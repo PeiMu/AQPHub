@@ -31,6 +31,8 @@ public:
   // Parse SQL and return logical plan
   void ParseSQL(const std::string &sql) override;
 
+  json GetParseTree() { return parse_tree; }
+
   // Convert logical plan to IR
   std::unique_ptr<ir_sql_converter::SimplestStmt> ConvertPlanToIR() override;
 

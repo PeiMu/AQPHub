@@ -11,8 +11,8 @@
 #include <sys/stat.h>
 #include <vector>
 
-#define DEBUG true
-#define MEASURE_SINGLE_QUERY true
+#define DEBUG_MIDDLEWARE false
+#define MEASURE_SINGLE_QUERY false
 
 namespace middleware {
 bool ends_with_sql(const std::string &filename);
