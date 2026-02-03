@@ -601,11 +601,11 @@ FKBasedSplitter::CollectJoinConditionsForTables(
 
         // Include condition if BOTH tables are in our cluster
         if (tables.count(left_table) && tables.count(right_table)) {
-          // Clone the condition
+          // Clone the condition - constructor order: (comparison_type, left_attr, right_attr)
           auto cloned = std::make_unique<ir_sql_converter::SimplestVarComparison>(
+              cond->GetSimplestExprType(),
               std::make_unique<ir_sql_converter::SimplestAttr>(*cond->left_attr),
-              std::make_unique<ir_sql_converter::SimplestAttr>(*cond->right_attr),
-              cond->op_type);
+              std::make_unique<ir_sql_converter::SimplestAttr>(*cond->right_attr));
           conditions.push_back(std::move(cloned));
         }
       }
@@ -632,18 +632,20 @@ FKBasedSplitter::CollectFilterConditionsForTables(
   if (!ir)
     return filters;
 
-  // Check filter_conditions in any node
-  for (const auto &filter : ir->filter_conditions) {
+  // Check qual_vec for filter conditions in this node
+  for (const auto &qual : ir->qual_vec) {
     // Check if filter involves only tables in our cluster
-    // For simplicity, we check if any referenced table is in the cluster
-    bool involves_cluster = false;
-    // TODO: More sophisticated check for which tables a filter references
-    // For now, include all filters (may include some that don't apply)
-    involves_cluster = true;
-
-    if (involves_cluster) {
-      // Clone the filter - this is simplified, may need deep clone
-      // filters.push_back(filter->Clone());
+    // For SimplestVarConstComparison, check the attr's table
+    if (qual->GetNodeType() == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
+      auto *var_const = dynamic_cast<ir_sql_converter::SimplestVarConstComparison *>(qual.get());
+      if (var_const && tables.count(var_const->attr->GetTableIndex())) {
+        // Clone the filter
+        auto cloned = std::make_unique<ir_sql_converter::SimplestVarConstComparison>(
+            var_const->GetSimplestExprType(),
+            std::make_unique<ir_sql_converter::SimplestAttr>(*var_const->attr),
+            std::make_unique<ir_sql_converter::SimplestConstVar>(*var_const->const_var));
+        filters.push_back(std::move(cloned));
+      }
     }
   }
 
@@ -656,6 +658,72 @@ FKBasedSplitter::CollectFilterConditionsForTables(
   }
 
   return filters;
+}
+
+// Helper: Collect attributes from cluster tables that are needed for join conditions
+// with tables OUTSIDE the cluster (for the remaining plan)
+// NOTE: Only considers joins that still exist in join_graph_ (after RemoveRedundantJoins)
+std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+FKBasedSplitter::CollectExternalJoinAttrs(
+    ir_sql_converter::SimplestStmt *ir,
+    const std::set<unsigned int> &cluster_tables) {
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> attrs;
+  std::set<std::pair<unsigned int, unsigned int>> seen; // (table_idx, col_idx)
+
+  if (!ir)
+    return attrs;
+
+  // Check join conditions in Join nodes
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
+    auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(ir);
+    if (join) {
+      for (const auto &cond : join->join_conditions) {
+        unsigned int left_table = cond->left_attr->GetTableIndex();
+        unsigned int right_table = cond->right_attr->GetTableIndex();
+
+        // Skip joins that no longer exist in join_graph_ (removed as redundant)
+        // Check both directions since graph may be asymmetric
+        if (!join_graph_.HasEdge(left_table, right_table) &&
+            !join_graph_.HasEdge(right_table, left_table)) {
+          continue;
+        }
+
+        // If one table is in cluster and the other is NOT, we need to include
+        // the cluster table's attr in our output (for the remaining plan's join)
+        bool left_in_cluster = cluster_tables.count(left_table) > 0;
+        bool right_in_cluster = cluster_tables.count(right_table) > 0;
+
+        if (left_in_cluster && !right_in_cluster) {
+          auto key = std::make_pair(left_table, cond->left_attr->GetColumnIndex());
+          if (seen.find(key) == seen.end()) {
+            seen.insert(key);
+            attrs.push_back(std::make_unique<ir_sql_converter::SimplestAttr>(*cond->left_attr));
+          }
+        }
+        if (right_in_cluster && !left_in_cluster) {
+          auto key = std::make_pair(right_table, cond->right_attr->GetColumnIndex());
+          if (seen.find(key) == seen.end()) {
+            seen.insert(key);
+            attrs.push_back(std::make_unique<ir_sql_converter::SimplestAttr>(*cond->right_attr));
+          }
+        }
+      }
+    }
+  }
+
+  // Recurse into children
+  for (auto &child : ir->children) {
+    auto child_attrs = CollectExternalJoinAttrs(child.get(), cluster_tables);
+    for (auto &attr : child_attrs) {
+      auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
+      if (seen.find(key) == seen.end()) {
+        seen.insert(key);
+        attrs.push_back(std::move(attr));
+      }
+    }
+  }
+
+  return attrs;
 }
 
 std::unique_ptr<ir_sql_converter::SimplestStmt>
@@ -681,84 +749,133 @@ FKBasedSplitter::BuildSubIRForCluster(
     return nullptr;
   }
 
-  // Step 2: Collect join conditions between cluster tables
+  // Step 2: Collect join conditions between cluster tables (internal joins)
   auto join_conditions = CollectJoinConditionsForTables(ir, cluster_tables);
   std::cout << "[BuildSubIRForCluster] Found " << join_conditions.size()
-            << " join condition(s)" << std::endl;
+            << " internal join condition(s)" << std::endl;
 
-  // Step 3: Build the sub-IR tree
-  // Start with the first scan, then build up joins
+  // Step 3: Collect required output attributes
+  // - Attributes from original target_list that belong to cluster tables
+  // - Attributes needed for joins with tables OUTSIDE the cluster
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> required_attrs;
+  std::set<std::pair<unsigned int, unsigned int>> seen_attrs;
+
+  // 3a: From original target_list
+  for (const auto &attr : ir->target_list) {
+    if (cluster_tables.count(attr->GetTableIndex())) {
+      auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
+      if (seen_attrs.find(key) == seen_attrs.end()) {
+        seen_attrs.insert(key);
+        required_attrs.push_back(std::make_unique<ir_sql_converter::SimplestAttr>(*attr));
+      }
+    }
+  }
+
+  // 3b: From external join conditions (attrs needed for remaining plan)
+  auto external_attrs = CollectExternalJoinAttrs(ir, cluster_tables);
+  for (auto &attr : external_attrs) {
+    auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
+    if (seen_attrs.find(key) == seen_attrs.end()) {
+      seen_attrs.insert(key);
+      required_attrs.push_back(std::move(attr));
+    }
+  }
+
+  std::cout << "[BuildSubIRForCluster] Required output attributes: "
+            << required_attrs.size() << std::endl;
+
+  // Step 4: Build the sub-IR tree (left-deep)
+  // Clone scan nodes
   std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> scan_nodes;
   for (auto *scan : scans) {
-    // Clone the scan node
-    auto cloned_scan = std::make_unique<ir_sql_converter::SimplestScan>(*scan);
+    // Clone the scan node - build manually since SimplestStmt has no copy constructor
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> empty_children;
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> cloned_target_list;
+    for (const auto &attr : scan->target_list) {
+      cloned_target_list.push_back(
+          std::make_unique<ir_sql_converter::SimplestAttr>(*attr));
+    }
+    auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(empty_children), std::move(cloned_target_list),
+        ir_sql_converter::SimplestNodeType::ScanNode);
+
+    auto cloned_scan = std::make_unique<ir_sql_converter::SimplestScan>(
+        std::move(base_stmt), scan->GetTableIndex(), scan->GetTableName());
     scan_nodes.push_back(std::move(cloned_scan));
   }
 
   if (scan_nodes.size() == 1) {
-    // Only one table - just return the scan
-    return std::move(scan_nodes[0]);
+    // Only one table - wrap in Projection and return
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> proj_children;
+    proj_children.push_back(std::move(scan_nodes[0]));
+
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> proj_target;
+    for (auto &attr : required_attrs) {
+      proj_target.push_back(std::make_unique<ir_sql_converter::SimplestAttr>(*attr));
+    }
+
+    auto proj_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(proj_children), std::move(proj_target),
+        ir_sql_converter::SimplestNodeType::ProjectionNode);
+
+    // Use table index 0 for the projection (temporary result)
+    return std::make_unique<ir_sql_converter::SimplestProjection>(
+        std::move(proj_base), 0);
   }
 
-  // Build a left-deep join tree
-  // Start with first two scans joined, then add remaining
+  // Build left-deep tree using CrossProduct for intermediate joins
   std::unique_ptr<ir_sql_converter::SimplestStmt> result = std::move(scan_nodes[0]);
 
   for (size_t i = 1; i < scan_nodes.size(); i++) {
-    // Create empty children vector for base stmt
     std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> join_children;
     join_children.push_back(std::move(result));
     join_children.push_back(std::move(scan_nodes[i]));
 
-    // Create base SimplestStmt
+    // Create base SimplestStmt with empty target_list
     std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> empty_attrs;
     auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
         std::move(join_children), std::move(empty_attrs),
-        ir_sql_converter::SimplestNodeType::JoinNode);
+        ir_sql_converter::SimplestNodeType::CrossProductNode);
 
-    // Create the join node
-    auto join_node = std::make_unique<ir_sql_converter::SimplestJoin>(
-        std::move(base_stmt), ir_sql_converter::SimplestJoinType::INNER);
+    if (i < scan_nodes.size() - 1) {
+      // Intermediate join: use CrossProduct (no conditions)
+      result = std::make_unique<ir_sql_converter::SimplestCrossProduct>(
+          std::move(base_stmt));
+    } else {
+      // Final join: use Join with all conditions
+      base_stmt->ChangeNodeType(ir_sql_converter::SimplestNodeType::JoinNode);
+      auto join_node = std::make_unique<ir_sql_converter::SimplestJoin>(
+          std::move(base_stmt), ir_sql_converter::Inner);
 
-    result = std::move(join_node);
-  }
-
-  // Step 4: Add join conditions to the final join node
-  if (result->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
-    auto *final_join =
-        dynamic_cast<ir_sql_converter::SimplestJoin *>(result.get());
-    if (final_join) {
+      // Add all join conditions to the final join
       for (auto &cond : join_conditions) {
-        final_join->join_conditions.push_back(std::move(cond));
+        join_node->join_conditions.push_back(std::move(cond));
       }
+      result = std::move(join_node);
     }
   }
 
-  // Step 5: Build target list from original IR's target list
-  // Copy columns that belong to cluster tables
-  for (const auto &attr : ir->target_list) {
-    if (cluster_tables.count(attr->GetTableIndex())) {
-      auto cloned_attr =
-          std::make_unique<ir_sql_converter::SimplestAttr>(*attr);
-      result->target_list.push_back(std::move(cloned_attr));
-    }
+  // Step 5: Add Projection node on top with required attributes
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> proj_children;
+  proj_children.push_back(std::move(result));
+
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> proj_target;
+  for (auto &attr : required_attrs) {
+    proj_target.push_back(std::make_unique<ir_sql_converter::SimplestAttr>(*attr));
   }
 
-  // If no target list was built, create one from scans
-  if (result->target_list.empty()) {
-    for (auto *scan : scans) {
-      for (const auto &attr : scan->target_list) {
-        auto cloned_attr =
-            std::make_unique<ir_sql_converter::SimplestAttr>(*attr);
-        result->target_list.push_back(std::move(cloned_attr));
-      }
-    }
-  }
+  auto proj_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+      std::move(proj_children), std::move(proj_target),
+      ir_sql_converter::SimplestNodeType::ProjectionNode);
 
-  std::cout << "[BuildSubIRForCluster] Built sub-IR with "
-            << result->target_list.size() << " output column(s)" << std::endl;
+  // Use table index 0 for the projection (will be replaced by temp table index)
+  auto projection = std::make_unique<ir_sql_converter::SimplestProjection>(
+      std::move(proj_base), 0);
 
-  return result;
+  std::cout << "[BuildSubIRForCluster] Built sub-IR with Projection ("
+            << projection->target_list.size() << " output columns)" << std::endl;
+
+  return projection;
 }
 
 // ===== MinSubquery Strategy =====

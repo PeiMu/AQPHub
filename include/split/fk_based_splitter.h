@@ -165,6 +165,12 @@ protected:
   CollectFilterConditionsForTables(ir_sql_converter::SimplestStmt *ir,
                                    const std::set<unsigned int> &tables);
 
+  // Helper: Collect attributes from cluster tables needed for join conditions
+  // with tables OUTSIDE the cluster (for the remaining plan's joins)
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+  CollectExternalJoinAttrs(ir_sql_converter::SimplestStmt *ir,
+                           const std::set<unsigned int> &cluster_tables);
+
   BackendEngine engine_;
   SplitStrategy strategy_;
   ForeignKeyExtractor fk_extractor_;

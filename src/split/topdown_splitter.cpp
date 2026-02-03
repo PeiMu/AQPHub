@@ -186,6 +186,7 @@ std::unique_ptr<SubqueryExtraction> TopDownSplitter::ExtractNextSubquery(
   std::unordered_set<std::string> table_names_in_subquery;
   if (CheckSameTableInSubtree(sub_ir, table_names_in_subquery)) {
     // TODO: implement merge-back logic like DuckDB
+    throw std::runtime_error("todo: fix same-table issue!");
   }
 
   return extraction;
