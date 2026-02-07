@@ -1,7 +1,11 @@
 ## How to compile
 ```bash
-mkdir -p build && cd build/
-cmake .. # requires CMake 4.0 or higher
+mkdir -p build_debug && cd build_debug/
+cmake -DCMAKE_BUILD_TYPE=Debug .. # requires CMake 4.0 or higher
+make -j32
+
+mkdir -p build_release && cd build_release/
+cmake -DCMAKE_BUILD_TYPE=Release .. # requires CMake 4.0 or higher
 make -j32
 ```
 

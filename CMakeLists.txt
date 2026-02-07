@@ -8,8 +8,8 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Build split library (common for both DuckDB and PostgreSQL)
 add_library(split_lib STATIC
         src/util/param_config.cpp
-        src/split/split_algorithm.cpp
         src/split/ir_reorder_get.cpp
+        src/split/ir_utils.cpp
         src/split/foreign_key_extractor.cpp
         src/split/fk_based_splitter.cpp
         src/split/topdown_splitter.cpp

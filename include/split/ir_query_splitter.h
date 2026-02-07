@@ -13,10 +13,22 @@
 #include "util/param_config.h"
 #include <chrono>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <vector>
 
 namespace middleware {
+
+// Mapping entry for column index updates
+struct ColumnMapping {
+  unsigned int old_table_idx;
+  unsigned int old_col_idx;
+  std::string column_name;
+
+  ColumnMapping(unsigned int table_idx, unsigned int col_idx, std::string name)
+      : old_table_idx(table_idx), old_col_idx(col_idx),
+        column_name(std::move(name)) {}
+};
 
 // Temp table information after executing a subquery
 struct TempTableInfo {
@@ -25,8 +37,25 @@ struct TempTableInfo {
   uint64_t cardinality;
   std::vector<std::string> column_names;
 
+  // Mapping from old (table_idx, col_idx) to position in this temp table
+  // column_mappings[i] contains the original (table_idx, col_idx) for column i
+  std::vector<ColumnMapping> column_mappings;
+
   TempTableInfo(std::string name, unsigned int idx, uint64_t card)
       : table_name(std::move(name)), table_index(idx), cardinality(card) {}
+
+  // Find the new column index for a given old (table_idx, col_idx)
+  // Returns -1 if not found
+  int FindNewColumnIndex(unsigned int old_table_idx,
+                         unsigned int old_col_idx) const {
+    for (size_t i = 0; i < column_mappings.size(); i++) {
+      if (column_mappings[i].old_table_idx == old_table_idx &&
+          column_mappings[i].old_col_idx == old_col_idx) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
 };
 
 class IRQuerySplitter {
@@ -42,44 +71,47 @@ public:
   std::vector<double> GetIterationTimes() const { return iteration_times_; }
 
 private:
-  // === Iterative Split-Execute Loop (DuckDB pattern) ===
-  // Main loop: while (!IsComplete()) { ExtractSubquery → Execute → Merge }
+  // === Iterative Split-Execute Loop ===
   QueryResult
   ExecuteSplitLoop(std::unique_ptr<ir_sql_converter::SimplestStmt> whole_ir);
 
-  // Single iteration: extract → execute → merge
-  // Returns false when done
+  // Single iteration: extract → execute → update remaining IR
   bool ExecuteOneIteration(
       std::unique_ptr<ir_sql_converter::SimplestStmt> &remaining_ir);
 
   // Execute a sub-IR and create temp table
-  // Similar to DuckDB: ExecuteRow() + MergeDataChunk()
-  // Uses: adapter_->GenerateSQL() → adapter_->ExecuteSQLandCreateTempTable()
   TempTableInfo
   ExecuteSubIR(std::unique_ptr<ir_sql_converter::SimplestStmt> sub_ir,
                const std::set<unsigned int> &executed_table_indices);
 
-  // Update remaining IR after executing a subquery
-  // Replace executed tables with temp table reference
-  void UpdateRemainingIR(
-      std::unique_ptr<ir_sql_converter::SimplestStmt> &remaining_ir,
-      const TempTableInfo &temp_table,
-      ir_sql_converter::SimplestStmt *node_to_replace,
-      const std::set<unsigned int> &old_table_indices);
-
-  // Helper function to recursively replace a node with temp table
-  bool
-  ReplaceNodeWithTempTable(ir_sql_converter::SimplestStmt *current,
-                           ir_sql_converter::SimplestStmt *node_to_replace,
+  // === Shared Index Update Functions ===
+  // Update table/column indices in remaining IR after creating temp table
+  // Called after strategy-specific UpdateRemainingIR
+  void
+  UpdateRemainingIRIndices(ir_sql_converter::SimplestStmt *remaining_ir,
                            const TempTableInfo &temp_table,
                            const std::set<unsigned int> &old_table_indices);
 
+  // Helper: Update a single SimplestAttr if it references an executed table
+  std::unique_ptr<ir_sql_converter::SimplestAttr>
+  UpdateAttrIndices(const ir_sql_converter::SimplestAttr *attr,
+                    const TempTableInfo &temp_table,
+                    const std::set<unsigned int> &old_table_indices);
+
+  // Helper: Recursively update all attributes in an IR node
+  void UpdateNodeIndices(ir_sql_converter::SimplestStmt *node,
+                         const TempTableInfo &temp_table,
+                         const std::set<unsigned int> &old_table_indices);
+
+  // Helper: Recursively update attributes in an expression tree
+  void UpdateExprIndices(ir_sql_converter::SimplestExpr *expr,
+                         const TempTableInfo &temp_table,
+                         const std::set<unsigned int> &old_table_indices);
+
   // === Helper Functions ===
   std::string GenerateTempTableName();
-  void PrintIterationInfo(int iteration, const std::string &info);
 
   // Check if remaining IR is trivial (just a temp table reference)
-  // Returns the temp table name if trivial, empty string otherwise
   std::string GetTrivialTempTable(ir_sql_converter::SimplestStmt *ir) const;
 
   DBAdapter *adapter_;
@@ -90,6 +122,16 @@ private:
   int iteration_count_ = 0;
   std::vector<TempTableInfo> temp_tables_;
   std::vector<double> iteration_times_;
+
+  // Table index to name mapping (collected once, updated with temp tables)
+  std::map<unsigned int, std::string> table_index_to_name_;
+
+  // Helper: Collect table names from IR (called once at start)
+  void CollectTableNames(ir_sql_converter::SimplestStmt *ir);
+
+  // Helper: Compute column alias using SQL generator's convention
+  std::string ComputeColumnAlias(unsigned int table_idx,
+                                 const std::string &col_name) const;
 };
 
 } // namespace middleware

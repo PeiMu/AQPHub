@@ -28,10 +28,8 @@ void test_single_query(middleware::DuckDBAdapter *adapter,
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "Testing: " << result.query_file << std::endl;
-#if DEBUG_MIDDLEWARE
     std::cout << "========================================" << std::endl;
     std::cout << "Original SQL:\n" << sql << std::endl;
-#endif
 
     // Parse SQL
     auto parse_start = std::chrono::high_resolution_clock::now();
@@ -41,29 +39,23 @@ void test_single_query(middleware::DuckDBAdapter *adapter,
         std::chrono::duration<double, std::milli>(parse_end - parse_start)
             .count();
 
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== SQL Parsed Successfully ===" << std::endl;
     std::cout << "Parse time: " << result.parse_time_ms << " ms" << std::endl;
-#endif
 
     // Cast to LogicalOperator
     auto *logical_plan =
         static_cast<duckdb::LogicalOperator *>(adapter->GetLogicalPlan());
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Init Logical Plan ===" << std::endl;
     logical_plan->Print();
     std::cout << "===================\n" << std::endl;
-#endif
 
     // Pre optimizer
     adapter->PreOptimizePlan();
     logical_plan =
         static_cast<duckdb::LogicalOperator *>(adapter->GetLogicalPlan());
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Logical Plan After Pre Optimizer ===" << std::endl;
     logical_plan->Print();
     std::cout << "===================\n" << std::endl;
-#endif
 
     // Convert logical plan to IR
     auto ir_start = std::chrono::high_resolution_clock::now();
@@ -72,12 +64,10 @@ void test_single_query(middleware::DuckDBAdapter *adapter,
     result.ir_convert_time_ms =
         std::chrono::duration<double, std::milli>(ir_end - ir_start).count();
 
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Simplest IR ===" << std::endl;
     simplest_ir->Print();
     std::cout << "IR conversion time: " << result.ir_convert_time_ms << " ms"
               << std::endl;
-#endif
 
     // Convert IR to SQL
     auto sql_gen_start = std::chrono::high_resolution_clock::now();
@@ -87,12 +77,10 @@ void test_single_query(middleware::DuckDBAdapter *adapter,
         std::chrono::duration<double, std::milli>(sql_gen_end - sql_gen_start)
             .count();
 
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Generated SQL ===" << std::endl;
     std::cout << generated_sql << std::endl;
     std::cout << "SQL generation time: " << result.sql_gen_time_ms << " ms"
               << std::endl;
-#endif
 
     // Execute and verify
     auto exec_start = std::chrono::high_resolution_clock::now();
@@ -112,10 +100,8 @@ void test_single_query(middleware::DuckDBAdapter *adapter,
       std::cout << std::endl;
     }
 
-#if DEBUG_MIDDLEWARE
     std::cout << "Execution time: " << result.execution_time_ms << " ms"
               << std::endl;
-#endif
 
     result.success = true;
 

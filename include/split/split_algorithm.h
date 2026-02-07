@@ -69,6 +69,27 @@ public:
   // Get strategy name for logging
   virtual std::string GetStrategyName() const = 0;
 
+  // Update remaining IR after executing a subquery
+  // Different strategies have different implementations:
+  // - TopDown: Replace subtree directly (DuckDB style) - returns same IR
+  // modified in-place
+  // - FK-based: Rebuild the IR (PostgreSQL style) - consumes old IR, returns
+  // new one column_mappings: (old_table_idx, old_col_idx) for each column
+  // column_names: computed column names matching SQL generator's convention
+  // Takes ownership of remaining_ir to allow moving expressions instead of
+  // cloning Returns the updated remaining IR
+  virtual std::unique_ptr<ir_sql_converter::SimplestStmt> UpdateRemainingIR(
+      std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir,
+      const std::set<unsigned int> &executed_table_indices,
+      unsigned int temp_table_index, const std::string &temp_table_name,
+      uint64_t temp_table_cardinality,
+      const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
+      const std::vector<std::string> &column_names) = 0;
+
+  // Get the maximum table index in the original IR
+  // Used to generate new table indices for temp tables
+  unsigned int GetMaxTableIndex() const { return max_table_index_; }
+
 protected:
   DBAdapter *adapter_;
 
@@ -77,6 +98,9 @@ protected:
 
   // Track which tables have been executed (now part of a temp table)
   std::set<unsigned int> executed_tables_;
+
+  // Track the maximum table index (for generating new temp table indices)
+  unsigned int max_table_index_ = 0;
 };
 
 } // namespace middleware

@@ -154,21 +154,23 @@ protected:
   CollectScansForTables(ir_sql_converter::SimplestStmt *ir,
                         const std::set<unsigned int> &tables);
 
-  // Helper: Collect join conditions that involve only the specified tables
-  std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
-  CollectJoinConditionsForTables(ir_sql_converter::SimplestStmt *ir,
-                                 const std::set<unsigned int> &tables);
-
-  // Helper: Collect filter conditions that involve only the specified tables
-  std::vector<std::unique_ptr<ir_sql_converter::SimplestExpr>>
-  CollectFilterConditionsForTables(ir_sql_converter::SimplestStmt *ir,
-                                   const std::set<unsigned int> &tables);
-
   // Helper: Collect attributes from cluster tables needed for join conditions
   // with tables OUTSIDE the cluster (for the remaining plan's joins)
+  // NOTE: This stays in FK-based splitter because it uses join_graph_ member
   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
   CollectExternalJoinAttrs(ir_sql_converter::SimplestStmt *ir,
                            const std::set<unsigned int> &cluster_tables);
+
+  // Update remaining IR by rebuilding (PostgreSQL style)
+  // Because cluster tables may be scattered throughout the tree
+  // Takes ownership of old IR to move expressions instead of cloning
+  std::unique_ptr<ir_sql_converter::SimplestStmt> UpdateRemainingIR(
+      std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir,
+      const std::set<unsigned int> &executed_table_indices,
+      unsigned int temp_table_index, const std::string &temp_table_name,
+      uint64_t temp_table_cardinality,
+      const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
+      const std::vector<std::string> &column_names) override;
 
   BackendEngine engine_;
   SplitStrategy strategy_;
@@ -177,9 +179,11 @@ protected:
   // Current state
   JoinGraph join_graph_;
   std::map<unsigned int, std::string> table_index_to_name_;
-  std::map<std::string, unsigned int> table_name_to_index_;
   ForeignKeyGraph fk_graph_;
   std::vector<bool> is_relationship_;
+
+  // Join pairs from original IR (used for filtering valid join conditions)
+  std::vector<std::pair<unsigned int, unsigned int>> join_pairs_;
 };
 
 // ===== MinSubquery Strategy =====

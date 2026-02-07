@@ -13,8 +13,10 @@ namespace middleware {
 IRQuerySplitter::IRQuerySplitter(DBAdapter *adapter, const ParamConfig &config)
     : adapter_(adapter), config_(config) {
 
-  std::cout << "[IRQuerySplitter] Initializing with strategy: "
-            << config.GetStrategyName() << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[IRQuerySplitter] Initializing with strategy: "
+              << config.GetStrategyName() << std::endl;
+  }
 
   // Create the appropriate splitter based on strategy
   switch (config.strategy) {
@@ -25,19 +27,15 @@ IRQuerySplitter::IRQuerySplitter(DBAdapter *adapter, const ParamConfig &config)
 
   case SplitStrategy::MIN_SUBQUERY:
     splitter_ = std::make_unique<MinSubquerySplitter>(adapter, config.engine);
-    std::cout << "[IRQuerySplitter] Created MinSubquery splitter" << std::endl;
     break;
 
   case SplitStrategy::RELATIONSHIP_CENTER:
     splitter_ =
         std::make_unique<RelationshipCenterSplitter>(adapter, config.engine);
-    std::cout << "[IRQuerySplitter] Created RelationshipCenter splitter"
-              << std::endl;
     break;
 
   case SplitStrategy::ENTITY_CENTER:
     splitter_ = std::make_unique<EntityCenterSplitter>(adapter, config.engine);
-    std::cout << "[IRQuerySplitter] Created EntityCenter splitter" << std::endl;
     break;
 
   case SplitStrategy::NONE:
@@ -48,9 +46,11 @@ IRQuerySplitter::IRQuerySplitter(DBAdapter *adapter, const ParamConfig &config)
 }
 
 QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
-  std::cout
-      << "\n[IRQuerySplitter] ========== Starting Split Execution =========="
-      << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout
+        << "\n[IRQuerySplitter] ========== Starting Split Execution =========="
+        << std::endl;
+  }
 
   if (!config_.NeedsSplit() || !splitter_) {
     std::cout << "[IRQuerySplitter] No splitting needed, executing directly"
@@ -59,32 +59,41 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 
   // === Phase 1: Parse SQL ===
-  std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
+  }
   adapter_->ParseSQL(sql);
 
   // === Phase 2: Pre-Optimize (ONLY for DuckDB) ===
-  // PreOptimize runs JOIN_ORDER optimizer which sets cardinality
   if (config_.engine == BackendEngine::DUCKDB &&
       config_.strategy == SplitStrategy::TOP_DOWN) {
-    std::cout << "[IRQuerySplitter] Phase 2: Pre-Optimization (DuckDB)"
-              << std::endl;
+    if (config_.enable_debug_print) {
+      std::cout << "[IRQuerySplitter] Phase 2: Pre-Optimization (DuckDB)"
+                << std::endl;
+    }
 #ifdef HAVE_DUCKDB
     auto *duckdb_adapter = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duckdb_adapter) {
       duckdb_adapter->PreOptimizePlan();
-      std::cout << "[IRQuerySplitter] Phase 2: After Pre-Optimization (DuckDB)"
-                << std::endl;
+      if (config_.enable_debug_print) {
+        std::cout
+            << "[IRQuerySplitter] Phase 2: After Pre-Optimization (DuckDB)"
+            << std::endl;
+      }
       duckdb_adapter->PrintLogicalPlan();
     }
 #endif
   } else {
-    std::cout << "[IRQuerySplitter] Phase 2: Skipping Pre-Optimization "
-                 "(PostgreSQL doesn't need it)"
-              << std::endl;
+    if (config_.enable_debug_print) {
+      std::cout << "[IRQuerySplitter] Phase 2: Skipping Pre-Optimization"
+                << std::endl;
+    }
   }
 
   // === Phase 3: Convert to IR ===
-  std::cout << "[IRQuerySplitter] Phase 3: Converting to IR" << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[IRQuerySplitter] Phase 3: Converting to IR" << std::endl;
+  }
   auto whole_ir = adapter_->ConvertPlanToIR();
 
   if (!whole_ir) {
@@ -97,14 +106,18 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 
   // === Phase 4: Iterative Split-Execute Loop ===
-  std::cout << "[IRQuerySplitter] Phase 4: Iterative Split-Execute Loop"
-            << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[IRQuerySplitter] Phase 4: Iterative Split-Execute Loop"
+              << std::endl;
+  }
   auto result = ExecuteSplitLoop(std::move(whole_ir));
 
-  std::cout
-      << "[IRQuerySplitter] ========== Split Execution Complete =========="
-      << std::endl;
-  std::cout << "Total iterations: " << iteration_count_ << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout
+        << "[IRQuerySplitter] ========== Split Execution Complete =========="
+        << std::endl;
+    std::cout << "Total iterations: " << iteration_count_ << std::endl;
+  }
 
   return result;
 }
@@ -116,26 +129,27 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir =
       std::move(whole_ir);
 
-  // === Strategy Preprocessing (called ONCE before the loop) ===
-  // This builds the join graph, extracts foreign keys, marks
-  // entity/relationship
+  // === Strategy Preprocessing ===
+  if (config_.enable_debug_print) {
   std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
+  }
   splitter_->Preprocess(remaining_ir);
 
+  // Collect table names once from the whole IR
+  table_index_to_name_.clear();
+  CollectTableNames(remaining_ir.get());
+
   // Main loop: while (graph has edges) { extract → execute → merge }
-  // Pattern from PostgreSQL: query_split.c QSExecutor loop
-  // Exit condition: IsComplete() returns true when join graph has no remaining
-  // edges
   while (!splitter_->IsComplete(remaining_ir.get())) {
     iteration_count_++;
 
-    std::cout << "\n========== Iteration " << iteration_count_
-              << " ==========" << std::endl;
+    if (config_.enable_debug_print) {
+      std::cout << "\n========== Iteration " << iteration_count_
+                << " ==========" << std::endl;
+    }
 
     auto iter_start = std::chrono::high_resolution_clock::now();
 
-    // Execute one iteration (extract subquery, execute, update IR)
-    // Returns false only if ExtractNextSubquery fails unexpectedly
     if (!ExecuteOneIteration(remaining_ir)) {
       std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
                    "false but IsComplete was false. Breaking loop."
@@ -149,12 +163,16 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
             .count();
     iteration_times_.push_back(iter_time_ms);
 
-    std::cout << "Iteration " << iteration_count_ << " completed in "
-              << iter_time_ms << " ms" << std::endl;
+    if (config_.enable_debug_print) {
+      std::cout << "Iteration " << iteration_count_ << " completed in "
+                << iter_time_ms << " ms" << std::endl;
+    }
   }
 
-  std::cout << "[IRQuerySplitter] Split loop completed after "
-            << iteration_count_ << " iteration(s)" << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[IRQuerySplitter] Split loop completed after "
+              << iteration_count_ << " iteration(s)" << std::endl;
+  }
 
   // === Final Execution ===
   if (!remaining_ir) {
@@ -167,24 +185,21 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   }
 
   // Check if remaining IR is trivial (just a temp table reference)
-  // If so, we can return the temp table contents directly without re-executing
   std::string trivial_temp = GetTrivialTempTable(remaining_ir.get());
   if (!trivial_temp.empty()) {
-    std::cout << "\n[IRQuerySplitter] Final IR is trivial (temp table: "
-              << trivial_temp << "), returning directly" << std::endl;
-
-    // Just SELECT * FROM the temp table
-    std::string final_sql = "SELECT * FROM " + trivial_temp;
     if (config_.enable_debug_print) {
-      std::cout << "=== Final SQL (trivial) ===" << std::endl;
-      std::cout << final_sql << std::endl;
+      std::cout << "\n[IRQuerySplitter] Final IR is trivial (temp table: "
+                << trivial_temp << "), returning directly" << std::endl;
     }
+    std::string final_sql = "SELECT * FROM " + trivial_temp;
     return adapter_->ExecuteSQL(final_sql);
   }
 
   // Non-trivial case: generate and execute final SQL
-  std::cout << "\n[IRQuerySplitter] Executing final remaining IR" << std::endl;
-
+  if (config_.enable_debug_print) {
+    std::cout << "\n[IRQuerySplitter] Executing final remaining IR"
+              << std::endl;
+  }
   std::string final_sql =
       adapter_->GenerateSQL(*remaining_ir, adapter_->subquery_index++);
 
@@ -200,41 +215,40 @@ bool IRQuerySplitter::ExecuteOneIteration(
     std::unique_ptr<ir_sql_converter::SimplestStmt> &remaining_ir) {
 
   // === Step 1: Extract Next Subquery ===
-  std::cout << "[Iteration " << iteration_count_
-            << "] Step 1: Extracting next subquery" << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[Iteration " << iteration_count_
+              << "] Step 1: Extracting next subquery" << std::endl;
+  }
 
   auto extraction = splitter_->ExtractNextSubquery(remaining_ir.get());
 
   if (!extraction) {
-    std::cout << "[Iteration " << iteration_count_
-              << "] No more subqueries to extract" << std::endl;
+    if (config_.enable_debug_print) {
+      std::cout << "[Iteration " << iteration_count_
+                << "] No more subqueries to extract" << std::endl;
+    }
     return false;
   }
 
-  std::cout << "[Iteration " << iteration_count_ << "] Extracted subquery with "
-            << extraction->executed_table_indices.size() << " table(s)"
-            << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[Iteration " << iteration_count_
+              << "] Extracted subquery with "
+              << extraction->executed_table_indices.size() << " table(s)"
+              << std::endl;
+  }
 
   // === Step 2: Execute Sub-IR ===
-  std::cout << "[Iteration " << iteration_count_ << "] Step 2: Executing sub-IR"
-            << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "[Iteration " << iteration_count_
+              << "] Step 2: Executing sub-IR" << std::endl;
+  }
 
-  // Get the executable IR (prefers built sub_ir over pipeline_breaker_ptr)
   ir_sql_converter::SimplestStmt *executable_ir = extraction->GetExecutableIR();
 
   if (!executable_ir) {
     std::cerr << "[Iteration " << iteration_count_
-              << "] Error: No executable IR (sub_ir or pipeline_breaker_ptr)"
-              << std::endl;
+              << "] Error: No executable IR" << std::endl;
     return false;
-  }
-
-  if (extraction->sub_ir) {
-    std::cout << "[Iteration " << iteration_count_
-              << "] Using built sub-IR for execution" << std::endl;
-  } else {
-    std::cout << "[Iteration " << iteration_count_
-              << "] Using pipeline_breaker_ptr for execution" << std::endl;
   }
 
   if (config_.enable_debug_print) {
@@ -242,7 +256,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     executable_ir->Print();
   }
 
-  // Generate SQL from the sub-IR
+  // Generate SQL and execute
   std::string sub_sql =
       adapter_->GenerateSQL(*executable_ir, adapter_->subquery_index++);
   std::string temp_table_name = GenerateTempTableName();
@@ -252,54 +266,74 @@ bool IRQuerySplitter::ExecuteOneIteration(
     std::cout << sub_sql << std::endl;
   }
 
-  std::cout << "Executing sub-query and creating temp table: "
-            << temp_table_name << std::endl;
+  if (config_.enable_debug_print) {
+    std::cout << "Executing sub-query and creating temp table: "
+              << temp_table_name << std::endl;
+  }
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name);
 
-  unsigned int temp_table_index = adapter_->subquery_index - 1;
+  // Generate temp table index
+  unsigned int temp_table_index =
+      splitter_->GetMaxTableIndex() + iteration_count_;
   uint64_t cardinality = adapter_->GetTempTableCardinality(temp_table_name);
 
   TempTableInfo temp_table =
       TempTableInfo(temp_table_name, temp_table_index, cardinality);
 
-  // Store column names from the executed node
+  // Store column mappings with correct names (SQL generator uses:
+  // {table}_{col})
+  std::vector<std::pair<unsigned int, unsigned int>> col_mappings;
+  std::vector<std::string> col_names;
   for (const auto &attr : executable_ir->target_list) {
-    temp_table.column_names.push_back(attr->GetColumnName());
+    std::string col_alias =
+        ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName());
+    temp_table.column_names.push_back(col_alias);
+    temp_table.column_mappings.emplace_back(attr->GetTableIndex(),
+                                            attr->GetColumnIndex(), col_alias);
+    col_mappings.emplace_back(attr->GetTableIndex(), attr->GetColumnIndex());
+    col_names.push_back(col_alias);
   }
 
-  std::cout << "[Iteration " << iteration_count_
-            << "] Created temp table: " << temp_table.table_name
-            << " (cardinality=" << temp_table.cardinality << ")" << std::endl;
+  // Add temp table to the mapping for future iterations
+  table_index_to_name_[temp_table_index] = temp_table_name;
+
+  if (config_.enable_debug_print) {
+    std::cout << "[Iteration " << iteration_count_
+              << "] Created temp table: " << temp_table.table_name
+              << " (index=" << temp_table.table_index
+              << ", cardinality=" << temp_table.cardinality << ")" << std::endl;
+  }
 
   // === Step 3: Update Remaining IR ===
-  std::cout << "[Iteration " << iteration_count_
-            << "] Step 3: Updating remaining IR" << std::endl;
-
-  // Note: For UpdateRemainingIR, we need to find the node in remaining_ir to
-  // replace If we built a new sub_ir, we need to find where to replace in the
-  // original tree For now, use pipeline_breaker_ptr if available, otherwise
-  // skip update
-  ir_sql_converter::SimplestStmt *node_to_replace =
-      extraction->pipeline_breaker_ptr;
-
-  if (!node_to_replace && extraction->sub_ir) {
-    // We built a new sub-IR, need to find the corresponding node in
-    // remaining_ir For now, we'll try to find it using FindSubIRForCluster
-    // logic This is a simplification - in production, we'd track the original
-    // node
+  if (config_.enable_debug_print) {
     std::cout << "[Iteration " << iteration_count_
-              << "] Note: Using built sub-IR, searching for node to replace"
-              << std::endl;
+              << "] Step 3: Updating remaining IR" << std::endl;
   }
 
-  if (node_to_replace) {
-    UpdateRemainingIR(remaining_ir, temp_table, node_to_replace,
-                      extraction->executed_table_indices);
-  } else {
-    std::cerr << "[Iteration " << iteration_count_
-              << "] Warning: No node to replace in remaining IR" << std::endl;
+  // Call strategy-specific UpdateRemainingIR (takes ownership of old IR)
+  remaining_ir = splitter_->UpdateRemainingIR(
+      std::move(remaining_ir), extraction->executed_table_indices,
+      temp_table.table_index, temp_table.table_name, temp_table.cardinality,
+      col_mappings, col_names);
+
+  if (config_.enable_debug_print) {
+    if (remaining_ir) {
+      std::cout << "[Iteration " << iteration_count_
+                << "] Successfully updated remaining IR" << std::endl;
+    } else {
+      std::cerr << "[Iteration " << iteration_count_
+                << "] Warning: Failed to update remaining IR" << std::endl;
+    }
   }
+
+  // === Step 4: Update Indices (shared) ===
+  if (config_.enable_debug_print) {
+    std::cout << "[Iteration " << iteration_count_
+              << "] Step 4: Updating indices in remaining IR" << std::endl;
+  }
+  UpdateRemainingIRIndices(remaining_ir.get(), temp_table,
+                           extraction->executed_table_indices);
 
   if (config_.enable_debug_print) {
     std::cout << "\n=== Updated Remaining IR ===" << std::endl;
@@ -315,133 +349,20 @@ TempTableInfo IRQuerySplitter::ExecuteSubIR(
     std::unique_ptr<ir_sql_converter::SimplestStmt> sub_ir,
     const std::set<unsigned int> &executed_table_indices) {
 
-  // Generate temp table name (uses adapter's counter)
   std::string temp_table_name = GenerateTempTableName();
-
-  // Convert sub-IR to SQL using adapter_->GenerateSQL()
   std::string sub_sql =
       adapter_->GenerateSQL(*sub_ir, adapter_->subquery_index++);
 
-  if (config_.enable_debug_print) {
-    std::cout << "\n=== Sub-Query SQL ===" << std::endl;
-    std::cout << sub_sql << std::endl;
-  }
-
-  // Execute and create temp table
-  // Uses: adapter_->ExecuteSQLandCreateTempTable()
-  std::cout << "Executing sub-query and creating temp table: "
-            << temp_table_name << std::endl;
-
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name);
 
-  // For now, use the temp table index from adapter
   unsigned int temp_table_index = adapter_->subquery_index - 1;
   uint64_t cardinality = adapter_->GetTempTableCardinality(temp_table_name);
 
   return TempTableInfo(temp_table_name, temp_table_index, cardinality);
 }
 
-void IRQuerySplitter::UpdateRemainingIR(
-    std::unique_ptr<ir_sql_converter::SimplestStmt> &remaining_ir,
-    const TempTableInfo &temp_table,
-    ir_sql_converter::SimplestStmt *node_to_replace,
-    const std::set<unsigned int> &old_table_indices) {
-
-  std::cout << "[UpdateRemainingIR] Replacing node with temp table: "
-            << temp_table.table_name << std::endl;
-
-  if (!remaining_ir || !node_to_replace) {
-    std::cerr << "[UpdateRemainingIR] Error: null pointer" << std::endl;
-    return;
-  }
-
-  // Strategy: Find the parent of node_to_replace and replace the child pointer
-  bool replaced = ReplaceNodeWithTempTable(remaining_ir.get(), node_to_replace,
-                                           temp_table, old_table_indices);
-
-  if (replaced) {
-    std::cout << "[UpdateRemainingIR] Successfully replaced node" << std::endl;
-  } else {
-    std::cerr << "[UpdateRemainingIR] Warning: Failed to find and replace node"
-              << std::endl;
-  }
-}
-
-// Helper function to find and replace a node in the IR tree
-bool IRQuerySplitter::ReplaceNodeWithTempTable(
-    ir_sql_converter::SimplestStmt *current,
-    ir_sql_converter::SimplestStmt *node_to_replace,
-    const TempTableInfo &temp_table,
-    const std::set<unsigned int> &old_table_indices) {
-
-  if (!current) {
-    return false;
-  }
-
-  // Check each child
-  for (size_t i = 0; i < current->children.size(); i++) {
-    auto &child = current->children[i];
-
-    if (!child) {
-      continue;
-    }
-
-    // If this child is the node we want to replace
-    if (child.get() == node_to_replace) {
-      std::cout << "[ReplaceNodeWithTempTable] Found target node at child[" << i
-                << "]" << std::endl;
-
-      // Create a new SimplestChunk node to represent the temp table
-      std::vector<std::string> chunk_contents;
-      chunk_contents.push_back(temp_table.table_name);
-
-      std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>>
-          empty_children;
-      std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> empty_attrs;
-      auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
-          std::move(empty_children), std::move(empty_attrs),
-          ir_sql_converter::SimplestNodeType::StmtNode);
-      auto temp_table_node = std::make_unique<ir_sql_converter::SimplestChunk>(
-          std::move(base_stmt), temp_table.table_index, chunk_contents);
-
-      // Copy the target_list from the original node
-      for (const auto &attr : child->target_list) {
-        auto cloned_attr =
-            std::make_unique<ir_sql_converter::SimplestAttr>(*attr);
-        temp_table_node->target_list.push_back(std::move(cloned_attr));
-      }
-
-      std::cout << "[ReplaceNodeWithTempTable] Created SimplestChunk with "
-                << temp_table_node->target_list.size() << " columns"
-                << std::endl;
-
-      // Replace the child
-      current->children[i] = std::move(temp_table_node);
-
-      std::cout << "[ReplaceNodeWithTempTable] Replacement successful"
-                << std::endl;
-      return true;
-    }
-
-    // Recursively search in this child's subtree
-    if (ReplaceNodeWithTempTable(child.get(), node_to_replace, temp_table,
-                                 old_table_indices)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 std::string IRQuerySplitter::GenerateTempTableName() {
   return "temp" + std::to_string(adapter_->subquery_index);
-}
-
-void IRQuerySplitter::PrintIterationInfo(int iteration,
-                                         const std::string &info) {
-  if (config_.enable_debug_print) {
-    std::cout << "[Iteration " << iteration << "] " << info << std::endl;
-  }
 }
 
 std::string
@@ -450,15 +371,13 @@ IRQuerySplitter::GetTrivialTempTable(ir_sql_converter::SimplestStmt *ir) const {
     return "";
   }
 
-  // Case 1: IR is directly a ChunkNode (temp table reference)
   if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ChunkNode) {
     auto *chunk = dynamic_cast<ir_sql_converter::SimplestChunk *>(ir);
     if (chunk && !chunk->GetContents().empty()) {
-      return chunk->GetContents()[0]; // Return temp table name
+      return chunk->GetContents()[0];
     }
   }
 
-  // Case 2: IR is a Projection over a single ChunkNode
   if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ProjectionNode) {
     if (ir->children.size() == 1 && ir->children[0]) {
       auto *child = ir->children[0].get();
@@ -472,14 +391,304 @@ IRQuerySplitter::GetTrivialTempTable(ir_sql_converter::SimplestStmt *ir) const {
     }
   }
 
-  // Case 3: Check if there's only one node and it's a ChunkNode
-  // (remaining_ir might be wrapped in a generic StmtNode)
   if (ir->children.size() == 1 && ir->children[0]) {
     return GetTrivialTempTable(ir->children[0].get());
   }
 
-  // Not trivial - has actual operations to perform
   return "";
+}
+
+// ===== Shared Index Update Functions =====
+
+void IRQuerySplitter::UpdateExprIndices(
+    ir_sql_converter::SimplestExpr *expr, const TempTableInfo &temp_table,
+    const std::set<unsigned int> &old_table_indices) {
+
+  if (!expr) {
+    return;
+  }
+
+  auto node_type = expr->GetNodeType();
+
+  if (node_type == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
+    auto *var_const =
+        dynamic_cast<ir_sql_converter::SimplestVarConstComparison *>(expr);
+    if (var_const && var_const->attr) {
+      auto updated = UpdateAttrIndices(var_const->attr.get(), temp_table,
+                                       old_table_indices);
+      if (updated) {
+        var_const->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::VarComparisonNode) {
+    auto *var_cmp =
+        dynamic_cast<ir_sql_converter::SimplestVarComparison *>(expr);
+    if (var_cmp) {
+      if (var_cmp->left_attr) {
+        auto updated = UpdateAttrIndices(var_cmp->left_attr.get(), temp_table,
+                                         old_table_indices);
+        if (updated) {
+          var_cmp->left_attr = std::move(updated);
+        }
+      }
+      if (var_cmp->right_attr) {
+        auto updated = UpdateAttrIndices(var_cmp->right_attr.get(), temp_table,
+                                         old_table_indices);
+        if (updated) {
+          var_cmp->right_attr = std::move(updated);
+        }
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::IsNullExprNode) {
+    auto *is_null = dynamic_cast<ir_sql_converter::SimplestIsNullExpr *>(expr);
+    if (is_null && is_null->attr) {
+      auto updated =
+          UpdateAttrIndices(is_null->attr.get(), temp_table, old_table_indices);
+      if (updated) {
+        is_null->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::VarParamComparisonNode) {
+    auto *var_param =
+        dynamic_cast<ir_sql_converter::SimplestVarParamComparison *>(expr);
+    if (var_param && var_param->attr) {
+      auto updated = UpdateAttrIndices(var_param->attr.get(), temp_table,
+                                       old_table_indices);
+      if (updated) {
+        var_param->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
+    auto *logical = dynamic_cast<ir_sql_converter::SimplestLogicalExpr *>(expr);
+    if (logical) {
+      UpdateExprIndices(logical->left_expr.get(), temp_table,
+                        old_table_indices);
+      UpdateExprIndices(logical->right_expr.get(), temp_table,
+                        old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::SingleAttrExprNode) {
+    auto *single_attr =
+        dynamic_cast<ir_sql_converter::SimplestSingleAttrExpr *>(expr);
+    if (single_attr && single_attr->attr) {
+      auto updated = UpdateAttrIndices(single_attr->attr.get(), temp_table,
+                                       old_table_indices);
+      if (updated) {
+        single_attr->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+}
+
+std::unique_ptr<ir_sql_converter::SimplestAttr>
+IRQuerySplitter::UpdateAttrIndices(
+    const ir_sql_converter::SimplestAttr *attr, const TempTableInfo &temp_table,
+    const std::set<unsigned int> &old_table_indices) {
+
+  if (!attr) {
+    return nullptr;
+  }
+
+  unsigned int old_table_idx = attr->GetTableIndex();
+  unsigned int old_col_idx = attr->GetColumnIndex();
+
+  if (old_table_indices.find(old_table_idx) == old_table_indices.end()) {
+    return nullptr;
+  }
+
+  int new_col_idx = temp_table.FindNewColumnIndex(old_table_idx, old_col_idx);
+
+  if (new_col_idx < 0) {
+    std::cerr << "[UpdateAttrIndices] Warning: Column [" << old_table_idx << "."
+              << old_col_idx << "] (" << attr->GetColumnName()
+              << ") not found in temp table mapping" << std::endl;
+    return nullptr;
+  }
+
+  // Use the column name from column_mappings which matches SQL generator's
+  // convention Format: {table_name}_{column_name}
+  std::string new_col_name =
+      temp_table.column_mappings[new_col_idx].column_name;
+
+  auto new_attr = std::make_unique<ir_sql_converter::SimplestAttr>(
+      attr->GetType(), temp_table.table_index,
+      static_cast<unsigned int>(new_col_idx), new_col_name);
+
+  if (config_.enable_debug_print) {
+    std::cout << "[UpdateAttrIndices] Updated [" << old_table_idx << "."
+              << old_col_idx << "] (" << attr->GetColumnName() << ") -> ["
+              << temp_table.table_index << "." << new_col_idx << "] ("
+              << new_col_name << ")" << std::endl;
+  }
+
+  return new_attr;
+}
+
+void IRQuerySplitter::UpdateNodeIndices(
+    ir_sql_converter::SimplestStmt *node, const TempTableInfo &temp_table,
+    const std::set<unsigned int> &old_table_indices) {
+
+  if (!node) {
+    return;
+  }
+
+  // Update target_list
+  for (size_t i = 0; i < node->target_list.size(); i++) {
+    auto updated = UpdateAttrIndices(node->target_list[i].get(), temp_table,
+                                     old_table_indices);
+    if (updated) {
+      node->target_list[i] = std::move(updated);
+    }
+  }
+
+  // Update qual_vec
+  for (auto &qual : node->qual_vec) {
+    if (qual) {
+      UpdateExprIndices(qual.get(), temp_table, old_table_indices);
+    }
+  }
+
+  // Update join conditions
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
+    auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node);
+    if (join) {
+      for (auto &cond : join->join_conditions) {
+        if (cond->left_attr) {
+          auto updated = UpdateAttrIndices(cond->left_attr.get(), temp_table,
+                                           old_table_indices);
+          if (updated) {
+            cond->left_attr = std::move(updated);
+          }
+        }
+        if (cond->right_attr) {
+          auto updated = UpdateAttrIndices(cond->right_attr.get(), temp_table,
+                                           old_table_indices);
+          if (updated) {
+            cond->right_attr = std::move(updated);
+          }
+        }
+      }
+    }
+  }
+
+  // Update hash_keys
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::HashNode) {
+    auto *hash = dynamic_cast<ir_sql_converter::SimplestHash *>(node);
+    if (hash) {
+      for (size_t i = 0; i < hash->hash_keys.size(); i++) {
+        auto updated = UpdateAttrIndices(hash->hash_keys[i].get(), temp_table,
+                                         old_table_indices);
+        if (updated) {
+          hash->hash_keys[i] = std::move(updated);
+        }
+      }
+    }
+  }
+
+  // Update aggregate groups and functions
+  if (node->GetNodeType() ==
+      ir_sql_converter::SimplestNodeType::AggregateNode) {
+    auto *agg = dynamic_cast<ir_sql_converter::SimplestAggregate *>(node);
+    if (agg) {
+      for (size_t i = 0; i < agg->groups.size(); i++) {
+        auto updated = UpdateAttrIndices(agg->groups[i].get(), temp_table,
+                                         old_table_indices);
+        if (updated) {
+          agg->groups[i] = std::move(updated);
+        }
+      }
+      for (auto &fn_pair : agg->agg_fns) {
+        auto updated = UpdateAttrIndices(fn_pair.first.get(), temp_table,
+                                         old_table_indices);
+        if (updated) {
+          fn_pair.first = std::move(updated);
+        }
+      }
+    }
+  }
+
+  // Update order by
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::OrderNode) {
+    auto *order = dynamic_cast<ir_sql_converter::SimplestOrderBy *>(node);
+    if (order) {
+      for (auto &ord : order->orders) {
+        auto updated =
+            UpdateAttrIndices(ord.attr.get(), temp_table, old_table_indices);
+        if (updated) {
+          ord.attr = std::move(updated);
+        }
+      }
+    }
+  }
+
+  // Recursively update children
+  for (auto &child : node->children) {
+    UpdateNodeIndices(child.get(), temp_table, old_table_indices);
+  }
+}
+
+void IRQuerySplitter::UpdateRemainingIRIndices(
+    ir_sql_converter::SimplestStmt *remaining_ir,
+    const TempTableInfo &temp_table,
+    const std::set<unsigned int> &old_table_indices) {
+
+  if (!remaining_ir) {
+    return;
+  }
+
+  if (config_.enable_debug_print) {
+    std::cout
+        << "[UpdateRemainingIRIndices] Updating indices for executed tables: ";
+    for (unsigned int idx : old_table_indices) {
+      std::cout << idx << " ";
+    }
+    std::cout << "-> temp table index " << temp_table.table_index << std::endl;
+  }
+
+  UpdateNodeIndices(remaining_ir, temp_table, old_table_indices);
+}
+
+void IRQuerySplitter::CollectTableNames(ir_sql_converter::SimplestStmt *ir) {
+  if (!ir)
+    return;
+
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan = dynamic_cast<ir_sql_converter::SimplestScan *>(ir);
+    if (scan) {
+      table_index_to_name_[scan->GetTableIndex()] = scan->GetTableName();
+    }
+  }
+
+  for (auto &child : ir->children) {
+    CollectTableNames(child.get());
+  }
+}
+
+std::string
+IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
+                                    const std::string &col_name) const {
+  // SQL generator convention: {table_name}_{column_name}
+  auto it = table_index_to_name_.find(table_idx);
+  if (it != table_index_to_name_.end()) {
+    return it->second + "_" + col_name;
+  }
+  // Fallback: use table index if name not found
+  return "t" + std::to_string(table_idx) + "_" + col_name;
 }
 
 } // namespace middleware

@@ -82,7 +82,7 @@ void ForeignKeyGraph::Print() const {
 ForeignKeyGraph ForeignKeyExtractor::ExtractForTables(
     const std::set<std::string> &table_names) {
 
-#if DEBUG_MIDDLEWARE
+#ifndef NDEBUG
   std::cout << "[ForeignKeyExtractor] Extracting foreign keys for "
             << table_names.size() << " table(s)" << std::endl;
 #endif
@@ -100,7 +100,7 @@ ForeignKeyGraph ForeignKeyExtractor::ExtractForTables(
     graph.AddForeignKey(fk);
   }
 
-#if DEBUG_MIDDLEWARE
+#ifndef NDEBUG
   std::cout << "[ForeignKeyExtractor] Found " << fks.size()
             << " foreign key relationship(s)" << std::endl;
 #endif
@@ -109,7 +109,7 @@ ForeignKeyGraph ForeignKeyExtractor::ExtractForTables(
 }
 
 ForeignKeyGraph ForeignKeyExtractor::ExtractAll() {
-#if DEBUG_MIDDLEWARE
+#ifndef NDEBUG
   std::cout << "[ForeignKeyExtractor] Extracting all foreign keys from database"
             << std::endl;
 #endif

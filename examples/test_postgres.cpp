@@ -27,10 +27,8 @@ void test_single_query(middleware::PostgreSQLAdapter *adapter,
 
     std::cout << "\n========================================" << std::endl;
     std::cout << "Testing: " << result.query_file << std::endl;
-#if DEBUG_MIDDLEWARE
     std::cout << "========================================" << std::endl;
     std::cout << "Original SQL:\n" << sql << std::endl;
-#endif
 
     // Parse SQL
     auto parse_start = std::chrono::high_resolution_clock::now();
@@ -40,13 +38,11 @@ void test_single_query(middleware::PostgreSQLAdapter *adapter,
         std::chrono::duration<double, std::milli>(parse_end - parse_start)
             .count();
 
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Parse Tree ===" << std::endl;
     auto parse_tree_str = adapter->GetParseTree().dump(2);
     std::cout << parse_tree_str << std::endl;
     std::cout << "\n=== SQL Parsed Successfully ===" << std::endl;
     std::cout << "Parse time: " << result.parse_time_ms << " ms" << std::endl;
-#endif
 
     // Convert parse tree to IR
     auto ir_start = std::chrono::high_resolution_clock::now();
@@ -55,12 +51,10 @@ void test_single_query(middleware::PostgreSQLAdapter *adapter,
     result.ir_convert_time_ms =
         std::chrono::duration<double, std::milli>(ir_end - ir_start).count();
 
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Simplest IR ===" << std::endl;
     simplest_ir->Print();
     std::cout << "IR conversion time: " << result.ir_convert_time_ms << " ms"
               << std::endl;
-#endif
 
     // Convert IR to SQL
     auto sql_gen_start = std::chrono::high_resolution_clock::now();
@@ -70,12 +64,10 @@ void test_single_query(middleware::PostgreSQLAdapter *adapter,
         std::chrono::duration<double, std::milli>(sql_gen_end - sql_gen_start)
             .count();
 
-#if DEBUG_MIDDLEWARE
     std::cout << "\n=== Generated SQL ===" << std::endl;
     std::cout << generated_sql << std::endl;
     std::cout << "SQL generation time: " << result.sql_gen_time_ms << " ms"
               << std::endl;
-#endif
 
     // Execute and verify
     auto exec_start = std::chrono::high_resolution_clock::now();
@@ -95,10 +87,8 @@ void test_single_query(middleware::PostgreSQLAdapter *adapter,
       std::cout << std::endl;
     }
 
-#if DEBUG_MIDDLEWARE
     std::cout << "Execution time: " << result.execution_time_ms << " ms"
               << std::endl;
-#endif
 
     result.success = true;
 

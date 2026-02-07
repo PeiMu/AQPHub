@@ -28,6 +28,17 @@ public:
 
   std::string GetStrategyName() const override { return "TopDown"; }
 
+  // Update remaining IR by replacing subtree (DuckDB style)
+  // Because split points align with subtree boundaries
+  // Takes ownership but modifies in-place and returns the same IR
+  std::unique_ptr<ir_sql_converter::SimplestStmt> UpdateRemainingIR(
+      std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir,
+      const std::set<unsigned int> &executed_table_indices,
+      unsigned int temp_table_index, const std::string &temp_table_name,
+      uint64_t temp_table_cardinality,
+      const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
+      const std::vector<std::string> &column_names) override;
+
 private:
   // Visit operator tree and identify split points
   void VisitOperator(ir_sql_converter::SimplestStmt *node, bool is_top_most);

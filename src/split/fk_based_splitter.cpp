@@ -4,7 +4,9 @@
  */
 
 #include "split/fk_based_splitter.h"
+#include "split/ir_utils.h"
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <limits>
 
@@ -15,18 +17,27 @@ namespace middleware {
 void FKBasedSplitter::Preprocess(
     std::unique_ptr<ir_sql_converter::SimplestStmt> &ir) {
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName() << "] Preprocessing IR" << std::endl;
+#endif
 
   // Step 1: Collect tables from IR
   table_index_to_name_ = CollectTables(ir.get());
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName() << "] Found "
             << table_index_to_name_.size() << " table(s)" << std::endl;
+#endif
 
-  // Build reverse mapping
+  // Build reverse mapping and track max table index
+  max_table_index_ = 0;
   for (const auto &[idx, name] : table_index_to_name_) {
-    table_name_to_index_[name] = idx;
+    if (idx > max_table_index_) {
+      max_table_index_ = idx;
+    }
+#ifndef NDEBUG
     std::cout << "  Table " << idx << ": " << name << std::endl;
+#endif
   }
 
   // Step 2: Extract foreign keys
@@ -37,13 +48,16 @@ void FKBasedSplitter::Preprocess(
 
   fk_graph_ = fk_extractor_.ExtractForTables(table_names);
 
+#ifndef NDEBUG
   fk_graph_.Print();
+#endif
 
   // Step 3: Mark entity vs relationship tables
   // Referenced tables (pk_table in FK) = entities
   // Referencing tables (fk_table in FK) = relationships
   is_relationship_ = MarkEntityRelationship(fk_graph_, table_index_to_name_);
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName()
             << "] Entity/Relationship classification:" << std::endl;
   for (const auto &[idx, name] : table_index_to_name_) {
@@ -51,18 +65,23 @@ void FKBasedSplitter::Preprocess(
               << (is_relationship_[idx] ? "RELATIONSHIP" : "ENTITY")
               << std::endl;
   }
+#endif
 
   // Step 4: Build join graph (implements PostgreSQL's List2Graph)
   BuildJoinGraph(ir.get());
 
+#ifndef NDEBUG
   join_graph_.Print();
+#endif
 
   // Reset state
   split_iteration_ = 0;
   executed_tables_.clear();
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName() << "] Preprocessing complete"
             << std::endl;
+#endif
 }
 
 bool FKBasedSplitter::IsFKJoin(unsigned int table1, unsigned int table2) const {
@@ -95,10 +114,12 @@ FKBasedSplitter::RemoveRedundantJoins(
 
     if (t1_is_relationship && t2_is_relationship) {
       // Both are relationship tables - this is a redundant FK-FK join
+#ifndef NDEBUG
       std::cout << "[" << GetStrategyName()
                 << "] Removing redundant FK-FK join: " << t1 << " ("
                 << table_index_to_name_.at(t1) << ") <-> " << t2 << " ("
                 << table_index_to_name_.at(t2) << ")" << std::endl;
+#endif
       continue;
     }
 
@@ -106,40 +127,46 @@ FKBasedSplitter::RemoveRedundantJoins(
     filtered_joins.push_back({t1, t2});
   }
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName() << "] Removed "
             << (joins.size() - filtered_joins.size())
             << " redundant FK-FK join(s)" << std::endl;
+#endif
 
   return filtered_joins;
 }
 
 void FKBasedSplitter::BuildJoinGraph(const ir_sql_converter::SimplestStmt *ir) {
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName() << "] Building join graph (List2Graph)"
             << std::endl;
+#endif
 
   // Resize graph to accommodate all tables
   int num_tables = table_index_to_name_.size();
   join_graph_.Resize(num_tables);
 
   // Collect all join conditions from IR
-  auto join_pairs = CollectJoinConditions(ir);
+  join_pairs_ = CollectJoinConditions(ir);
 
-  std::cout << "[" << GetStrategyName() << "] Found " << join_pairs.size()
+#ifndef NDEBUG
+  std::cout << "[" << GetStrategyName() << "] Found " << join_pairs_.size()
             << " join condition(s) from IR" << std::endl;
+#endif
 
   // For RelationshipCenter and EntityCenter, remove redundant FK-FK joins
   // This implements PostgreSQL's rRj (removeRedundantJoin) function
   // which is called before List2Graph when algorithm != Minsubquery
   if (strategy_ == SplitStrategy::RELATIONSHIP_CENTER ||
       strategy_ == SplitStrategy::ENTITY_CENTER) {
-    join_pairs = RemoveRedundantJoins(join_pairs);
+    join_pairs_ = RemoveRedundantJoins(join_pairs_);
   }
 
   // Separate FK joins from non-FK joins (PostgreSQL List2Graph pattern)
   std::vector<std::pair<unsigned int, unsigned int>> fk_joins;
   std::vector<std::pair<unsigned int, unsigned int>> non_fk_joins;
 
-  for (const auto &[t1, t2] : join_pairs) {
+  for (const auto &[t1, t2] : join_pairs_) {
     if (IsFKJoin(t1, t2)) {
       fk_joins.push_back({t1, t2});
     } else {
@@ -147,8 +174,10 @@ void FKBasedSplitter::BuildJoinGraph(const ir_sql_converter::SimplestStmt *ir) {
     }
   }
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName() << "] FK joins: " << fk_joins.size()
             << ", Non-FK joins: " << non_fk_joins.size() << std::endl;
+#endif
 
   // === Process based on algorithm type ===
   // This implements PostgreSQL's List2Graph() from query_split.c:1811-1911
@@ -156,11 +185,13 @@ void FKBasedSplitter::BuildJoinGraph(const ir_sql_converter::SimplestStmt *ir) {
   if (strategy_ == SplitStrategy::MIN_SUBQUERY) {
     // MinSubquery: symmetric graph with i < j (upper triangular)
     // PostgreSQL lines 1856-1866
-    for (const auto &[t1, t2] : join_pairs) {
+    for (const auto &[t1, t2] : join_pairs_) {
       unsigned int i = std::min(t1, t2);
       unsigned int j = std::max(t1, t2);
       join_graph_.SetEdge(i, j, true);
+#ifndef NDEBUG
       std::cout << "  MinSubquery edge: " << i << " -> " << j << std::endl;
+#endif
     }
   } else if (strategy_ == SplitStrategy::RELATIONSHIP_CENTER ||
              strategy_ == SplitStrategy::ENTITY_CENTER) {
@@ -194,18 +225,22 @@ void FKBasedSplitter::BuildJoinGraph(const ir_sql_converter::SimplestStmt *ir) {
         // (relationship -> entity)
         // PostgreSQL line 1844
         join_graph_.SetEdge(fk_owner_idx, pk_ref_idx, true);
+#ifndef NDEBUG
         std::cout << "  RelationshipCenter FK edge: " << fk_owner_idx << " -> "
                   << pk_ref_idx << " (" << table_index_to_name_.at(fk_owner_idx)
                   << " -> " << table_index_to_name_.at(pk_ref_idx) << ")"
                   << std::endl;
+#endif
       } else { // EntityCenter
         // EntityCenter: graph[pk_ref][fk_owner] = true (entity -> relationship)
         // PostgreSQL line 1848
         join_graph_.SetEdge(pk_ref_idx, fk_owner_idx, true);
+#ifndef NDEBUG
         std::cout << "  EntityCenter FK edge: " << pk_ref_idx << " -> "
                   << fk_owner_idx << " (" << table_index_to_name_.at(pk_ref_idx)
                   << " -> " << table_index_to_name_.at(fk_owner_idx) << ")"
                   << std::endl;
+#endif
       }
     }
 
@@ -220,38 +255,50 @@ void FKBasedSplitter::BuildJoinGraph(const ir_sql_converter::SimplestStmt *ir) {
         if (t1_is_relationship && !t2_is_relationship) {
           // t1 is relationship, t2 is entity: graph[t1][t2] = true
           join_graph_.SetEdge(t1, t2, true);
+#ifndef NDEBUG
           std::cout << "  RelationshipCenter non-FK: " << t1 << " -> " << t2
                     << std::endl;
+#endif
         } else if (!t1_is_relationship && t2_is_relationship) {
           // t1 is entity, t2 is relationship: graph[t2][t1] = true
           join_graph_.SetEdge(t2, t1, true);
+#ifndef NDEBUG
           std::cout << "  RelationshipCenter non-FK: " << t2 << " -> " << t1
                     << std::endl;
+#endif
         } else {
           // Both entities or both relationships: bidirectional
           join_graph_.SetEdge(t1, t2, true);
           join_graph_.SetEdge(t2, t1, true);
+#ifndef NDEBUG
           std::cout << "  RelationshipCenter non-FK bidirectional: " << t1
                     << " <-> " << t2 << std::endl;
+#endif
         }
       } else { // EntityCenter
         // PostgreSQL lines 1888-1907
         if (!t1_is_relationship && t2_is_relationship) {
           // t1 is entity, t2 is relationship: graph[t1][t2] = true
           join_graph_.SetEdge(t1, t2, true);
+#ifndef NDEBUG
           std::cout << "  EntityCenter non-FK: " << t1 << " -> " << t2
                     << std::endl;
+#endif
         } else if (t1_is_relationship && !t2_is_relationship) {
           // t1 is relationship, t2 is entity: graph[t2][t1] = true
           join_graph_.SetEdge(t2, t1, true);
+#ifndef NDEBUG
           std::cout << "  EntityCenter non-FK: " << t2 << " -> " << t1
                     << std::endl;
+#endif
         } else {
           // Both entities or both relationships: bidirectional
           join_graph_.SetEdge(t1, t2, true);
           join_graph_.SetEdge(t2, t1, true);
+#ifndef NDEBUG
           std::cout << "  EntityCenter non-FK bidirectional: " << t1 << " <-> "
                     << t2 << std::endl;
+#endif
         }
       }
     }
@@ -378,12 +425,14 @@ bool FKBasedSplitter::IsComplete(
     }
   }
 
-  bool complete = (remaining_edges == 0);
+  bool complete = (remaining_edges == 1);
 
+#ifndef NDEBUG
   std::cout << "[" << GetStrategyName()
             << "] IsComplete: " << (complete ? "YES" : "NO")
             << " (remaining edges between non-executed tables: "
             << remaining_edges << ")" << std::endl;
+#endif
 
   return complete;
 }
@@ -525,8 +574,10 @@ ir_sql_converter::SimplestStmt *FKBasedSplitter::FindSubIRForCluster(
   // First, check if current node contains exactly the cluster tables
   auto node_tables = CollectTableIndices(ir);
   if (node_tables == cluster_tables) {
+#ifndef NDEBUG
     std::cout << "[FindSubIRForCluster] Found exact match at node type "
               << static_cast<int>(ir->GetNodeType()) << std::endl;
+#endif
     return ir;
   }
 
@@ -540,8 +591,10 @@ ir_sql_converter::SimplestStmt *FKBasedSplitter::FindSubIRForCluster(
 
     // If child contains exactly the cluster tables, return it
     if (child_tables == cluster_tables) {
+#ifndef NDEBUG
       std::cout << "[FindSubIRForCluster] Found exact match in child"
                 << std::endl;
+#endif
       return child.get();
     }
 
@@ -571,8 +624,10 @@ ir_sql_converter::SimplestStmt *FKBasedSplitter::FindSubIRForCluster(
                       cluster_tables.begin(), cluster_tables.end())) {
       // This join contains the cluster - it might be the best we can do
       // if no exact match was found in children
+#ifndef NDEBUG
       std::cout << "[FindSubIRForCluster] Using Join node that contains cluster"
                 << std::endl;
+#endif
       return ir;
     }
   }
@@ -601,93 +656,6 @@ FKBasedSplitter::CollectScansForTables(ir_sql_converter::SimplestStmt *ir,
   }
 
   return scans;
-}
-
-std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
-FKBasedSplitter::CollectJoinConditionsForTables(
-    ir_sql_converter::SimplestStmt *ir, const std::set<unsigned int> &tables) {
-  std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
-      conditions;
-
-  if (!ir)
-    return conditions;
-
-  // If this is a Join node, check its join conditions
-  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
-    auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(ir);
-    if (join) {
-      for (const auto &cond : join->join_conditions) {
-        unsigned int left_table = cond->left_attr->GetTableIndex();
-        unsigned int right_table = cond->right_attr->GetTableIndex();
-
-        // Include condition if BOTH tables are in our cluster
-        if (tables.count(left_table) && tables.count(right_table)) {
-          // Clone the condition - constructor order: (comparison_type,
-          // left_attr, right_attr)
-          auto cloned =
-              std::make_unique<ir_sql_converter::SimplestVarComparison>(
-                  cond->GetSimplestExprType(),
-                  std::make_unique<ir_sql_converter::SimplestAttr>(
-                      *cond->left_attr),
-                  std::make_unique<ir_sql_converter::SimplestAttr>(
-                      *cond->right_attr));
-          conditions.push_back(std::move(cloned));
-        }
-      }
-    }
-  }
-
-  // Recurse into children
-  for (auto &child : ir->children) {
-    auto child_conds = CollectJoinConditionsForTables(child.get(), tables);
-    for (auto &c : child_conds) {
-      conditions.push_back(std::move(c));
-    }
-  }
-
-  return conditions;
-}
-
-std::vector<std::unique_ptr<ir_sql_converter::SimplestExpr>>
-FKBasedSplitter::CollectFilterConditionsForTables(
-    ir_sql_converter::SimplestStmt *ir, const std::set<unsigned int> &tables) {
-  std::vector<std::unique_ptr<ir_sql_converter::SimplestExpr>> filters;
-
-  if (!ir)
-    return filters;
-
-  // Check qual_vec for filter conditions in this node
-  for (const auto &qual : ir->qual_vec) {
-    // Check if filter involves only tables in our cluster
-    // For SimplestVarConstComparison, check the attr's table
-    if (qual->GetNodeType() ==
-        ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
-      auto *var_const =
-          dynamic_cast<ir_sql_converter::SimplestVarConstComparison *>(
-              qual.get());
-      if (var_const && tables.count(var_const->attr->GetTableIndex())) {
-        // Clone the filter
-        auto cloned =
-            std::make_unique<ir_sql_converter::SimplestVarConstComparison>(
-                var_const->GetSimplestExprType(),
-                std::make_unique<ir_sql_converter::SimplestAttr>(
-                    *var_const->attr),
-                std::make_unique<ir_sql_converter::SimplestConstVar>(
-                    *var_const->const_var));
-        filters.push_back(std::move(cloned));
-      }
-    }
-  }
-
-  // Recurse into children
-  for (auto &child : ir->children) {
-    auto child_filters = CollectFilterConditionsForTables(child.get(), tables);
-    for (auto &f : child_filters) {
-      filters.push_back(std::move(f));
-    }
-  }
-
-  return filters;
 }
 
 // Helper: Collect attributes from cluster tables that are needed for join
@@ -767,8 +735,10 @@ FKBasedSplitter::BuildSubIRForCluster(
     ir_sql_converter::SimplestStmt *ir,
     const std::set<unsigned int> &cluster_tables) {
 
+#ifndef NDEBUG
   std::cout << "[BuildSubIRForCluster] Building sub-IR for "
             << cluster_tables.size() << " tables" << std::endl;
+#endif
 
   if (!ir || cluster_tables.empty()) {
     return nullptr;
@@ -776,8 +746,10 @@ FKBasedSplitter::BuildSubIRForCluster(
 
   // Step 1: Collect Scan nodes for tables in the cluster
   auto scans = CollectScansForTables(ir, cluster_tables);
+#ifndef NDEBUG
   std::cout << "[BuildSubIRForCluster] Found " << scans.size()
             << " scan node(s)" << std::endl;
+#endif
 
   if (scans.empty()) {
     std::cerr << "[BuildSubIRForCluster] No scans found for cluster tables"
@@ -786,17 +758,27 @@ FKBasedSplitter::BuildSubIRForCluster(
   }
 
   // Step 2: Collect join conditions between cluster tables (internal joins)
-  auto join_conditions = CollectJoinConditionsForTables(ir, cluster_tables);
+  auto join_conditions = ir_utils::CollectJoinConditions(ir, cluster_tables);
+#ifndef NDEBUG
   std::cout << "[BuildSubIRForCluster] Found " << join_conditions.size()
             << " internal join condition(s)" << std::endl;
+#endif
 
-  // Step 3: Collect required output attributes
+  // Step 3: Collect filter conditions that involve only cluster tables
+  // Uses AND-splitting: extracts conjuncts that involve cluster tables
+  auto cluster_filters = ir_utils::CollectFilterConditions(ir, cluster_tables);
+#ifndef NDEBUG
+  std::cout << "[BuildSubIRForCluster] Found " << cluster_filters.size()
+            << " filter condition(s) for cluster" << std::endl;
+#endif
+
+  // Step 4: Collect required output attributes
   // - Attributes from original target_list that belong to cluster tables
   // - Attributes needed for joins with tables OUTSIDE the cluster
   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> required_attrs;
   std::set<std::pair<unsigned int, unsigned int>> seen_attrs;
 
-  // 3a: From original target_list
+  // 4a: From original target_list
   for (const auto &attr : ir->target_list) {
     if (cluster_tables.count(attr->GetTableIndex())) {
       auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
@@ -808,7 +790,7 @@ FKBasedSplitter::BuildSubIRForCluster(
     }
   }
 
-  // 3b: From external join conditions (attrs needed for remaining plan)
+  // 4b: From external join conditions (attrs needed for remaining plan)
   auto external_attrs = CollectExternalJoinAttrs(ir, cluster_tables);
   for (auto &attr : external_attrs) {
     auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
@@ -818,10 +800,16 @@ FKBasedSplitter::BuildSubIRForCluster(
     }
   }
 
+  // Note: Filter attrs are NOT added to projection target list
+  // Filter conditions are evaluated internally within the cluster,
+  // so their attrs don't need to be projected out
+
+#ifndef NDEBUG
   std::cout << "[BuildSubIRForCluster] Required output attributes: "
             << required_attrs.size() << std::endl;
+#endif
 
-  // Step 4: Build the sub-IR tree (left-deep)
+  // Step 5: Build the sub-IR tree (left-deep)
   // Clone scan nodes
   std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> scan_nodes;
   for (auto *scan : scans) {
@@ -896,7 +884,30 @@ FKBasedSplitter::BuildSubIRForCluster(
     }
   }
 
-  // Step 5: Add Projection node on top with required attributes
+  if (!cluster_filters.empty()) {
+    // Build Filter node
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>>
+        filter_children;
+    filter_children.emplace_back(std::move(result));
+    // todo: add target_list content
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> target_list;
+    // add qual vec
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestExpr>> qual_vec;
+    for (auto &filter : cluster_filters) {
+      if (filter) {
+        qual_vec.push_back(std::move(filter));
+      }
+    }
+
+    auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(filter_children), std::move(target_list), std::move(qual_vec),
+        ir_sql_converter::SimplestNodeType::FilterNode);
+
+    result = std::make_unique<ir_sql_converter::SimplestFilter>(
+        std::move(base_stmt));
+  }
+
+  // Step 6: Add Projection node on top with required attributes
   std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> proj_children;
   proj_children.push_back(std::move(result));
 
@@ -914,9 +925,11 @@ FKBasedSplitter::BuildSubIRForCluster(
   auto projection = std::make_unique<ir_sql_converter::SimplestProjection>(
       std::move(proj_base), 0);
 
+#ifndef NDEBUG
   std::cout << "[BuildSubIRForCluster] Built sub-IR with Projection ("
-            << projection->target_list.size() << " output columns)"
-            << std::endl;
+            << projection->target_list.size() << " output columns) and "
+            << cluster_filters.size() << " filter(s)" << std::endl;
+#endif
 
   return projection;
 }
@@ -927,7 +940,9 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
     ir_sql_converter::SimplestStmt *remaining_ir) {
 
   split_iteration_++;
+#ifndef NDEBUG
   std::cout << "\n[MinSubquery] Iteration " << split_iteration_ << std::endl;
+#endif
 
   // Find next pair of tables with lowest estimated cost
   auto [table1, table2] = FindNextPair(remaining_ir);
@@ -937,9 +952,11 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cout << "[MinSubquery] Selected pair: " << table1 << ", " << table2
             << " (" << table_index_to_name_[table1] << ", "
             << table_index_to_name_[table2] << ")" << std::endl;
+#endif
 
   // Remove this edge from graph
   // PostgreSQL lines 1345: graph[X][Y] = false
@@ -976,8 +993,10 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
       } else {
         join_graph_.SetEdge(table1, i, false);
       }
+#ifndef NDEBUG
       std::cout << "[MinSubquery] Removed transitive edge between " << i
                 << " and " << table1 << std::endl;
+#endif
     }
   }
 
@@ -994,7 +1013,9 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
 
   if (built_sub_ir) {
     extraction->sub_ir = std::move(built_sub_ir);
+#ifndef NDEBUG
     std::cout << "[MinSubquery] Built sub-IR for pair" << std::endl;
+#endif
   }
 
   // Always find the node in original tree to replace (for UpdateRemainingIR)
@@ -1003,8 +1024,10 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
       FindSubIRForCluster(remaining_ir, table_indices);
   if (found_node) {
     extraction->pipeline_breaker_ptr = found_node;
+#ifndef NDEBUG
     std::cout << "[MinSubquery] Found node to replace in remaining IR"
               << std::endl;
+#endif
   } else {
     std::cerr << "[MinSubquery] Warning: Could not find node to replace"
               << std::endl;
@@ -1026,7 +1049,9 @@ MinSubquerySplitter::FindNextPair(ir_sql_converter::SimplestStmt *ir) {
   std::pair<int, int> best_pair = {-1, -1};
   double best_cost = std::numeric_limits<double>::max();
 
+#ifndef NDEBUG
   std::cout << "[MinSubquery] Evaluating candidate pairs:" << std::endl;
+#endif
 
   for (int i = 0; i < join_graph_.Size(); i++) {
     // Skip tables that have already been executed
@@ -1048,9 +1073,11 @@ MinSubquerySplitter::FindNextPair(ir_sql_converter::SimplestStmt *ir) {
       std::vector<int> cluster = {i, j};
       auto [cost, rows] = GetClusterCost(cluster, ir);
 
+#ifndef NDEBUG
       std::cout << "  Pair (" << i << ", " << j << ") ["
                 << table_index_to_name_[i] << ", " << table_index_to_name_[j]
                 << "]: cost=" << cost << ", rows=" << rows << std::endl;
+#endif
 
       // PostgreSQL's tarfunc comparison (simplified: use cost)
       if (cost < best_cost) {
@@ -1060,10 +1087,12 @@ MinSubquerySplitter::FindNextPair(ir_sql_converter::SimplestStmt *ir) {
     }
   }
 
+#ifndef NDEBUG
   if (best_pair.first != -1) {
     std::cout << "[MinSubquery] Best pair: (" << best_pair.first << ", "
               << best_pair.second << ") with cost=" << best_cost << std::endl;
   }
+#endif
 
   return best_pair;
 }
@@ -1075,8 +1104,10 @@ RelationshipCenterSplitter::ExtractNextSubquery(
     ir_sql_converter::SimplestStmt *remaining_ir) {
 
   split_iteration_++;
+#ifndef NDEBUG
   std::cout << "\n[RelationshipCenter] Iteration " << split_iteration_
             << std::endl;
+#endif
 
   // Find relationship cluster with lowest estimated cost
   auto cluster = FindRelationshipCluster(remaining_ir);
@@ -1087,11 +1118,13 @@ RelationshipCenterSplitter::ExtractNextSubquery(
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cout << "[RelationshipCenter] Selected cluster: ";
   for (int idx : cluster) {
     std::cout << idx << "(" << table_index_to_name_[idx] << ") ";
   }
   std::cout << std::endl;
+#endif
 
   // Remove edges for this relationship
   // AQP-PostgreSQL lines 1330-1337: clear all edges from center X
@@ -1118,7 +1151,9 @@ RelationshipCenterSplitter::ExtractNextSubquery(
 
   if (built_sub_ir) {
     extraction->sub_ir = std::move(built_sub_ir);
+#ifndef NDEBUG
     std::cout << "[RelationshipCenter] Built sub-IR for cluster" << std::endl;
+#endif
   }
 
   // Always find the node in original tree to replace (for UpdateRemainingIR)
@@ -1126,8 +1161,10 @@ RelationshipCenterSplitter::ExtractNextSubquery(
       FindSubIRForCluster(remaining_ir, table_indices);
   if (found_node) {
     extraction->pipeline_breaker_ptr = found_node;
+#ifndef NDEBUG
     std::cout << "[RelationshipCenter] Found node to replace in remaining IR"
               << std::endl;
+#endif
   } else {
     std::cerr << "[RelationshipCenter] Warning: Could not find node to replace"
               << std::endl;
@@ -1149,8 +1186,10 @@ std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
   std::vector<int> best_cluster;
   double best_cost = std::numeric_limits<double>::max();
 
+#ifndef NDEBUG
   std::cout << "[RelationshipCenter] Evaluating candidate clusters:"
             << std::endl;
+#endif
 
   // First pass: check relationship tables as centers
   for (int i = 0; i < join_graph_.Size(); i++) {
@@ -1185,6 +1224,7 @@ std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
     // Get estimated cost for this cluster
     auto [cost, rows] = GetClusterCost(cluster, ir);
 
+#ifndef NDEBUG
     std::cout << "  Cluster center=" << i << " (" << table_index_to_name_[i]
               << "): tables=[";
     for (size_t k = 0; k < cluster.size(); k++) {
@@ -1193,6 +1233,7 @@ std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
       std::cout << table_index_to_name_[cluster[k]];
     }
     std::cout << "] cost=" << cost << ", rows=" << rows << std::endl;
+#endif
 
     // PostgreSQL's tarfunc comparison (simplified: use cost)
     if (cost < best_cost) {
@@ -1228,9 +1269,11 @@ std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
 
       auto [cost, rows] = GetClusterCost(cluster, ir);
 
+#ifndef NDEBUG
       std::cout << "  Fallback cluster center=" << i << " ("
                 << table_index_to_name_[i] << "): cost=" << cost
                 << ", rows=" << rows << std::endl;
+#endif
 
       if (cost < best_cost) {
         best_cost = cost;
@@ -1239,11 +1282,13 @@ std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
     }
   }
 
+#ifndef NDEBUG
   if (!best_cluster.empty()) {
     std::cout << "[RelationshipCenter] Best cluster center=" << best_cluster[0]
               << " (" << table_index_to_name_[best_cluster[0]]
               << ") with cost=" << best_cost << std::endl;
   }
+#endif
 
   return best_cluster;
 }
@@ -1254,7 +1299,9 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
     ir_sql_converter::SimplestStmt *remaining_ir) {
 
   split_iteration_++;
+#ifndef NDEBUG
   std::cout << "\n[EntityCenter] Iteration " << split_iteration_ << std::endl;
+#endif
 
   // Find entity cluster with lowest estimated cost
   auto cluster = FindEntityCluster(remaining_ir);
@@ -1264,11 +1311,13 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cout << "[EntityCenter] Selected cluster: ";
   for (int idx : cluster) {
     std::cout << idx << "(" << table_index_to_name_[idx] << ") ";
   }
   std::cout << std::endl;
+#endif
 
   // Remove edges for this entity
   // PostgreSQL lines 1330-1337: clear all edges from center X
@@ -1295,7 +1344,9 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
 
   if (built_sub_ir) {
     extraction->sub_ir = std::move(built_sub_ir);
+#ifndef NDEBUG
     std::cout << "[EntityCenter] Built sub-IR for cluster" << std::endl;
+#endif
   }
 
   // Always find the node in original tree to replace (for UpdateRemainingIR)
@@ -1303,8 +1354,10 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
       FindSubIRForCluster(remaining_ir, table_indices);
   if (found_node) {
     extraction->pipeline_breaker_ptr = found_node;
+#ifndef NDEBUG
     std::cout << "[EntityCenter] Found node to replace in remaining IR"
               << std::endl;
+#endif
   } else {
     std::cerr << "[EntityCenter] Warning: Could not find node to replace"
               << std::endl;
@@ -1326,7 +1379,9 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
   std::vector<int> best_cluster;
   double best_cost = std::numeric_limits<double>::max();
 
+#ifndef NDEBUG
   std::cout << "[EntityCenter] Evaluating candidate clusters:" << std::endl;
+#endif
 
   // First pass: check entity tables as centers
   for (int i = 0; i < join_graph_.Size(); i++) {
@@ -1361,6 +1416,7 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
     // Get estimated cost for this cluster
     auto [cost, rows] = GetClusterCost(cluster, ir);
 
+#ifndef NDEBUG
     std::cout << "  Cluster center=" << i << " (" << table_index_to_name_[i]
               << "): tables=[";
     for (size_t k = 0; k < cluster.size(); k++) {
@@ -1369,6 +1425,7 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
       std::cout << table_index_to_name_[cluster[k]];
     }
     std::cout << "] cost=" << cost << ", rows=" << rows << std::endl;
+#endif
 
     // PostgreSQL's tarfunc comparison (simplified: use cost)
     if (cost < best_cost) {
@@ -1404,9 +1461,11 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
 
       auto [cost, rows] = GetClusterCost(cluster, ir);
 
+#ifndef NDEBUG
       std::cout << "  Fallback cluster center=" << i << " ("
                 << table_index_to_name_[i] << "): cost=" << cost
                 << ", rows=" << rows << std::endl;
+#endif
 
       if (cost < best_cost) {
         best_cost = cost;
@@ -1415,13 +1474,458 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
     }
   }
 
+#ifndef NDEBUG
   if (!best_cluster.empty()) {
     std::cout << "[EntityCenter] Best cluster center=" << best_cluster[0]
               << " (" << table_index_to_name_[best_cluster[0]]
               << ") with cost=" << best_cost << std::endl;
   }
+#endif
 
   return best_cluster;
+}
+
+// ===== UpdateRemainingIR (PostgreSQL-style rebuild) =====
+std::unique_ptr<ir_sql_converter::SimplestStmt>
+FKBasedSplitter::UpdateRemainingIR(
+    std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir,
+    const std::set<unsigned int> &executed_table_indices,
+    unsigned int temp_table_index, const std::string &temp_table_name,
+    uint64_t temp_table_cardinality,
+    const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
+    const std::vector<std::string> &column_names) {
+
+#ifndef NDEBUG
+  std::cout << "[FKBasedSplitter::UpdateRemainingIR] Rebuilding remaining IR "
+               "with temp table: "
+            << temp_table_name << " (index " << temp_table_index
+            << ", cardinality " << temp_table_cardinality << ")" << std::endl;
+#endif
+
+  if (!remaining_ir) {
+    return nullptr;
+  }
+
+  // Step 1: Collect all remaining tables (not executed)
+  auto all_tables = CollectTableIndices(remaining_ir.get());
+  std::set<unsigned int> remaining_tables;
+  for (unsigned int t : all_tables) {
+    if (executed_table_indices.find(t) == executed_table_indices.end()) {
+      remaining_tables.insert(t);
+    }
+  }
+
+#ifndef NDEBUG
+  std::cout << "[FKBasedSplitter::UpdateRemainingIR] Remaining tables: ";
+  for (unsigned int t : remaining_tables) {
+    std::cout << t << " ";
+  }
+  std::cout << std::endl;
+#endif
+
+  // Step 2: Collect Scan nodes for remaining tables
+  auto remaining_scans =
+      CollectScansForTables(remaining_ir.get(), remaining_tables);
+#ifndef NDEBUG
+  std::cout << "[FKBasedSplitter::UpdateRemainingIR] Found "
+            << remaining_scans.size() << " scan node(s) for remaining tables"
+            << std::endl;
+#endif
+
+  // Step 3: Move join conditions from old IR (no cloning needed since we own
+  // the IR) Helper to check if a table pair exists in join_pairs_
+  auto pairExistsInJoinPairs = [this](unsigned int t1,
+                                      unsigned int t2) -> bool {
+    for (const auto &[p1, p2] : join_pairs_) {
+      if ((p1 == t1 && p2 == t2) || (p1 == t2 && p2 == t1)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Move join conditions from IR (we own the IR so we can move)
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
+      internal_joins;
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
+      cross_boundary_joins;
+
+  std::function<void(std::unique_ptr<ir_sql_converter::SimplestStmt> &)>
+      MoveValidJoins;
+  MoveValidJoins = [&](std::unique_ptr<ir_sql_converter::SimplestStmt> &node) {
+    if (!node)
+      return;
+
+    if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
+      auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node.get());
+      if (join) {
+        // Iterate and move conditions we need
+        for (auto &cond : join->join_conditions) {
+          if (!cond)
+            continue;
+
+          unsigned int left_table = cond->left_attr->GetTableIndex();
+          unsigned int right_table = cond->right_attr->GetTableIndex();
+
+          // Skip if this join pair was removed as redundant
+          if (!pairExistsInJoinPairs(left_table, right_table)) {
+#ifndef NDEBUG
+            std::cout << "[FKBasedSplitter::UpdateRemainingIR] Skipping "
+                         "redundant join: "
+                      << left_table << " <-> " << right_table << std::endl;
+#endif
+            continue;
+          }
+
+          bool left_in_remaining = remaining_tables.count(left_table) > 0;
+          bool right_in_remaining = remaining_tables.count(right_table) > 0;
+          bool left_in_executed = executed_table_indices.count(left_table) > 0;
+          bool right_in_executed =
+              executed_table_indices.count(right_table) > 0;
+
+          // Internal join: both tables in remaining_tables
+          if (left_in_remaining && right_in_remaining) {
+            internal_joins.push_back(std::move(cond));
+          }
+          // Cross-boundary: one in remaining, one in CURRENT executed tables
+          else if ((left_in_remaining && right_in_executed) ||
+                   (left_in_executed && right_in_remaining)) {
+            cross_boundary_joins.push_back(std::move(cond));
+          }
+        }
+      }
+    }
+
+    for (auto &child : node->children) {
+      MoveValidJoins(child);
+    }
+  };
+
+  MoveValidJoins(remaining_ir);
+#ifndef NDEBUG
+  std::cout << "[FKBasedSplitter::UpdateRemainingIR] Moved "
+            << internal_joins.size() << " internal join condition(s)"
+            << std::endl;
+  std::cout << "[FKBasedSplitter::UpdateRemainingIR] Moved "
+            << cross_boundary_joins.size()
+            << " cross-boundary join condition(s)" << std::endl;
+#endif
+
+  // Step 4: Extract filter conditions for remaining tables using AND-splitting
+  // For a filter like: #(1,1)... && #(3,1)... && #(4,4)...
+  // If tables 1,4 are executed and table 3 is remaining,
+  // we extract: #(3,1)... for the remaining IR
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestExpr>>
+      remaining_filters;
+
+  std::function<void(std::unique_ptr<ir_sql_converter::SimplestStmt> &)>
+      ExtractRemainingFilters;
+  ExtractRemainingFilters =
+      [&](std::unique_ptr<ir_sql_converter::SimplestStmt> &node) {
+        if (!node)
+          return;
+
+        // Use AND-splitting to extract conjuncts for remaining tables
+        for (auto &qual : node->qual_vec) {
+          if (qual) {
+            auto extracted = ir_utils::ExtractConjunctsForTables(
+                qual.get(), remaining_tables);
+            if (extracted) {
+              remaining_filters.push_back(std::move(extracted));
+            }
+          }
+        }
+
+        for (auto &child : node->children) {
+          ExtractRemainingFilters(child);
+        }
+      };
+
+  ExtractRemainingFilters(remaining_ir);
+#ifndef NDEBUG
+  std::cout << "[FKBasedSplitter::UpdateRemainingIR] Moved "
+            << remaining_filters.size() << " remaining filter condition(s)"
+            << std::endl;
+#endif
+
+  // Step 5a. Find Aggregate node in original IR
+  std::function<ir_sql_converter::SimplestAggregate *(
+      const std::unique_ptr<ir_sql_converter::SimplestStmt> &)>
+      FindAggregateNode;
+  FindAggregateNode =
+      [&](const std::unique_ptr<ir_sql_converter::SimplestStmt> &node)
+      -> ir_sql_converter::SimplestAggregate * {
+    if (!node)
+      return nullptr;
+    if (node->GetNodeType() ==
+        ir_sql_converter::SimplestNodeType::AggregateNode) {
+      return dynamic_cast<ir_sql_converter::SimplestAggregate *>(node.get());
+    }
+    for (const auto &child : node->children) {
+      auto *found = FindAggregateNode(child);
+      if (found)
+        return found;
+    }
+    return nullptr;
+  };
+  auto *orig_agg = FindAggregateNode(remaining_ir);
+
+  // Step 5b. Find OrderBy node in original IR
+  std::function<ir_sql_converter::SimplestOrderBy *(
+      const std::unique_ptr<ir_sql_converter::SimplestStmt> &)>
+      FindOrderByNode;
+  FindOrderByNode =
+      [&](const std::unique_ptr<ir_sql_converter::SimplestStmt> &node)
+      -> ir_sql_converter::SimplestOrderBy * {
+    if (!node)
+      return nullptr;
+    if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::OrderNode) {
+      return dynamic_cast<ir_sql_converter::SimplestOrderBy *>(node.get());
+    }
+    for (const auto &child : node->children) {
+      auto *found = FindOrderByNode(child);
+      if (found)
+        return found;
+    }
+    return nullptr;
+  };
+  auto *orig_order = FindOrderByNode(remaining_ir);
+
+  // Step 5c. Find Limit node in original IR
+  std::function<ir_sql_converter::SimplestLimit *(
+      const std::unique_ptr<ir_sql_converter::SimplestStmt> &)>
+      FindLimitNode;
+  FindLimitNode =
+      [&](const std::unique_ptr<ir_sql_converter::SimplestStmt> &node)
+      -> ir_sql_converter::SimplestLimit * {
+    if (!node)
+      return nullptr;
+    if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::LimitNode) {
+      return dynamic_cast<ir_sql_converter::SimplestLimit *>(node.get());
+    }
+    for (const auto &child : node->children) {
+      auto *found = FindLimitNode(child);
+      if (found)
+        return found;
+    }
+    return nullptr;
+  };
+  auto *orig_limit = FindLimitNode(remaining_ir);
+
+  // Step 6: Build the new remaining IR tree
+
+  // 6a: Create SimplestScan for the temp table using pre-computed column names
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+      temp_scan_target_list;
+  for (size_t i = 0; i < column_names.size(); i++) {
+    ir_sql_converter::SimplestVarType col_type =
+        ir_sql_converter::SimplestVarType::IntVar;
+
+    // Get type from original IR's target list
+    for (const auto &attr : remaining_ir->target_list) {
+      if (attr && attr->GetTableIndex() == column_mappings[i].first &&
+          attr->GetColumnIndex() == column_mappings[i].second) {
+        col_type = attr->GetType();
+        break;
+      }
+    }
+
+    auto attr = std::make_unique<ir_sql_converter::SimplestAttr>(
+        col_type, temp_table_index, static_cast<unsigned int>(i),
+        column_names[i]);
+    temp_scan_target_list.push_back(std::move(attr));
+  }
+
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> empty_children;
+  auto temp_scan_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+      std::move(empty_children), std::move(temp_scan_target_list),
+      ir_sql_converter::SimplestNodeType::ScanNode);
+
+  // Create SimplestScan for temp table (treat it like a base table)
+  auto temp_scan_node = std::make_unique<ir_sql_converter::SimplestScan>(
+      std::move(temp_scan_base), temp_table_index, temp_table_name);
+  temp_scan_node->SetEstimatedCardinality(temp_table_cardinality);
+
+  // 6b: Build scan nodes for remaining tables - move target_list from old IR
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> scan_nodes;
+  scan_nodes.push_back(std::move(temp_scan_node)); // Add temp table first
+
+  for (auto *scan : remaining_scans) {
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> scan_children;
+
+    // Move target_list from old scan node (we own remaining_ir)
+    auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(scan_children), std::move(scan->target_list),
+        ir_sql_converter::SimplestNodeType::ScanNode);
+
+    auto new_scan = std::make_unique<ir_sql_converter::SimplestScan>(
+        std::move(base_stmt), scan->GetTableIndex(), scan->GetTableName());
+    new_scan->SetEstimatedCardinality(scan->GetEstimatedCardinality());
+    scan_nodes.push_back(std::move(new_scan));
+  }
+
+  // 6c: Build left-deep join tree
+  std::unique_ptr<ir_sql_converter::SimplestStmt> result =
+      std::move(scan_nodes[0]);
+
+  // Combine all join conditions
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
+      all_joins;
+  for (auto &j : internal_joins) {
+    all_joins.push_back(std::move(j));
+  }
+  for (auto &j : cross_boundary_joins) {
+    all_joins.push_back(std::move(j));
+  }
+
+  for (size_t i = 1; i < scan_nodes.size(); i++) {
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> join_children;
+    join_children.push_back(std::move(result));
+    join_children.push_back(std::move(scan_nodes[i]));
+
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> empty_attrs;
+    auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(join_children), std::move(empty_attrs),
+        ir_sql_converter::SimplestNodeType::JoinNode);
+
+    auto join_node = std::make_unique<ir_sql_converter::SimplestJoin>(
+        std::move(base_stmt), ir_sql_converter::Inner);
+
+    // Add relevant join conditions
+    // For now, add all remaining join conditions to the last join
+    if (i == scan_nodes.size() - 1) {
+      for (auto &cond : all_joins) {
+        if (cond) {
+          join_node->join_conditions.push_back(std::move(cond));
+        }
+      }
+    }
+
+    result = std::move(join_node);
+  }
+
+  // 6d: Add filter conditions to qual_vec
+  if (!remaining_filters.empty()) {
+    // Build Filter node
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>>
+        filter_children;
+    filter_children.emplace_back(std::move(result));
+    // todo: add target_list content
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> target_list;
+    // add qual vec
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestExpr>> qual_vec;
+    for (auto &filter : remaining_filters) {
+      if (filter) {
+        qual_vec.push_back(std::move(filter));
+      }
+    }
+
+    auto base_stmt = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(filter_children), std::move(target_list), std::move(qual_vec),
+        ir_sql_converter::SimplestNodeType::FilterNode);
+
+    result = std::make_unique<ir_sql_converter::SimplestFilter>(
+        std::move(base_stmt));
+  }
+
+  // 6e: Add Projection node on top - move target_list from old IR
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> proj_children;
+  proj_children.push_back(std::move(result));
+
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> proj_target_list;
+  if (!orig_agg && !orig_order && !orig_limit) {
+    proj_target_list = std::move(remaining_ir->target_list);
+  }
+  auto proj_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+      std::move(proj_children), std::move(proj_target_list),
+      ir_sql_converter::SimplestNodeType::ProjectionNode);
+
+  result = std::make_unique<ir_sql_converter::SimplestProjection>(
+      std::move(proj_base), 0);
+
+  // 6f: Add Aggregate node if original IR had aggregation
+  if (orig_agg) {
+#ifndef NDEBUG
+    std::cout << "[FKBasedSplitter::UpdateRemainingIR] Found aggregation in "
+                 "original IR, "
+              << "adding Aggregate node" << std::endl;
+#endif
+
+    // Build target_list first (need clones since groups/agg_fns will be moved)
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+        agg_target_list;
+    for (const auto &grp : orig_agg->groups) {
+      agg_target_list.push_back(
+          std::make_unique<ir_sql_converter::SimplestAttr>(*grp));
+    }
+    for (const auto &fn_pair : orig_agg->agg_fns) {
+      agg_target_list.push_back(
+          std::make_unique<ir_sql_converter::SimplestAttr>(*fn_pair.first));
+    }
+
+    // Build Aggregate node - move groups and agg_fns directly from old IR
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> agg_children;
+    agg_children.push_back(std::move(result));
+
+    auto agg_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(agg_children), std::move(agg_target_list),
+        ir_sql_converter::SimplestNodeType::AggregateNode);
+
+    result = std::make_unique<ir_sql_converter::SimplestAggregate>(
+        std::move(agg_base), std::move(orig_agg->agg_fns),
+        std::move(orig_agg->groups), orig_agg->GetAggIndex(),
+        orig_agg->GetGroupIndex());
+  }
+
+  // 6g: Add OrderBy node if original IR had ORDER BY
+  if (orig_order) {
+#ifndef NDEBUG
+    std::cout << "[FKBasedSplitter::UpdateRemainingIR] Found ORDER BY in "
+                 "original IR, "
+              << "adding OrderBy node" << std::endl;
+#endif
+
+    // Build OrderBy node - move target_list and orders directly from old IR
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> order_children;
+    order_children.push_back(std::move(result));
+
+    auto order_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(order_children), std::move(orig_order->target_list),
+        ir_sql_converter::SimplestNodeType::OrderNode);
+
+    result = std::make_unique<ir_sql_converter::SimplestOrderBy>(
+        std::move(order_base), std::move(orig_order->orders));
+  }
+
+  // 6h: Add Limit node if original IR had LIMIT
+  if (orig_limit) {
+#ifndef NDEBUG
+    std::cout
+        << "[FKBasedSplitter::UpdateRemainingIR] Found LIMIT in original IR, "
+        << "adding Limit node" << std::endl;
+#endif
+
+    // Build Limit node - move target_list directly from old IR
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> limit_children;
+    limit_children.push_back(std::move(result));
+
+    auto limit_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+        std::move(limit_children), std::move(orig_limit->target_list),
+        ir_sql_converter::SimplestNodeType::LimitNode);
+
+    result = std::make_unique<ir_sql_converter::SimplestLimit>(
+        std::move(limit_base), orig_limit->limit_val, orig_limit->offset_val);
+  }
+
+#ifndef NDEBUG
+  std::cout
+      << "[FKBasedSplitter::UpdateRemainingIR] Built new remaining IR with "
+      << remaining_tables.size() << " remaining tables + temp table"
+      << (orig_agg ? " + aggregation" : "") << (orig_order ? " + order by" : "")
+      << (orig_limit ? " + limit" : "") << std::endl;
+#endif
+
+  return result;
 }
 
 } // namespace middleware

@@ -11,7 +11,6 @@ namespace middleware {
 DuckDBAdapter::DuckDBAdapter(const std::string &db_path) {
   db = std::make_unique<duckdb::DuckDB>(db_path);
   conn = std::make_unique<duckdb::Connection>(*db);
-  std::cout << "[DuckDB] Initialized: " << db_path << std::endl;
 }
 
 DuckDBAdapter::~DuckDBAdapter() { CleanUp(); }

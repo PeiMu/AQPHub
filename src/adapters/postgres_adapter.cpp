@@ -17,9 +17,10 @@ PostgreSQLAdapter::PostgreSQLAdapter(const std::string &connection_string)
     conn = nullptr;
     throw std::runtime_error("PostgreSQL connection failed: " + error_msg);
   }
-
+#ifndef NDEBUG
   std::cout << "[PostgreSQL] Connected to database: " << PQdb(conn) << "@"
             << PQhost(conn) << std::endl;
+#endif
 }
 
 PostgreSQLAdapter::~PostgreSQLAdapter() { CleanUp(); }
@@ -111,8 +112,10 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
   std::string create_sql = "CREATE TEMP TABLE " + temp_table_name + " AS (" +
                            sql.substr(0, sql.size() - 1) + ");";
 
+#ifndef NDEBUG
   std::cout << "[PostgreSQL] Creating temp table: " << temp_table_name
             << std::endl;
+#endif
 
   PGresult *pg_result = PQexec(conn, create_sql.c_str());
 
@@ -125,8 +128,10 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
 
   PQclear(pg_result);
 
+#ifndef NDEBUG
   std::cout << "[PostgreSQL] Created temp table: " << temp_table_name
             << std::endl;
+#endif
 }
 
 void PostgreSQLAdapter::CreateTempTable(const std::string &table_name,
@@ -147,7 +152,9 @@ void PostgreSQLAdapter::DropTempTable(const std::string &table_name) {
 
   PQclear(pg_result);
 
+#ifndef NDEBUG
   std::cout << "[PostgreSQL] Dropped temp table: " << table_name << std::endl;
+#endif
 }
 
 bool PostgreSQLAdapter::TempTableExists(const std::string &table_name) {
@@ -245,7 +252,9 @@ void PostgreSQLAdapter::CleanUp() {
   if (conn) {
     PQfinish(conn);
     conn = nullptr;
+#ifndef NDEBUG
     std::cout << "[PostgreSQL] Connection closed" << std::endl;
+#endif
   }
 }
 

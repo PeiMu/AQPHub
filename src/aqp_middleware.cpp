@@ -32,16 +32,20 @@ std::unique_ptr<DBAdapter> CreateAdapter(const ParamConfig &config) {
   switch (config.engine) {
 #if defined(HAVE_DUCKDB)
   case BackendEngine::DUCKDB: {
-    std::cout << "[AQP Middleware] Creating DuckDB adapter: "
-              << config.db_path_or_connection << std::endl;
+    if (config.enable_debug_print) {
+      std::cout << "[AQP Middleware] Creating DuckDB adapter: "
+                << config.db_path_or_connection << std::endl;
+    }
     return std::make_unique<DuckDBAdapter>(config.db_path_or_connection);
   }
 #endif
 
 #if defined(HAVE_POSTGRES)
   case BackendEngine::POSTGRESQL: {
-    std::cout << "[AQP Middleware] Creating PostgreSQL adapter: "
-              << config.db_path_or_connection << std::endl;
+    if (config.enable_debug_print) {
+      std::cout << "[AQP Middleware] Creating PostgreSQL adapter: "
+                << config.db_path_or_connection << std::endl;
+    }
     return std::make_unique<PostgreSQLAdapter>(config.db_path_or_connection);
   }
 #endif
@@ -72,8 +76,10 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
   result.num_rows = 0;
 
   try {
-    std::cout << "\n========================================" << std::endl;
-    std::cout << "Testing: " << result.query_file << std::endl;
+    if (config.enable_debug_print) {
+      std::cout << "\n========================================" << std::endl;
+      std::cout << "Testing: " << result.query_file << std::endl;
+    }
 
     // Read SQL file
     std::string sql = ReadSQLFile(sql_file_path);
@@ -88,8 +94,10 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
 
     if (config.NeedsSplit()) {
       // Execute with split strategy using IRQuerySplitter
-      std::cout << "\n=== Execution with Split Strategy: "
-                << config.GetStrategyName() << " ===" << std::endl;
+      if (config.enable_debug_print) {
+        std::cout << "\n=== Execution with Split Strategy: "
+                  << config.GetStrategyName() << " ===" << std::endl;
+      }
 
       // Create IRQuerySplitter with the selected strategy
       IRQuerySplitter splitter(adapter, config);
@@ -99,7 +107,9 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
 
     } else {
       // Direct execution (no split)
-      std::cout << "\n=== Direct Execution (No Splitting) ===" << std::endl;
+      if (config.enable_debug_print) {
+        std::cout << "\n=== Direct Execution (No Splitting) ===" << std::endl;
+      }
 
       query_result = adapter->ExecuteSQL(sql);
     }
@@ -114,14 +124,11 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
     std::cout << "\n=== Query Results ===" << std::endl;
     std::cout << "Rows: " << query_result.num_rows
               << ", Columns: " << query_result.num_columns << std::endl;
-
-    if (config.enable_debug_print) {
-      for (const auto &row : query_result.rows) {
-        for (const auto &val : row) {
-          std::cout << val << " ";
-        }
-        std::cout << std::endl;
+    for (const auto &row : query_result.rows) {
+      for (const auto &val : row) {
+        std::cout << val << "|";
       }
+      std::cout << std::endl;
     }
 
     if (config.enable_timing) {
@@ -223,7 +230,8 @@ int main(int argc, char **argv) {
     config.Print();
 
 #ifdef HAVE_POSTGRES
-    // Initialize schema parser for PostgreSQL (needed for correct column indices)
+    // Initialize schema parser for PostgreSQL (needed for correct column
+    // indices)
     if (config.engine == BackendEngine::POSTGRESQL &&
         !config.schema_path.empty()) {
       if (!ir_sql_converter::InitSchemaParser(config.schema_path)) {

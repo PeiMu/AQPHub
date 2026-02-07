@@ -4,6 +4,7 @@
  */
 
 #include "split/ir_reorder_get.h"
+#include "split/ir_utils.h"
 #include <algorithm>
 #include <iostream>
 #include <map>
@@ -12,25 +13,31 @@ namespace middleware {
 
 std::unique_ptr<ir_sql_converter::SimplestStmt>
 IRReorderGet::Reorder(std::unique_ptr<ir_sql_converter::SimplestStmt> ir) {
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Starting table reordering by cardinality"
             << std::endl;
+#endif
 
   // Step 1: Collect all table scans with their cardinalities
   std::vector<TableInfo> tables;
   CollectTableScans(ir.get(), tables);
 
   if (tables.size() <= 1) {
+#ifndef NDEBUG
     std::cout << "[IRReorderGet] Only " << tables.size()
               << " table(s), no reordering needed" << std::endl;
+#endif
     return ir;
   }
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Found " << tables.size()
             << " tables:" << std::endl;
   for (const auto &table : tables) {
     std::cout << "  - Table " << table.table_index << " (" << table.table_name
               << "): cardinality = " << table.cardinality << std::endl;
   }
+#endif
 
   // Step 2: Sort tables by cardinality (SMALLEST FIRST for left-deep join tree)
   std::sort(tables.begin(), tables.end(),
@@ -38,23 +45,29 @@ IRReorderGet::Reorder(std::unique_ptr<ir_sql_converter::SimplestStmt> ir) {
               return a.cardinality < b.cardinality; // Ascending order
             });
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Sorted order (smallest first):" << std::endl;
   for (const auto &table : tables) {
     std::cout << "  - Table " << table.table_index << " (" << table.table_name
               << "): cardinality = " << table.cardinality << std::endl;
   }
+#endif
 
   // Step 3: Collect join conditions
   std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
       join_conditions;
   CollectJoinConditions(ir.get(), join_conditions);
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Found " << join_conditions.size()
             << " join condition(s)" << std::endl;
+#endif
 
   if (join_conditions.empty()) {
+#ifndef NDEBUG
     std::cout << "[IRReorderGet] No join conditions, returning original IR"
               << std::endl;
+#endif
     return ir;
   }
 
@@ -62,8 +75,10 @@ IRReorderGet::Reorder(std::unique_ptr<ir_sql_converter::SimplestStmt> ir) {
   auto reordered_join_tree = RebuildJoinTree(tables, join_conditions);
 
   if (!reordered_join_tree) {
+#ifndef NDEBUG
     std::cout << "[IRReorderGet] Tree rebuild failed, returning original IR"
               << std::endl;
+#endif
     return ir;
   }
 
@@ -71,7 +86,9 @@ IRReorderGet::Reorder(std::unique_ptr<ir_sql_converter::SimplestStmt> ir) {
   auto rebuilt_tree =
       PreserveTopOperators(std::move(ir), std::move(reordered_join_tree));
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Reordering complete!" << std::endl;
+#endif
   return rebuilt_tree;
 }
 
@@ -93,10 +110,12 @@ void IRReorderGet::CollectTableScans(ir_sql_converter::SimplestStmt *node,
   else if (node->GetNodeType() ==
            ir_sql_converter::SimplestNodeType::ChunkNode) {
     auto *chunk = dynamic_cast<ir_sql_converter::SimplestChunk *>(node);
+#ifndef NDEBUG
     if (chunk) {
       std::cout << "[IRReorderGet] Found Chunk node (table_index="
                 << chunk->GetTableIndex() << "), skipping reorder" << std::endl;
     }
+#endif
   }
 
   // Recursively collect from children
@@ -118,14 +137,10 @@ void IRReorderGet::CollectJoinConditions(
     if (join) {
       // Clone join conditions
       for (const auto &cond : join->join_conditions) {
-        auto cloned_cond =
-            std::make_unique<ir_sql_converter::SimplestVarComparison>(
-                cond->GetSimplestExprType(),
-                std::make_unique<ir_sql_converter::SimplestAttr>(
-                    *cond->left_attr),
-                std::make_unique<ir_sql_converter::SimplestAttr>(
-                    *cond->right_attr));
-        join_conds.push_back(std::move(cloned_cond));
+        auto cloned_cond = ir_utils::CloneVarComparison(cond.get());
+        if (cloned_cond) {
+          join_conds.push_back(std::move(cloned_cond));
+        }
       }
     }
   }
@@ -141,7 +156,9 @@ std::unique_ptr<ir_sql_converter::SimplestStmt> IRReorderGet::RebuildJoinTree(
     std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
         &join_conditions) {
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Building left-deep join tree" << std::endl;
+#endif
 
   // Build a map: (table1_idx, table2_idx) -> join conditions
   std::map<std::pair<unsigned int, unsigned int>,
@@ -167,8 +184,10 @@ std::unique_ptr<ir_sql_converter::SimplestStmt> IRReorderGet::RebuildJoinTree(
     auto &table_info = sorted_tables[i];
     unsigned int current_table_idx = table_info.table_index;
 
+#ifndef NDEBUG
     std::cout << "[IRReorderGet] Adding table " << current_table_idx << " ("
               << table_info.table_name << ")" << std::endl;
+#endif
 
     // Create scan node for this table
     std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>> empty_children;
@@ -198,14 +217,10 @@ std::unique_ptr<ir_sql_converter::SimplestStmt> IRReorderGet::RebuildJoinTree(
       if (join_map.count(key)) {
         for (auto *cond : join_map[key]) {
           // Clone the condition
-          auto cloned =
-              std::make_unique<ir_sql_converter::SimplestVarComparison>(
-                  cond->GetSimplestExprType(),
-                  std::make_unique<ir_sql_converter::SimplestAttr>(
-                      *cond->left_attr),
-                  std::make_unique<ir_sql_converter::SimplestAttr>(
-                      *cond->right_attr));
-          applicable_conditions.push_back(std::move(cloned));
+          auto cloned = ir_utils::CloneVarComparison(cond);
+          if (cloned) {
+            applicable_conditions.push_back(std::move(cloned));
+          }
         }
       }
     }
@@ -219,9 +234,11 @@ std::unique_ptr<ir_sql_converter::SimplestStmt> IRReorderGet::RebuildJoinTree(
         ir_sql_converter::SimplestNodeType::StmtNode);
 
     if (applicable_conditions.empty()) {
+#ifndef NDEBUG
       std::cout << "[IRReorderGet] Warning: No join condition found, using "
                    "CROSS_PRODUCT"
                 << std::endl;
+#endif
 
       // Create cross product
       auto cross_product =
@@ -230,8 +247,10 @@ std::unique_ptr<ir_sql_converter::SimplestStmt> IRReorderGet::RebuildJoinTree(
       current_tree = std::move(cross_product);
 
     } else {
+#ifndef NDEBUG
       std::cout << "[IRReorderGet] Found " << applicable_conditions.size()
                 << " join condition(s)" << std::endl;
+#endif
 
       // Create join node
       auto join_node = std::make_unique<ir_sql_converter::SimplestJoin>(
@@ -243,7 +262,9 @@ std::unique_ptr<ir_sql_converter::SimplestStmt> IRReorderGet::RebuildJoinTree(
     joined_tables.insert(current_table_idx);
   }
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Join tree construction complete" << std::endl;
+#endif
   return current_tree;
 }
 

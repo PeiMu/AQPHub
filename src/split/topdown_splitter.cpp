@@ -3,6 +3,7 @@
  */
 
 #include "split/topdown_splitter.h"
+#include <functional>
 #include <iostream>
 
 namespace middleware {
@@ -17,6 +18,7 @@ void TopDownSplitter::Preprocess(
   found_split_node_ = nullptr;
   query_split_index_ = 0;
   split_iteration_ = 0;
+  max_table_index_ = 0;
 
   if (enable_reorder_) {
     std::cout << "[TopDownSplitter] Running IR-level ReorderGet" << std::endl;
@@ -34,6 +36,16 @@ void TopDownSplitter::Preprocess(
   } else {
     std::cout << "[TopDownSplitter] ReorderGet disabled, skipping" << std::endl;
   }
+
+  // Collect table indices and find max
+  auto table_indices = CollectTableIndices(ir.get());
+  for (unsigned int idx : table_indices) {
+    if (idx > max_table_index_) {
+      max_table_index_ = idx;
+    }
+  }
+  std::cout << "[TopDownSplitter] Max table index: " << max_table_index_
+            << std::endl;
 
   std::cout << "[TopDownSplitter] Finish Preprocess with IR: "
             << ir->Print(true) << std::endl;
@@ -314,6 +326,103 @@ std::string TopDownSplitter::GetNodeTypeName(
   default:
     return "UNKNOWN(" + std::to_string((int)type) + ")";
   }
+}
+
+std::unique_ptr<ir_sql_converter::SimplestStmt>
+TopDownSplitter::UpdateRemainingIR(
+    std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir,
+    const std::set<unsigned int> &executed_table_indices,
+    unsigned int temp_table_index, const std::string &temp_table_name,
+    uint64_t temp_table_cardinality,
+    const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
+    const std::vector<std::string> &column_names) {
+
+  std::cout << "[TopDownSplitter::UpdateRemainingIR] Replacing executed "
+               "subtree with temp table: "
+            << temp_table_name << " (index " << temp_table_index
+            << ", cardinality " << temp_table_cardinality << ")" << std::endl;
+
+  if (!remaining_ir || !found_split_node_) {
+    std::cerr << "[TopDownSplitter::UpdateRemainingIR] Error: null "
+                 "remaining_ir or found_split_node_"
+              << std::endl;
+    return nullptr;
+  }
+
+  // Get raw pointer for tree traversal (we still own the IR)
+  auto *ir_ptr = remaining_ir.get();
+
+  // Helper lambda to find parent and replace child
+  std::function<bool(ir_sql_converter::SimplestStmt *)> ReplaceInTree;
+  ReplaceInTree = [&](ir_sql_converter::SimplestStmt *node) -> bool {
+    if (!node)
+      return false;
+
+    for (size_t i = 0; i < node->children.size(); i++) {
+      if (node->children[i].get() == found_split_node_) {
+        // Found the split node - create SimplestScan to replace it
+        std::cout
+            << "[TopDownSplitter::UpdateRemainingIR] Found split node at child "
+            << i << ", replacing with SimplestScan for temp table" << std::endl;
+
+        // Build target list using pre-computed column names
+        std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+            scan_target_list;
+        for (size_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
+          ir_sql_converter::SimplestVarType col_type =
+              ir_sql_converter::SimplestVarType::IntVar;
+          if (col_idx < found_split_node_->target_list.size()) {
+            col_type = found_split_node_->target_list[col_idx]->GetType();
+          }
+
+          auto attr = std::make_unique<ir_sql_converter::SimplestAttr>(
+              col_type, temp_table_index, static_cast<unsigned int>(col_idx),
+              column_names[col_idx]);
+          scan_target_list.push_back(std::move(attr));
+        }
+
+        // Create base SimplestStmt for the scan
+        std::vector<std::unique_ptr<ir_sql_converter::SimplestStmt>>
+            empty_children;
+        auto scan_base = std::make_unique<ir_sql_converter::SimplestStmt>(
+            std::move(empty_children), std::move(scan_target_list),
+            ir_sql_converter::SimplestNodeType::ScanNode);
+
+        // Create SimplestScan node for temp table (treat it like a base table)
+        auto scan_node = std::make_unique<ir_sql_converter::SimplestScan>(
+            std::move(scan_base), temp_table_index, temp_table_name);
+        scan_node->SetEstimatedCardinality(temp_table_cardinality);
+
+        // Replace the child
+        node->children[i] = std::move(scan_node);
+
+        std::cout << "[TopDownSplitter::UpdateRemainingIR] Successfully "
+                     "replaced subtree"
+                  << std::endl;
+        return true;
+      }
+
+      // Recursively search in children
+      if (ReplaceInTree(node->children[i].get())) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  // Find and replace the split node in tree
+  // Note: The case where remaining_ir == found_split_node_ should not happen
+  // because IsComplete returns true when only 1 table remains (like DuckDB line
+  // 605)
+  if (!ReplaceInTree(ir_ptr)) {
+    std::cerr << "[TopDownSplitter::UpdateRemainingIR] Warning: Could not find "
+                 "split node in tree"
+              << std::endl;
+  }
+
+  // Return the modified IR (same IR, modified in-place)
+  return remaining_ir;
 }
 
 } // namespace middleware
