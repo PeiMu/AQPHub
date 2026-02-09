@@ -176,6 +176,7 @@ int RunBenchmark(DBAdapter *adapter, const ParamConfig &config) {
   int failed = 0;
 
   for (const auto &sql_file : sql_files) {
+    std::cout << "Run " + sql_file << std::endl;
     TestResult result;
     ExecuteSingleQuery(adapter, sql_file, config, result);
     results.push_back(result);
