@@ -99,10 +99,10 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     throw std::runtime_error("Failed to convert plan to IR");
   }
 
-//  if (config_.enable_debug_print) {
-//    std::cout << "\n=== Whole IR (before split) ===" << std::endl;
-//    whole_ir->Print();
-//  }
+  if (config_.enable_debug_print) {
+    std::cout << "\n=== Whole IR (before split) ===" << std::endl;
+    whole_ir->Print();
+  }
 
   // === Phase 4: Iterative Split-Execute Loop ===
   if (config_.enable_debug_print) {
@@ -130,7 +130,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
   // === Strategy Preprocessing ===
   if (config_.enable_debug_print) {
-  std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
+    std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
   }
   splitter_->Preprocess(remaining_ir);
 
@@ -178,10 +178,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     throw std::runtime_error("Remaining IR is null after split loop");
   }
 
-//  if (config_.enable_debug_print) {
-//    std::cout << "\n=== Final Remaining IR ===" << std::endl;
-//    remaining_ir->Print();
-//  }
+  if (config_.enable_debug_print) {
+    std::cout << "\n=== Final Remaining IR ===" << std::endl;
+    remaining_ir->Print();
+  }
 
   // Check if remaining IR is trivial (just a temp table reference)
   std::string trivial_temp = GetTrivialTempTable(remaining_ir.get());
@@ -250,10 +250,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
     return false;
   }
 
-//  if (config_.enable_debug_print) {
-//    std::cout << "\n=== Sub-IR to Execute ===" << std::endl;
-//    executable_ir->Print();
-//  }
+  if (config_.enable_debug_print) {
+    std::cout << "\n=== Sub-IR to Execute ===" << std::endl;
+    executable_ir->Print();
+  }
 
   // Generate SQL and execute
   std::string sub_sql =
@@ -334,10 +334,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
   UpdateRemainingIRIndices(remaining_ir.get(), temp_table,
                            extraction->executed_table_indices);
 
-//  if (config_.enable_debug_print) {
-//    std::cout << "\n=== Updated Remaining IR ===" << std::endl;
-//    remaining_ir->Print();
-//  }
+  if (config_.enable_debug_print) {
+    std::cout << "\n=== Updated Remaining IR ===" << std::endl;
+    remaining_ir->Print();
+  }
 
   temp_tables_.push_back(temp_table);
 
@@ -687,7 +687,7 @@ IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
     return it->second + "_" + col_name;
   }
   // Fallback: use table index if name not found
-  return "t" + std::to_string(table_idx) + "_" + col_name;
+  return std::to_string(table_idx) + "_" + col_name;
 }
 
 } // namespace middleware
