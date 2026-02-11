@@ -473,7 +473,8 @@ FKBasedSplitter::GenerateSQLForCluster(const std::vector<int> &cluster,
   // Format: SELECT * FROM t1, t2, ... WHERE join_conditions
   std::string sql = "SELECT * FROM ";
 
-  // Add table names
+  // Add table names with aliases to handle duplicate table names
+  // Convention matches ir_to_sql.cpp: table_name AS table_name_index
   bool first = true;
   for (int idx : cluster) {
     auto it = table_index_to_name_.find(static_cast<unsigned int>(idx));
@@ -482,7 +483,7 @@ FKBasedSplitter::GenerateSQLForCluster(const std::vector<int> &cluster,
 
     if (!first)
       sql += ", ";
-    sql += it->second;
+    sql += it->second + " AS " + it->second + "_" + std::to_string(idx);
     first = false;
   }
 
@@ -504,9 +505,10 @@ FKBasedSplitter::GenerateSQLForCluster(const std::vector<int> &cluster,
     auto it2 = table_index_to_name_.find(right_table);
     if (it1 != table_index_to_name_.end() &&
         it2 != table_index_to_name_.end()) {
-      where_clauses.push_back(
-          it1->second + "." + cond->left_attr->GetColumnName() + " = " +
-          it2->second + "." + cond->right_attr->GetColumnName());
+      where_clauses.push_back(it1->second + "_" + std::to_string(left_table) +
+                              "." + cond->left_attr->GetColumnName() + " = " +
+                              it2->second + "_" + std::to_string(right_table) +
+                              "." + cond->right_attr->GetColumnName());
     }
   }
 
