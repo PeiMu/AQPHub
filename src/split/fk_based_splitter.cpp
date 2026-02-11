@@ -1485,6 +1485,10 @@ FKBasedSplitter::UpdateRemainingIR(
   std::cout << std::endl;
 #endif
 
+  // Save current_join_pairs_ before PrepareForNextIteration redirects them
+  // (needed to filter FK-FK joins from old IR using original table indices)
+  auto saved_join_pairs = current_join_pairs_;
+
   // Step 2: Update join graph for temp table
   PrepareForNextIteration(executed_table_indices, temp_table_index,
                           temp_table_name);
@@ -1498,11 +1502,8 @@ FKBasedSplitter::UpdateRemainingIR(
             << std::endl;
 #endif
 
-  // Step 4: Move join conditions from old IR (no cloning needed since we own
-  // the IR)
-  // Note: We include ALL join conditions (including FK-FK joins that were
-  // removed from join_graph_ for cluster finding). Redundant FK-FK joins are
-  // only removed for graph partitioning, not for SQL correctness.
+  // Step 4: Move join conditions from old IR, filtering out FK-FK joins
+  // using saved_join_pairs (which has FK-FK pairs already removed by rRj)
   std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
       internal_joins;
   std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
@@ -1517,13 +1518,27 @@ FKBasedSplitter::UpdateRemainingIR(
     if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
       auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node.get());
       if (join) {
-        // Iterate and move conditions we need
         for (auto &cond : join->join_conditions) {
           if (!cond)
             continue;
 
           unsigned int left_table = cond->left_attr->GetTableIndex();
           unsigned int right_table = cond->right_attr->GetTableIndex();
+
+          // Skip FK-FK joins not in saved_join_pairs
+          if (strategy_ == SplitStrategy::RELATIONSHIP_CENTER ||
+              strategy_ == SplitStrategy::ENTITY_CENTER) {
+            bool pair_found = false;
+            for (const auto &[p1, p2] : saved_join_pairs) {
+              if ((p1 == left_table && p2 == right_table) ||
+                  (p1 == right_table && p2 == left_table)) {
+                pair_found = true;
+                break;
+              }
+            }
+            if (!pair_found)
+              continue;
+          }
 
           bool left_in_remaining = remaining_tables.count(left_table) > 0;
           bool right_in_remaining = remaining_tables.count(right_table) > 0;
