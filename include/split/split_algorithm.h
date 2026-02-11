@@ -38,6 +38,10 @@ struct SubqueryExtraction {
   // execution) For TopDown: typically null (uses pipeline_breaker_ptr instead)
   std::unique_ptr<ir_sql_converter::SimplestStmt> sub_ir;
 
+  // Optimizer's estimated rows for this subquery (from EXPLAIN/GetEstimatedCost)
+  // Used when update_temp_card is disabled to simulate inaccurate cardinality
+  double estimated_rows = 0;
+
   // Pointer to node in the ORIGINAL tree that should be replaced with temp
   // table For FK-based strategies: the LCA node containing cluster tables (used
   // for UpdateRemainingIR) For TopDown: points to the subtree for both

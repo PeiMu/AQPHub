@@ -1114,7 +1114,8 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
 #endif
 
   // Find next pair of tables with lowest estimated cost
-  auto [table1, table2] = FindNextPair(remaining_ir);
+  double est_rows = 0;
+  auto [table1, table2] = FindNextPair(remaining_ir, est_rows);
 
   if (table1 == -1 || table2 == -1) {
     std::cout << "[MinSubquery] No more pairs to join" << std::endl;
@@ -1133,6 +1134,7 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
 
   auto extraction = std::make_unique<SubqueryExtraction>(
       table_indices, "temp_" + std::to_string(split_iteration_));
+  extraction->estimated_rows = est_rows;
 
   // Build a NEW sub-IR containing only the selected tables
   // This is equivalent to PostgreSQL's createQuery()
@@ -1169,12 +1171,14 @@ std::unique_ptr<SubqueryExtraction> MinSubquerySplitter::ExtractNextSubquery(
 }
 
 std::pair<int, int>
-MinSubquerySplitter::FindNextPair(ir_sql_converter::SimplestStmt *ir) {
+MinSubquerySplitter::FindNextPair(ir_sql_converter::SimplestStmt *ir,
+                                  double &estimated_rows) {
   // PostgreSQL-style: evaluate all candidate pairs and select lowest cost
   // Lines 1267-1304 in query_split.c
 
   std::pair<int, int> best_pair = {-1, -1};
   double best_cost = std::numeric_limits<double>::max();
+  estimated_rows = 0;
 
 #ifndef NDEBUG
   std::cout << "[MinSubquery] Evaluating candidate pairs:" << std::endl;
@@ -1210,6 +1214,7 @@ MinSubquerySplitter::FindNextPair(ir_sql_converter::SimplestStmt *ir) {
       if (cost < best_cost) {
         best_cost = cost;
         best_pair = {i, j};
+        estimated_rows = rows;
       }
     }
   }
@@ -1237,7 +1242,8 @@ RelationshipCenterSplitter::ExtractNextSubquery(
 #endif
 
   // Find relationship cluster with lowest estimated cost
-  auto cluster = FindRelationshipCluster(remaining_ir);
+  double est_rows = 0;
+  auto cluster = FindRelationshipCluster(remaining_ir, est_rows);
 
   if (cluster.empty()) {
     std::cout << "[RelationshipCenter] No more relationship clusters"
@@ -1261,6 +1267,7 @@ RelationshipCenterSplitter::ExtractNextSubquery(
 
   auto extraction = std::make_unique<SubqueryExtraction>(
       table_indices, "temp_" + std::to_string(split_iteration_));
+  extraction->estimated_rows = est_rows;
 
   // Build a NEW sub-IR containing only the cluster tables
   // This is equivalent to PostgreSQL's createQuery()
@@ -1296,12 +1303,13 @@ RelationshipCenterSplitter::ExtractNextSubquery(
 }
 
 std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
-    ir_sql_converter::SimplestStmt *ir) {
+    ir_sql_converter::SimplestStmt *ir, double &estimated_rows) {
   // PostgreSQL-style: evaluate all candidate clusters and select lowest cost
   // Lines 1220-1254 in query_split.c
 
   std::vector<int> best_cluster;
   double best_cost = std::numeric_limits<double>::max();
+  estimated_rows = 0;
 
 #ifndef NDEBUG
   std::cout << "[RelationshipCenter] Evaluating candidate clusters:"
@@ -1352,6 +1360,7 @@ std::vector<int> RelationshipCenterSplitter::FindRelationshipCluster(
     if (cost < best_cost) {
       best_cost = cost;
       best_cluster = cluster;
+      estimated_rows = rows;
     }
   }
 
@@ -1377,7 +1386,8 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
 #endif
 
   // Find entity cluster with lowest estimated cost
-  auto cluster = FindEntityCluster(remaining_ir);
+  double est_rows = 0;
+  auto cluster = FindEntityCluster(remaining_ir, est_rows);
 
   if (cluster.empty()) {
     std::cout << "[EntityCenter] No more entity clusters" << std::endl;
@@ -1400,6 +1410,7 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
 
   auto extraction = std::make_unique<SubqueryExtraction>(
       table_indices, "temp_" + std::to_string(split_iteration_));
+  extraction->estimated_rows = est_rows;
 
   // Build a NEW sub-IR containing only the cluster tables
   // This is equivalent to PostgreSQL's createQuery()
@@ -1435,12 +1446,14 @@ std::unique_ptr<SubqueryExtraction> EntityCenterSplitter::ExtractNextSubquery(
 }
 
 std::vector<int>
-EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
+EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir,
+                                        double &estimated_rows) {
   // PostgreSQL-style: evaluate all candidate clusters and select lowest cost
   // Inverse of RelationshipCenter
 
   std::vector<int> best_cluster;
   double best_cost = std::numeric_limits<double>::max();
+  estimated_rows = 0;
 
 #ifndef NDEBUG
   std::cout << "[EntityCenter] Evaluating candidate clusters:" << std::endl;
@@ -1490,6 +1503,7 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::SimplestStmt *ir) {
     if (cost < best_cost) {
       best_cost = cost;
       best_cluster = cluster;
+      estimated_rows = rows;
     }
   }
 

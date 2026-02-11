@@ -73,7 +73,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #ifdef HAVE_DUCKDB
     auto *duckdb_adapter = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duckdb_adapter) {
-      duckdb_adapter->PreOptimizePlan();
+      duckdb_adapter->FilterOptimize();
       if (config_.enable_debug_print) {
         std::cout
             << "[IRQuerySplitter] Phase 2: After Pre-Optimization (DuckDB)"
@@ -276,7 +276,17 @@ bool IRQuerySplitter::ExecuteOneIteration(
   // Generate temp table index
   unsigned int temp_table_index =
       splitter_->GetMaxTableIndex() + iteration_count_;
-  uint64_t cardinality = adapter_->GetTempTableCardinality(temp_table_name);
+  uint64_t cardinality;
+  if (config_.enable_update_temp_card || extraction->estimated_rows <= 0) {
+    cardinality = adapter_->GetTempTableCardinality(temp_table_name);
+  } else {
+    // Use optimizer's estimated rows (from EXPLAIN) to simulate inaccurate
+    // cardinality for A/B testing
+    cardinality = static_cast<uint64_t>(extraction->estimated_rows);
+    // Override the engine's internal stats so subsequent EXPLAIN queries
+    // also use the estimated cardinality instead of the real one
+    adapter_->SetTempTableCardinality(temp_table_name, cardinality);
+  }
 
   TempTableInfo temp_table =
       TempTableInfo(temp_table_name, temp_table_index, cardinality);
@@ -357,6 +367,7 @@ TempTableInfo IRQuerySplitter::ExecuteSubIR(
                                          config_.enable_update_temp_card);
 
   unsigned int temp_table_index = adapter_->subquery_index - 1;
+  // TODO: support estimated_rows for enable_update_temp_card=false path
   uint64_t cardinality = adapter_->GetTempTableCardinality(temp_table_name);
 
   return TempTableInfo(temp_table_name, temp_table_index, cardinality);

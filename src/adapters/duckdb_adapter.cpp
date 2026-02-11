@@ -49,7 +49,7 @@ void DuckDBAdapter::ParseSQL(const std::string &sql) {
   }
 }
 
-void DuckDBAdapter::PreOptimizePlan() {
+void DuckDBAdapter::FilterOptimize() {
   auto context = GetClientContext();
 
   if (!plan) {
@@ -73,7 +73,7 @@ void DuckDBAdapter::PreOptimizePlan() {
 
   // Create optimizer and run PreOptimize
   duckdb::Optimizer optimizer(*planner->binder, *context);
-  auto optimized_plan = optimizer.PreOptimize(std::move(plan));
+  auto optimized_plan = optimizer.FilterOptimize(std::move(plan));
 
   // Store the optimized plan
   plan = std::move(optimized_plan);
@@ -171,23 +171,23 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
     bool update_temp_card) {
-  auto context = GetClientContext();
-
-  auto duckdb_result = conn->Query(sql);
-  if (duckdb_result->HasError()) {
-    throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+  auto prepared = conn->Prepare(sql);
+  if (prepared->HasError()) {
+    throw std::runtime_error("[DuckDB] Prepare failed: " +
+                             prepared->GetError());
   }
-  auto subquery_result = duckdb_result->Collection();
+  duckdb::vector<duckdb::Value> bound_values;
+  auto subquery_result = prepared->ExecuteRow(bound_values, false);
+  int64_t chunk_size = subquery_result->Count();
   auto data_chunk_index = planner->binder->GenerateTableIndex();
 
   subquery_index++;
   intermediate_table_map[data_chunk_index] = temp_table_name;
+
+  auto context = GetClientContext();
   // create a table from data chunk
-  auto &default_entry = context->client_data->catalog_search_path->GetDefault();
-  auto current_catalog = default_entry.catalog;
-  auto current_schema = default_entry.schema;
   auto &catalog = duckdb::Catalog::GetCatalog(*context, TEMP_CATALOG);
-  auto &types = subquery_result.Types();
+  auto &types = subquery_result->Types();
   auto info = duckdb::make_uniq<duckdb::CreateTableInfo>(
       TEMP_CATALOG, DEFAULT_SCHEMA, temp_table_name);
   info->temporary = true;
@@ -196,6 +196,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   // Track used column names to handle duplicates
   duckdb::case_insensitive_set_t used_column_names;
   for (duckdb::idx_t i = 0; i < types.size(); i++) {
+    //    auto column_name = simplest_proj.target_list[i]->GetColumnName();
     std::string column_name = "col_" + std::to_string(i);
 
     // Handle duplicate column names
@@ -219,8 +220,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
   auto created_table = catalog.CreateTable(*context, std::move(info));
   auto &created_table_entry = created_table->Cast<duckdb::TableCatalogEntry>();
-  int64_t created_table_size = subquery_result.Count();
-  temp_table_card_.emplace(temp_table_name, created_table_size);
+  temp_table_card_.emplace(temp_table_name, chunk_size);
   //  const duckdb::vector<duckdb::unique_ptr<duckdb::BoundConstraint>>
   //      bound_constraints =
   //      planner->binder->BindConstraints(created_table_entry);
@@ -228,17 +228,12 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   auto &storage = created_table_entry.GetStorage();
   //  storage.LocalAppend(created_table_entry, *context, subquery_result,
   //                      bound_constraints, nullptr);
-  storage.LocalAppend(created_table_entry, *context, subquery_result);
+  storage.LocalAppend(created_table_entry, *context, *subquery_result);
 
   // Commit transaction if in auto-commit mode
   if (context->transaction.IsAutoCommit()) {
     context->transaction.Commit();
   }
-#ifndef NDEBUG
-  std::cout << "[DuckDB] " << temp_table_name
-            << " storage.info->cardinality = " << storage.info->cardinality
-            << std::endl;
-#endif
 }
 
 void DuckDBAdapter::CreateTempTable(const std::string &table_name,
@@ -299,6 +294,30 @@ DuckDBAdapter::GetTempTableCardinality(const std::string &temp_table_name) {
     return temp_table_card_[temp_table_name];
   }
   return 0; // Default if not found
+}
+
+void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
+                                            uint64_t cardinality) {
+  auto context = GetClientContext();
+
+  if (context->transaction.IsAutoCommit()) {
+    context->transaction.BeginTransaction();
+  }
+
+  auto &catalog = duckdb::Catalog::GetCatalog(*context, TEMP_CATALOG);
+  auto &table_entry = catalog.GetEntry<duckdb::TableCatalogEntry>(
+      *context, DEFAULT_SCHEMA, temp_table_name);
+  auto &storage = table_entry.GetStorage();
+  storage.info->cardinality = cardinality;
+
+  if (context->transaction.IsAutoCommit()) {
+    context->transaction.Commit();
+  }
+
+#ifndef NDEBUG
+  std::cout << "[DuckDB] SetTempTableCardinality: " << temp_table_name << " = "
+            << cardinality << std::endl;
+#endif
 }
 
 std::pair<double, double>

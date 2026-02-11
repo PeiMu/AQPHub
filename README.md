@@ -38,7 +38,7 @@ It can select different engines and split strategies.
 E.g.,
 ```bash
 --engine=postgresql
---db="host=localhost port=5432 dbname=imdb user=imdb"
+--db="host=localhost port=5432 dbname=imdb user=pei"
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql
 --split=relationshipcenter
 --check-correctness
@@ -62,7 +62,7 @@ It can also run the whole benchmark.
 E.g.,
 ```bash
 --engine=postgresql
---db="host=localhost port=5432 dbname=imdb user=imdb"
+--db="host=localhost port=5432 dbname=imdb user=pei"
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql
 --split=relationshipcenter
 --check-correctness

@@ -50,7 +50,7 @@ void test_single_query(middleware::DuckDBAdapter *adapter,
     std::cout << "===================\n" << std::endl;
 
     // Pre optimizer
-    adapter->PreOptimizePlan();
+    adapter->FilterOptimize();
     logical_plan =
         static_cast<duckdb::LogicalOperator *>(adapter->GetLogicalPlan());
     std::cout << "\n=== Logical Plan After Pre Optimizer ===" << std::endl;

@@ -242,7 +242,9 @@ public:
 
 private:
   // Find next pair of tables that have a join edge (cost-based selection)
-  std::pair<int, int> FindNextPair(ir_sql_converter::SimplestStmt *ir);
+  // estimated_rows: output parameter for the optimizer's estimated row count
+  std::pair<int, int> FindNextPair(ir_sql_converter::SimplestStmt *ir,
+                                   double &estimated_rows);
 };
 
 // ===== RelationshipCenter Strategy =====
@@ -260,7 +262,9 @@ public:
 private:
   // Find next relationship table and its connected entities (cost-based
   // selection)
-  std::vector<int> FindRelationshipCluster(ir_sql_converter::SimplestStmt *ir);
+  // estimated_rows: output parameter for the optimizer's estimated row count
+  std::vector<int> FindRelationshipCluster(ir_sql_converter::SimplestStmt *ir,
+                                           double &estimated_rows);
 };
 
 // ===== EntityCenter Strategy =====
@@ -278,7 +282,9 @@ public:
 private:
   // Find next entity table and its connected relationships (cost-based
   // selection)
-  std::vector<int> FindEntityCluster(ir_sql_converter::SimplestStmt *ir);
+  // estimated_rows: output parameter for the optimizer's estimated row count
+  std::vector<int> FindEntityCluster(ir_sql_converter::SimplestStmt *ir,
+                                     double &estimated_rows);
 };
 
 } // namespace middleware

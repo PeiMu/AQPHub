@@ -47,7 +47,7 @@ public:
   void ParseSQL(const std::string &sql) override;
 
   // Optimizer
-  void PreOptimizePlan();
+  void FilterOptimize();
   void PostOptimizePlan();
 
   void *GetLogicalPlan();
@@ -72,6 +72,9 @@ public:
   bool TempTableExists(const std::string &table_name) override;
 
   uint64_t GetTempTableCardinality(const std::string &temp_table_name) override;
+
+  void SetTempTableCardinality(const std::string &temp_table_name,
+                               uint64_t cardinality) override;
 
   // Get estimated cost and rows for a query using EXPLAIN
   std::pair<double, double> GetEstimatedCost(const std::string &sql) override;
