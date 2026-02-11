@@ -71,6 +71,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_reorder_get = false;
     } else if (arg == "--no-update-temp-card") {
       config.enable_update_temp_card = false;
+    } else if (arg == "--no-postgres-analyze") {
+      config.enable_postgres_analyze = false;
     } else if (arg == "--check-correctness") {
       config.enable_correctness_check = true;
     } else if (arg == "--timing") {
@@ -111,6 +113,9 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --no-update-temp-card            Disable updating "
                "cardinality for temp table (default: enabled)"
+            << std::endl;
+  std::cout << "  --no-postgres-analyze            Disable ANALYZE in "
+               "PostgreSQL adapter"
             << std::endl;
   std::cout << "  --check-correctness              Enable correctness "
                "checking (default: disabled)"

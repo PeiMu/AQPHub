@@ -26,16 +26,18 @@ IRQuerySplitter::IRQuerySplitter(DBAdapter *adapter, const ParamConfig &config)
     break;
 
   case SplitStrategy::MIN_SUBQUERY:
-    splitter_ = std::make_unique<MinSubquerySplitter>(adapter, config.engine);
+    splitter_ = std::make_unique<MinSubquerySplitter>(
+        adapter, config.engine, config.enable_postgres_analyze);
     break;
 
   case SplitStrategy::RELATIONSHIP_CENTER:
-    splitter_ =
-        std::make_unique<RelationshipCenterSplitter>(adapter, config.engine);
+    splitter_ = std::make_unique<RelationshipCenterSplitter>(
+        adapter, config.engine, config.enable_postgres_analyze);
     break;
 
   case SplitStrategy::ENTITY_CENTER:
-    splitter_ = std::make_unique<EntityCenterSplitter>(adapter, config.engine);
+    splitter_ = std::make_unique<EntityCenterSplitter>(
+        adapter, config.engine, config.enable_postgres_analyze);
     break;
 
   case SplitStrategy::NONE:

@@ -37,6 +37,7 @@ struct ParamConfig {
   // Options
   bool enable_reorder_get = true; // Only applies when strategy=TOP_DOWN
   bool enable_update_temp_card = true;
+  bool enable_postgres_analyze = true;
   bool enable_correctness_check = false;
   bool enable_timing = false;
   bool enable_debug_print = false;

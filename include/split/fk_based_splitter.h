@@ -98,8 +98,9 @@ private:
 class FKBasedSplitter : public SplitAlgorithm {
 public:
   FKBasedSplitter(DBAdapter *adapter, BackendEngine engine,
-                  SplitStrategy strategy)
+                  SplitStrategy strategy, bool enable_postgres_analyze)
       : SplitAlgorithm(adapter), engine_(engine), strategy_(strategy),
+        enable_postgres_analyze_(enable_postgres_analyze),
         fk_extractor_(adapter, engine) {}
 
   void Preprocess(std::unique_ptr<ir_sql_converter::SimplestStmt> &ir) override;
@@ -211,6 +212,7 @@ protected:
 
   BackendEngine engine_;
   SplitStrategy strategy_;
+  bool enable_postgres_analyze_;
   ForeignKeyExtractor fk_extractor_;
 
   // Current state
@@ -227,8 +229,10 @@ protected:
 // Finds pairs of tables to join (smallest possible subqueries)
 class MinSubquerySplitter : public FKBasedSplitter {
 public:
-  MinSubquerySplitter(DBAdapter *adapter, BackendEngine engine)
-      : FKBasedSplitter(adapter, engine, SplitStrategy::MIN_SUBQUERY) {}
+  MinSubquerySplitter(DBAdapter *adapter, BackendEngine engine,
+                      bool enable_postgres_analyze)
+      : FKBasedSplitter(adapter, engine, SplitStrategy::MIN_SUBQUERY,
+                        enable_postgres_analyze) {}
 
   std::unique_ptr<SubqueryExtraction>
   ExtractNextSubquery(ir_sql_converter::SimplestStmt *remaining_ir) override;
@@ -246,8 +250,10 @@ private:
 // Joins relationship tables with all connected entity tables
 class RelationshipCenterSplitter : public FKBasedSplitter {
 public:
-  RelationshipCenterSplitter(DBAdapter *adapter, BackendEngine engine)
-      : FKBasedSplitter(adapter, engine, SplitStrategy::RELATIONSHIP_CENTER) {}
+  RelationshipCenterSplitter(DBAdapter *adapter, BackendEngine engine,
+                             bool enable_postgres_analyze)
+      : FKBasedSplitter(adapter, engine, SplitStrategy::RELATIONSHIP_CENTER,
+                        enable_postgres_analyze) {}
 
   std::unique_ptr<SubqueryExtraction>
   ExtractNextSubquery(ir_sql_converter::SimplestStmt *remaining_ir) override;
@@ -266,8 +272,10 @@ private:
 // Joins entity tables with all connected relationship tables
 class EntityCenterSplitter : public FKBasedSplitter {
 public:
-  EntityCenterSplitter(DBAdapter *adapter, BackendEngine engine)
-      : FKBasedSplitter(adapter, engine, SplitStrategy::ENTITY_CENTER) {}
+  EntityCenterSplitter(DBAdapter *adapter, BackendEngine engine,
+                       bool enable_postgres_analyze)
+      : FKBasedSplitter(adapter, engine, SplitStrategy::ENTITY_CENTER,
+                        enable_postgres_analyze) {}
 
   std::unique_ptr<SubqueryExtraction>
   ExtractNextSubquery(ir_sql_converter::SimplestStmt *remaining_ir) override;
