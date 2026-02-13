@@ -238,11 +238,13 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    // Print configuration
-    std::cout << "========================================" << std::endl;
-    std::cout << "AQP Middleware" << std::endl;
-    std::cout << "========================================" << std::endl;
-    config.Print();
+    if (config.enable_debug_print) {
+      // Print configuration
+      std::cout << "========================================" << std::endl;
+      std::cout << "AQP Middleware" << std::endl;
+      std::cout << "========================================" << std::endl;
+      config.Print();
+    }
 
 #ifdef HAVE_POSTGRES
     // Initialize schema parser for PostgreSQL (needed for correct column

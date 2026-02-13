@@ -57,6 +57,11 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
         << std::endl;
   }
 
+  // Reset per-query state (but NOT subquery_index -- it must keep
+  // incrementing across queries so temp table names stay unique)
+  temp_tables_.clear();
+  iteration_times_.clear();
+
   if (!config_.NeedsSplit() || !splitter_) {
     std::cout << "[IRQuerySplitter] No splitting needed, executing directly"
               << std::endl;
