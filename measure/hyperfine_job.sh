@@ -33,7 +33,7 @@ for sql in "${dir}"/*.sql; do
     --db=\"${db_conn}\" \
     --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
     --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-    --split=relationshipcenter --no-postgres-analyze ${sql}"
+    --split=relationshipcenter --no-analyze ${sql}"
     cat temp.csv >> ${log_name}
 done
 

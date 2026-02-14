@@ -3,6 +3,8 @@
 mkdir -p job_result/
 rm -rf compile.log
 
+engine=$1
+
 ########################################
 # Start / Stop PostgreSQL
 ########################################
@@ -61,7 +63,9 @@ cleanup() {
 trap cleanup EXIT
 
 
+echo "compiling..."
 bash ./compile.sh >> compile.log 2>&1
+echo "compilation done"
 
 ########################################
 # Start Umbra if needed
@@ -83,6 +87,6 @@ else
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh $1
+cd ../measure && bash ./hyperfine_job.sh "${engine}"
 
 mv compile.log job_result/.

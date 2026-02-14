@@ -70,7 +70,7 @@ cleanup() {
 	pg_stop
     fi
 }
-trap cleanup EXIT
+#trap cleanup EXIT
 
 ########################################
 # Wait until Umbra is ready
@@ -92,14 +92,18 @@ rm -f "job_result/${log_name}"
 mkdir -p job_result
 shopt -s nullglob
 
+echo "compiling..."
+bash ./compile.sh >> compile.log 2>&1
+echo "compilation done"
+
 ########################################
 # Start Umbra if needed
 ########################################
-if [[ "$engine" == "umbra" ]]; then
-    start_umbra
-else
-    pg_start
-fi
+#if [[ "$engine" == "umbra" ]]; then
+#    start_umbra
+#else
+#    pg_start
+#fi
 
 ########################################
 # ANALYZE
@@ -125,7 +129,7 @@ for sql in "$dir"/*.sql; do
         --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
         --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
         --split=relationshipcenter \
-        --no-postgres-analyze \
+        --no-analyze \
         "${sql}" \
         2>&1 | tee -a "$log_name"
 done
