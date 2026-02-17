@@ -258,6 +258,8 @@ void PostgreSQLAdapter::SetTempTableCardinality(
 #endif
 }
 
+// todo: potential optimization: implement only_cost, only_row, hybrid_row,
+//  hybrid_sqrt, hybrid_log
 std::pair<double, double>
 PostgreSQLAdapter::GetEstimatedCost(const std::string &sql) {
   CheckConnection();
