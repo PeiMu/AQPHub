@@ -8,12 +8,164 @@
 #include <stdexcept>
 
 namespace middleware {
+
+#if IN_MEM_TMP_TABLE
+// Anonymous namespace for table function internal state
+namespace {
+
+// Bind data: holds pointer to collection and override cardinality
+struct TempCollectionFunctionData : public duckdb::FunctionData {
+  duckdb::ColumnDataCollection *collection = nullptr;
+  bool has_override_cardinality = false;
+  uint64_t override_cardinality = 0;
+
+  duckdb::unique_ptr<duckdb::FunctionData> Copy() const override {
+    auto result = duckdb::make_uniq<TempCollectionFunctionData>();
+    result->collection = collection;
+    result->has_override_cardinality = has_override_cardinality;
+    result->override_cardinality = override_cardinality;
+    return std::move(result);
+  }
+
+  bool Equals(const duckdb::FunctionData &other_p) const override {
+    auto &other = other_p.Cast<TempCollectionFunctionData>();
+    return collection == other.collection;
+  }
+};
+
+// Global state: holds scan state for ColumnDataCollection
+struct TempCollectionGlobalState : public duckdb::GlobalTableFunctionState {
+  duckdb::ColumnDataScanState scan_state;
+  bool initialized = false;
+};
+
+} // anonymous namespace
+#endif
+
 DuckDBAdapter::DuckDBAdapter(const std::string &db_path) {
   db = std::make_unique<duckdb::DuckDB>(db_path);
   conn = std::make_unique<duckdb::Connection>(*db);
+#if IN_MEM_TMP_TABLE
+  RegisterTempCollectionScan();
+#endif
 }
 
 DuckDBAdapter::~DuckDBAdapter() { CleanUp(); }
+
+#if IN_MEM_TMP_TABLE
+void DuckDBAdapter::RegisterTempCollectionScan() {
+  auto context = GetClientContext();
+
+  // Create the table function
+  duckdb::TableFunction func(
+      "scan_temp_collection", {duckdb::LogicalType::VARCHAR},
+      TempCollectionScanFunc, TempCollectionBind, TempCollectionInitGlobal);
+  func.cardinality = TempCollectionCardinality;
+  func.function_info =
+      duckdb::make_shared<TempCollectionScanInfo>(&temp_collections_);
+
+  // Register the table function in the catalog
+  duckdb::CreateTableFunctionInfo info(func);
+  auto &catalog = duckdb::Catalog::GetSystemCatalog(*context);
+  if (context->transaction.IsAutoCommit()) {
+    context->transaction.BeginTransaction();
+  }
+  catalog.CreateTableFunction(*context, info);
+  if (context->transaction.IsAutoCommit()) {
+    context->transaction.Commit();
+  }
+
+  // Register the replacement scan
+  auto &db_config = duckdb::DBConfig::GetConfig(*context);
+  auto scan_data =
+      duckdb::make_uniq<TempCollectionScanData>(&temp_collections_);
+  db_config.replacement_scans.emplace_back(TempCollectionReplacementScan,
+                                           std::move(scan_data));
+}
+
+// Table function callbacks
+duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::TempCollectionBind(
+    duckdb::ClientContext &context, duckdb::TableFunctionBindInput &input,
+    duckdb::vector<duckdb::LogicalType> &return_types,
+    duckdb::vector<duckdb::string> &names) {
+
+  auto &info = input.info->Cast<TempCollectionScanInfo>();
+  auto table_name = input.inputs[0].GetValue<duckdb::string>();
+
+  auto it = info.temp_collections->find(table_name);
+  if (it == info.temp_collections->end()) {
+    throw duckdb::BinderException("Temp collection '%s' not found", table_name);
+  }
+
+  auto &stored = it->second;
+  return_types = stored.collection->Types();
+  for (auto &col_name : stored.column_names) {
+    names.push_back(col_name);
+  }
+
+  auto result = duckdb::make_uniq<TempCollectionFunctionData>();
+  result->collection = stored.collection.get();
+  result->has_override_cardinality = stored.has_override_cardinality;
+  result->override_cardinality = stored.override_cardinality;
+  return std::move(result);
+}
+
+duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
+DuckDBAdapter::TempCollectionInitGlobal(duckdb::ClientContext &context,
+                                        duckdb::TableFunctionInitInput &input) {
+  return duckdb::make_uniq<TempCollectionGlobalState>();
+}
+
+void DuckDBAdapter::TempCollectionScanFunc(duckdb::ClientContext &context,
+                                           duckdb::TableFunctionInput &data,
+                                           duckdb::DataChunk &output) {
+  auto &bind_data = data.bind_data->Cast<TempCollectionFunctionData>();
+  auto &state = data.global_state->Cast<TempCollectionGlobalState>();
+
+  if (!state.initialized) {
+    bind_data.collection->InitializeScan(state.scan_state);
+    state.initialized = true;
+  }
+
+  bind_data.collection->Scan(state.scan_state, output);
+}
+
+duckdb::unique_ptr<duckdb::NodeStatistics>
+DuckDBAdapter::TempCollectionCardinality(
+    duckdb::ClientContext &context, const duckdb::FunctionData *bind_data) {
+  auto &data = bind_data->Cast<TempCollectionFunctionData>();
+  duckdb::idx_t cardinality;
+  if (data.has_override_cardinality) {
+    cardinality = data.override_cardinality;
+  } else {
+    cardinality = data.collection->Count();
+  }
+  return duckdb::make_uniq<duckdb::NodeStatistics>(cardinality, cardinality);
+}
+
+// Replacement scan callback
+duckdb::unique_ptr<duckdb::TableRef>
+DuckDBAdapter::TempCollectionReplacementScan(
+    duckdb::ClientContext &context, const duckdb::string &table_name,
+    duckdb::ReplacementScanData *data) {
+
+  auto &scan_data = dynamic_cast<TempCollectionScanData &>(*data);
+  if (scan_data.temp_collections->find(table_name) ==
+      scan_data.temp_collections->end()) {
+    return nullptr;
+  }
+
+  auto table_ref = duckdb::make_uniq<duckdb::TableFunctionRef>();
+  duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
+  children.push_back(
+      duckdb::make_uniq<duckdb::ConstantExpression>(duckdb::Value(table_name)));
+  table_ref->function = duckdb::make_uniq<duckdb::FunctionExpression>(
+      "scan_temp_collection", std::move(children));
+  table_ref->alias = table_name;
+  return std::move(table_ref);
+}
+
+#endif
 
 void DuckDBAdapter::ParseSQL(const std::string &sql) {
   auto context = GetClientContext();
@@ -168,6 +320,56 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   return result;
 }
 
+#if IN_MEM_TMP_TABLE
+void DuckDBAdapter::ExecuteSQLandCreateTempTable(
+    const std::string &sql, const std::string &temp_table_name,
+    bool update_temp_card) {
+  auto prepared = conn->Prepare(sql);
+  if (prepared->HasError()) {
+    throw std::runtime_error("[DuckDB] Prepare failed: " +
+                             prepared->GetError());
+  }
+  duckdb::vector<duckdb::Value> bound_values;
+  auto subquery_result = prepared->ExecuteRow(bound_values, false);
+  int64_t chunk_size = subquery_result->Count();
+  auto data_chunk_index = planner->binder->GenerateTableIndex();
+
+  subquery_index++;
+  intermediate_table_map[data_chunk_index] = temp_table_name;
+
+  // Build column names (same dedup logic as before)
+  auto &types = subquery_result->Types();
+  auto &result_names = prepared->GetNames();
+  duckdb::case_insensitive_set_t used_column_names;
+  std::vector<std::string> column_names;
+  for (duckdb::idx_t i = 0; i < types.size(); i++) {
+    std::string column_name =
+        (i < result_names.size() && !result_names[i].empty())
+            ? result_names[i]
+            : "col_" + std::to_string(i);
+
+    // Handle duplicate column names
+    std::string unique_column_name = column_name;
+    duckdb::idx_t suffix = 1;
+    while (used_column_names.count(unique_column_name) > 0) {
+      unique_column_name = column_name + "_" + std::to_string(suffix);
+      suffix++;
+    }
+    used_column_names.insert(unique_column_name);
+    column_names.push_back(unique_column_name);
+    table_column_mappings.emplace(std::make_pair(data_chunk_index, i),
+                                  unique_column_name);
+  }
+
+  // Store the ColumnDataCollection in temp_collections_ (zero-copy)
+  StoredTempResult stored;
+  stored.collection = std::move(subquery_result);
+  stored.column_names = std::move(column_names);
+  temp_collections_[temp_table_name] = std::move(stored);
+
+  temp_table_card_.emplace(temp_table_name, chunk_size);
+}
+#else
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
     bool update_temp_card) {
@@ -238,6 +440,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     context->transaction.Commit();
   }
 }
+#endif
 
 void DuckDBAdapter::CreateTempTable(const std::string &table_name,
                                     const QueryResult &result) {
@@ -276,6 +479,15 @@ void DuckDBAdapter::CreateTempTable(const std::string &table_name,
   //  storage.LocalAppend(created_table_entry, *context, *subquery_result);
 }
 
+#if IN_MEM_TMP_TABLE
+void DuckDBAdapter::DropTempTable(const std::string &table_name) {
+  temp_collections_.erase(table_name);
+}
+
+bool DuckDBAdapter::TempTableExists(const std::string &table_name) {
+  return temp_collections_.count(table_name) > 0;
+}
+#else
 void DuckDBAdapter::DropTempTable(const std::string &table_name) {
   ExecuteSQL("DROP TABLE IF EXISTS " + table_name);
 }
@@ -290,6 +502,7 @@ bool DuckDBAdapter::TempTableExists(const std::string &table_name) {
     return false;
   }
 }
+#endif
 
 uint64_t
 DuckDBAdapter::GetTempTableCardinality(const std::string &temp_table_name) {
@@ -299,6 +512,25 @@ DuckDBAdapter::GetTempTableCardinality(const std::string &temp_table_name) {
   return 0; // Default if not found
 }
 
+#if IN_MEM_TMP_TABLE
+void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
+                                            uint64_t cardinality) {
+  // Set override cardinality on the stored collection
+  auto it = temp_collections_.find(temp_table_name);
+  if (it != temp_collections_.end()) {
+    it->second.has_override_cardinality = true;
+    it->second.override_cardinality = cardinality;
+  }
+
+  // Update temp_table_card_ for consistency
+  temp_table_card_[temp_table_name] = cardinality;
+
+#ifndef NDEBUG
+  std::cout << "[DuckDB] SetTempTableCardinality: " << temp_table_name << " = "
+            << cardinality << std::endl;
+#endif
+}
+#else
 void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
                                             uint64_t cardinality) {
   auto context = GetClientContext();
@@ -322,6 +554,7 @@ void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
             << cardinality << std::endl;
 #endif
 }
+#endif
 
 std::pair<double, double>
 DuckDBAdapter::GetEstimatedCost(const std::string &sql) {
@@ -360,6 +593,9 @@ DuckDBAdapter::GetEstimatedCost(const std::string &sql) {
 }
 
 void DuckDBAdapter::CleanUp() {
+#if IN_MEM_TMP_TABLE
+  temp_collections_.clear();
+#endif
   plan.reset();
   planner.reset();
   conn.reset();

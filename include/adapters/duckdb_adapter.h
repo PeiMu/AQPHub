@@ -13,20 +13,32 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/common/types/column/column_data_scan_states.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/function/replacement_scan.hpp"
+#include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/bound_constraint.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/statistics/node_statistics.hpp"
+
+#define IN_MEM_TMP_TABLE false
 
 namespace duckdb {
 class DuckDB;
@@ -38,6 +50,33 @@ class Optimizer;
 } // namespace duckdb
 
 namespace middleware {
+
+#if IN_MEM_TMP_TABLE
+// Stored result for replacement-scan-based temp tables
+struct StoredTempResult {
+  duckdb::unique_ptr<duckdb::ColumnDataCollection> collection;
+  std::vector<std::string> column_names;
+  bool has_override_cardinality = false;
+  uint64_t override_cardinality = 0;
+};
+
+// ReplacementScanData subclass: holds pointer to temp_collections_ map
+struct TempCollectionScanData : public duckdb::ReplacementScanData {
+  explicit TempCollectionScanData(
+      std::unordered_map<std::string, StoredTempResult> *collections)
+      : temp_collections(collections) {}
+  std::unordered_map<std::string, StoredTempResult> *temp_collections;
+};
+
+// TableFunctionInfo subclass: holds pointer to temp_collections_ map
+struct TempCollectionScanInfo : public duckdb::TableFunctionInfo {
+  explicit TempCollectionScanInfo(
+      std::unordered_map<std::string, StoredTempResult> *collections)
+      : temp_collections(collections) {}
+  std::unordered_map<std::string, StoredTempResult> *temp_collections;
+};
+#endif
+
 class DuckDBAdapter : public DBAdapter {
 public:
   explicit DuckDBAdapter(const std::string &db_path = ":memory :");
@@ -109,5 +148,38 @@ private:
 
   // <temp%, subquery_dd_index>
   std::unordered_map<unsigned int, std::string> intermediate_table_map;
+
+#if IN_MEM_TMP_TABLE
+private:
+  // Register the temp collection table function and replacement scan
+  void RegisterTempCollectionScan();
+
+  // Table function callbacks (static)
+  static duckdb::unique_ptr<duckdb::FunctionData>
+  TempCollectionBind(duckdb::ClientContext &context,
+                     duckdb::TableFunctionBindInput &input,
+                     duckdb::vector<duckdb::LogicalType> &return_types,
+                     duckdb::vector<duckdb::string> &names);
+
+  static duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
+  TempCollectionInitGlobal(duckdb::ClientContext &context,
+                           duckdb::TableFunctionInitInput &input);
+
+  static void TempCollectionScanFunc(duckdb::ClientContext &context,
+                                     duckdb::TableFunctionInput &data,
+                                     duckdb::DataChunk &output);
+
+  static duckdb::unique_ptr<duckdb::NodeStatistics>
+  TempCollectionCardinality(duckdb::ClientContext &context,
+                            const duckdb::FunctionData *bind_data);
+
+  // Replacement scan callback (static)
+  static duckdb::unique_ptr<duckdb::TableRef>
+  TempCollectionReplacementScan(duckdb::ClientContext &context,
+                                const duckdb::string &table_name,
+                                duckdb::ReplacementScanData *data);
+  // Replacement scan: in-memory temp table storage
+  std::unordered_map<std::string, StoredTempResult> temp_collections_;
+#endif
 };
 } // namespace middleware
