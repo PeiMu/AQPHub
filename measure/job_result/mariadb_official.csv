@@ -1,0 +1,176 @@
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/10a.sql,189.55053505831998,1.612628535470087,189.27579573332,0.028971206666666666,0.007951346666666666,188.09292524732,191.28288419432
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/10b.sql,26.494114626093335,0.4697683665361942,26.283501469759997,0.026186346666666666,0.0027081799999999997,26.16650794276,27.032334465759998
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/10c.sql,77.76226416602667,0.14260884773776022,77.69301553536,0.027225573333333333,0.002038393333333333,77.66750241636,77.92627454636
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/11a.sql,0.05141700784000001,0.0036143566044423447,0.04984373184,0.02749285333333333,0.002907746666666667,0.048855933840000004,0.05555135784
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/11b.sql,0.04346175918666667,0.00023555086324260073,0.04349158352,0.027436119999999998,0.00117768,0.04321271652,0.043680977520000004
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/11c.sql,1.3727602862666668,0.010360164879881293,1.3684237556,0.02422636,0.0048628,1.3652730406000002,1.3845840626
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/11d.sql,4.94228494422,0.009678718861281592,4.94166302722,0.026772686666666667,0.0018041733333333332,4.93293218122,4.95225962422
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/12a.sql,48.56002456920667,0.5002303922563872,48.57641000954,0.030247306666666664,0.00469928,48.05180276654,49.05186093154
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/12b.sql,0.7813814759066666,0.030423539409607337,0.7641465322400001,0.02791176666666666,0.00017148666666666666,0.7634883972400001,0.8165094982400001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/12c.sql,94.63676698882666,0.43865816793932194,94.62844877316,0.03897094,0.006161466666666666,94.20232708416,95.07952510916
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/13a.sql,78.62759926186666,1.8549353395271089,79.4092585312,0.030564046666666667,0.006212566666666666,76.5097659492,79.9637733052
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/13b.sql,27.354238442333337,0.702511485887044,27.556718559,0.032649246666666666,0.0030211599999999997,26.572723631,27.933273137
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/13c.sql,21.000243456906666,0.5407563855373223,20.939869210239998,0.02959532666666667,0.007315019999999999,20.49220787424,21.56865328624
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/13d.sql,117.76436975739334,1.1280872615940678,118.38458420206,0.03001154,0.0010669,116.46225376406001,118.44627130606
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/14a.sql,61.222063749886665,0.26321406293673366,61.33903491722,0.027046266666666666,0.007786753333333334,60.92063794222,61.40651839022
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/14b.sql,18.226420908806666,0.1943822218228549,18.15547716314,0.023307193333333334,0.011516653333333333,18.07747562714,18.44630993614
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/14c.sql,95.38136519093332,0.6176243419726897,95.0540179586,0.03375676666666667,0.005858693333333334,94.9963196896,96.0937579246
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/15a.sql,67.95905010764666,1.0065293584072093,68.47389539898,0.03549978,0.003776726666666666,66.79924057498,68.60401434898
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/15b.sql,25.995083823639998,0.09065348578581219,26.03395257364,0.02642865333333333,0.009561053333333331,25.89147718664,26.059821710639998
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/15c.sql,172.74259224827333,0.6925039144300168,172.53666787594,0.03797015333333333,0.008831626666666667,172.17640718894,173.51470167994
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/15d.sql,318.8057680968,0.2666943469108409,318.8278215888,0.02856976,0.0035431866666666666,318.52873175080003,319.0607509508
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/18b.sql,42.18408980896667,0.441254254747951,42.4157012243,0.027924886666666666,0.008502093333333334,41.6752542913,42.4613139113
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/19a.sql,301.38801656474,1.138918164705728,301.17709791374,0.030203899999999995,0.009863373333333333,300.36930082474,302.61765095574
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/19b.sql,231.59192951758666,1.138481486812066,231.79772174092,0.029532406666666667,0.0028119200000000003,230.36458809092,232.61347872092
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/19c.sql,744.6232545671601,1.248618510987904,744.81727949716,0.029129086666666665,0.0062966533333333324,743.28898144616,745.76350275816
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/1a.sql,1.02174713646,0.42548895782628016,0.77705625446,0.028441666666666667,0.00021848666666666666,0.77512695246,1.51305820246
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/1b.sql,0.76263980356,0.00394201153675367,0.7604480815600001,0.026286746666666666,0.004281613333333333,0.7602807085600001,0.7671906205600001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/1c.sql,0.7599700504533334,0.0010404266868416544,0.76053398712,0.024528966666666666,0.00384818,0.75876940412,0.7606067601200001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/1d.sql,0.7677222813600001,0.014169381975837295,0.7597672353600001,0.028530593333333337,0.00132916,0.7593179903600001,0.7840816183600001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/21a.sql,0.04929347434,0.0003580385818832955,0.04911766534,0.02218988666666667,0.006319026666666667,0.04905732634,0.04970543134
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/21b.sql,0.06255252805333333,0.004595824775662936,0.060111114720000004,0.03363844,0.004335493333333333,0.05969264272000001,0.06785382672
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/21c.sql,0.05378811576666667,0.0003793739631871635,0.053582410100000005,0.028186446666666667,0.0002157333333333333,0.0535560231,0.05422591410000001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/22a.sql,70.60270019084,0.49270243644766365,70.35623458184,0.031276359999999996,0.006401186666666666,70.28186462384001,71.17000136684
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/22b.sql,45.16485368723334,0.5996065979506157,44.9573834339,0.03250300666666667,0.003697113333333333,44.6965353699,45.8406422579
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/22c.sql,109.95286405429333,0.5287660051694166,109.95734854996,0.030619813333333332,0.00401172,109.42187006396,110.47937354896
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/22d.sql,163.32035361192666,0.5742365816505952,163.17426441326,0.02679163333333333,0.00461204,162.83327223326,163.95352418926
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/23a.sql,85.10166640686,1.3721065232996692,85.32611069786,0.029084466666666666,0.008022806666666667,83.63117518586,86.34771333686001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/23b.sql,85.66861920652667,0.4905094088880917,85.84134381986,0.030412880000000003,0.003295546666666666,85.11511223686,86.04940156286
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/23c.sql,145.48102649603334,0.8520911976030937,145.1768800707,0.031329906666666664,0.003568973333333333,144.82274137870002,146.44345803870002
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/24a.sql,419.16463788977995,0.43756554982540363,418.95089576678,0.032813046666666665,0.003961106666666667,418.87502523278,419.66799266978
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/24b.sql,280.81919945014005,0.09199917589895318,280.85014380714,0.031226013333333334,0.008924426666666667,280.71571770714,280.89173683614
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/25b.sql,22.227183083906663,0.3684158527244462,22.413093654239997,0.026591026666666667,0.005741426666666666,21.802854617239998,22.465600980239998
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/26a.sql,666.6915425249467,1.226444716847122,667.0676813712801,0.032098466666666665,0.00539578,665.3210787852801,667.68586741828
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/26b.sql,62.60494732531333,0.9473669939218549,62.76125164798,0.02787859333333333,0.005299153333333334,61.58914867398,63.464441653979996
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/27a.sql,0.045887980433333336,0.0001386600789064176,0.04588954010000001,0.026372999999999997,0.0017214666666666666,0.0457485471,0.046025854100000006
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/27b.sql,0.04634743556666667,0.0029285046730818686,0.0449582559,0.026333726666666668,0.0033673333333333333,0.0443720489,0.049712001900000004
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/27c.sql,0.061207963126666674,0.022494348572130785,0.04824162146000001,0.040382933333333336,0.0011874866666666667,0.04820007946,0.08718218846
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/28a.sql,89.55913252691334,0.5553960627721454,89.72254468958,0.02673684,0.006373866666666666,88.94036300858001,90.01448988258001
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/28b.sql,52.338914856453336,0.1999161424906963,52.401089100120004,0.030616806666666663,0.002740666666666667,52.11529920012,52.500356269120005
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/28c.sql,101.30004527799333,0.6426902455301129,101.60780485866,0.031865866666666666,0.004493166666666666,100.56134604366001,101.73098493166
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/29a.sql,32.64226212766,0.9505222713620841,32.122829631660004,0.028467206666666665,0.00043461333333333336,32.06464033166,33.73931641966
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/29b.sql,31.796548598646666,0.61806646652951,31.736002304979998,0.024726786666666667,0.006316526666666667,31.210983481979998,32.44266000898
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/29c.sql,88.81801966323333,1.527676104534337,88.0378213809,0.025363140000000003,0.0043724,87.8379865989,90.5782510099
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/2a.sql,29.299230514093335,0.2479210642826467,29.186100500760002,0.03102347333333333,0.0034768,29.12805432076,29.58353672076
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/2b.sql,29.312801699566666,0.5874305136757332,29.2022585279,0.023927293333333335,0.009256153333333333,28.7884960569,29.9476505139
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/2c.sql,29.071325597426664,0.08834257058231207,29.09448692676,0.028566499999999998,0.00401942,28.973709623759998,29.145780241759997
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/2d.sql,30.17879603945333,0.6177302481079137,30.154894081120002,0.04182862666666667,0.006050246666666668,29.57336368412,30.80813035312
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/30a.sql,349.60491061334005,0.8065480175200376,349.27218595234,0.030311926666666666,0.007007986666666666,349.01795333734,350.52459255034
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/30b.sql,21.364816684653334,0.7678341716800692,21.26609748532,0.031245333333333333,0.0015388266666666666,20.65111651932,22.17723604932
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/31a.sql,221.48781790377333,1.2752038371063403,221.83218057343998,0.027986239999999996,0.005195526666666666,220.07579561544,222.55547752244
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/31b.sql,23.751686675233334,0.40185671962985703,23.8276795019,0.032124926666666664,0.002841413333333333,23.3172591319,24.110121391899998
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/31c.sql,251.43415158268667,1.79536850098583,250.97324963902,0.031786339999999996,0.0047664533333333335,249.91416686502,253.41503824402
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/32a.sql,23.142873367866667,3.082551115911981,21.893296537199998,0.03036766,0.0054148,20.8813077352,26.6540158312
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/32b.sql,21.122076459006667,0.47758200712694787,21.25113744234,0.028123153333333328,0.005737559999999999,20.59322708934,21.52186484534
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/33a.sql,0.05184672044666667,0.0047400180488713665,0.049142174780000006,0.025213486666666663,0.005461626666666666,0.04907808978000001,0.057319896780000004
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/33b.sql,0.046713831573333336,0.0005075858086967481,0.04643446624000001,0.024904759999999998,0.00395266,0.046407297240000006,0.047299731240000004
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/33c.sql,0.20552197398666663,0.0005598187198069897,0.20563720432,0.025809553333333332,0.002655333333333333,0.20491350632,0.20601521132
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/3a.sql,44.354823789486666,0.2213660786021259,44.35242812282,0.02721565333333333,0.005868413333333333,44.13466526682,44.57737797882
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/3b.sql,33.590632800659996,0.40700130641463406,33.62484564366,0.02598506,0.006826966666666667,33.16760498966,33.97944776866
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/3c.sql,58.508134539386674,0.11074106816188727,58.48478230872,0.030777046666666665,0.004062746666666666,58.41093187272,58.62868943672
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/4a.sql,29.979887142633334,0.3668945159517923,30.0552634313,0.02781111333333333,0.004836253333333333,29.5811582843,30.303239712299998
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/4b.sql,0.7739531397466667,0.6769526646579738,0.38311663308000005,0.029385493333333335,0,0.38311204008000005,1.55563074608
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/4c.sql,34.18639572890666,0.8143915794176662,34.44926753324,0.025024406666666665,0.006483293333333333,33.27303434724,34.83688530624
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/5a.sql,1.9917920529266668,0.4572004583070002,1.7612968372600002,0.025530706666666667,0.0024810266666666666,1.69571712826,2.51836219326
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/5b.sql,1.7272142686266667,0.07625950430269535,1.75309529196,0.024706573333333332,0.004091806666666666,1.64138245796,1.78716505596
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/5c.sql,27.124686618053335,0.1876609253031979,27.11625046272,0.029025426666666663,0.004025353333333333,26.94138603972,27.31642335172
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/6a.sql,19.138616212653336,0.31957569927532326,18.96486501132,0.027879293333333333,0.0013537133333333333,18.94355827932,19.50742534732
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/6b.sql,22.25329628117333,0.7458892393293062,22.077125374839998,0.02926022,0.0024796533333333332,21.611262828839997,23.07150063984
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/6c.sql,4.930542695226666,0.3418552609186836,4.79640468856,0.026218019999999998,0.00255004,4.6760992325599995,5.31912416456
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/6e.sql,19.253354274773333,0.3771992526741698,19.46930248544,0.027034266666666664,0.0021223266666666666,18.81780719444,19.47295314444
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/7b.sql,262.14686547523337,0.6205263112454583,261.80576489690003,0.026804599999999994,0.00882282,261.7717137399,262.8631177889
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/8a.sql,22.52304839102,0.2314429904386856,22.421983033020002,0.02774947333333333,0.004709626666666667,22.35932607502,22.787836065020002
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/8b.sql,21.977506764266668,0.6662673833228984,21.6008532906,0.02737239333333333,0.0025941733333333336,21.5848762336,22.7467907686
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/8d.sql,729.0296377498667,2.6526995897067347,729.4066115452,0.028666226666666666,0.005249946666666667,726.2086172472,731.4736844572
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/9a.sql,320.08276411186665,0.39856955751675816,319.9550191042,0.029896293333333334,0.0075971,319.76372853019996,320.5295447012
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/9b.sql,269.21975219923337,0.6601538230048238,269.1693925629,0.029032359999999997,0.0064969,268.5862203959,269.9036436389
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/9c.sql,522.8456243150532,2.884366645535456,524.1760290887199,0.02771748,0.007304626666666667,519.53616621072,524.8246776457199
+command,mean,stddev,median,user,system,min,max
+mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/mariadb_queries/9d.sql,743.1970432372,0.5146099101338063,743.2556153142,0.028811639999999996,0.00404296,742.6556533582,743.6798610392
