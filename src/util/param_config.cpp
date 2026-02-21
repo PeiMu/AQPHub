@@ -31,9 +31,11 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.engine = BackendEngine::POSTGRESQL;
       } else if (engine_str == "umbra") {
         config.engine = BackendEngine::UMBRA;
+      } else if (engine_str == "mariadb") {
+        config.engine = BackendEngine::MARIADB;
       } else {
         throw std::runtime_error("Unknown engine: " + arg.substr(9) +
-                                 " (valid: duckdb, postgres, umbra)");
+                                 " (valid: duckdb, postgres, umbra, mariadb)");
       }
     }
     // Parse --db=<value>
@@ -47,6 +49,27 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     // Parse --fkeys=<value> (for FK extraction from file)
     else if (arg.find("--fkeys=") == 0) {
       config.fkeys_path = arg.substr(8);
+    }
+    // Parse --estimator=<engine> (which engine's optimizer to use for EXPLAIN)
+    else if (arg.find("--estimator=") == 0) {
+      std::string est_str = to_lower(arg.substr(12));
+      if (est_str == "duckdb") {
+        config.estimator_engine = BackendEngine::DUCKDB;
+      } else if (est_str == "postgres" || est_str == "postgresql") {
+        config.estimator_engine = BackendEngine::POSTGRESQL;
+      } else if (est_str == "umbra") {
+        config.estimator_engine = BackendEngine::UMBRA;
+      } else if (est_str == "mariadb") {
+        config.estimator_engine = BackendEngine::MARIADB;
+      } else {
+        throw std::runtime_error("Unknown estimator engine: " + arg.substr(12) +
+                                 " (valid: duckdb, postgres, umbra, mariadb)");
+      }
+    }
+    // Parse --estimator-db=<connection> (connection string for estimator
+    // engine)
+    else if (arg.find("--estimator-db=") == 0) {
+      config.estimator_db = arg.substr(15);
     }
     // Parse --split=<value>
     else if (arg.find("--split=") == 0) {
@@ -97,12 +120,31 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
 
   config.query_path = argv[argc - 1];
 
+  // Apply estimator defaults:
+  // - MariaDB defaults to PostgreSQL estimator (much better cardinality
+  // estimates)
+  // - All others default to their own estimator
+  // Only override if --estimator was not explicitly set (detected by checking
+  // if estimator_engine is still the initial DUCKDB sentinel and engine !=
+  // DUCKDB)
+  bool estimator_explicitly_set =
+      (config.estimator_engine != BackendEngine::DUCKDB) ||
+      (config.engine == BackendEngine::DUCKDB);
+  if (!estimator_explicitly_set) {
+    // estimator was not set by user
+    if (config.engine == BackendEngine::MARIADB) {
+      config.estimator_engine = BackendEngine::POSTGRESQL;
+    } else {
+      config.estimator_engine = config.engine;
+    }
+  }
+
   return config;
 }
 void ParamConfig::PrintUsage() {
   std::cout << "Usage: AQP_middleware [options]" << std::endl;
   std::cout << "\nOptions:" << std::endl;
-  std::cout << "  --engine=<duckdb|postgres|umbra>  Backend engine "
+  std::cout << "  --engine=<duckdb|postgres|umbra|mariadb>  Backend engine "
                "(default: duckdb)"
             << std::endl;
   std::cout
@@ -113,6 +155,12 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --fkeys=<path>                   FK constraints SQL file "
                "(for engines without information_schema)"
+            << std::endl;
+  std::cout << "  --estimator=<engine>             Engine to use for cost "
+               "estimation (default: own engine; MariaDB default: postgres)"
+            << std::endl;
+  std::cout << "  --estimator-db=<conn>            Connection string for the "
+               "estimator engine (when --estimator differs from --engine)"
             << std::endl;
   std::cout << "    Strategies: none, topdown, minsubquery, "
                "relationship-center, entity-center"

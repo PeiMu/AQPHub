@@ -10,7 +10,7 @@
 
 namespace middleware {
 
-enum class BackendEngine { DUCKDB, POSTGRESQL, UMBRA };
+enum class BackendEngine { DUCKDB, POSTGRESQL, UMBRA, MARIADB };
 
 enum class SplitStrategy {
   NONE,                // No splitting - execute whole query directly
@@ -25,6 +25,13 @@ struct ParamConfig {
   SplitStrategy strategy = SplitStrategy::NONE;
 
   std::string db_path_or_connection; // Database path or connection string
+
+  // Cost estimator (can differ from execution engine)
+  // Default: same as engine. MariaDB default: POSTGRESQL.
+  BackendEngine estimator_engine =
+      BackendEngine::DUCKDB; // overridden in ParseFromArgs
+  std::string estimator_db;  // Connection string for the estimator engine
+                             // (only needed when estimator_engine != engine)
 
   // Mode selection
   bool benchmark_mode = false; // false = single query, true = benchmark
@@ -57,6 +64,8 @@ struct ParamConfig {
       return "PostgreSQL";
     case BackendEngine::UMBRA:
       return "Umbra";
+    case BackendEngine::MARIADB:
+      return "MariaDB";
     default:
       return "Unknown";
     }
@@ -79,6 +88,25 @@ struct ParamConfig {
     }
   }
 
+  bool UseCustomEstimator() const { return estimator_engine != engine; }
+
+  std::string GetEstimatorName() const {
+    if (!UseCustomEstimator())
+      return GetEngineName();
+    switch (estimator_engine) {
+    case BackendEngine::DUCKDB:
+      return "DuckDB";
+    case BackendEngine::POSTGRESQL:
+      return "PostgreSQL";
+    case BackendEngine::UMBRA:
+      return "Umbra";
+    case BackendEngine::MARIADB:
+      return "MariaDB";
+    default:
+      return "Unknown";
+    }
+  }
+
   bool NeedsSplit() const { return strategy != SplitStrategy::NONE; }
 
   bool NeedsReorderGet() const {
@@ -94,6 +122,7 @@ struct ParamConfig {
   void Print() const {
     std::cout << "=== Split Configuration ===" << std::endl;
     std::cout << "  Engine: " << GetEngineName() << std::endl;
+    std::cout << "  Estimator: " << GetEstimatorName() << std::endl;
     std::cout << "  Strategy: " << GetStrategyName() << std::endl;
     std::cout << "  ReorderGet: "
               << (NeedsReorderGet() ? "enabled" : "disabled") << std::endl;
