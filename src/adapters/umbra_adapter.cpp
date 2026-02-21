@@ -61,6 +61,33 @@ void UmbraAdapter::ExecuteSQLandCreateTempTable(
 #endif
 }
 
+uint64_t
+UmbraAdapter::GetTempTableCardinality(const std::string &temp_table_name) {
+  // Check cache first (populated by ExecuteSQLandCreateTempTable)
+  auto it = temp_table_card_.find(temp_table_name);
+  if (it != temp_table_card_.end()) {
+    return it->second;
+  }
+
+  // Umbra auto-collects stats — pg_class.reltuples is cheaper than COUNT(*)
+  CheckConnection();
+  std::string sql = "SELECT reltuples::bigint FROM pg_class WHERE relname = '" +
+                    temp_table_name + "'";
+  PGresult *r = PQexec(GetConnection(), sql.c_str());
+  if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) > 0) {
+    int64_t reltuples = std::stoll(PQgetvalue(r, 0, 0));
+    PQclear(r);
+    if (reltuples >= 0) {
+      return static_cast<uint64_t>(reltuples);
+    }
+  }
+  if (r)
+    PQclear(r);
+
+  // Fallback to COUNT(*) via parent
+  return PostgreSQLAdapter::GetTempTableCardinality(temp_table_name);
+}
+
 std::pair<double, double>
 UmbraAdapter::GetEstimatedCost(const std::string &sql) {
   CheckConnection();

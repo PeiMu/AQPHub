@@ -17,6 +17,9 @@ public:
   void SetTempTableCardinality(const std::string &temp_table_name,
                                uint64_t estimated_rows) override;
 
+  // Umbra auto-populates pg_class.reltuples — cheaper than COUNT(*)
+  uint64_t GetTempTableCardinality(const std::string &temp_table_name) override;
+
   // Umbra EXPLAIN JSON: {"plan":{"cardinality":N,...}} (no "Total Cost")
   std::pair<double, double> GetEstimatedCost(const std::string &sql) override;
 };
