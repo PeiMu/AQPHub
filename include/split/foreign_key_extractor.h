@@ -78,6 +78,10 @@ private:
   std::vector<ForeignKey>
   ExtractFromPostgreSQL(const std::set<std::string> &table_names);
 
+  // MariaDB FK extraction via information_schema
+  std::vector<ForeignKey>
+  ExtractFromMariaDB(const std::set<std::string> &table_names);
+
   // Parse FK constraints from an SQL file (ALTER TABLE ... ADD FOREIGN KEY)
   std::vector<ForeignKey>
   ExtractFromFile(const std::set<std::string> &table_names);

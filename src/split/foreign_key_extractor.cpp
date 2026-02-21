@@ -123,8 +123,10 @@ ForeignKeyGraph ForeignKeyExtractor::ExtractForTables(
   if (!fkeys_path_.empty()) {
     // Parse FK constraints from file (works for any engine)
     fks = ExtractFromFile(table_names);
+  } else if (engine_ == BackendEngine::MARIADB) {
+    fks = ExtractFromMariaDB(table_names);
   } else {
-    // Query the database catalog
+    // Query the database catalog (PostgreSQL/Umbra)
     fks = ExtractFromPostgreSQL(table_names);
   }
 
@@ -304,6 +306,48 @@ std::vector<ForeignKey> ForeignKeyExtractor::ExtractFromPostgreSQL(
   return fks;
 }
 
+std::vector<ForeignKey> ForeignKeyExtractor::ExtractFromMariaDB(
+    const std::set<std::string> &table_names) {
+
+  std::vector<ForeignKey> fks;
+
+  // Use information_schema.KEY_COLUMN_USAGE (standard SQL, works on MariaDB)
+  std::string query = R"(
+    SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+    FROM information_schema.KEY_COLUMN_USAGE
+    WHERE REFERENCED_TABLE_NAME IS NOT NULL
+      AND TABLE_SCHEMA = DATABASE()
+  )";
+
+  // Add table filter if specific tables requested
+  if (!table_names.empty()) {
+    std::ostringstream table_list;
+    bool first = true;
+    for (const auto &table : table_names) {
+      if (!first)
+        table_list << ", ";
+      table_list << "'" << table << "'";
+      first = false;
+    }
+    query += " AND TABLE_NAME IN (" + table_list.str() + ")";
+  }
+
+  try {
+    QueryResult result = adapter_->ExecuteSQL(query);
+
+    for (const auto &row : result.rows) {
+      if (row.size() >= 4) {
+        fks.emplace_back(row[0], row[1], row[2], row[3]);
+      }
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "[ForeignKeyExtractor] Error extracting FKs from MariaDB: "
+              << e.what() << std::endl;
+  }
+
+  return fks;
+}
+
 std::vector<ForeignKey>
 ForeignKeyExtractor::ExtractFromFile(const std::set<std::string> &table_names) {
 
@@ -339,8 +383,7 @@ ForeignKeyExtractor::ExtractFromFile(const std::set<std::string> &table_names) {
 
     // Find FOREIGN KEY ... REFERENCES on this line
     std::smatch fk_match;
-    if (!current_table.empty() &&
-        std::regex_search(line, fk_match, fk_regex)) {
+    if (!current_table.empty() && std::regex_search(line, fk_match, fk_regex)) {
       std::string fk_column = fk_match[1].str();
       std::string pk_table = fk_match[2].str();
       std::string pk_column = fk_match[3].str();
@@ -354,7 +397,7 @@ ForeignKeyExtractor::ExtractFromFile(const std::set<std::string> &table_names) {
 
       // Filter: keep FK if either fk_table or pk_table is in the set
       if (!table_names.empty() &&
-          table_names.find(current_table) == table_names.end() ||
+              table_names.find(current_table) == table_names.end() ||
           table_names.find(pk_table) == table_names.end()) {
         continue;
       }
