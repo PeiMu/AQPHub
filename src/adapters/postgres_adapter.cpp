@@ -21,6 +21,11 @@ PostgreSQLAdapter::PostgreSQLAdapter(const std::string &connection_string)
   std::cout << "[PostgreSQL] Connected to database: " << PQdb(conn) << "@"
             << PQhost(conn) << std::endl;
 #endif
+
+  // Temp tables don't need WAL durability — skip fsync on every commit
+  PGresult *sync_result = PQexec(conn, "SET synchronous_commit = off");
+  if (sync_result)
+    PQclear(sync_result);
 }
 
 PostgreSQLAdapter::~PostgreSQLAdapter() { CleanUp(); }
@@ -258,8 +263,6 @@ void PostgreSQLAdapter::SetTempTableCardinality(
 #endif
 }
 
-// todo: potential optimization: implement only_cost, only_row, hybrid_row,
-//  hybrid_sqrt, hybrid_log
 std::pair<double, double>
 PostgreSQLAdapter::GetEstimatedCost(const std::string &sql) {
   CheckConnection();
@@ -304,6 +307,80 @@ PostgreSQLAdapter::GetEstimatedCost(const std::string &sql) {
 
   PQclear(pg_result);
   return {estimated_cost, estimated_rows};
+}
+
+std::vector<std::pair<double, double>>
+PostgreSQLAdapter::BatchGetEstimatedCosts(
+    const std::vector<std::string> &sqls) {
+  if (sqls.empty()) {
+    return {};
+  }
+
+  CheckConnection();
+
+  // Concatenate all EXPLAIN queries into one string
+  std::string combined;
+  for (const auto &sql : sqls) {
+    combined += "EXPLAIN (FORMAT JSON) " + sql + ";";
+  }
+
+  // Send all at once via PQsendQuery
+  if (!PQsendQuery(conn, combined.c_str())) {
+    std::cerr << "[PostgreSQL] BatchGetEstimatedCosts: PQsendQuery failed: "
+              << PQerrorMessage(conn) << std::endl;
+    // Fallback: return max for all
+    return std::vector<std::pair<double, double>>(
+        sqls.size(), {std::numeric_limits<double>::max(),
+                      std::numeric_limits<double>::max()});
+  }
+
+  std::vector<std::pair<double, double>> results;
+  results.reserve(sqls.size());
+
+  for (size_t i = 0; i < sqls.size(); i++) {
+    PGresult *pg_result = PQgetResult(conn);
+
+    double estimated_cost = std::numeric_limits<double>::max();
+    double estimated_rows = std::numeric_limits<double>::max();
+
+    if (pg_result && PQresultStatus(pg_result) == PGRES_TUPLES_OK &&
+        PQntuples(pg_result) > 0 && PQnfields(pg_result) > 0) {
+      std::string json_str = PQgetvalue(pg_result, 0, 0);
+      try {
+        json explain_json = json::parse(json_str);
+        if (explain_json.is_array() && !explain_json.empty()) {
+          auto &plan = explain_json[0]["Plan"];
+          if (plan.contains("Total Cost")) {
+            estimated_cost = plan["Total Cost"].get<double>();
+          }
+          if (plan.contains("Plan Rows")) {
+            estimated_rows = plan["Plan Rows"].get<double>();
+          }
+        }
+      } catch (const std::exception &e) {
+        std::cerr << "[PostgreSQL] BatchGetEstimatedCosts: parse failed for "
+                     "query "
+                  << i << ": " << e.what() << std::endl;
+      }
+    } else {
+#ifndef NDEBUG
+      std::cerr << "[PostgreSQL] BatchGetEstimatedCosts: EXPLAIN failed for "
+                   "query "
+                << i << std::endl;
+#endif
+    }
+
+    if (pg_result)
+      PQclear(pg_result);
+    results.push_back({estimated_cost, estimated_rows});
+  }
+
+  // Drain NULL terminator
+  while (PGresult *r = PQgetResult(conn)) {
+    PQclear(r);
+  }
+
+  return results;
 }
 
 void PostgreSQLAdapter::CleanUp() {
