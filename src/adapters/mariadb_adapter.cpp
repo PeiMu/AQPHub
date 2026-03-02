@@ -554,7 +554,7 @@ MariaDBAdapter::GetEstimatedCost(const std::string &sql) {
 
       // MariaDB EXPLAIN FORMAT=JSON:
       // {"query_block": {"select_id": 1, "cost": 123.45,
-      //   "table": {"table_name": "t1", "rows": 100, "cost": 10.0}}}
+      //   "table": {"chunk_name": "t1", "rows": 100, "cost": 10.0}}}
       if (explain_json.contains("query_block")) {
         auto &qb = explain_json["query_block"];
         if (qb.contains("cost")) {

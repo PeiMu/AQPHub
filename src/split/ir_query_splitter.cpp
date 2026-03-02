@@ -6,6 +6,7 @@
 
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
+#include "duckdb/optimizer/reorder_get.h"
 #endif
 
 namespace middleware {
@@ -39,6 +40,19 @@ IRQuerySplitter::IRQuerySplitter(DBAdapter *adapter, const ParamConfig &config)
     splitter_ = std::make_unique<EntityCenterSplitter>(
         adapter, config.engine, config.enable_analyze, config.fkeys_path);
     break;
+
+  case SplitStrategy::NODE_BASED: {
+#ifdef HAVE_DUCKDB
+    auto *duckdb_adapter = dynamic_cast<DuckDBAdapter *>(adapter);
+    if (!duckdb_adapter)
+      throw std::runtime_error(
+          "NODE_BASED strategy requires a DuckDB adapter for planning");
+    splitter_ = std::make_unique<NodeBasedSplitter>(adapter, duckdb_adapter);
+#else
+    throw std::runtime_error("NODE_BASED strategy requires HAVE_DUCKDB");
+#endif
+    break;
+  }
 
   case SplitStrategy::NONE:
   default:
@@ -95,6 +109,19 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
                 << std::endl;
     }
   }
+
+#ifdef HAVE_DUCKDB
+  // === Phase 3 (NODE_BASED): skip ConvertPlanToIR; drive loop from DuckDB plan
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    auto *duckdb_adapter = dynamic_cast<DuckDBAdapter *>(adapter_);
+    if (!duckdb_adapter)
+      throw std::runtime_error("NODE_BASED requires DuckDB adapter");
+    if (config_.enable_debug_print)
+      std::cout << "[IRQuerySplitter] Phase 3+4: NodeBased DuckDB loop"
+                << std::endl;
+    return ExecuteSplitLoopNodeBased(duckdb_adapter);
+  }
+#endif
 
   // === Phase 3: Convert to IR ===
   if (config_.enable_debug_print) {
@@ -537,7 +564,7 @@ IRQuerySplitter::UpdateAttrIndices(
   }
 
   // Use the column name from column_mappings which matches SQL generator's
-  // convention Format: {table_name}_{column_name}
+  // convention Format: {chunk_name}_{column_name}
   std::string new_col_name =
       temp_table.column_mappings[new_col_idx].column_name;
 
@@ -682,7 +709,7 @@ void IRQuerySplitter::UpdateRemainingIRIndices(
 std::string
 IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
                                     const std::string &col_name) const {
-  // SQL generator convention: {table_name}_{table_index}_{column_name}
+  // SQL generator convention: {chunk_name}_{table_index}_{column_name}
   // Index included to disambiguate when same table appears multiple times
   std::string table_name = splitter_->GetTableName(table_idx);
   if (!table_name.empty()) {
@@ -691,5 +718,190 @@ IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
   // Fallback: use table index if name not found
   return std::to_string(table_idx) + "_" + col_name;
 }
+
+#ifdef HAVE_DUCKDB
+// ---------------------------------------------------------------------------
+// ExecuteSplitLoopNodeBased
+// Mirrors DuckDB's client_context.cpp split loop (lines 574-985):
+//   BLOCK 1 (ALWAYS_SPLIT=true → runs every iteration):
+//     merge pending subqueries back, MiddleOptimize, Clear+Split
+//   BLOCK 2 (enable_dbshaker_split_jop=false → always runs):
+//     MergeSubquery, UpdateProjHead, merge_sibling_expr=false, Clear+Split
+//   Early terminal (size==1 after BLOCK 2): MergeToSubquery, break (no UpdateProjHead)
+//   GenerateProjHead → SetPlan + ConvertPlanToIR → GenerateSQL → execute
+//   MergeDataChunk → MergeSibling → UpdateSubqueriesIndex → UpdateTableExpr
+//   Late terminal (size==1 after UpdateTableExpr): MergeToSubquery + UpdateProjHead, break
+// ---------------------------------------------------------------------------
+QueryResult
+IRQuerySplitter::ExecuteSplitLoopNodeBased(DuckDBAdapter *duckdb_adapter) {
+  iteration_count_ = 0;
+
+  auto *ctx = duckdb_adapter->GetClientContext();
+
+  // Take ownership of the plan; it lives here for the entire loop
+  auto plan = duckdb_adapter->TakePlan();
+
+  // Initialize DuckDB split machinery
+  duckdb::QuerySplit qs(*ctx);
+  duckdb::SubqueryPreparer sp(duckdb_adapter->GetBinder(), *ctx);
+
+  duckdb::subquery_queue subqueries;
+  duckdb::table_expr_info table_expr_queue;
+  std::vector<duckdb::TableExpr> proj_expr;
+  bool merge_sibling_expr = false;
+  duckdb::ReorderGet reorder_get(*ctx);
+
+  while (true) {
+    // ── BLOCK 1 (ALWAYS_SPLIT=true: runs every iteration) ────────────────
+    // Merge previous subqueries back into plan if non-empty
+    if (!subqueries.empty()) {
+      sp.MergeSubquery(plan, std::move(subqueries));
+      plan = sp.UpdateProjHead(std::move(plan), proj_expr);
+      merge_sibling_expr = false;
+    }
+
+    // MiddleOptimize: re-optimize join order with updated cardinality estimates
+    if (ctx->transaction.IsAutoCommit())
+      ctx->transaction.BeginTransaction();
+    {
+      duckdb::Optimizer optimizer(duckdb_adapter->GetBinder(), *ctx);
+      plan = optimizer.MiddleOptimize(std::move(plan));
+      if (config_.enable_debug_print) {
+        std::cout << "[ExecuteSplitLoopNodeBased]: plan after MiddleOptimize\n";
+        plan->Print();
+      }
+    }
+    if (ctx->transaction.IsAutoCommit())
+      ctx->transaction.Commit();
+
+    plan = qs.Clear(std::move(plan));
+    plan = qs.Split(std::move(plan), true);
+    subqueries = qs.GetSubqueries();
+    table_expr_queue = qs.GetTableExprQueue();
+    proj_expr = qs.GetProjExpr();
+
+    // ── BLOCK 2 (enable_dbshaker_split_jop=false: always runs) ───────────
+    reorder_get.ReorderTables(subqueries);
+    sp.MergeSubquery(plan, std::move(subqueries));
+    plan = sp.UpdateProjHead(std::move(plan), proj_expr);
+    merge_sibling_expr = false;
+
+    plan = qs.Clear(std::move(plan));
+    plan = qs.Split(std::move(plan), true);
+    subqueries = qs.GetSubqueries();
+    table_expr_queue = qs.GetTableExprQueue();
+    proj_expr = qs.GetProjExpr();
+
+    if (config_.enable_debug_print)
+      std::cout << "[NodeBased] Iteration " << iteration_count_ + 1
+                << ": subquery groups=" << subqueries.size() << std::endl;
+
+    // ── Early terminal (lines 683-695 of client_context.cpp) ─────────────
+    // NO UpdateProjHead here — plan is already shaped by BLOCK 2
+    if (subqueries.empty())
+      break;
+    if (subqueries.size() == 1) {
+      auto &child_node = subqueries.front()[0];
+      bool merged = false;
+      sp.MergeToSubquery(plan, child_node, merged);
+      break;
+    }
+
+    iteration_count_++;
+    auto iter_start = std::chrono::high_resolution_clock::now();
+
+    // ── Save sibling (ENABLE_PARALLEL_EXECUTION=false) ───────────────────
+    duckdb::unique_ptr<duckdb::LogicalOperator> last_sibling_node = nullptr;
+    if (subqueries.front().size() > 1)
+      last_sibling_node = std::move(subqueries.front()[1]);
+
+    // ── GenerateProjHead: build the executable sub-plan ──────────────────
+    sp.ClearOldTableIndex();
+    sp.AddOldTableIndex(subqueries.front()[0]); // const ref — before move
+    auto sub_plan =
+        sp.GenerateProjHead(plan, std::move(subqueries.front()[0]),
+                            table_expr_queue, proj_expr, merge_sibling_expr);
+    subqueries.pop_front();
+    table_expr_queue.pop_front();
+
+    // ── Convert sub_plan to IR via SetPlan + ConvertPlanToIR ─────────────
+    sub_plan->ResolveOperatorTypes();
+    auto sub_plan_types = sub_plan->types;
+    duckdb_adapter->SetPlan(std::move(sub_plan));
+    auto sub_ir = duckdb_adapter->ConvertPlanToIR();
+    if (config_.enable_debug_print) {
+      std::cout << "[NodeBased] sub-query IR:\n";
+      sub_ir->Print();
+    }
+
+    // ── Generate SQL and execute into a temp table ────────────────────────
+    std::string sub_sql =
+        duckdb_adapter->GenerateSQL(*sub_ir, duckdb_adapter->subquery_index++);
+    std::string temp_name = GenerateTempTableName();
+
+    if (config_.enable_debug_print)
+      std::cout << "[NodeBased] sub-query SQL:\n" << sub_sql << std::endl;
+
+    duckdb_adapter->ExecuteSQLandCreateTempTable(sub_sql, temp_name,
+                                           config_.enable_update_temp_card);
+    uint64_t cardinality = duckdb_adapter->GetTempTableCardinality(temp_name);
+
+    if (config_.enable_debug_print)
+      std::cout << "[NodeBased] created " << temp_name
+                << " (card=" << cardinality << ")" << std::endl;
+
+    // ── Tell SubqueryPreparer which index was assigned to this temp table ────
+    // ExecuteSQLandCreateTempTable already generated the index and registered
+    // it in intermediate_table_map; retrieve it here so SetNewTableIndex uses
+    // the exact same index (avoiding a duplicate GenerateTableIndex call).
+    sp.SetNewTableIndex(duckdb_adapter->GetTempTableIndex());
+
+    // ── MergeDataChunk: insert CHUNK_GET node into subqueries ────────────
+    auto collection =
+        duckdb::make_uniq<duckdb::ColumnDataCollection>(*ctx, sub_plan_types);
+    collection->Types() = duckdb_adapter->temp_table_types;
+    sp.MergeDataChunk(subqueries, std::move(collection), cardinality);
+
+    // ── MergeSibling (lines 876-929 of client_context.cpp) ───────────────
+    if (last_sibling_node) {
+      merge_sibling_expr =
+          sp.MergeSibling(subqueries, std::move(last_sibling_node));
+    } else {
+      merge_sibling_expr = false;
+    }
+
+    sp.UpdateSubqueriesIndex(subqueries);
+    table_expr_queue =
+        sp.UpdateTableExpr(std::move(table_expr_queue), proj_expr);
+
+    auto iter_end = std::chrono::high_resolution_clock::now();
+    iteration_times_.push_back(
+        std::chrono::duration<double, std::milli>(iter_end - iter_start)
+            .count());
+
+    // ── Late terminal (lines 952-984 of client_context.cpp) ──────────────
+    // UpdateProjHead IS called here (unlike early terminal above)
+    if (subqueries.size() == 1) {
+      auto &child_node = subqueries.front()[0];
+      bool merged = false;
+      sp.MergeToSubquery(plan, child_node, merged);
+      plan = sp.UpdateProjHead(std::move(plan), proj_expr);
+      break;
+    }
+    // needToSplit = false; (ALWAYS_SPLIT=true overrides this — no-op)
+  }
+
+  // ── Final execution: plan now holds the fully-merged last query ───────────
+  duckdb_adapter->SetPlan(std::move(plan));
+  auto final_ir = duckdb_adapter->ConvertPlanToIR();
+  std::string final_sql =
+      adapter_->GenerateSQL(*final_ir, adapter_->subquery_index++);
+
+  if (config_.enable_debug_print)
+    std::cout << "[NodeBased] final SQL:\n" << final_sql << std::endl;
+
+  return adapter_->ExecuteSQL(final_sql);
+}
+#endif
 
 } // namespace middleware

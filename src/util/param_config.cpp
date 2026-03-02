@@ -87,10 +87,13 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       } else if (strategy_str == "entitycenter" ||
                  strategy_str == "entity-center") {
         config.strategy = SplitStrategy::ENTITY_CENTER;
+      } else if (strategy_str == "nodebased" || strategy_str == "node_based" ||
+                 strategy_str == "node-based") {
+        config.strategy = SplitStrategy::NODE_BASED;
       } else {
         throw std::runtime_error("Unknown split strategy: " + arg.substr(8) +
                                  " (valid: none, topdown, minsubquery, "
-                                 "relationship-center, entity-center)");
+                                 "relationship-center, entity-center, node-based)");
       }
     }
     // Parse boolean flags

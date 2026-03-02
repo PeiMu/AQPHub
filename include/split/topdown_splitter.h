@@ -96,7 +96,7 @@ private:
   // Current subquery index
   int query_split_index_ = 0;
 
-  // table_index -> table_name
+  // table_index -> chunk_name
   std::unordered_map<unsigned int, std::string> table_names_;
 };
 

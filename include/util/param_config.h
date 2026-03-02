@@ -17,7 +17,8 @@ enum class SplitStrategy {
   TOP_DOWN,            // Top-down traversal split (pipeline breakers)
   MIN_SUBQUERY,        // FK-based: minimize subquery size
   RELATIONSHIP_CENTER, // FK-based: relationship-centric
-  ENTITY_CENTER        // FK-based: entity-centric
+  ENTITY_CENTER,       // FK-based: entity-centric
+  NODE_BASED           // DuckDB MiddleOptimize-driven, works with any execution adapter
 };
 
 struct ParamConfig {
@@ -83,6 +84,8 @@ struct ParamConfig {
       return "RelationshipCenter";
     case SplitStrategy::ENTITY_CENTER:
       return "EntityCenter";
+    case SplitStrategy::NODE_BASED:
+      return "NodeBased";
     default:
       return "Unknown";
     }

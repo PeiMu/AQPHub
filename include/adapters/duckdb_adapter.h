@@ -25,6 +25,8 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/optimizer/query_split/query_split.hpp"
+#include "duckdb/optimizer/query_split/subquery_preparer.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
@@ -38,7 +40,7 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
-#define IN_MEM_TMP_TABLE false
+#define IN_MEM_TMP_TABLE true
 
 namespace duckdb {
 class DuckDB;
@@ -125,6 +127,22 @@ public:
   // Get context and binder for IR conversion
   duckdb::ClientContext *GetClientContext();
 
+  // NodeBasedSplitter support
+  // Return the chunk table index allocated by the last ExecuteSQLandCreateTempTable call.
+  // SubqueryPreparer::SetNewTableIndex must use this exact index so that
+  // ConvertDuckDBPlanToIR can resolve the resulting CHUNK_GET node via
+  // intermediate_table_map (which was already populated by ExecuteSQLandCreateTempTable).
+  duckdb::idx_t GetTempTableIndex() const { return temp_table_index_; }
+
+  // Get reference to binder (for NodeBasedSplitter to create Optimizer /
+  // QuerySplit / SubqueryPreparer)
+  duckdb::Binder &GetBinder();
+
+  // Take/return plan ownership (NodeBasedSplitter drives the plan through the
+  // loop; SetPlan(sub_plan) + ConvertPlanToIR() converts each sub-plan to IR)
+  duckdb::unique_ptr<duckdb::LogicalOperator> TakePlan();
+  void SetPlan(duckdb::unique_ptr<duckdb::LogicalOperator> p);
+
   struct pair_hash {
     template <class T1, class T2>
     uint64_t operator()(const std::pair<T1, T2> &p) const {
@@ -137,6 +155,8 @@ public:
     }
   };
 
+  duckdb::vector<duckdb::LogicalType> temp_table_types;
+
 private:
   std::unique_ptr<duckdb::DuckDB> db;
   std::unique_ptr<duckdb::Connection> conn;
@@ -148,6 +168,10 @@ private:
 
   // <temp%, subquery_dd_index>
   std::unordered_map<unsigned int, std::string> intermediate_table_map;
+
+  // Index allocated by the most recent ExecuteSQLandCreateTempTable call;
+  // used by ExecuteSplitLoopNodeBased to call sp.SetNewTableIndex correctly.
+  duckdb::idx_t temp_table_index_ = 0;
 
 #if IN_MEM_TMP_TABLE
 private:
@@ -176,8 +200,8 @@ private:
   // Replacement scan callback (static)
   static duckdb::unique_ptr<duckdb::TableRef>
   TempCollectionReplacementScan(duckdb::ClientContext &context,
-                                const duckdb::string &table_name,
-                                duckdb::ReplacementScanData *data);
+                                duckdb::ReplacementScanInput &input,
+                                duckdb::optional_ptr<duckdb::ReplacementScanData> data);
   // Replacement scan: in-memory temp table storage
   std::unordered_map<std::string, StoredTempResult> temp_collections_;
 #endif

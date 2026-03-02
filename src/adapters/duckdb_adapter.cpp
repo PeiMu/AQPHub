@@ -62,7 +62,7 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
       TempCollectionScanFunc, TempCollectionBind, TempCollectionInitGlobal);
   func.cardinality = TempCollectionCardinality;
   func.function_info =
-      duckdb::make_shared<TempCollectionScanInfo>(&temp_collections_);
+      duckdb::make_shared_ptr<TempCollectionScanInfo>(&temp_collections_);
 
   // Register the table function in the catalog
   duckdb::CreateTableFunctionInfo info(func);
@@ -146,10 +146,11 @@ DuckDBAdapter::TempCollectionCardinality(
 // Replacement scan callback
 duckdb::unique_ptr<duckdb::TableRef>
 DuckDBAdapter::TempCollectionReplacementScan(
-    duckdb::ClientContext &context, const duckdb::string &table_name,
-    duckdb::ReplacementScanData *data) {
+    duckdb::ClientContext &context, duckdb::ReplacementScanInput &input,
+    duckdb::optional_ptr<duckdb::ReplacementScanData> data) {
 
-  auto &scan_data = dynamic_cast<TempCollectionScanData &>(*data);
+  auto &scan_data = data->Cast<TempCollectionScanData>();
+  const auto &table_name = input.table_name;
   if (scan_data.temp_collections->find(table_name) ==
       scan_data.temp_collections->end()) {
     return nullptr;
@@ -334,15 +335,15 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   int64_t chunk_size = subquery_result->Count();
   auto data_chunk_index = planner->binder->GenerateTableIndex();
 
-  subquery_index++;
   intermediate_table_map[data_chunk_index] = temp_table_name;
+  temp_table_index_ = data_chunk_index;
 
   // Build column names (same dedup logic as before)
-  auto &types = subquery_result->Types();
+  temp_table_types = subquery_result->Types();
   auto &result_names = prepared->GetNames();
   duckdb::case_insensitive_set_t used_column_names;
   std::vector<std::string> column_names;
-  for (duckdb::idx_t i = 0; i < types.size(); i++) {
+  for (duckdb::idx_t i = 0; i < temp_table_types.size(); i++) {
     std::string column_name =
         (i < result_names.size() && !result_names[i].empty())
             ? result_names[i]
@@ -383,8 +384,8 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   int64_t chunk_size = subquery_result->Count();
   auto data_chunk_index = planner->binder->GenerateTableIndex();
 
-  subquery_index++;
   intermediate_table_map[data_chunk_index] = temp_table_name;
+  temp_table_index_ = data_chunk_index;
 
   auto context = GetClientContext();
   // create a table from data chunk
@@ -446,7 +447,7 @@ void DuckDBAdapter::CreateTempTable(const std::string &table_name,
   //  auto context = GetClientContext();
   //  auto &catalog = duckdb::Catalog::GetCatalog(*context, TEMP_CATALOG);
   //  auto info = duckdb::make_uniq<duckdb::CreateTableInfo>(TEMP_CATALOG,
-  //  DEFAULT_SCHEMA, table_name); info->temporary = true; info->on_conflict =
+  //  DEFAULT_SCHEMA, chunk_name); info->temporary = true; info->on_conflict =
   //  duckdb::OnCreateConflict::REPLACE_ON_CONFLICT; auto &types =
   //  result.Types(); auto data_chunk_index =
   //  planner.binder->GenerateTableIndex();
@@ -487,15 +488,15 @@ bool DuckDBAdapter::TempTableExists(const std::string &table_name) {
   return temp_collections_.count(table_name) > 0;
 }
 #else
-void DuckDBAdapter::DropTempTable(const std::string &table_name) {
-  ExecuteSQL("DROP TABLE IF EXISTS " + table_name);
+void DuckDBAdapter::DropTempTable(const std::string &chunk_name) {
+  ExecuteSQL("DROP TABLE IF EXISTS " + chunk_name);
 }
 
-bool DuckDBAdapter::TempTableExists(const std::string &table_name) {
+bool DuckDBAdapter::TempTableExists(const std::string &chunk_name) {
   try {
     auto result = ExecuteSQL(
-        "SELECT count(*) FROM information_schema.tables WHERE table_name = '" +
-        table_name + "'");
+        "SELECT count(*) FROM information_schema.tables WHERE chunk_name = '" +
+        chunk_name + "'");
     return result.num_rows > 0 && result.rows[0][0] != "0";
   } catch (...) {
     return false;
@@ -611,5 +612,17 @@ void DuckDBAdapter::CleanUp() {
 
 duckdb::ClientContext *DuckDBAdapter::GetClientContext() {
   return conn->context.get();
+}
+
+duckdb::Binder &DuckDBAdapter::GetBinder() {
+  return *planner->binder;
+}
+
+duckdb::unique_ptr<duckdb::LogicalOperator> DuckDBAdapter::TakePlan() {
+  return std::move(plan);
+}
+
+void DuckDBAdapter::SetPlan(duckdb::unique_ptr<duckdb::LogicalOperator> p) {
+  plan = std::move(p);
 }
 } // namespace middleware

@@ -10,6 +10,9 @@
 #include "split/foreign_key_extractor.h"
 #include "split/split_algorithm.h"
 #include "split/topdown_splitter.h"
+#ifdef HAVE_DUCKDB
+#include "split/node_based_splitter.h"
+#endif
 #include "util/param_config.h"
 #include <chrono>
 #include <iostream>
@@ -71,9 +74,14 @@ public:
   std::vector<double> GetIterationTimes() const { return iteration_times_; }
 
 private:
-  // === Iterative Split-Execute Loop ===
+  // === IR-based Iterative Split-Execute Loop (TOP_DOWN / FK-based) ===
   QueryResult
   ExecuteSplitLoop(std::unique_ptr<ir_sql_converter::SimplestStmt> whole_ir);
+
+#ifdef HAVE_DUCKDB
+  // === NODE_BASED: DuckDB-plan-driven loop (skips ConvertPlanToIR entirely) ===
+  QueryResult ExecuteSplitLoopNodeBased(DuckDBAdapter *duckdb_adapter);
+#endif
 
   // Single iteration: extract → execute → update remaining IR
   bool ExecuteOneIteration(

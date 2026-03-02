@@ -454,7 +454,7 @@ FKBasedSplitter::GenerateSQLForCluster(const std::vector<int> &cluster,
   std::string sql = "SELECT * FROM ";
 
   // Add table names with aliases to handle duplicate table names
-  // Convention matches ir_to_sql.cpp: table_name AS table_name_index
+  // Convention matches ir_to_sql.cpp: chunk_name AS table_name_index
   bool first = true;
   for (int idx : cluster) {
     auto it = table_index_to_name_.find(static_cast<unsigned int>(idx));
