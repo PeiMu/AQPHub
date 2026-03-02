@@ -128,10 +128,11 @@ public:
   duckdb::ClientContext *GetClientContext();
 
   // NodeBasedSplitter support
-  // Return the chunk table index allocated by the last ExecuteSQLandCreateTempTable call.
-  // SubqueryPreparer::SetNewTableIndex must use this exact index so that
-  // ConvertDuckDBPlanToIR can resolve the resulting CHUNK_GET node via
-  // intermediate_table_map (which was already populated by ExecuteSQLandCreateTempTable).
+  // Return the chunk table index allocated by the last
+  // ExecuteSQLandCreateTempTable call. SubqueryPreparer::SetNewTableIndex must
+  // use this exact index so that ConvertDuckDBPlanToIR can resolve the
+  // resulting CHUNK_GET node via intermediate_table_map (which was already
+  // populated by ExecuteSQLandCreateTempTable).
   duckdb::idx_t GetTempTableIndex() const { return temp_table_index_; }
 
   // Get reference to binder (for NodeBasedSplitter to create Optimizer /
@@ -173,6 +174,11 @@ private:
   // used by ExecuteSplitLoopNodeBased to call sp.SetNewTableIndex correctly.
   duckdb::idx_t temp_table_index_ = 0;
 
+  // Column names for each chunk table: data_chunk_index → column names as
+  // stored in the temp table. Used by ConvertDuckDBPlanToIR to resolve correct
+  // column names for CHUNK_GET nodes (DuckDB plan alias ≠ temp table alias).
+  std::unordered_map<unsigned int, std::vector<std::string>> chunk_col_names_;
+
 #if IN_MEM_TMP_TABLE
 private:
   // Register the temp collection table function and replacement scan
@@ -198,10 +204,9 @@ private:
                             const duckdb::FunctionData *bind_data);
 
   // Replacement scan callback (static)
-  static duckdb::unique_ptr<duckdb::TableRef>
-  TempCollectionReplacementScan(duckdb::ClientContext &context,
-                                duckdb::ReplacementScanInput &input,
-                                duckdb::optional_ptr<duckdb::ReplacementScanData> data);
+  static duckdb::unique_ptr<duckdb::TableRef> TempCollectionReplacementScan(
+      duckdb::ClientContext &context, duckdb::ReplacementScanInput &input,
+      duckdb::optional_ptr<duckdb::ReplacementScanData> data);
   // Replacement scan: in-memory temp table storage
   std::unordered_map<std::string, StoredTempResult> temp_collections_;
 #endif

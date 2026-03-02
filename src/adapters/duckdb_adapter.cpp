@@ -281,7 +281,8 @@ DuckDBAdapter::ConvertPlanToIR() {
   auto context = GetClientContext();
   auto logical_plan = std::move(plan);
   auto ir = ir_sql_converter::ConvertDuckDBPlanToIR(
-      *planner->binder, *context, logical_plan.get(), intermediate_table_map);
+      *planner->binder, *context, logical_plan.get(), intermediate_table_map,
+      false, &chunk_col_names_);
 
   return std::move(ir);
 }
@@ -363,6 +364,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
 
   // Store the ColumnDataCollection in temp_collections_ (zero-copy)
+  chunk_col_names_[data_chunk_index] = column_names;
   StoredTempResult stored;
   stored.collection = std::move(subquery_result);
   stored.column_names = std::move(column_names);
@@ -415,6 +417,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     used_column_names.insert(unique_column_name);
     info->columns.AddColumn(
         duckdb::ColumnDefinition(unique_column_name, types[i]));
+    chunk_col_names_[data_chunk_index].push_back(unique_column_name);
     table_column_mappings.emplace(std::make_pair(data_chunk_index, i),
                                   std::move(unique_column_name));
   }
@@ -614,9 +617,7 @@ duckdb::ClientContext *DuckDBAdapter::GetClientContext() {
   return conn->context.get();
 }
 
-duckdb::Binder &DuckDBAdapter::GetBinder() {
-  return *planner->binder;
-}
+duckdb::Binder &DuckDBAdapter::GetBinder() { return *planner->binder; }
 
 duckdb::unique_ptr<duckdb::LogicalOperator> DuckDBAdapter::TakePlan() {
   return std::move(plan);
