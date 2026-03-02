@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd ../../duckdb_010/ && make clean && GEN=ninja ENABLE_QUERY_SPLIT=0 VERBOSE=1 make
+cd ../../duckdb_132/ && make clean && GEN=ninja ENABLE_QUERY_SPLIT=0 VERBOSE=1 make
 cd ../PostgreSQL-12.3/build/ && make clean && make -j32 && sudo make install
 cd ../../AQP_middleware
 

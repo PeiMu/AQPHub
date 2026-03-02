@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 engine=$1
-log_name=aqp_middleware_${engine}_job.txt
+split=$2
+log_name=aqp_middleware_${engine}_${split}_job.txt
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
@@ -12,7 +13,7 @@ if [[ "$engine" == "postgres" ]]; then
     db_conn="host=localhost port=5432 dbname=imdb user=pei"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb_010/measure/imdb.db"
+    db_conn="/home/pei/Project/duckdb_132/measure/imdb.db"
 
 elif [[ "$engine" == "umbra" ]]; then
     db_conn="host=localhost port=5432 user=postgres password=postgres"
@@ -107,9 +108,9 @@ rm -f "job_result/${log_name}"
 mkdir -p job_result
 shopt -s nullglob
 
-#echo "compiling..."
-#bash ./compile.sh >> compile.log 2>&1
-#echo "compilation done"
+echo "compiling..."
+bash ./compile.sh >> compile.log 2>&1
+echo "compilation done"
 
 #########################################
 ## Start Umbra if needed
@@ -148,7 +149,7 @@ for sql in "$dir"/*.sql; do
         --estimator-db="host=localhost port=5432 dbname=imdb user=pei" \
         --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
         --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-        --split=relationshipcenter \
+        --split="${split}" \
         --no-analyze \
         "${sql}" \
         2>&1 | tee -a "$log_name"
