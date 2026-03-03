@@ -18,7 +18,7 @@ enum class SplitStrategy {
   MIN_SUBQUERY,        // FK-based: minimize subquery size
   RELATIONSHIP_CENTER, // FK-based: relationship-centric
   ENTITY_CENTER,       // FK-based: entity-centric
-  NODE_BASED           // DuckDB MiddleOptimize-driven, works with any execution adapter
+  NODE_BASED // DuckDB MiddleOptimize-driven, works with any execution adapter
 };
 
 struct ParamConfig {
@@ -31,7 +31,7 @@ struct ParamConfig {
   // Default: same as engine. MariaDB default: POSTGRESQL.
   BackendEngine estimator_engine =
       BackendEngine::DUCKDB; // overridden in ParseFromArgs
-  std::string estimator_db;  // Connection string for the estimator engine
+  std::string helper_db;     // Connection string for the estimator engine
                              // (only needed when estimator_engine != engine)
 
   // Mode selection

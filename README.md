@@ -18,33 +18,35 @@ make -j32
 
 It can select different engines and split strategies.
 
-E.g., PostgreSQL
+### Config by engines
+
+#### PostgreSQL
 ```bash
 ./build_release/aqp_middleware
 --engine=postgresql \
 --db="host=localhost port=5432 dbname=imdb user=pei" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
---split=relationshipcenter \
+--split=relationship-center \
 --check-correctness \
 --debug \
 /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
-Or DuckDB
+#### DuckDB
 ```bash
 ./build_release/aqp_middleware
 --engine=duckdb \
 --db="/home/pei/Project/duckdb_132/measure/imdb.db" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
---split=top_down \
+--split=node-based \
 --check-correctness \
 --debug \
 /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
-Or Umbra
+#### Umbra
 ```bash
 # start the docker
 docker run \
@@ -63,24 +65,87 @@ umbra-server --address 0.0.0.0 /var/db/imdb.db
 --db="host=localhost port=5432 user=postgres password=postgres" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
---split=relationshipcenter \
+--split=relationship-center \
 --check-correctness \
 --debug \
 /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
-Or MariaDB
+#### MariaDB
 ```bash
 ../build/aqp_middleware \
 --engine=mariadb \
 --db="host=localhost dbname=imdb user=imdb" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
---split=relationshipcenter \
+--split=relationship-center \
 --check-correctness \
 --debug \
 /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
+
+### Config by split strategies
+
+#### relationship-center
+```bash
+./build_release/aqp_middleware
+--engine=postgresql \
+--db="host=localhost port=5432 dbname=imdb user=pei" \
+--schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--split=relationship-center \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+```
+
+Note: this split strategy depends on the estimation of each "cluster", but the MariaDB's estimator is very bad.
+Thus we can specify it a helper estimator engine with path, 
+e.g., `--estimator=postgres --helper-db-path="host=localhost port=5432 dbname=imdb user=pei"`
+
+#### entity-center
+```bash
+./build_release/aqp_middleware
+--engine=postgresql \
+--db="host=localhost port=5432 dbname=imdb user=pei" \
+--schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--split=entity-center \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+```
+
+#### min-subquery
+```bash
+./build_release/aqp_middleware
+--engine=postgresql \
+--db="host=localhost port=5432 dbname=imdb user=pei" \
+--schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--split=min-subquery \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+```
+
+#### node-based
+```bash
+./build_release/aqp_middleware
+--engine=postgresql \
+--db="host=localhost port=5432 dbname=imdb user=pei" \
+--helper-db-path="/home/pei/Project/duckdb_132/measure/imdb.db" \
+--schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--split=node-based \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+```
+Note: it is a bit tricky that there are some bugs with the `node-based` strategy, 
+and we need to specify a duckdb's database path to avoid these bugs 
+
+### Whole benchmark
 
 It can also run the whole benchmark.
 
@@ -100,13 +165,13 @@ E.g.,
 Go to directory `measure/`, there is script to run with either engine/split_strategy
 
 ```bash
-bash ./run_job.sh duckdb
+bash ./run_job.sh duckdb node-based
 ```
 
 Or measure the performance.
 
 ```bash
-bash ./measure_job.sh duckdb
+bash ./measure_job.sh duckdb node-based
 ```
 
 

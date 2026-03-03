@@ -1,0 +1,1243 @@
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Himself|Evil Eyes: Behind the Scenes|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|follows|The Money Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox Home Entertainment|(1997-2002) (worldwide) (all media)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+13th Street|(1954) (UK) (TV)|...denn sie wissen nicht, was sie tun|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+10th Grade Reunion Films|8.1|3:20|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+$10,000|Birdemic: Shock and Terror|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+"Oh That Gus!"|7.1|$1.11|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Afghanistan:24 June 2012|1.0|&Me|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+501audio|1.8|5 Time Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+DL Sites|1.8|Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+"O" Films|1.0|#54 Meets #47|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+6.4|Of Dolls and Murder|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:1 June 2007|Battlestar Galactica: The Resistance|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:27 April 2007|RoboCop vs Terminator|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:1 April 2003|24: Day Six - Debrief|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+(Not So) Instant Photo|06/05|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Adams, Stan|Carol Burnett vs. Anthony Perkins|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+!!!, Toy|& Teller|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+"Brooklyn" Tony Danza|(#1.5)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+"Brooklyn" Tony Danza|(#1.5)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+B, Khaz|B, Khaz|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Z'Dar, Robert|Z'Dar, Robert|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+X'Volaitis, John|X'Volaitis, John|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Abrahamsson, Bertil|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17e.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+$hort, Too|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+'El Galgo PornoStar', Blanquito|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+$1,000|10|40 Days and 40 Nights|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Horror|8.1|Agorable|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Action|10|#PostModem|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Angeline, Moriah|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Jolie, Angelina|Kung Fu Panda|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Alborg, Ana Esther|.hack//Akusei heni vol. 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Aaron, Caroline|$9.99|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(A Warner Bros.-First National Picture) (presents)|A Clockwork Orange|1934|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(Set Decoration Rentals) (uncredited)|Disaster Movie|2008|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(co-production)|Intouchables|2011|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(Set Decoration Rentals) (uncredited)|Disaster Movie|2004|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Disaster Movie|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Iron Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Abell, Alistair|...And Then I...|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Der Serienkiller - Klinge des Todes|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Hämndens pris|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|2.1|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Boll Kino Beteiligungs GmbH & Co. KG|3.0|A Small Act|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.6|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Analysts|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Big Mope|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|Dirt Merchant|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Additional Voices|Baker, Andrea|Baiohazâdo 6|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Tigress|Jolie, Angelina|Kung Fu Panda 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|10|Abdallah, Damon|-- And Now the Screaming Starts!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|138|Campbell, Jeremiah|Vampire Boys|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|10|Aakeson, Kim Fupz|$|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+'Agua' Man|7.1|Acereda, Hermie|3:10 to Yuma|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Bank Manager|8.2|Inception|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+'Agua' Man|1.9|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Spår i mörker|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Vita nätter|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Spår i mörker|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|2.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox|6.6|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|1.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Lola|Andrews, Julie|Hoodwinked!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+'Doc'|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+'Doc'|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+& Teller|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|100356|Abrams, J.J.|16 Blocks|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|194782|Shannon, Damian|Freddy vs. Jason|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|100356|Abernathy, Lewis|$|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|1040|Agnew, Jim|2001 Maniacs|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|129755|Bousman, Darren Lynn|Saw|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|1008|Abraham, Brad|11:14|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+alternate language version of|12 oz. Mouse|'Angel': Season 2 Overview|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 6
+495 Productions|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MTV Netherlands|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 6
+2BE|495 Productions|1.3|1.0|A Double Shot at Love|A Double Shot at Love|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2 Days in New York|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+300: Rise of an Empire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+& Teller 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+5.1|& Teller 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+9.1|Batman: Arkham City|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+2.1|& Teller 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 1
+11,830,420|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|2008 MTV Movie Awards|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6e.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6f.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|"Steff", Stefanie Oxmann Mcgaha|& Teller 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Antonioni, Michelangelo|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+De Palma, Brian|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+50 Cent|"Boo" Arnold was born Earl Arnold in Hattiesburg, Mississippi in 1966. His father gave him the nickname 'Boo' early in life and it stuck through grade school, high school, and college. He is still known as "Boo" to family and friends.  Raised in central Texas, Arnold played baseball at Texas Tech University where he graduated with a BA in Advertising and Marketing. While at Texas Tech he was also a member of the Texas Epsilon chapter of Phi Delta Theta fraternity. After college he worked with Young Life, an outreach to high school students, in San Antonio, Texas.  While with Young Life Arnold began taking extension courses through Fuller Theological Seminary and ultimately went full-time to Gordon-Conwell Theological Seminary in Boston, Massachusetts. At Gordon-Conwell he completed a Master's Degree in Divinity studying Theology, Philosophy, Church History, Biblical Languages (Hebrew & Greek), and Exegetical Methods. Following seminary he was involved with reconciliation efforts in the former Yugoslavia shortly after the war ended there in1995.  Arnold started acting in his early thirties in Texas. After an encouraging visit to Los Angeles where he spent time with childhood friend George Eads (of CSI Las Vegas) he decided to move to Los Angeles in 2001 to pursue acting full-time. While in Los Angeles he has studied acting with Judith Weston at Judith Weston Studio for Actors and Directors.  Arnold's acting career has been one of steady development, booking co-star and guest-star roles in nighttime television. He guest-starred opposite of Jane Seymour on the night time television drama Justice. He played the lead, Michael Hollister, in the film The Seer, written and directed by Patrick Masset (Friday Night Lights).  He was nominated Best Actor in the168 Film Festival for the role of Phil Stevens in the short-film Useless. In Useless he played a US Marshal who must choose between mercy and justice as he confronts the man who murdered his father. Arnold's performance in Useless confirmed his ability to carry lead roles, and he continues to work toward solidifying himself as a male lead in film and television.  Arnold married fellow Texan Stacy Rudd of San Antonio in 2003 and they are now raising their three children in the Los Angeles area.|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|.hack//Quantum|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Dragon Ball Z: Shin Budokai|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+"A.J."|#1 Cheerleader Camp|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 2
+"Jenny from the Block"|#1 Cheerleader Camp|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AJ|Airport Announcer|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+'Annette'|2nd Balladeer|Alborg, Ana Esther|(1975-01-20)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+=== Query Results ===
+Rows: 1, Columns: 4
+!!!, Toy|"Cockamamie's" Salesgirl|Aaron, Caroline|$15,000.00 Error|
+
+========================================
+Execution completed
+========================================

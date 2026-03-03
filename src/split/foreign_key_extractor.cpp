@@ -288,6 +288,7 @@ std::vector<ForeignKey> ForeignKeyExtractor::ExtractFromPostgreSQL(
       result = adapter_->ExecuteSQL(query);
     } else {
       // DuckDB: need a separate PostgreSQL connection for FK metadata
+      // fixme: pass the config.pg_connection
       auto postgres_adapter = std::make_unique<PostgreSQLAdapter>(
           "host=localhost port=5432 dbname=imdb user=imdb");
       result = postgres_adapter->ExecuteSQL(query);

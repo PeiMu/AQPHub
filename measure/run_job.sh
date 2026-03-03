@@ -26,6 +26,17 @@ else
     exit 1
 fi
 
+# For node-based split on non-DuckDB backends, pass the DuckDB helper DB
+# for planning.  For DuckDB itself the flag is unused.
+helper_db_arg=""
+if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
+    helper_db_path="/home/pei/Project/duckdb_132/measure/imdb.db"
+    helper_db_arg="--helper-db-path=${helper_db_path}"
+elif [[ "$engine" == "mariadb" ]]; then
+    helper_db_path="host=localhost port=5432 dbname=imdb user=pei"
+    helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
+fi
+
 ########################################
 # Start / Stop Umbra
 ########################################
@@ -77,16 +88,16 @@ mariadb_stop() {
 }
 
 
-#cleanup() {
-#    if [[ "$engine" == "umbra" ]]; then
-#        stop_umbra
-#    elif [[ "$engine" == "mariadb" ]]; then
-#        mariadb_stop
-#    else
-#	      pg_stop
-#    fi
-#}
-#trap cleanup EXIT
+cleanup() {
+    if [[ "$engine" == "umbra" ]]; then
+        stop_umbra
+    elif [[ "$engine" == "mariadb" ]]; then
+        mariadb_stop
+    else
+	      pg_stop
+    fi
+}
+trap cleanup EXIT
 
 ########################################
 # Wait until Umbra is ready
@@ -108,20 +119,20 @@ rm -f "job_result/${log_name}"
 mkdir -p job_result
 shopt -s nullglob
 
-echo "compiling..."
-bash ./compile.sh >> compile.log 2>&1
-echo "compilation done"
+#echo "compiling..."
+#bash ./compile.sh >> compile.log 2>&1
+#echo "compilation done"
 
-#########################################
-## Start Umbra if needed
-#########################################
-#if [[ "$engine" == "umbra" ]]; then
-#    start_umbra
-#elif [[ "$engine" == "mariadb" ]]; then
-#    mariadb_start
-#else
-#    pg_start
-#fi
+########################################
+# Start Umbra if needed
+########################################
+if [[ "$engine" == "umbra" ]]; then
+    start_umbra
+elif [[ "$engine" == "mariadb" ]]; then
+    mariadb_start
+else
+    pg_start
+fi
 
 ########################################
 # ANALYZE
@@ -146,7 +157,7 @@ for sql in "$dir"/*.sql; do
     ../build/aqp_middleware \
         --engine="${engine}" \
         --db="${db_conn}" \
-        --estimator-db="host=localhost port=5432 dbname=imdb user=pei" \
+        "${helper_db_arg}" \
         --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
         --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
         --split="${split}" \

@@ -75,12 +75,16 @@ std::unique_ptr<DBAdapter> CreateAdapter(const ParamConfig &config) {
                 << config.db_path_or_connection << std::endl;
       if (config.UseCustomEstimator()) {
         std::cout << "[AQP Middleware] MariaDB estimator: "
-                  << config.GetEstimatorName() << " (" << config.estimator_db
+                  << config.GetEstimatorName() << " (" << config.helper_db
                   << ")" << std::endl;
       }
     }
-    return std::make_unique<MariaDBAdapter>(config.db_path_or_connection,
-                                            config.estimator_db);
+    if (config.strategy == SplitStrategy::NODE_BASED) {
+      return std::make_unique<MariaDBAdapter>(config.db_path_or_connection, "");
+    } else {
+      return std::make_unique<MariaDBAdapter>(config.db_path_or_connection,
+                                              config.helper_db);
+    }
   }
 #endif
 

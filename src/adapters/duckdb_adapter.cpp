@@ -626,4 +626,17 @@ duckdb::unique_ptr<duckdb::LogicalOperator> DuckDBAdapter::TakePlan() {
 void DuckDBAdapter::SetPlan(duckdb::unique_ptr<duckdb::LogicalOperator> p) {
   plan = std::move(p);
 }
+
+void DuckDBAdapter::RegisterExternalTempTable(
+    const std::string &temp_name,
+    const duckdb::vector<duckdb::LogicalType> &types,
+    const std::vector<std::string> &col_names) {
+
+  auto data_chunk_index = planner->binder->GenerateTableIndex();
+  intermediate_table_map[data_chunk_index] = temp_name;
+  temp_table_index_ = data_chunk_index;
+  temp_table_types = types;
+  chunk_col_names_[data_chunk_index] = col_names;
+}
+
 } // namespace middleware

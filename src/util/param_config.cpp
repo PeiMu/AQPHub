@@ -66,10 +66,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
                                  " (valid: duckdb, postgres, umbra, mariadb)");
       }
     }
-    // Parse --estimator-db=<connection> (connection string for estimator
-    // engine)
-    else if (arg.find("--estimator-db=") == 0) {
-      config.estimator_db = arg.substr(15);
+    // Parse --helper-db-path=<connection> (connection string for estimator
+    // engine, or duckdb database path when using node-based split)
+    else if (arg.find("--helper-db-path=") == 0) {
+      config.helper_db = arg.substr(17);
     }
     // Parse --split=<value>
     else if (arg.find("--split=") == 0) {
@@ -91,9 +91,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
                  strategy_str == "node-based") {
         config.strategy = SplitStrategy::NODE_BASED;
       } else {
-        throw std::runtime_error("Unknown split strategy: " + arg.substr(8) +
-                                 " (valid: none, topdown, minsubquery, "
-                                 "relationship-center, entity-center, node-based)");
+        throw std::runtime_error(
+            "Unknown split strategy: " + arg.substr(8) +
+            " (valid: none, topdown, minsubquery, "
+            "relationship-center, entity-center, node-based)");
       }
     }
     // Parse boolean flags
@@ -123,25 +124,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
 
   config.query_path = argv[argc - 1];
 
-  // Apply estimator defaults:
-  // - MariaDB defaults to PostgreSQL estimator (much better cardinality
-  // estimates)
-  // - All others default to their own estimator
-  // Only override if --estimator was not explicitly set (detected by checking
-  // if estimator_engine is still the initial DUCKDB sentinel and engine !=
-  // DUCKDB)
-  bool estimator_explicitly_set =
-      (config.estimator_engine != BackendEngine::DUCKDB) ||
-      (config.engine == BackendEngine::DUCKDB);
-  if (!estimator_explicitly_set) {
-    // estimator was not set by user
-    if (config.engine == BackendEngine::MARIADB) {
-      config.estimator_engine = BackendEngine::POSTGRESQL;
-    } else {
-      config.estimator_engine = config.engine;
-    }
-  }
-
   return config;
 }
 void ParamConfig::PrintUsage() {
@@ -160,10 +142,10 @@ void ParamConfig::PrintUsage() {
                "(for engines without information_schema)"
             << std::endl;
   std::cout << "  --estimator=<engine>             Engine to use for cost "
-               "estimation (default: own engine; MariaDB default: postgres)"
+               "estimation (default: own engine)"
             << std::endl;
-  std::cout << "  --estimator-db=<conn>            Connection string for the "
-               "estimator engine (when --estimator differs from --engine)"
+  std::cout << "  --helper-db-path=<conn>            Connection string for the "
+               "helper engine"
             << std::endl;
   std::cout << "    Strategies: none, topdown, minsubquery, "
                "relationship-center, entity-center"

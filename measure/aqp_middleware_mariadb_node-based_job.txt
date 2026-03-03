@@ -1,0 +1,19 @@
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql...

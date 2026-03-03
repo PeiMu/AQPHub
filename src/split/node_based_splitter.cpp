@@ -11,18 +11,14 @@
 
 namespace middleware {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constructor
-// ─────────────────────────────────────────────────────────────────────────────
 NodeBasedSplitter::NodeBasedSplitter(DBAdapter *exec_adapter,
                                      DuckDBAdapter *plan_adapter,
                                      bool enable_debug_print)
     : SplitAlgorithm(exec_adapter), plan_adapter_(plan_adapter),
+      external_execution_(exec_adapter !=
+                          static_cast<DBAdapter *>(plan_adapter)),
       enable_debug_print_(enable_debug_print) {}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Preprocess
-// ─────────────────────────────────────────────────────────────────────────────
 void NodeBasedSplitter::Preprocess(
     std::unique_ptr<ir_sql_converter::SimplestStmt> & /*ir*/) {
   ctx_ = plan_adapter_->GetClientContext();
@@ -153,6 +149,10 @@ std::unique_ptr<SubqueryExtraction> NodeBasedSplitter::ExtractNextSubquery(
   plan_adapter_->SetPlan(std::move(sub_plan));
   auto sub_ir = plan_adapter_->ConvertPlanToIR();
 
+  // Populate table_index_to_name_ so ComputeColumnAlias can resolve
+  // table names for temp table column aliases (e.g. "movie_info_7_movie_id").
+  CollectTableNames(sub_ir.get());
+
   if (enable_debug_print_) {
     std::cout << "[NodeBased] sub-query IR:\n";
     sub_ir->Print();
@@ -179,20 +179,39 @@ std::unique_ptr<ir_sql_converter::SimplestStmt>
 NodeBasedSplitter::UpdateRemainingIR(
     std::unique_ptr<ir_sql_converter::SimplestStmt> remaining_ir,
     const std::set<unsigned int> & /*executed_table_indices*/,
-    unsigned int /*temp_table_index*/, const std::string & /*temp_table_name*/,
+    unsigned int /*temp_table_index*/, const std::string &temp_table_name,
     uint64_t temp_table_cardinality,
     const std::vector<std::pair<unsigned int, unsigned int>> & /*col_mappings*/,
-    const std::vector<std::string> & /*col_names*/) {
+    const std::vector<std::string> &col_names) {
+
+  if (external_execution_) {
+    // Execution happened on a non-DuckDB backend; DuckDB never ran
+    // ExecuteSQLandCreateTempTable so GetTempTableIndex() is stale.
+    // Allocate a fresh DuckDB index and register the temp table name.
+    plan_adapter_->RegisterExternalTempTable(temp_table_name, sub_plan_types_,
+                                             col_names);
+  }
+
+  // Register the DuckDB-assigned index → temp table name so that
+  // ComputeColumnAlias can resolve it in future iterations.
+  // (The index from GetMaxTableIndex()+iteration_count_ used by
+  // ExecuteOneIteration is unrelated to DuckDB's GenerateTableIndex().)
+  AddTableMapping(plan_adapter_->GetTempTableIndex(), temp_table_name);
 
   // Tell SubqueryPreparer the DuckDB chunk index assigned by
-  // ExecuteSQLandCreateTempTable (stored in temp_table_index_ by the adapter).
+  // ExecuteSQLandCreateTempTable (or RegisterExternalTempTable for external
+  // backends) stored in temp_table_index_ by the adapter.
   sp_->SetNewTableIndex(plan_adapter_->GetTempTableIndex());
 
   // Build an empty ColumnDataCollection with the correct types and inject it
   // as a CHUNK_GET node so DuckDB can track cardinality for MiddleOptimize.
+  // For DuckDB-native execution: temp_table_types matches sub_plan_types_.
+  // For external execution: sub_plan_types_ is the correct type source.
   auto collection =
       duckdb::make_uniq<duckdb::ColumnDataCollection>(*ctx_, sub_plan_types_);
-  collection->Types() = plan_adapter_->temp_table_types;
+  if (!external_execution_) {
+    collection->Types() = plan_adapter_->temp_table_types;
+  }
   sp_->MergeDataChunk(subqueries_, std::move(collection),
                       temp_table_cardinality);
 

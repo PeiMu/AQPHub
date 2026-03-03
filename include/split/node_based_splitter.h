@@ -91,6 +91,7 @@ private:
 
   bool merge_sibling_expr_ = false;
   bool terminal_ = false;
+  bool external_execution_ = false; // true when exec adapter != DuckDB
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   // Run MiddleOptimize inside a transaction (matches client_context.cpp).

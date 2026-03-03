@@ -42,11 +42,18 @@ IRQuerySplitter::IRQuerySplitter(DBAdapter *adapter, const ParamConfig &config)
 
   case SplitStrategy::NODE_BASED: {
 #ifdef HAVE_DUCKDB
-    auto *duckdb_adapter = dynamic_cast<DuckDBAdapter *>(adapter);
-    if (!duckdb_adapter)
+    if (config_.engine == BackendEngine::DUCKDB) {
+      duckdb_adapter_ = dynamic_cast<DuckDBAdapter *>(adapter);
+    } else {
+      // Create and OWN a helper DuckDB adapter for planning.
+      owned_duckdb_adapter_ =
+          std::make_unique<DuckDBAdapter>(config_.helper_db);
+      duckdb_adapter_ = owned_duckdb_adapter_.get();
+    }
+    if (!duckdb_adapter_)
       throw std::runtime_error(
           "NODE_BASED strategy requires a DuckDB adapter for planning");
-    splitter_ = std::make_unique<NodeBasedSplitter>(adapter, duckdb_adapter,
+    splitter_ = std::make_unique<NodeBasedSplitter>(adapter, duckdb_adapter_,
                                                     config.enable_debug_print);
 #else
     throw std::runtime_error("NODE_BASED strategy requires HAVE_DUCKDB");
@@ -83,32 +90,41 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
   }
-  adapter_->ParseSQL(sql);
-
-  // === Phase 2: Pre-Optimize (ONLY for DuckDB) ===
-  if (config_.engine == BackendEngine::DUCKDB) {
-    if (config_.enable_debug_print) {
-      std::cout << "[IRQuerySplitter] Phase 2: Pre-Optimization (DuckDB)"
-                << std::endl;
-    }
+  // For NODE_BASED: parse SQL with the DuckDB helper adapter so it builds a
+  // DuckDB logical plan.  All other strategies parse on the execution adapter.
 #ifdef HAVE_DUCKDB
-    auto *duckdb_adapter = dynamic_cast<DuckDBAdapter *>(adapter_);
-    if (duckdb_adapter) {
-      duckdb_adapter->FilterOptimize();
-      if (config_.enable_debug_print) {
-        std::cout
-            << "[IRQuerySplitter] Phase 2: After Pre-Optimization (DuckDB)"
-            << std::endl;
-        duckdb_adapter->PrintLogicalPlan();
-      }
-    }
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    duckdb_adapter_->ParseSQL(sql);
+  } else
 #endif
-  } else {
-    if (config_.enable_debug_print) {
-      std::cout << "[IRQuerySplitter] Phase 2: Skipping Pre-Optimization"
-                << std::endl;
+  {
+    adapter_->ParseSQL(sql);
+  }
+
+  // === Phase 2: Pre-Optimize (ONLY for DuckDB, or node-based split) ===
+#ifdef HAVE_DUCKDB
+  {
+    DuckDBAdapter *pre_opt = nullptr;
+    if (config_.strategy == SplitStrategy::NODE_BASED) {
+      pre_opt = duckdb_adapter_; // always a DuckDBAdapter*
+    } else if (config_.engine == BackendEngine::DUCKDB) {
+      pre_opt = dynamic_cast<DuckDBAdapter *>(adapter_);
+    }
+    if (pre_opt) {
+      if (config_.enable_debug_print)
+        std::cout << "[IRQuerySplitter] Phase 2: Pre-Optimization\n";
+      pre_opt->FilterOptimize();
+      if (config_.enable_debug_print)
+        pre_opt->PrintLogicalPlan();
+    } else {
+      if (config_.enable_debug_print)
+        std::cout << "[IRQuerySplitter] Phase 2: Skipping Pre-Optimization\n";
     }
   }
+#else
+  if (config_.enable_debug_print)
+    std::cout << "[IRQuerySplitter] Phase 2: Skipping Pre-Optimization\n";
+#endif
 
   // === Phase 3: Convert to IR ===
   // NODE_BASED skips this: NodeBasedSplitter holds the DuckDB plan directly

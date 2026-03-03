@@ -1,0 +1,1003 @@
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql...
+
+Test FAILED for 10c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox Home Entertainment|(1997-2002) (worldwide) (all media)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+13th Street||...denn sie wissen nicht, was sie tun|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+10th Grade Reunion Films|8.1|3:20|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+$10,000|Birdemic: Shock and Terror|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+'68 Productions|7.1|.hack//SIGN|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Afghanistan:24 June 2012|1.0|_grau|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+11 Films|1.8|5 Time Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+DL Sites|1.8|Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+-45 cm Productions|1.0|-30-|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+6.4|Of Dolls and Murder|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:1 June 2007|Battlestar Galactica: The Resistance|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:27 April 2007|RoboCop vs Terminator|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:1 April 2003|24: Day Six - Debrief|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+¡He creado un monstruo... y encima estoy por él!|06/05|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql...
+
+Test FAILED for 16a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16b.sql...
+
+Test FAILED for 16b.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16c.sql...
+
+Test FAILED for 16c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16d.sql...
+
+Test FAILED for 16d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+Test FAILED for 17a.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+Test FAILED for 17b.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+Test FAILED for 17c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+Test FAILED for 17d.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17e.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+Test FAILED for 17e.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql...
+[RelationshipCenter] No more relationship clusters
+[IRQuerySplitter] Warning: ExecuteOneIteration returned false but IsComplete was false. Breaking loop.
+
+Test FAILED for 17f.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql...
+
+Test FAILED for 18a.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql...
+
+Test FAILED for 18c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Ambrose, Tangie|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Jolie, Angelina|Kung Fu Panda|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Adler, Joanna|¡Mucha Lucha!: The Return of El Maléfico|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Aaron, Caroline|¡Mucha Lucha!: The Return of El Maléfico|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(A Warner Bros.-First National Picture) (presents)|A Clockwork Orange|1934|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+|Birdemic: Shock and Terror|2006|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(co-production)|Intouchables|2011|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+|Anne B. Real|2003|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql...
+
+Test FAILED for 20a.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql...
+
+Test FAILED for 20b.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20c.sql...
+
+Test FAILED for 20c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|2.1|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Boll Kino Beteiligungs GmbH & Co. KG|3.0|A Small Act|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.4|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Analysts|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Big Mope|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|Dirt Merchant|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Additional Voices|Arent, Janneke|All-Star Superman|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Mom Bunny|Jolie, Angelina|Kung Fu Panda 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql...
+
+Test FAILED for 25a.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|138|Campbell, Jeremiah|Vampire Boys|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql...
+
+Test FAILED for 25c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+'Agua' Man|7.1|Acereda, Hermie|3:10 to Yuma|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Bank Manager|8.2|Inception|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql...
+
+Test FAILED for 26c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|2.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox|6.6|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|1.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Abby Mallard|Andrews, Julie|Chicken Little|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+¿Alguien ha visto a Lupita?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+...continuavano a chiamarlo Trinità|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+¡Ay, Carmela!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|100356|Abrams, J.J.|16 Blocks|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|194782|Shannon, Damian|Freddy vs. Jason|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql...
+
+Test FAILED for 30c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|1040|Agnew, Jim|2001 Maniacs|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|129755|Bousman, Darren Lynn|Saw|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|1008|Abraham, Brad|11:14|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+alternate language version of|12 oz. Mouse|¿Lo dejamos acá?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 6
+495 Productions|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MTV Netherlands|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 6
+2BE|495 Productions|1.3|1.0|A Double Shot at Love|A Double Shot at Love|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2 Days in New York|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+300: Rise of an Empire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+...Reel Five|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+5.1|¡Maldito bastardo!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+9.1|Batman: Arkham City|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+2.1|¡¡Semos peligrosos!! (uséase Makinavaja 2)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+11,830,420|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql...
+
+Test FAILED for 6d.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6e.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6f.sql...
+
+Test FAILED for 6f.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql...
+
+Test FAILED for 7a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+De Palma, Brian|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql...
+
+Test FAILED for 7c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|.hack//Quantum|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Dragon Ball Z: Shin Budokai|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8c.sql...
+
+Test FAILED for 8c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql...
+
+Test FAILED for 8d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AJ|Additional Characters|28 Days Later: The Aftermath (Chapter 1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+?|'Bart sucks!' people|Adams, Lillian|¡Mucha Lucha!: The Return of El Maléfico|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+!!!, Toy|'Bart sucks!' people|Aaron, Caroline|¡Mucha Lucha!: The Return of El Maléfico|
+
+========================================
+Execution completed
+========================================

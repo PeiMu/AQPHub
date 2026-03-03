@@ -118,6 +118,15 @@ private:
   std::string GetTrivialTempTable(ir_sql_converter::SimplestStmt *ir) const;
 
   DBAdapter *adapter_;
+#ifdef HAVE_DUCKDB
+  // Owned helper DuckDB adapter; non-null only when engine != DUCKDB and
+  // strategy == NODE_BASED. Null when engine == DUCKDB (adapter_ is the DuckDB
+  // adapter in that case).
+  std::unique_ptr<DuckDBAdapter> owned_duckdb_adapter_;
+  // Non-owning pointer to the DuckDB adapter used for planning.
+  // Valid whenever strategy == NODE_BASED.
+  DuckDBAdapter *duckdb_adapter_ = nullptr;
+#endif
   ParamConfig config_;
   std::unique_ptr<SplitAlgorithm> splitter_;
 

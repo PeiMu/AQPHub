@@ -135,6 +135,15 @@ public:
   // populated by ExecuteSQLandCreateTempTable).
   duckdb::idx_t GetTempTableIndex() const { return temp_table_index_; }
 
+  // Register a temp table created by an external execution engine.
+  // Allocates a fresh DuckDB table index and maps it to temp_name so that
+  // NodeBasedSplitter::UpdateRemainingIR can call SetNewTableIndex correctly.
+  // Does NOT execute any SQL.
+  void
+  RegisterExternalTempTable(const std::string &temp_name,
+                            const duckdb::vector<duckdb::LogicalType> &types,
+                            const std::vector<std::string> &col_names);
+
   // Get reference to binder (for NodeBasedSplitter to create Optimizer /
   // QuerySplit / SubqueryPreparer)
   duckdb::Binder &GetBinder();

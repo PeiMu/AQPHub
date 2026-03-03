@@ -1,0 +1,1127 @@
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Himself|Evil Eyes: Behind the Scenes|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|follows|The Money Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox Home Entertainment|(1997-2002) (worldwide) (all media)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+13th Street|(1954) (UK) (TV)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+10th Grade Reunion Films|8.1|3:20|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+$10,000|Birdemic: Shock and Terror|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+101st Street Productions|7.1|$1.11|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Afghanistan:24 June 2012|1.0|00|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+501audio|1.8|5 Time Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+DL Sites|1.8|Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Entertainment|1.0|****|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+6.4|Of Dolls and Murder|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql...
+NOTICE:  identifier "temp7_28_temp6_26_temp5_24_temp4_22_temp3_20_temp2_18_movie_info_6_info" will be truncated to "temp7_28_temp6_26_temp5_24_temp4_22_temp3_20_temp2_18_movie_inf"
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql...
+NOTICE:  identifier "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id" will be truncated to "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_t"
+NOTICE:  identifier "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id" will be truncated to "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_t"
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:10 April 2001|24: Day Six - Debrief|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+06/05: The Sixth of May|06/05|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Adams, Stan|Carol Burnett vs. Anthony Perkins|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+...|002 agenti segretissimi|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|003|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|003|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Baaca, John|Baaca, John|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Xainte, Arnaud|Xainte, Arnaud|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Abrahamsson, Bertil|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17e.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+$hort, Too|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2X, Benjamin|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+$1,000|10|40 Days and 40 Nights|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Horror|8.1|Agorable|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Action|10|?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Angeline, Moriah|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql...
+NOTICE:  identifier "temp6_27_temp5_25_temp4_23_temp3_21_temp2_19_temp1_17_title_9_title" will be truncated to "temp6_27_temp5_25_temp4_23_temp3_21_temp2_19_temp1_17_title_9_t"
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Jolie, Angelina|Kung Fu Panda|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Alborg, Ana Esther|About Schmidt|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Aaron, Caroline|$9.99|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as Indo-British Films Ltd.) (presents)|A Clockwork Orange|1934|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as Grosvenor Park) (presents)|Disaster Movie|2008|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(co-production)|Intouchables|2011|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as ApolloMedia)|Disaster Movie|2004|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Disaster Movie|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Iron Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Abell, Alistair|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Der Serienkiller - Klinge des Todes|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Hämndens pris|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|2.1|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Boll Kino Beteiligungs GmbH & Co. KG|3.0|As Good as Dead|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.9|10,000 BC|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.6|10,000 BC|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Analysts|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql...
+NOTICE:  identifier "temp8_32_temp7_30_temp6_28_temp5_26_temp4_24_temp3_22_title_10_title" will be truncated to "temp8_32_temp7_30_temp6_28_temp5_26_temp4_24_temp3_22_title_10_"
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|Dirt Merchant|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql...
+NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_"
+NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_"
+NOTICE:  identifier "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_"
+NOTICE:  identifier "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_"
+NOTICE:  identifier "temp9_35_temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp9_35_temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Tigress|Jolie, Angelina|Kung Fu Panda 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql...
+NOTICE:  identifier "temp6_28_temp5_26_temp4_24_temp3_22_temp2_20_movie_info_idx_5_info" will be truncated to "temp6_28_temp5_26_temp4_24_temp3_22_temp2_20_movie_info_idx_5_i"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|10|Abdallah, Damon|1000 Year Sleep|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql...
+NOTICE:  identifier "temp6_28_temp5_26_temp4_24_temp3_22_temp2_20_temp1_18_movie_info_4_info" will be truncated to "temp6_28_temp5_26_temp4_24_temp3_22_temp2_20_temp1_18_movie_inf"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|138|Campbell, Jeremiah|Vampire Boys|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|10|Aakeson, Kim Fupz|$|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql...
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_i"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_inf"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_title_11_title" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_title_11_"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Aaron Fleischman|7.1|Acereda, Hermie|3:10 to Yuma|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql...
+NOTICE:  identifier "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_i"
+NOTICE:  identifier "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_inf"
+NOTICE:  identifier "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_inf"
+NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Bank Manager|8.2|Inception|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql...
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_i"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_inf"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_title_11_title" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_title_11_"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+1st Baseman|1.9|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Öga för öga|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Öga för öga|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Öga för öga|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql...
+NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_"
+NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_inf"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_13_title" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_13_"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|2.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox|6.6|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql...
+NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_"
+NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_inf"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_13_title" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_13_"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|1.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql...
+NOTICE:  identifier "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp7_36_temp6_34_temp5_32_char_name_4_name" will be truncated to "temp11_44_temp10_42_temp9_40_temp7_36_temp6_34_temp5_32_char_na"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_2"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql...
+NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_"
+NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_"
+NOTICE:  identifier "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_"
+NOTICE:  identifier "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_"
+NOTICE:  identifier "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_"
+NOTICE:  identifier "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_3"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql...
+NOTICE:  identifier "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_title" will be truncated to "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_"
+NOTICE:  identifier "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_title" will be truncated to "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_3"
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Lola|Andrews, Julie|Hoodwinked!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+008 - Agent wider Willen|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+007 in Rio|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+002 agenti segretissimi|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|100356|Abrams, J.J.|16 Blocks|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_11_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_11_"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|194782|Shannon, Damian|Freddy vs. Jason|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql...
+NOTICE:  identifier "temp5_30_temp4_28_temp3_26_temp2_24_temp1_22_movie_info_idx_8_info" will be truncated to "temp5_30_temp4_28_temp3_26_temp2_24_temp1_22_movie_info_idx_8_i"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|100356|Abernathy, Lewis|$|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql...
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_i"
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_i"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_info" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_inf"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_info" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_inf"
+NOTICE:  identifier "temp8_34_temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_info" will be truncated to "temp8_34_temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|1040|Agnew, Jim|2001 Maniacs|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql...
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_movie_info_idx_7_info" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_movie_info_idx_7_i"
+NOTICE:  identifier "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_title_10_title" will be truncated to "temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_title_10_"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|129755|Bousman, Darren Lynn|Saw|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_i"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_i"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_"
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|1008|Abraham, Brad|11:14|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+alternate language version of|12 oz. Mouse|100 Greatest Cartoons|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_title_13_title" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_title_13_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_title_13_title" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_title_13_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_title_13_title" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_"
+
+=== Query Results ===
+Rows: 1, Columns: 6
+495 Productions|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_inf"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_"
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MTV Netherlands|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql...
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_i"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_i"
+NOTICE:  identifier "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_in"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_"
+NOTICE:  identifier "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27"
+
+=== Query Results ===
+Rows: 1, Columns: 6
+2BE|495 Productions|1.3|1.0|Abenteuer 1900 - Leben im Gutshaus|Abenteuer 1927 - Sommerfrische|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2 Days in New York|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+300: Rise of an Empire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+00 Schneider - Jagd auf Nihil Baxter|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+5.1|20-seiki shônen: Dai 2 shô - Saigo no kibô|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+9.1|Batman: Arkham City|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+2.1|00 Schneider - Jagd auf Nihil Baxter|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+114 Days: The Race to Save a Dream|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|2008 MTV Movie Awards|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6e.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6f.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|$hort, Too|007: Agent Under Fire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chevalier, Maurice|Clint Eastwood: The Man from Malpaso|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+De Palma, Brian|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+50 Cent|Aaron Carter was born in Tampa, Florida. He is the younger brother of 'Nick Carter (II)' (qv) (the 'Backstreet Boys' (qv)) and has three sisters.  He began his music career at age seven, singing lead for the band "Dead End" for two years. He made his first solo appearance when he was 9, opening for the 'Backstreet Boys' (qv) in Berlin in March 1997. The performance was followed by a record contract and, in the fall of 1997, he released his first single, "Crush On You".  His first full-length album "Aaron Carter" came out Dec 1, 1997. It achieved gold status in Norway, Spain, Denmark, Canada and Germany. The album was released in the United States on June 16, 1998. On May 18, 1998, Carter released the EP "Let The Music Heal Your Soul", a fund-raising project that featured vocals by Carter, the 'Backstreet Boys' (qv), 'N Sync, the Moffatts and other artists. His next album, Aaron's Party (Sep 26, 2000), was released in the United States under the Jive Label. The album achieved triple-platinum certification.  At 13, Carter recorded the album "Oh, Aaron" (Aug 7, 2001) which featured his first duet recording with his brother Nick. "Oh, Aaron" was accompanied by a video/DVD of the same name (March 26, 2002) which included footage of his 2001 concert in Baton Rouge, Louisiana as well as music videos and interviews. Play Along Toys also created an Aaron Carter action figure along with the album's release.  Carter's next album, "Another Earthquake" (September 3, 2002), was released during the 2002 "Rock, Rap, and Retro" tour. The album featured the patriotic-themed "America A O" and the ballad "Do You Remember". Most Requested Hits was released November 3, 2003. The collection included tracks from his last three albums as well as a new single, "One Better".  Carter is also an actor. His TV appearances include _"Lizzie McGuire" (2001)_ (qv), _"Sabrina, the Teenage Witch" (1996)_ (qv) and _"7th Heaven" (1996)_ (qv). His first lead role in a feature was in _Popstar (2005)_ (qv).|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Bushi no ichibun|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Dragon Ball Z: Shin Budokai|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|****|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+100% Birgitta|?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AJ|additional voices|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+A.B.|2nd Balladeer|Alborg, Ana Esther|(1975-01-20)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+?|100-Series Realian|Aaron, Caroline|$15,000.00 Error|
+
+========================================
+Execution completed
+========================================

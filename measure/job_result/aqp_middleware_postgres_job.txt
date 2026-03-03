@@ -1,0 +1,1017 @@
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Himself|Evil Eyes: Behind the Scenes|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|follows|The Money Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox Home Entertainment|(1997-2002) (worldwide) (all media)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+13th Street|(1954) (UK) (TV)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+10th Grade Reunion Films|8.1|3:20|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+$10,000|Birdemic: Shock and Terror|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+101st Street Productions|7.1|$1.11|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Afghanistan:24 June 2012|1.0|00|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+501audio|1.8|5 Time Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+DL Sites|1.8|Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Entertainment|1.0|****|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+6.4|Of Dolls and Murder|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:12 June 2006|Battlestar Galactica: The Resistance|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:27 April 2007|RoboCop vs Terminator|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:10 April 2001|24: Day Six - Debrief|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+06/05: The Sixth of May|06/05|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Adams, Stan|Carol Burnett vs. Anthony Perkins|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+...|002 agenti segretissimi|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|003|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|003|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Baaca, John|Baaca, John|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Zaa, Charlie|Zaa, Charlie|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Xainte, Arnaud|Xainte, Arnaud|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Abrahamsson, Bertil|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17e.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+$hort, Too|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2X, Benjamin|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+$1,000|10|40 Days and 40 Nights|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Horror|8.1|Agorable|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Action|10|?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Angeline, Moriah|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Jolie, Angelina|Kung Fu Panda|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Alborg, Ana Esther|About Schmidt|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Aaron, Caroline|$9.99|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as Indo-British Films Ltd.) (presents)|A Clockwork Orange|1934|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as Grosvenor Park) (presents)|Disaster Movie|2008|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(co-production)|Intouchables|2011|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as ApolloMedia)|Disaster Movie|2004|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Disaster Movie|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Iron Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Abell, Alistair|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Der Serienkiller - Klinge des Todes|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Hämndens pris|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|2.1|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Boll Kino Beteiligungs GmbH & Co. KG|3.0|As Good as Dead|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.9|10,000 BC|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.6|10,000 BC|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Analysts|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Big Mope|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|Dirt Merchant|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Additional Voices|Baker, Andrea|Baiohazâdo 6|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Tigress|Jolie, Angelina|Kung Fu Panda 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|10|Abdallah, Damon|1000 Year Sleep|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|138|Campbell, Jeremiah|Vampire Boys|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|10|Aakeson, Kim Fupz|$|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Aaron Fleischman|7.1|Acereda, Hermie|3:10 to Yuma|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Bank Manager|8.2|Inception|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+1st Baseman|1.9|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Öga för öga|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Öga för öga|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Öga för öga|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|2.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox|6.6|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|1.9|(#1.1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Lola|Andrews, Julie|Hoodwinked!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+008 - Agent wider Willen|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+007 in Rio|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+002 agenti segretissimi|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|100356|Abrams, J.J.|16 Blocks|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|194782|Shannon, Damian|Freddy vs. Jason|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|100356|Abernathy, Lewis|$|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|1040|Agnew, Jim|2001 Maniacs|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|129755|Bousman, Darren Lynn|Saw|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|1008|Abraham, Brad|11:14|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+alternate language version of|12 oz. Mouse|100 Greatest Cartoons|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 6
+495 Productions|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MTV Netherlands|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 6
+2BE|495 Productions|1.3|1.0|Abenteuer 1900 - Leben im Gutshaus|Abenteuer 1927 - Sommerfrische|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2 Days in New York|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+300: Rise of an Empire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+00 Schneider - Jagd auf Nihil Baxter|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+5.1|20-seiki shônen: Dai 2 shô - Saigo no kibô|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+9.1|Batman: Arkham City|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+2.1|00 Schneider - Jagd auf Nihil Baxter|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+114 Days: The Race to Save a Dream|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|2008 MTV Movie Awards|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6e.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6f.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|$hort, Too|007: Agent Under Fire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Antonioni, Michelangelo|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+De Palma, Brian|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+50 Cent|Aames has a son, Christopher, with his first wife. Aames met his second wife, 'Maylo McCaslin' (qv), in 1984 on the set of _"Rocky Road" (1985)_ (qv), a cable sitcom in which she starred. They live in rural Olathe, Kansas with their daughter, Harleigh.|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Bushi no ichibun|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Dragon Ball Z: Shin Budokai|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|****|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+100% Birgitta|?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AJ|additional voices|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+A.B.|2nd Balladeer|Alborg, Ana Esther|(1975-01-20)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+?|100-Series Realian|Aaron, Caroline|$15,000.00 Error|
+
+========================================
+Execution completed
+========================================
