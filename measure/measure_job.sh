@@ -4,6 +4,7 @@ mkdir -p job_result/
 rm -rf compile.log
 
 engine=$1
+split=$2
 
 ########################################
 # Start / Stop PostgreSQL
@@ -74,6 +75,7 @@ cleanup() {
         stop_umbra
     elif [[ "$engine" == "mariadb" ]]; then
         mariadb_stop
+        pg_stop
     elif [[ "$engine" == "postgres" ]]; then
         pg_stop
     fi
@@ -92,6 +94,7 @@ if [[ "$engine" == "umbra" ]]; then
     start_umbra
 elif [[ "$engine" == "mariadb" ]]; then
     mariadb_start
+    pg_start
 elif [[ "$engine" == "postgres" ]]; then
     pg_start
 fi
@@ -109,6 +112,6 @@ elif [[ "$engine" == "postgres" ]]; then
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}"
+cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}"
 
 mv compile.log job_result/.
