@@ -39,8 +39,9 @@ struct SubqueryExtraction {
   // execution) For TopDown: typically null (uses pipeline_breaker_ptr instead)
   std::unique_ptr<ir_sql_converter::SimplestStmt> sub_ir;
 
-  // Optimizer's estimated rows for this subquery (from EXPLAIN/GetEstimatedCost)
-  // Used when update_temp_card is disabled to simulate inaccurate cardinality
+  // Optimizer's estimated rows for this subquery (from
+  // EXPLAIN/GetEstimatedCost) Used when update_temp_card is disabled to
+  // simulate inaccurate cardinality
   double estimated_rows = 0;
 
   // Pointer to node in the ORIGINAL tree that should be replaced with temp
@@ -48,6 +49,12 @@ struct SubqueryExtraction {
   // for UpdateRemainingIR) For TopDown: points to the subtree for both
   // execution AND replacement
   ir_sql_converter::SimplestStmt *pipeline_breaker_ptr = nullptr;
+
+  // When true: sub_ir holds the final plan IR ready for direct execution.
+  // ExecuteOneIteration sets remaining_ir = sub_ir and stops without running
+  // SQL or calling UpdateRemainingIR. Used by NodeBasedSplitter to hand the
+  // merged final plan back to ExecuteSplitLoop (both early and late terminal).
+  bool is_final = false;
 };
 
 class SplitAlgorithm {
@@ -91,6 +98,11 @@ public:
       const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
       const std::vector<std::string> &column_names) = 0;
 
+  // When true, ExecuteOneIteration skips the generic UpdateRemainingIRIndices
+  // step. NodeBasedSplitter returns true because DuckDB's UpdateSubqueriesIndex
+  // / UpdateTableExpr handle all index updates internally.
+  virtual bool SkipUpdateIndices() const { return false; }
+
   // Get the maximum table index in the original IR
   // Used to generate new table indices for temp tables
   unsigned int GetMaxTableIndex() const { return max_table_index_; }
@@ -115,8 +127,7 @@ protected:
     if (!ir)
       return;
     if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
-      auto *scan =
-          dynamic_cast<const ir_sql_converter::SimplestScan *>(ir);
+      auto *scan = dynamic_cast<const ir_sql_converter::SimplestScan *>(ir);
       if (scan) {
         table_index_to_name_[scan->GetTableIndex()] = scan->GetTableName();
       }

@@ -74,14 +74,9 @@ public:
   std::vector<double> GetIterationTimes() const { return iteration_times_; }
 
 private:
-  // === IR-based Iterative Split-Execute Loop (TOP_DOWN / FK-based) ===
+  // === IR-based Iterative Split-Execute Loop (all strategies) ===
   QueryResult
   ExecuteSplitLoop(std::unique_ptr<ir_sql_converter::SimplestStmt> whole_ir);
-
-#ifdef HAVE_DUCKDB
-  // === NODE_BASED: DuckDB-plan-driven loop (skips ConvertPlanToIR entirely) ===
-  QueryResult ExecuteSplitLoopNodeBased(DuckDBAdapter *duckdb_adapter);
-#endif
 
   // Single iteration: extract → execute → update remaining IR
   bool ExecuteOneIteration(
