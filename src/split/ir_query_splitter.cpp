@@ -79,6 +79,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   // incrementing across queries so temp table names stay unique)
   temp_tables_.clear();
   iteration_times_.clear();
+  sub_plan_sqls_.clear();
 
   if (!config_.NeedsSplit() || !splitter_) {
     std::cout << "[IRQuerySplitter] No splitting needed, executing directly"
@@ -223,31 +224,38 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     remaining_ir->Print();
   }
 
-  // Check if remaining IR is trivial (just a temp table reference)
+  // Determine final SQL (trivial or non-trivial)
+  std::string final_sql;
   std::string trivial_temp = GetTrivialTempTable(remaining_ir.get());
   if (!trivial_temp.empty()) {
     if (config_.enable_debug_print) {
       std::cout << "\n[IRQuerySplitter] Final IR is trivial (temp table: "
                 << trivial_temp << "), returning directly" << std::endl;
     }
-    std::string final_sql = "SELECT * FROM " + trivial_temp;
+    final_sql = "SELECT * FROM " + trivial_temp;
+  } else {
+    // Non-trivial case: generate final SQL
+    if (config_.enable_debug_print) {
+      std::cout << "\n[IRQuerySplitter] Executing final remaining IR"
+                << std::endl;
+    }
+    final_sql =
+        adapter_->GenerateSQL(*remaining_ir, adapter_->subquery_index++);
+    if (config_.enable_debug_print) {
+      std::cout << "\n=== Final Generated Sub-SQL ===" << std::endl;
+      std::cout << final_sql << std::endl;
+    }
+  }
+
+  // Print combined CTE if enabled and sub-plans were collected
+  if (config_.enable_sub_plan_combiner && !sub_plan_sqls_.empty()) {
+    std::string combined = BuildCombinedSQL(sub_plan_sqls_, final_sql);
+    std::cout << "\n=== Combined Sub-Plan SQL ===" << std::endl;
+    std::cout << combined << std::endl;
+    return adapter_->ExecuteSQL(combined);
+  } else {
     return adapter_->ExecuteSQL(final_sql);
   }
-
-  // Non-trivial case: generate and execute final SQL
-  if (config_.enable_debug_print) {
-    std::cout << "\n[IRQuerySplitter] Executing final remaining IR"
-              << std::endl;
-  }
-  std::string final_sql =
-      adapter_->GenerateSQL(*remaining_ir, adapter_->subquery_index++);
-
-  if (config_.enable_debug_print) {
-    std::cout << "\n=== Final Generated SQL ===" << std::endl;
-    std::cout << final_sql << std::endl;
-  }
-
-  return adapter_->ExecuteSQL(final_sql);
 }
 
 bool IRQuerySplitter::ExecuteOneIteration(
@@ -307,6 +315,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
   std::string sub_sql =
       adapter_->GenerateSQL(*executable_ir, adapter_->subquery_index++);
   std::string temp_table_name = GenerateTempTableName();
+
+  if (config_.enable_sub_plan_combiner) {
+    sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
+  }
 
   if (config_.enable_debug_print) {
     std::cout << "\n=== Sub-Query SQL ===" << std::endl;
@@ -737,6 +749,31 @@ IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
   }
   // Fallback: use table index if name not found
   return std::to_string(table_idx) + "_" + col_name;
+}
+
+// Strip trailing whitespace and semicolons from a SQL string (invalid in CTEs)
+static std::string StripTrailingSemicolon(const std::string &sql) {
+  size_t end = sql.size();
+  while (end > 0 &&
+         (sql[end - 1] == ';' || sql[end - 1] == ' ' || sql[end - 1] == '\n' ||
+          sql[end - 1] == '\r' || sql[end - 1] == '\t')) {
+    --end;
+  }
+  return sql.substr(0, end);
+}
+
+std::string IRQuerySplitter::BuildCombinedSQL(
+    const std::vector<std::pair<std::string, std::string>> &sub_plans,
+    const std::string &final_sql) const {
+  std::string result = "WITH ";
+  for (size_t i = 0; i < sub_plans.size(); i++) {
+    if (i > 0)
+      result += ",\n";
+    result += sub_plans[i].first + " AS (\n";
+    result += StripTrailingSemicolon(sub_plans[i].second) + "\n)";
+  }
+  result += "\n" + StripTrailingSemicolon(final_sql);
+  return result;
 }
 
 } // namespace middleware

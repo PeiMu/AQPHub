@@ -135,9 +135,17 @@ private:
   std::vector<TempTableInfo> temp_tables_;
   std::vector<double> iteration_times_;
 
+  // Sub-plan combiner: collected (temp_name, sql) pairs
+  std::vector<std::pair<std::string, std::string>> sub_plan_sqls_;
+
   // Helper: Compute column alias using SQL generator's convention
   std::string ComputeColumnAlias(unsigned int table_idx,
                                  const std::string &col_name) const;
+
+  // Helper: Build a combined CTE SQL from collected sub-plans + final SQL
+  std::string BuildCombinedSQL(
+      const std::vector<std::pair<std::string, std::string>> &sub_plans,
+      const std::string &final_sql) const;
 };
 
 } // namespace middleware

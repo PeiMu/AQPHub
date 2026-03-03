@@ -50,6 +50,7 @@ struct ParamConfig {
   bool enable_correctness_check = false;
   bool enable_timing = false;
   bool enable_debug_print = false;
+  bool enable_sub_plan_combiner = false;
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);
@@ -136,6 +137,9 @@ struct ParamConfig {
               << std::endl;
     std::cout << "  Debug Print: "
               << (enable_debug_print ? "enabled" : "disabled") << std::endl;
+    std::cout << "  Sub-Plan Combiner: "
+              << (enable_sub_plan_combiner ? "enabled" : "disabled")
+              << std::endl;
     std::cout << "===========================" << std::endl;
   }
 };
