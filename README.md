@@ -187,6 +187,7 @@ then compare it with the splitted result.
 ### Performance breakdown
 
 We use `std::chrono::high_resolution_clock::time_point` to measure the function-level performance breakdown.
+you can enable this by `--timing`.
 The time will be saved in `time_log.csv`. 
 You can also run script `bash ./measure_breakdown_time_job.sh` to measure all engines with all split strategies.
 
