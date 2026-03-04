@@ -78,7 +78,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   // Reset per-query state (but NOT subquery_index -- it must keep
   // incrementing across queries so temp table names stay unique)
   temp_tables_.clear();
-  iteration_times_.clear();
   sub_plan_sqls_.clear();
 
   if (!config_.NeedsSplit() || !splitter_) {
@@ -91,6 +90,9 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
   }
+  std::chrono::high_resolution_clock::time_point timer;
+  if (config_.enable_timing)
+    timer = chrono_tic();
   // For NODE_BASED: parse SQL with the DuckDB helper adapter so it builds a
   // DuckDB logical plan.  All other strategies parse on the execution adapter.
 #ifdef HAVE_DUCKDB
@@ -100,6 +102,15 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #endif
   {
     adapter_->ParseSQL(sql);
+  }
+  if (config_.enable_timing) {
+    auto parse_sql_time = chrono_toc(&timer, "Parse SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3) << (parse_sql_time / 1000.0)
+             << ", ";
+    log_file.close();
   }
 
   // === Phase 2: Pre-Optimize (ONLY for DuckDB, or node-based split) ===
@@ -137,7 +148,19 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #ifdef HAVE_DUCKDB
   if (config_.strategy != SplitStrategy::NODE_BASED) {
 #endif
+    if (config_.enable_timing)
+      timer = chrono_tic();
     whole_ir = adapter_->ConvertPlanToIR();
+    if (config_.enable_timing) {
+      auto convert_plan_to_ir_time =
+          chrono_toc(&timer, "Convert Plan to IR time is\n", false);
+      // save time to a file
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (convert_plan_to_ir_time / 1000.0) << ", ";
+      log_file.close();
+    }
     if (!whole_ir) {
       throw std::runtime_error("Failed to convert plan to IR");
     }
@@ -177,7 +200,19 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
   }
+  std::chrono::high_resolution_clock::time_point timer;
+  if (config_.enable_timing)
+    timer = chrono_tic();
   splitter_->Preprocess(remaining_ir);
+  if (config_.enable_timing) {
+    auto preprocess_time = chrono_toc(&timer, "Preprocess time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3) << (preprocess_time / 1000.0)
+             << ", ";
+    log_file.close();
+  }
 
   // Main loop: while (graph has edges) { extract → execute → merge }
   while (!splitter_->IsComplete(remaining_ir.get())) {
@@ -188,8 +223,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                 << " ==========" << std::endl;
     }
 
-    auto iter_start = std::chrono::high_resolution_clock::now();
-
     if (!ExecuteOneIteration(remaining_ir)) {
       std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
                    "false but IsComplete was false. Breaking loop."
@@ -197,15 +230,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       break;
     }
 
-    auto iter_end = std::chrono::high_resolution_clock::now();
-    double iter_time_ms =
-        std::chrono::duration<double, std::milli>(iter_end - iter_start)
-            .count();
-    iteration_times_.push_back(iter_time_ms);
-
     if (config_.enable_debug_print) {
-      std::cout << "Iteration " << iteration_count_ << " completed in "
-                << iter_time_ms << " ms" << std::endl;
+      std::cout << "Iteration " << iteration_count_ << " completed\n";
     }
   }
 
@@ -224,6 +250,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     remaining_ir->Print();
   }
 
+  if (config_.enable_timing)
+    timer = chrono_tic();
   // Determine final SQL (trivial or non-trivial)
   std::string final_sql;
   std::string trivial_temp = GetTrivialTempTable(remaining_ir.get());
@@ -246,16 +274,48 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::cout << final_sql << std::endl;
     }
   }
+  if (config_.enable_timing) {
+    auto generate_final_sub_sql_time =
+        chrono_toc(&timer, "Generate final sub-SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (generate_final_sub_sql_time / 1000.0) << ", ";
+    log_file.close();
+  }
 
   // Print combined CTE if enabled and sub-plans were collected
+  QueryResult query_result;
   if (config_.enable_sub_plan_combiner && !sub_plan_sqls_.empty()) {
     std::string combined = BuildCombinedSQL(sub_plan_sqls_, final_sql);
+    if (config_.enable_timing) {
+      auto combine_sql_time =
+          chrono_toc(&timer, "Combine SQL time is\n", false);
+      // save time to a file
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (combine_sql_time / 1000.0) << ", ";
+      log_file.close();
+    }
     std::cout << "\n=== Combined Sub-Plan SQL ===" << std::endl;
     std::cout << combined << std::endl;
-    return adapter_->ExecuteSQL(combined);
+    query_result = adapter_->ExecuteSQL(combined);
   } else {
-    return adapter_->ExecuteSQL(final_sql);
+    query_result = adapter_->ExecuteSQL(final_sql);
   }
+  if (config_.enable_timing) {
+    auto execute_final_sql_time =
+        chrono_toc(&timer, "Execute final SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (execute_final_sql_time / 1000.0) << ", ";
+    log_file.close();
+  }
+  return query_result;
 }
 
 bool IRQuerySplitter::ExecuteOneIteration(
@@ -267,8 +327,21 @@ bool IRQuerySplitter::ExecuteOneIteration(
               << "] Step 1: Extracting next subquery" << std::endl;
   }
 
+  std::chrono::high_resolution_clock::time_point timer;
+  if (config_.enable_timing)
+    timer = chrono_tic();
   // todo: potential optimization - Push Partial Aggregation into Sub-IR
   auto extraction = splitter_->ExtractNextSubquery(remaining_ir.get());
+  if (config_.enable_timing) {
+    auto extract_next_sub_sql_time =
+        chrono_toc(&timer, "Extract next sub-SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (extract_next_sub_sql_time / 1000.0) << ", ";
+    log_file.close();
+  }
 
   if (!extraction) {
     if (config_.enable_debug_print) {
@@ -316,6 +389,17 @@ bool IRQuerySplitter::ExecuteOneIteration(
       adapter_->GenerateSQL(*executable_ir, adapter_->subquery_index++);
   std::string temp_table_name = GenerateTempTableName();
 
+  if (config_.enable_timing) {
+    auto generate_sub_sql_time =
+        chrono_toc(&timer, "Generate sub-SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (generate_sub_sql_time / 1000.0) << ", ";
+    log_file.close();
+  }
+
   if (config_.enable_sub_plan_combiner) {
     sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
   }
@@ -331,7 +415,11 @@ bool IRQuerySplitter::ExecuteOneIteration(
   }
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                         config_.enable_update_temp_card);
+                                         config_.enable_update_temp_card,
+                                         config_.enable_timing);
+
+  if (config_.enable_timing)
+    timer = chrono_tic();
 
   // Generate temp table index
   unsigned int temp_table_index =
@@ -415,6 +503,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
   temp_tables_.push_back(temp_table);
 
+  if (config_.enable_timing) {
+    auto update_ir_time = chrono_toc(&timer, "Update IR time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3) << (update_ir_time / 1000.0)
+             << ", ";
+    log_file.close();
+  }
+
   return true;
 }
 
@@ -427,7 +525,8 @@ TempTableInfo IRQuerySplitter::ExecuteSubIR(
       adapter_->GenerateSQL(*sub_ir, adapter_->subquery_index++);
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                         config_.enable_update_temp_card);
+                                         config_.enable_update_temp_card,
+                                         config_.enable_timing);
 
   unsigned int temp_table_index = adapter_->subquery_index - 1;
   // TODO: support estimated_rows for enable_update_temp_card=false path

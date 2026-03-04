@@ -26,7 +26,6 @@
 #include "adapters/mariadb_adapter.h"
 #endif
 
-#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -119,8 +118,20 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
       std::cout << "Testing: " << result.query_file << std::endl;
     }
 
+    std::chrono::high_resolution_clock::time_point timer;
+    if (config.enable_timing)
+      timer = chrono_tic();
     // Read SQL file
     std::string sql = ReadSQLFile(sql_file_path);
+    if (config.enable_timing) {
+      auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
+      // save time to a file
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3) << (read_sql_time / 1000.0)
+               << ", ";
+      log_file.close();
+    }
 
     if (config.enable_debug_print) {
       std::cout << "========================================" << std::endl;
@@ -128,7 +139,6 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
     }
 
     QueryResult query_result;
-    auto exec_start = std::chrono::high_resolution_clock::now();
 
     if (config.NeedsSplit()) {
       // Execute with split strategy using IRQuerySplitter
@@ -151,14 +161,10 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
 
       query_result = adapter->ExecuteSQL(sql);
     }
-
-    auto exec_end = std::chrono::high_resolution_clock::now();
-
-    result.execution_time_ms =
-        std::chrono::duration<double, std::milli>(exec_end - exec_start)
-            .count();
     result.num_rows = query_result.num_rows;
 
+    if (config.enable_timing)
+      timer = chrono_tic();
     std::cout << "\n=== Query Results ===" << std::endl;
     std::cout << "Rows: " << query_result.num_rows
               << ", Columns: " << query_result.num_columns << std::endl;
@@ -169,12 +175,18 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
       std::cout << std::endl;
     }
 
-    if (config.enable_timing) {
-      std::cout << "Execution time: " << result.execution_time_ms << " ms"
-                << std::endl;
-    }
-
     result.success = true;
+
+    if (config.enable_timing) {
+      auto show_output_time =
+          chrono_toc(&timer, "Show output time is\n", false);
+      // save time to a file
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (show_output_time / 1000.0) << "\n";
+      log_file.close();
+    }
 
   } catch (const std::exception &e) {
     result.error_message = e.what();
@@ -253,6 +265,8 @@ int RunBenchmark(DBAdapter *adapter, const ParamConfig &config) {
 
 int main(int argc, char **argv) {
   try {
+    std::chrono::high_resolution_clock::time_point timer = chrono_tic();
+
     // Parse configuration
     auto config = ParamConfig::ParseFromArgs(argc, argv);
 
@@ -286,9 +300,19 @@ int main(int argc, char **argv) {
     // Create adapter
     auto adapter = CreateAdapter(config);
 
+    if (config.enable_timing) {
+      auto prepare_middleware_time =
+          chrono_toc(&timer, "Prepare Middleware time is\n", false);
+      // save time to a file
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (prepare_middleware_time / 1000.0) << ", ";
+      log_file.close();
+    }
+
     // Execute based on mode
     int return_code = 0;
-
     if (config.benchmark_mode) {
       return_code = RunBenchmark(adapter.get(), config);
     } else {

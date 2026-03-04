@@ -71,7 +71,6 @@ public:
 
   // Statistics
   int GetIterationCount() const { return iteration_count_; }
-  std::vector<double> GetIterationTimes() const { return iteration_times_; }
 
 private:
   // === IR-based Iterative Split-Execute Loop (all strategies) ===
@@ -133,7 +132,6 @@ private:
   // Iteration tracking
   int iteration_count_ = 0;
   std::vector<TempTableInfo> temp_tables_;
-  std::vector<double> iteration_times_;
 
   // Sub-plan combiner: collected (temp_name, sql) pairs
   std::vector<std::pair<std::string, std::string>> sub_plan_sqls_;

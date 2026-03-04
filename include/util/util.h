@@ -4,9 +4,11 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <sys/stat.h>
 #include <vector>
@@ -29,4 +31,13 @@ struct TestResult {
   double sql_gen_time_ms;
   double execution_time_ms;
 };
+
+timespec tic();
+
+void toc(timespec *start_time, const char *prefix);
+
+std::chrono::high_resolution_clock::time_point chrono_tic();
+
+long chrono_toc(std::chrono::high_resolution_clock::time_point *start_time,
+                const char *prefix, bool print = true);
 } // namespace middleware

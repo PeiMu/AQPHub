@@ -111,8 +111,12 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
 
 void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card) {
+    bool update_temp_card, bool enable_timing) {
   CheckConnection();
+
+  std::chrono::high_resolution_clock::time_point timer;
+  if (enable_timing)
+    timer = chrono_tic();
 
   // Build SQL: CREATE TEMP TABLE + optional ANALYZE in one round-trip
   std::string create_sql = "CREATE TEMP TABLE " + temp_table_name + " AS (" +
@@ -135,6 +139,16 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
   if (!PQsendQuery(conn, combined_sql.c_str())) {
     throw std::runtime_error("Failed to send query: " +
                              std::string(PQerrorMessage(conn)));
+  }
+  if (enable_timing) {
+    auto execute_sub_sql_time =
+        chrono_toc(&timer, "Execute sub-SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (execute_sub_sql_time / 1000.0) << ", ";
+    log_file.close();
   }
 
   // First result: CREATE TEMP TABLE — extract row count from command tag
@@ -159,6 +173,17 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
   // Drain remaining results (ANALYZE result if present, then NULL terminator)
   while (PGresult *r = PQgetResult(conn)) {
     PQclear(r);
+  }
+
+  if (enable_timing) {
+    auto extra_materialize_time =
+        chrono_toc(&timer, "Extra materialize time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (extra_materialize_time / 1000.0) << ", ";
+    log_file.close();
   }
 
 #ifndef NDEBUG

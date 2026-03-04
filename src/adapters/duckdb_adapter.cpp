@@ -325,7 +325,10 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
 #if IN_MEM_TMP_TABLE
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card) {
+    bool update_temp_card, bool enable_timing) {
+  std::chrono::high_resolution_clock::time_point timer;
+  if (enable_timing)
+    timer = chrono_tic();
   auto prepared = conn->Prepare(sql);
   if (prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
@@ -333,6 +336,17 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
   duckdb::vector<duckdb::Value> bound_values;
   auto subquery_result = prepared->ExecuteRow(bound_values, false);
+  if (enable_timing) {
+    auto execute_sub_sql_time =
+        chrono_toc(&timer, "Execute sub-SQL time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (execute_sub_sql_time / 1000.0) << ", ";
+    log_file.close();
+  }
+
   int64_t chunk_size = subquery_result->Count();
   auto data_chunk_index = planner->binder->GenerateTableIndex();
 
@@ -371,11 +385,22 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   temp_collections_[temp_table_name] = std::move(stored);
 
   temp_table_card_.emplace(temp_table_name, chunk_size);
+
+  if (enable_timing) {
+    auto extra_materialize_time =
+        chrono_toc(&timer, "Extra materialize time is\n", false);
+    // save time to a file
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (extra_materialize_time / 1000.0) << ", ";
+    log_file.close();
+  }
 }
 #else
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card) {
+    bool update_temp_card, bool enable_timing) {
   auto prepared = conn->Prepare(sql);
   if (prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
