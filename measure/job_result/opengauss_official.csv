@@ -1,0 +1,226 @@
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql,1.7466097003199998,0.002868751833765961,1.7464981607200003,0.012710679999999999,0.0035718399999999997,1.7425947327200002,1.7527832817200002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql,2.3830457341600004,0.008048859891288675,2.38314506416,0.012495359999999999,0.0038072040000000002,2.37198176666,2.39990127466
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql,2.92316209756,0.024104453397121035,2.91587198646,0.01248852,0.003814776,2.90196244896,2.98768846696
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql,0.33112352148,0.0018826207621031178,0.33082920518000003,0.011927219999999999,0.004228066,0.32878729268000007,0.33604915968000004
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql,0.17576933696000002,0.0009621444952213167,0.17565341726,0.011911159999999999,0.004350404,0.17447798226,0.17734207726
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql,1.00898116504,0.0026929847214610175,1.0086221443399999,0.01038536,0.0057475799999999995,1.00469718784,1.01524012384
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql,0.5470511154800001,0.0022823425033626685,0.54708384808,0.01189462,0.004200336,0.54316318008,0.55005135008
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql,2.04659870864,0.007680328942009999,2.04631564624,0.011569839999999998,0.0046743999999999996,2.03487859524,2.05811514924
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql,4.204932490900001,0.008217126651937254,4.207195349800001,0.012198020000000002,0.004157988,4.1863478353,4.2156700633
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql,3.0022346589,0.004539757081042506,3.0025515142,0.011715559999999998,0.004553454,2.9964824447,3.0119386476999996
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql,1.6812976764600003,0.008264629340798975,1.68358408176,0.011461639999999999,0.00480404,1.66704227976,1.69151501676
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql,0.039635474579999996,0.0009956597060742976,0.03912255288,0.012657000000000002,0.003592728,0.03895001838,0.04160288838
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql,0.04212801764,0.002804004420042172,0.04197710324000001,0.011004999999999997,0.00630376,0.038812830240000006,0.046461430240000004
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql,0.8420754572,0.004241696511589916,0.8419544253,0.010370659999999999,0.00576486,0.8373898918,0.8523437188
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql,4.71854479684,0.014855482736146071,4.7161012498399995,0.01202688,0.00432284,4.69890860684,4.7431874678399994
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql,0.30477463812,0.0010885276424811446,0.30447161532,0.012369580000000002,0.00381638,0.30361133782,0.30736398682
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql,4.15700924976,0.012918928551226201,4.1555205952600005,0.010397400000000001,0.00585898,4.13642666026,4.17775476326
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql,1.9571144566,0.0035977059819962314,1.9564589100999998,0.01129946,0.005011837999999999,1.9519085931,1.9636671561
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql,1.8180459737599999,0.01798696075939397,1.81902004816,0.011436779999999999,0.0049424759999999995,1.7926834216600003,1.85083982266
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/15c.sql,2.10701306136,0.009655708858335187,2.1060940300600004,0.01150952,0.004599848000000001,2.09159763306,2.12414837106
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql,9.241780926519999,0.021222906478179225,9.24319344322,0.01076534,0.00536222,9.205770812219999,9.284360571219999
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql,114.39861368176,0.38723291357762285,114.24116716566,0.0114703,0.0047448080000000005,114.02061846216,115.25248001616
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/16b.sql,122.31679278582001,0.47032646310482934,122.25156640852,0.010605940000000001,0.005666340000000001,121.68864357452,123.13776217552
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/16c.sql,113.80789833590002,0.20801264644929954,113.7479550278,0.01205314,0.00417442,113.58776209530001,114.21143590530001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/16d.sql,113.98747769728,0.3088997785039173,113.93105348878001,0.011476660000000001,0.004814659999999999,113.56969427828,114.43950925728001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql,118.22953292816001,0.3586801513572576,118.04763815996,0.012187519999999999,0.00402832,117.80202128096,118.84098644696
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql,118.09998763776,0.2006630876841713,118.01845246945999,0.01256254,0.0036582199999999994,117.90753822645999,118.57082033546
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql,118.33234674174,0.5554078528284738,118.14636085254,0.011582,0.00465258,117.73387689004,119.43005167504
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql,118.21829636778003,0.2935881622408332,118.15772726768,0.012433959999999997,0.0038317719999999993,117.87486393418,118.74804653418
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/17e.sql,119.01566316238002,0.2527660919083621,118.86123940598,0.0109737,0.00522624,118.80655176348,119.48988090548
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql,118.94235367944,0.4881872449251947,118.71214627854,0.01219224,0.004083366,118.49601901204001,119.99547136604001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql,3.0021267309999997,0.003435339216914468,3.0016623975999996,0.0113076,0.005041399999999999,2.9972832911,3.0074992501
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql,9.9408360118,0.0195386948261582,9.9377506394,0.011631939999999999,0.00472586,9.9139397449,9.9816110799
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql,7.4068683786000005,0.11377801534034919,7.3708822412,0.011577500000000001,0.00470308,7.3132805062,7.6808279952
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql,9.77573808852,0.08771955116612701,9.76861634062,0.0128752,0.003441203999999999,9.627720879120002,9.958148019120001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql,0.5370680237400001,0.007789360305321125,0.53707915904,0.01188632,0.00432636,0.5274050530400001,0.54709352304
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql,6.187559888600001,0.008788720512005249,6.1866144814,0.00975134,0.0065496799999999996,6.1682389464,6.1986306944
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql,4.406470276279999,0.006479582135577344,4.406293380679999,0.009127960000000001,0.007088179999999998,4.39754091768,4.41539766768
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql,1.21997662456,0.04489771675190175,1.2051401665600001,0.01142164,0.004798439999999999,1.19948099756,1.34707153156
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql,0.2695890605,0.00039568114172799267,0.26974088500000004,0.0109785,0.005107686,0.268913048,0.27025781
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql,0.32356942342000006,0.00105529351726482,0.32335087232000004,0.009787279999999999,0.006398079999999999,0.32226928882000005,0.32548812082000006
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql,0.6906076433600001,0.007354592731089546,0.6890878705600001,0.011708559999999998,0.00438584,0.6845431430600001,0.71047757306
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql,23.258816409619996,1.2383618177145683,22.87303923852,0.011926679999999999,0.00429012,22.79825503202,26.77929701902
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql,7.49576252912,0.040692358307054984,7.47521482222,0.0103571,0.005878812,7.4566470337199995,7.5777638207199995
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/20c.sql,6.76425100864,0.01817729183192097,6.7644496715399995,0.010797039999999999,0.005495466,6.735297999539999,6.79852372154
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/21a.sql,1.7477492400199999,0.004728864025454186,1.74810866402,0.011998739999999999,0.004254818,1.7413834505199999,1.75532679752
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/21b.sql,1.57220494074,0.006955293069257579,1.57112952634,0.010331080000000001,0.00576574,1.56439925734,1.5867645193400002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql,1.6753609405599998,0.0037700420695924637,1.67497805616,0.010887119999999998,0.005298422,1.67041852666,1.6807048686600001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql,11.7849936009,0.031505149125100745,11.7819828625,0.01109928,0.005179080000000001,11.747865578499999,11.849026477499999
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql,7.679929688339999,0.05850433742449779,7.66476395514,0.0107892,0.0055711,7.64660921314,7.84263841814
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql,19.83187795252,0.0766569787323026,19.82330740752,0.0120709,0.0043256200000000005,19.719367918520003,19.924874597520002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql,5.9573286532,0.016082207912504844,5.9579019453,0.01151818,0.004729127999999999,5.935529996800001,5.9819414828
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/23a.sql,1.8705309568400001,0.010307630855297156,1.8717821522400002,0.0119496,0.00436118,1.8538358912400001,1.88427011224
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql,1.1348474555799999,0.005517799469362135,1.13366326958,0.011474700000000001,0.004708904,1.1277203945799998,1.14536658058
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql,1.8323495802,0.013305851777987284,1.8300426327000001,0.00990276,0.0063342999999999984,1.8157682967000002,1.8615848177000003
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql,67.91454205606,0.19616777878709019,67.88899926306,0.010492979999999999,0.00579142,67.63831182256,68.21228106356
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql,2.0016488867,0.01203270411240021,2.0018253351,0.011882140000000001,0.00437716,1.9812051311,2.0263568291
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql,117.63822110062002,0.19403973637323346,117.60784442562,0.01114092,0.005579266,117.34392017262,118.09196022362
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql,0.52171992516,0.008678590351142115,0.51788561816,0.011175980000000002,0.005121986,0.51602179716,0.5433833111599999
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql,566.99687158514,1.0722386690415906,566.84568424464,0.01162392,0.00451154,565.21736563214,569.0650072631399
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql,3.9644816342599993,0.05552686815502255,3.94755838846,0.012185319999999998,0.00406432,3.91769101396,4.11286528996
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql,1.4625435025800002,0.012523333670246148,1.4606688453799999,0.01149402,0.004688204,1.44802192288,1.49388779488
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql,7.85533934154,0.030314235490206252,7.85692937004,0.011200000000000002,0.005003679999999999,7.80594356654,7.90369965554
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql,1.1839175364,0.028082370187336322,1.175080793,0.009794879999999999,0.006387518,1.1669205950000001,1.262705063
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql,1.19405916776,0.0041541819483229495,1.1928866238599998,0.010922179999999998,0.005417805999999999,1.18766002236,1.2007911923599999
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql,1.3590684835200002,0.014276279537108279,1.35477981432,0.010701500000000001,0.005527889999999999,1.3446602738200002,1.3955848008200002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql,18.396148511219998,0.04728281505483605,18.38574092362,0.01074194,0.005554689999999999,18.34175446312,18.49522465912
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql,9.82013186144,0.0321034180960052,9.82893488434,0.01179444,0.00449448,9.75879089034,9.85948856734
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql,5.81661468838,0.031839496664132876,5.8154222646800005,0.010935920000000002,0.00524322,5.76848654618,5.88278399318
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql,1.6220139096200001,0.005598604989796898,1.62234488062,0.012451879999999999,0.003714852,1.6142636441200002,1.63038866412
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql,1.44911673742,0.011195561458329952,1.44612264542,0.01081104,0.005456899999999999,1.4405149309199998,1.47891252492
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql,24.43284473926,0.1515001948929206,24.39911465146,0.011186080000000001,0.00515748,24.24805173846,24.68617793846
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql,4.8717258141199995,0.013371647543192103,4.87607570752,0.01099234,0.005107428,4.84852418102,4.89165621802
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql,4.866679813839999,0.019138789152413443,4.86730695564,0.011787339999999999,0.004357393999999999,4.83151476014,4.89322391214
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql,0.33134120062000005,0.0013349372219680568,0.33130646072000003,0.011416479999999998,0.0046631599999999995,0.32929798222000006,0.33367550422000003
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql,4.87479703628,0.016570605767643118,4.8788180921799995,0.011710459999999999,0.004427118,4.84126234068,4.89553902968
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql,51.43214238726,0.10814258201496665,51.44953699856,0.01138324,0.00491946,51.24045064606,51.57225014606
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql,2.0270222516,0.014339362969176192,2.0336780812,0.01077278,0.00559734,1.9962525562,2.0419945082
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql,124.51135371084001,0.14022416889056535,124.48872131754,0.0113621,0.00496675,124.27092402254,124.69750988254
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql,136.06420022516002,0.3072424352040641,136.12712033646,0.010614839999999999,0.00588978,135.50510102796,136.53661987896
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql,12.326775907919998,0.04799148044755113,12.31823660982,0.01176584,0.00450948,12.25156426882,12.409294959819999
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql,162.12678406368,0.44561532852808183,162.03472356528,0.011099719999999999,0.005241762,161.60541853627998,163.14110621327998
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/32a.sql,0.040011132320000004,0.0028767531709781293,0.03814362232,0.012839020000000001,0.0042457499999999995,0.037762392820000004,0.04520213582
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql,4.8461351418200005,0.014048378338808037,4.84663285682,0.012844280000000003,0.00312818,4.83023888582,4.870754569820001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql,1.18100377076,0.025377712476373968,1.1734635017600001,0.012380819999999997,0.003907348,1.16719585676,1.25191366776
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql,1.0577188292600002,0.005880836077527629,1.05786775696,0.012015260000000002,0.0041842599999999995,1.04944940696,1.07076307896
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql,1.71028749744,0.005950339463581308,1.7100732627400002,0.0124139,0.0038861999999999994,1.70274139224,1.7197636452400002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql,1.5530470247000001,0.003687754246115976,1.5528737650000002,0.0111143,0.005172388,1.5475399945,1.5580942545
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql,1.1573283105000003,0.0023262076587097767,1.1568479676,0.012172760000000001,0.004037819999999999,1.1547940561,1.1616746821000001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql,1.5890071910399999,0.0034056616639739665,1.58890457354,0.012067419999999999,0.004181720000000001,1.5837225055400002,1.59374395154
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql,0.28237440156,0.0013051147292005587,0.28177957826,0.01127742,0.0048931899999999995,0.28114472426,0.28518599626
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql,0.20902034771999997,0.0008454107582145673,0.20869127661999998,0.012477839999999999,0.003726368,0.20810614512,0.21078450612
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql,0.3091487515,0.004286615853926581,0.3073684016,0.012204199999999998,0.0039508239999999995,0.3058086906,0.3188280326
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql,0.2931593284,0.0010063215941519654,0.29305695480000005,0.01103356,0.005231511999999999,0.2917658693,0.2947290503
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql,0.17313772430000002,0.0013963473868952186,0.17266731560000004,0.01023082,0.00579448,0.17234144660000003,0.1770566496
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql,2.2204619297000003,0.009534711404227113,2.2178949656,0.01153584,0.004828542,2.2101487691,2.2408096031
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/6a.sql,0.26238304740000007,0.0018737532223040262,0.26203785930000006,0.01075032,0.005318979999999999,0.26058014530000007,0.2674864913
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/6b.sql,1.81013666038,0.0074523137817923205,1.80926176498,0.010145979999999999,0.006252513999999999,1.79946212848,1.8232438224800003
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql,0.1964977192,0.0010605588765796041,0.19610171790000003,0.011627339999999998,0.0044376680000000005,0.19512693990000002,0.19840145090000003
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql,103.78630295581999,0.30871221228861134,103.68932859352,0.01183844,0.004446,103.51306994002,104.52585887602001
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/6e.sql,0.28260121458000004,0.0007167428815297083,0.28270804038,0.012546999999999999,0.003566448,0.28142162638,0.28356611638
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/6f.sql,105.3607304568,0.4328512441473597,105.21762167520001,0.01096546,0.005239099999999999,104.99830559070001,106.2995115617
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql,0.30128718714,0.0015697627284909277,0.30069551134000005,0.011971699999999998,0.004197872,0.29946559434000003,0.30392659334000005
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql,0.10124365937999999,0.0005753124393469097,0.10129770668000002,0.012593779999999999,0.003541172,0.10015640418,0.10214225718000002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql,8.92036347358,0.3835647959171402,8.830832216380001,0.01163646,0.00454909,8.25362511688,9.39661122288
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql,1.4393791046,0.002196673899563989,1.4399037433,0.012958279999999997,0.0033276819999999998,1.4361309908,1.4418623908
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql,0.13484360172000004,0.0015684745846518693,0.13440944352,0.011571099999999999,0.004607175999999999,0.13373294052,0.13907336852000002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/8c.sql,2.62065314984,0.10752140956821846,2.60398335184,0.011707720000000001,0.0043898719999999995,2.53562309334,2.90751431134
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql,2.0087487844400003,0.14873733789661406,1.9549507168400002,0.011185839999999999,0.00505602,1.9248456158400002,2.4208197348400002
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql,3.5826382142599997,0.008108752402716225,3.5814805750599996,0.009915460000000001,0.006415111999999999,3.57031271056,3.59731885856
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql,1.7223412702,0.004310335334955129,1.7225728974,0.011748799999999997,0.004495676,1.7160466454,1.7292333084
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql,5.100849803760001,0.25045061103189464,4.9770577645600005,0.01152056,0.004568279999999999,4.9379780785600005,5.65346457456
+command,mean,stddev,median,user,system,min,max
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/queries/9d.sql,5.240935218700001,0.10513089458495667,5.2090464099,0.01162128,0.004643196,5.1881843604,5.536859129400001
