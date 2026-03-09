@@ -147,7 +147,7 @@ void ExecuteSingleQuery(DBAdapter *adapter, const std::string &sql_file_path,
       log_file.close();
     }
 
-    if (config.print_sql) {
+    if (config.print_sql || config.enable_debug_print) {
       std::cout << "========================================" << std::endl;
       std::cout << "Original SQL:\n" << sql << std::endl;
     }
