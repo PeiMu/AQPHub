@@ -269,7 +269,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
     final_sql =
         adapter_->GenerateSQL(*remaining_ir, adapter_->subquery_index++);
-    if (config_.enable_debug_print) {
+    if (config_.print_sql) {
       std::cout << "\n=== Final Generated Sub-SQL ===" << std::endl;
       std::cout << final_sql << std::endl;
     }
@@ -300,8 +300,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                << (combine_sql_time / 1000.0) << ", ";
       log_file.close();
     }
-    std::cout << "\n=== Combined Sub-Plan SQL ===" << std::endl;
-    std::cout << combined << std::endl;
+    if (config_.print_sql) {
+      std::cout << "\n=== Combined Sub-Plan SQL ===" << std::endl;
+      std::cout << combined << std::endl;
+    }
     // Drop temp tables created by the split loop so the combined SQL can
     // CREATE them fresh (avoiding "already exists" errors)
     for (const auto &plan : sub_plan_sqls_) {
@@ -410,7 +412,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
   }
 
-  if (config_.enable_debug_print) {
+  if (config_.print_sql) {
     std::cout << "\n=== Sub-Query SQL ===" << std::endl;
     std::cout << sub_sql << std::endl;
   }

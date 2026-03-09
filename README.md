@@ -183,13 +183,17 @@ By default, the cardinality updater is enabled.
 
 We have the feature of combining all the sub-SQLs into a whole SQL, but keep their execution order, by enabling `--combine-sub-plans`.
 We did this by first run the AQP with split strategies and get sub-SQLs. 
-Then replace the "temp tables" with the corresponding sub-SQL by `WITH` clause.
+Then replace the "temp tables" with the corresponding sub-SQL by `CREATE TEMP TABLE temp AS xxx`.
 
 ### Disable analyze
 
 By default, the middleware runs `ANALYZE` for each execution. 
 When measuring performance, we have the `ANALYZE` at the beginning of the measurement script.
-Thus no need to rerun the `ANALYZE` inside of the middleware, and we can disable it by `--no-analyze`
+Thus no need to rerun the `ANALYZE` inside of the middleware, and we can disable it by `--no-analyze`.
+
+### Print SQL only
+
+User can use `--print-sql` to check the vanilla SQL and the generated sub-SQLs (or the combined whole SQL with `--combine-sub-plans`).
 
 ### Check correctness
 
