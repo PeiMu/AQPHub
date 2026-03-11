@@ -438,6 +438,9 @@ bool IRQuerySplitter::ExecuteOneIteration(
   } else {
     // Use optimizer's estimated rows (from EXPLAIN) to simulate inaccurate
     // cardinality for A/B testing
+    // fixme: might be a bug where the node-based/top-down split didn't call
+    //  BatchGetEstimatedCosts maybe need to collect the card before
+    //  ExtractNextSubquery by calling BatchGetEstimatedCosts
     cardinality = static_cast<uint64_t>(extraction->estimated_rows);
     // Override the engine's internal stats so subsequent EXPLAIN queries
     // also use the estimated cardinality instead of the real one

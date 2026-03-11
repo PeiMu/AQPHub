@@ -589,6 +589,8 @@ void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
 }
 #endif
 
+// todo: if the middleware cannot access the duckdb's source code, it should run
+//  `EXPLAIN` as the other engines
 std::pair<double, double>
 DuckDBAdapter::GetEstimatedCost(const std::string &sql) {
   // Use EXPLAIN to get estimated cost and rows
