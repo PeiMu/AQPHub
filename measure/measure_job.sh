@@ -39,7 +39,7 @@ start_umbra() {
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 /var/db/imdb.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db >/dev/null
 
     wait_for_umbra
 }
@@ -51,8 +51,8 @@ stop_umbra() {
 }
 
 wait_for_umbra() {
-    echo "Waiting for Umbra to accept connections on port 5432..."
-    until pg_isready -h localhost -p 5432 >/dev/null 2>&1; do
+    echo "Waiting for Umbra to accept connections on port 15432..."
+    until pg_isready -h localhost -p 15432 >/dev/null 2>&1; do
         sleep 1
     done
     echo "Umbra is ready."
@@ -119,7 +119,7 @@ fi
 ########################################
 echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
-    PGPASSWORD=postgres psql -p 5432 -h localhost -U postgres -c "ANALYZE;"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
     mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_mariadb_table.sql
 elif [[ "$engine" == "postgres" ]]; then

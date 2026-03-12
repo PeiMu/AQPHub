@@ -26,7 +26,7 @@ start_umbra() {
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 /var/db/imdb.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db >/dev/null
 
     wait_for_umbra
 }
@@ -38,8 +38,8 @@ stop_umbra() {
 }
 
 wait_for_umbra() {
-    echo "Waiting for Umbra to accept connections on port 5432..."
-    until pg_isready -h localhost -p 5432 >/dev/null 2>&1; do
+    echo "Waiting for Umbra to accept connections on port 15432..."
+    until pg_isready -h localhost -p 15432 >/dev/null 2>&1; do
         sleep 1
     done
     echo "Umbra is ready."
@@ -56,7 +56,7 @@ start_umbra
 # ANALYZE
 ########################################
 echo "ANALYZING..."
-PGPASSWORD=postgres psql -p 5432 -h localhost -U postgres -c "ANALYZE;"
+PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 echo "ANALYZE done"
 
 dir="$JOB_PATH/queries"
@@ -64,7 +64,7 @@ iteration=10
 
 for sql in "${dir}"/*.sql; do
   #echo "hyperfine run ${sql}" 2>&1|tee -a ${log_name}
-  hyperfine --warmup 5 --runs ${iteration} --export-csv temp.csv "PGPASSWORD=postgres psql -p 5432 -h localhost -U postgres -f ${sql}"
+  hyperfine --warmup 5 --runs ${iteration} --export-csv temp.csv "PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -f ${sql}"
   cat temp.csv >> ${log_name}
 done
 

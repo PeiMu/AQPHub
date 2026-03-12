@@ -22,7 +22,7 @@ elif [[ "$engine" == "duckdb" ]]; then
     db_conn="/home/pei/Project/duckdb_132/measure/imdb.db"
 
 elif [[ "$engine" == "umbra" ]]; then
-    db_conn="host=localhost port=5432 user=postgres password=postgres"
+    db_conn="host=localhost port=15432 user=postgres password=postgres"
 
 elif [[ "$engine" == "mariadb" ]]; then
     db_conn="host=localhost dbname=imdb user=imdb"
