@@ -62,7 +62,7 @@ umbra-server --address 0.0.0.0 /var/db/imdb.db
 # run the aqp_middleware
 ../build_release/aqp_middleware \
 --engine=umbra \
---db="host=localhost port=5432 user=postgres password=postgres" \
+--db="host=localhost port=15432 user=postgres password=postgres" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
