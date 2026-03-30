@@ -3,7 +3,8 @@
 engine=$1
 split=$2
 log_name=time_log.csv
-dir="$JOB_PATH/queries"
+dir_1="$DSB_PATH/code/tools/1_instance_out_wo_multi_block/1/"
+dir_2="$DSB_PATH/code/tools/1_instance_out_wo_multi_block/2/"
 container_name="umbra_benchmark"
 
 iteration=15 # 5 warm up, 10 runs
@@ -12,19 +13,19 @@ iteration=15 # 5 warm up, 10 runs
 # DB connection
 ########################################
 if [[ "$engine" == "postgres" ]]; then
-    db_conn="host=localhost port=5432 dbname=imdb user=pei"
+    db_conn="host=localhost port=5432 dbname=dsb_10 user=postgres"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb_132/measure/imdb.db"
+    db_conn="/home/pei/Project/duckdb_132/measure/dsb_10.db"
 
 elif [[ "$engine" == "umbra" ]]; then
     db_conn="host=localhost port=15432 user=postgres password=postgres"
 
 elif [[ "$engine" == "mariadb" ]]; then
-    db_conn="host=localhost dbname=imdb user=imdb"
+    db_conn="host=localhost dbname=dsb_10 user=dsb_10"
 
 elif [[ "$engine" == "opengauss" ]]; then
-    db_conn="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132"
+    db_conn="host=localhost port=7654 dbname=dsb_10 user=dsb_10 password=dsb_10"
 
 else
     echo "Unknown engine: $engine"
@@ -35,10 +36,10 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb_132/measure/imdb.db"
+    helper_db_path="/home/pei/Project/duckdb_132/measure/dsb_10.db"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_path="host=localhost port=5432 dbname=imdb user=pei"
+    helper_db_path="host=localhost port=5432 dbname=dsb_10 user=postgres"
     helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
 fi
 
@@ -56,7 +57,7 @@ start_umbra() {
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
 
     wait_for_umbra
 }
@@ -160,11 +161,11 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_mariadb_table.sql
+    mariadb -u dsb_10 -D dsb_10 < /home/pei/Project/benchmarks/dsb-postgres/analyze_mariadb_dsb_table.sql
 elif [[ "$engine" == "postgres" ]]; then
-    psql -U pei -d imdb -c "ANALYZE;"
+    psql -U postgres -d dsb_10 -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
-    sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 -c "ANALYZE;"
+    sudo -i -u opengauss gsql -d dsb_10 -U dsb_10 --host=localhost -p 7654 -W dsb_10 -c "ANALYZE;"
 fi
 echo "ANALYZE done"
 
@@ -176,15 +177,15 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
-for sql in "$dir"/*.sql; do
+for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
   echo "Running benchmark for $sql..." | tee -a "$log_name"
   for i in $(eval echo {1.."${iteration}"}); do
       $cmd_prefix ../build/aqp_middleware \
         --engine="${engine}" \
         --db="${db_conn}" \
         "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-        --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+        --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+        --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
         --split="${split}" \
         --timing \
         --no-analyze \

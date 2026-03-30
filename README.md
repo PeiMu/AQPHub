@@ -57,12 +57,12 @@ docker run \
 --ulimit nofile=1048576:1048576 \
 --ulimit memlock=8388608:8388608 \
 umbradb/umbra:latest \
-umbra-server --address 0.0.0.0 /var/db/imdb.db
+umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db
 
 # run the aqp_middleware
 ../build_release/aqp_middleware \
 --engine=umbra \
---db="host=localhost port=5432 user=postgres password=postgres" \
+--db="host=localhost port=15432 user=postgres password=postgres" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
@@ -100,6 +100,8 @@ env LD_LIBRARY_PATH=$HOME/gauss_compat_libs ./build_release/aqp_middleware \
 --debug \
 /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
+
+When coding with IDEs, e.g., Clion, we need to specify the LD_LIBRARY_PATH as `LD_LIBRARY_PATH=$HOME/gauss_compat_libs`
 
 ### Config by split strategies
 
@@ -219,6 +221,76 @@ You can use `--debug` to print out the necessary log.
 ### Help
 
 You can check all the config options by `--help`.
+
+## Support of different dataset
+
+Currently we support two benchmarks: "JOB+IMDB" and "DSB".
+All the examples above are using JOB benchmark. 
+For "DSB", the config is, e.g.,
+
+
+### PostgreSQL
+
+```bash
+--engine=postgresql \
+--db="host=localhost port=5432 dbname=dsb_10 user=postgres" \
+--schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/pei/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
+--split=relationship-center \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+```
+
+### DuckDB
+```bash
+--engine=duckdb \
+--db="/home/pei/Project/duckdb_132/measure/dsb_10.db" \
+--schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/pei/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
+--split=relationship-center \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+```
+
+### Umbra
+
+```bash
+# start the docker
+docker run \
+--name umbra_middleware \
+--network=host \
+-v umbra-db:/var/db \
+-v /tmp:/tmp \
+--ulimit nofile=1048576:1048576 \
+--ulimit memlock=8388608:8388608 \
+umbradb/umbra:latest \
+umbra-server --address 0.0.0.0 /var/db/dsb_10.db
+
+# run the aqp_middleware
+--engine=umbra \
+--db="host=localhost port=15432 user=postgres password=postgres" \
+--schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
+--split=relationship-center \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+```
+
+### MariaDB
+
+```bash
+--engine=mariadb \
+--db="host=localhost dbname=dsb_10 user=dsb_10" \
+--schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_mariadb \
+--split=relationship-center \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+```
 
 ## Measurement Scripts
 Go to directory `measure/`, there is script to run with either engine/split_strategy

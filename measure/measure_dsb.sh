@@ -1,6 +1,6 @@
 #!/bin/bash
 
-mkdir -p job_result/
+mkdir -p dsb_result/
 rm -rf compile.log
 
 engine=$1
@@ -39,7 +39,7 @@ start_umbra() {
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
 
     wait_for_umbra
 }
@@ -121,11 +121,11 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_mariadb_table.sql
+    mariadb -u dsb_10 -D dsb_10 < /home/pei/Project/benchmarks/dsb-postgres/analyze_mariadb_dsb_table.sql
 elif [[ "$engine" == "postgres" ]]; then
-    psql -U pei -d imdb -c "ANALYZE;"
+    psql -U postgres -d dsb_10 -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
-    sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 -c "ANALYZE;"
+    sudo -i -u opengauss gsql -d dsb_10 -U dsb_10 --host=localhost -p 7654 -W dsb_10 -c "ANALYZE;"
 fi
 echo "ANALYZE done"
 
