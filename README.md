@@ -324,6 +324,17 @@ bash ./measure_mariadb.sh
 
 We provide a web interface at https://github.com/bitaasudeh/aqp-web-interface
 
+
+## DB as LLM framework
+
+```bash
+conda activate llm_db
+pip3 install -r requirements.txt
+
+# login to hugging face
+hf auth login
+```
+
 ## Citation
 
 TBD

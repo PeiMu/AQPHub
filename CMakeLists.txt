@@ -245,3 +245,6 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
 else ()
     message(WARNING "IR_SQL_Converter source not found at ${IR_CONVERTER_ROOT}")
 endif ()
+
+# TransQL: LLM inference via SQL (Section 3 of TranSQL+, SIGMOD 2025)
+add_subdirectory(transql)
