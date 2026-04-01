@@ -8,6 +8,7 @@
 #include "adapters/db_adapter.h"
 #include "dag_to_tree.h"
 #include "tensor_dag.h"
+#include "transql_postopt.h"
 
 namespace transql {
 
@@ -28,7 +29,10 @@ public:
     // If json_path is non-empty, load topology from a topology.json produced
     // by extract_weights.py --source onnx; otherwise build Llama3-8B DAG
     // from the hardcoded C++ definition.
-    void Init(int num_layers = 32, const std::string& json_path = "");
+    // enable_postopt: use Section 4 post-optimizations (CTE merge, table
+    // fusion, ROW2COL pivoting).
+    void Init(int num_layers = 32, const std::string& json_path = "",
+              bool enable_postopt = false);
 
     // Load token IDs, execute the full inference SQL pipeline, return logits.
     // tokens: list of token IDs (current implementation: single token).

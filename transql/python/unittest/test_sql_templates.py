@@ -277,6 +277,7 @@ def qk_attn_sql(q_rope, k_rope, out,
         f"FROM {q_rope} q JOIN {k_rope} k "
         f"ON q.chunk_id % {cph} = k.chunk_id % {cph} "
         f"AND q.chunk_id // {cphg} = k.chunk_id // {cph} "
+        f"AND k.row_id <= q.row_id "
         f"GROUP BY q.row_id, k.row_id, q.chunk_id // {cph}"
     )
     return [(sql, out)]
@@ -608,7 +609,9 @@ class TestQKAttn(unittest.TestCase):
 
         result   = read_scores(conn, "scores", SEQ_LEN, NUM_Q_HEADS, "score")
         expected = ref_qk_attn(q_rot, k_rot, NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM)
-        np.testing.assert_allclose(result, expected, atol=ATOL, rtol=RTOL,
+        # SQL only returns lower-triangular (k_tok <= q_tok); compare only those.
+        lower = np.tril(np.ones((SEQ_LEN, SEQ_LEN), dtype=bool))
+        np.testing.assert_allclose(result[lower], expected[lower], atol=ATOL, rtol=RTOL,
                                    err_msg="QKAttn mismatch")
 
     def test_scale(self):

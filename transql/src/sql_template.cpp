@@ -159,6 +159,7 @@ SqlSteps QKAttnSQL(const std::string& q_rope_table,
         "JOIN " + k_rope_table + " k "
         "ON q.chunk_id % " + cph + " = k.chunk_id % " + cph + " "
         "AND q.chunk_id // " + cphg + " = k.chunk_id // " + cph + " "
+        "AND k.row_id <= q.row_id "
         "GROUP BY q.row_id, k.row_id, q.chunk_id // " + cph;
 
     return {{sql, out_table}};

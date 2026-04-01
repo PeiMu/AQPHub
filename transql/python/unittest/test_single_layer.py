@@ -14,8 +14,12 @@ Run:
 """
 
 import unittest
+import sys
+import os
 import numpy as np
 import duckdb
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------------------------------
 # Model parameters — structurally equivalent to Llama3-8B but small enough
@@ -183,6 +187,7 @@ def qk_attn_sql(q_rope, k_rope, out,
         f"FROM {q_rope} q JOIN {k_rope} k "
         f"ON q.chunk_id % {cph} = k.chunk_id % {cph} "
         f"AND q.chunk_id // {cphg} = k.chunk_id // {cph} "
+        f"AND k.row_id <= q.row_id "
         f"GROUP BY q.row_id, k.row_id, q.chunk_id // {cph}"
     )
     return [(sql, out)]
@@ -333,8 +338,11 @@ def ref_transformer_layer(x, norm1, norm2, w_q, w_k, w_v, w_o,
     q_rot = ref_rope(q, rope_cos, rope_sin)
     k_rot = ref_rope(k, rope_cos[:, :num_kv_chunks, :], rope_sin[:, :num_kv_chunks, :])
 
-    # Attention
-    scores  = ref_qk_attn(q_rot, k_rot)       # [seq, seq, num_q_heads]
+    # Attention — apply causal mask (k_tok > q_tok → -inf) before softmax
+    scores = ref_qk_attn(q_rot, k_rot)   # [seq, seq, num_q_heads]
+    seq = scores.shape[0]
+    causal_mask = np.triu(np.full((seq, seq), -np.inf, dtype=np.float32), k=1)
+    scores = scores + causal_mask[:, :, np.newaxis]
     weights = ref_softmax(scores)               # [seq, seq, num_q_heads]
     attn_out = ref_attn_vmul(weights, v)        # [seq, hidden]
 
@@ -411,52 +419,91 @@ class TestSingleLayer(unittest.TestCase):
         load_rope_table(conn, "rope", self.rope_cos, self.rope_sin)
         return conn
 
-    def _run_layer_sql(self, conn):
-        """Execute the 15-step SQL pipeline for one transformer layer."""
-        steps = []
+    def _run_layer_sql(self, conn, postopt=False):
+        """Execute the SQL pipeline for one transformer layer.
 
-        # 1. Pre-attention RMSNorm
-        steps += rmsnorm_sql("x", "norm1", "x_norm1")
+        Args:
+            postopt: If True, apply all Section 4 post-optimizations
+                     (CTE merging, table fusion, ROW2COL pivoting).
+        """
+        if postopt:
+            from test_postopt import (fused_qkv_sql, fused_gateup_sql,
+                                      pivoted_matmul_sql, _merge_to_cte)
+            nc = HIDDEN_DIM // CHUNK_SIZE
+            nc_ffn = FFN_DIM // CHUNK_SIZE
 
-        # 2-4. QKV projections
-        steps += matmul_sql("x_norm1", "w_q",   "q_proj")
-        steps += matmul_sql("x_norm1", "w_k",   "k_proj")
-        steps += matmul_sql("x_norm1", "w_v",   "v_proj")
+            # G1: norm1 (shared boundary)
+            g1 = rmsnorm_sql("x", "norm1", "x_norm1")
 
-        # 5-6. RoPE on Q and K
-        steps += rope_sql("q_proj", "rope", "q_rope")
-        steps += rope_sql("k_proj", "rope", "k_rope")
+            # G2: fused QKV + attention + pivoted O proj + residual
+            g2 = []
+            g2 += fused_qkv_sql("x_norm1", "w_q", "w_k", "w_v",
+                                "q_proj", "k_proj", "v_proj")
+            g2 += rope_sql("q_proj", "rope", "q_rope")
+            g2 += rope_sql("k_proj", "rope", "k_rope")
+            g2 += qk_attn_sql("q_rope", "k_rope", "qk_scores")
+            g2 += softmax_sql("qk_scores", "attn_weights")
+            g2 += attn_vmul_sql("attn_weights", "v_proj", "attn_out")
+            g2 += pivoted_matmul_sql("attn_out", "w_o", "o_proj", nc)
+            g2 += residual_add_sql("x", "o_proj", "x_after_attn")
 
-        # 7. QK attention scores
-        steps += qk_attn_sql("q_rope", "k_rope", "qk_scores")
+            # G3: norm2 (shared boundary)
+            g3 = rmsnorm_sql("x_after_attn", "norm2", "x_norm2")
 
-        # 8. Softmax
-        steps += softmax_sql("qk_scores", "attn_weights")
+            # G4: fused gate+up + SwiGLU + pivoted down + residual
+            g4 = []
+            g4 += fused_gateup_sql("x_norm2", "w_gate", "w_up", "gate", "up")
+            g4 += swiglu_sql("gate", "up", "ffn_act")
+            g4 += pivoted_matmul_sql("ffn_act", "w_down", "down", nc_ffn)
+            g4 += residual_add_sql("x_after_attn", "down", "x_out")
 
-        # 9. Attention × V
-        steps += attn_vmul_sql("attn_weights", "v_proj", "attn_out")
+            steps = [_merge_to_cte(g1), _merge_to_cte(g2),
+                     _merge_to_cte(g3), _merge_to_cte(g4)]
+        else:
+            steps = []
+            # 1. Pre-attention RMSNorm
+            steps += rmsnorm_sql("x", "norm1", "x_norm1")
 
-        # 10. O projection
-        steps += matmul_sql("attn_out", "w_o", "o_proj")
+            # 2-4. QKV projections
+            steps += matmul_sql("x_norm1", "w_q",   "q_proj")
+            steps += matmul_sql("x_norm1", "w_k",   "k_proj")
+            steps += matmul_sql("x_norm1", "w_v",   "v_proj")
 
-        # 11. First residual add
-        steps += residual_add_sql("x", "o_proj", "x_after_attn")
+            # 5-6. RoPE on Q and K
+            steps += rope_sql("q_proj", "rope", "q_rope")
+            steps += rope_sql("k_proj", "rope", "k_rope")
 
-        # 12. Pre-FFN RMSNorm
-        steps += rmsnorm_sql("x_after_attn", "norm2", "x_norm2", hidden_dim=HIDDEN_DIM)
+            # 7. QK attention scores
+            steps += qk_attn_sql("q_rope", "k_rope", "qk_scores")
 
-        # 13-14. Gate / Up projections
-        steps += matmul_sql("x_norm2", "w_gate", "gate")
-        steps += matmul_sql("x_norm2", "w_up",   "up")
+            # 8. Softmax
+            steps += softmax_sql("qk_scores", "attn_weights")
 
-        # 15. SwiGLU
-        steps += swiglu_sql("gate", "up", "ffn_act")
+            # 9. Attention × V
+            steps += attn_vmul_sql("attn_weights", "v_proj", "attn_out")
 
-        # 16. Down projection
-        steps += matmul_sql("ffn_act", "w_down", "down")
+            # 10. O projection
+            steps += matmul_sql("attn_out", "w_o", "o_proj")
 
-        # 17. Second residual add
-        steps += residual_add_sql("x_after_attn", "down", "x_out")
+            # 11. First residual add
+            steps += residual_add_sql("x", "o_proj", "x_after_attn")
+
+            # 12. Pre-FFN RMSNorm
+            steps += rmsnorm_sql("x_after_attn", "norm2", "x_norm2",
+                                 hidden_dim=HIDDEN_DIM)
+
+            # 13-14. Gate / Up projections
+            steps += matmul_sql("x_norm2", "w_gate", "gate")
+            steps += matmul_sql("x_norm2", "w_up",   "up")
+
+            # 15. SwiGLU
+            steps += swiglu_sql("gate", "up", "ffn_act")
+
+            # 16. Down projection
+            steps += matmul_sql("ffn_act", "w_down", "down")
+
+            # 17. Second residual add
+            steps += residual_add_sql("x_after_attn", "down", "x_out")
 
         run_steps(conn, steps)
         return read_2d(conn, "x_out", SEQ_LEN, HIDDEN_DIM)
@@ -480,6 +527,16 @@ class TestSingleLayer(unittest.TestCase):
         np.testing.assert_allclose(result, expected, atol=2e-4, rtol=1e-4,
                                    err_msg="RMSNorm mismatch")
 
+    def test_layer_output_postopt(self):
+        """Full layer with all post-optimizations matches NumPy reference."""
+        conn   = self._build_conn()
+        result = self._run_layer_sql(conn, postopt=True)
+        np.testing.assert_allclose(
+            result, self.expected,
+            atol=ATOL, rtol=1e-3,
+            err_msg="Post-optimized single-layer SQL vs NumPy mismatch"
+        )
+
     def test_qkv_proj(self):
         """Q projection output matches NumPy reference."""
         conn = self._build_conn()
@@ -489,6 +546,7 @@ class TestSingleLayer(unittest.TestCase):
         expected = (ref_rmsnorm(self.x, self.norm1) @ self.w_q.T).astype(np.float32)
         np.testing.assert_allclose(result, expected, atol=ATOL, rtol=1e-3,
                                    err_msg="Q projection mismatch")
+
 
 
 if __name__ == "__main__":

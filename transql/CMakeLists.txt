@@ -8,6 +8,7 @@ add_library(transql_lib STATIC
     src/sql_template.cpp
     src/dag_to_tree.cpp
     src/transql_runner.cpp
+    src/transql_postopt.cpp
 )
 
 target_include_directories(transql_lib PUBLIC

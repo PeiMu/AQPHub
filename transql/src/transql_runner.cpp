@@ -10,7 +10,8 @@ namespace transql {
 TranSQLRunner::TranSQLRunner(middleware::EngineAdapter* adapter, int chunk_size)
     : adapter_(adapter), chunk_size_(chunk_size) {}
 
-void TranSQLRunner::Init(int num_layers, const std::string& json_path) {
+void TranSQLRunner::Init(int num_layers, const std::string& json_path,
+                          bool enable_postopt) {
     if (initialised_)
         return;
 
@@ -19,8 +20,13 @@ void TranSQLRunner::Init(int num_layers, const std::string& json_path) {
         : TensorComputeDAG::BuildFromJSON(json_path);
     output_table_ = dag.GetNode(dag.OutputNodeId()).output_table;
 
-    TensorDagSplitter splitter;
-    steps_ = splitter.Convert(dag);
+    if (enable_postopt) {
+        TransqlPostOpt optimizer;
+        steps_ = optimizer.Convert(dag);
+    } else {
+        TensorDagSplitter splitter;
+        steps_ = splitter.Convert(dag);
+    }
 
     // Record all temp table names that will be created during execution.
     created_tables_.push_back("input_tokens");
