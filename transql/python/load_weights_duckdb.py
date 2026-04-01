@@ -20,6 +20,12 @@ import duckdb
 CHUNK_SIZE = 32
 
 
+def _is_moe_expert_table(name):
+    """Check if table is a MOE expert weight (has expert_id column)."""
+    return ("_moe_gate_proj" in name or "_moe_up_proj" in name
+            or "_moe_down_proj" in name)
+
+
 def table_schema(name, chunk_size):
     """Return the CREATE TABLE DDL for a given weight table."""
     half = chunk_size // 2
@@ -37,6 +43,13 @@ def table_schema(name, chunk_size):
                 f"(row_id INTEGER NOT NULL, chunk_id INTEGER NOT NULL, "
                 f"v FLOAT[{chunk_size}], PRIMARY KEY (chunk_id))")
 
+    if _is_moe_expert_table(name):
+        # MOE expert weight: (expert_id, row_id, chunk_id, v FLOAT[chunk_size])
+        return (f"CREATE TABLE {name} "
+                f"(expert_id INTEGER NOT NULL, row_id INTEGER NOT NULL, "
+                f"chunk_id INTEGER NOT NULL, v FLOAT[{chunk_size}], "
+                f"PRIMARY KEY (expert_id, row_id, chunk_id))")
+
     # 2D weight or embedding: standard chunked layout
     return (f"CREATE TABLE {name} "
             f"(row_id INTEGER NOT NULL, chunk_id INTEGER NOT NULL, "
@@ -51,6 +64,9 @@ def load_table(con, csv_path, table_name, chunk_size):
     # DuckDB can read list literals [f1, f2, ...] from CSV via read_csv.
     if table_name == "rope":
         col_types = "{'row_id': 'INTEGER', 'chunk_id': 'INTEGER', 'cos': 'FLOAT[]', 'sin': 'FLOAT[]'}"
+    elif _is_moe_expert_table(table_name):
+        col_types = ("{'expert_id': 'INTEGER', 'row_id': 'INTEGER', "
+                     "'chunk_id': 'INTEGER', 'v': 'FLOAT[]'}")
     elif (table_name.endswith("_norm1") or table_name.endswith("_norm2")
           or table_name == "final_norm"):
         col_types = "{'row_id': 'INTEGER', 'chunk_id': 'INTEGER', 'v': 'FLOAT[]'}"
@@ -68,6 +84,11 @@ def load_table(con, csv_path, table_name, chunk_size):
     # Index on chunk_id for MatMul join performance.
     con.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_chunk "
                 f"ON {table_name}(chunk_id)")
+
+    # Index on expert_id for MOE expert weight tables.
+    if _is_moe_expert_table(table_name):
+        con.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_eid "
+                    f"ON {table_name}(expert_id)")
 
 
 def load_all(csv_dir, db_path, chunk_size):

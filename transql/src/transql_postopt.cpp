@@ -61,6 +61,18 @@ static SqlSteps ExpandNode(const TensorDagNode& node) {
         return SwiGLUSQL(in[0], in[1], out);
     case TensorOpType::ResidualAdd:
         return ResidualAddSQL(in[0], in[1], out);
+    case TensorOpType::TopKRouting:
+        return TopKRoutingSQL(in[0], in[1], out,
+                              GetIntParam(node, "num_experts"),
+                              GetIntParam(node, "top_k"),
+                              GetIntParam(node, "chunk_size"));
+    case TensorOpType::ExpertFFN:
+        return ExpertFFNSQL(in[0], in[1], in[2], in[3], in[4], out,
+                            GetIntParam(node, "expert_ffn_dim"),
+                            GetIntParam(node, "chunk_size"));
+    case TensorOpType::MoeAggregate:
+        return MoeAggregateSQL(in[0], in[1], out,
+                               GetIntParam(node, "chunk_size"));
     default:
         throw std::runtime_error("TransqlPostOpt: unknown TensorOpType");
     }
@@ -208,14 +220,14 @@ SqlSteps TransqlPostOpt::FusedGateUpSQL(
 // =====================================================================
 
 std::string TransqlPostOpt::PivotSQL(const std::string& table_name,
-                                      int n_chunks) {
+                                      int chunk_count, int chunk_start) {
     // SELECT row_id,
-    //   MAX(CASE WHEN chunk_id=0 THEN v END) AS chunk0,
-    //   MAX(CASE WHEN chunk_id=1 THEN v END) AS chunk1, ...
+    //   MAX(CASE WHEN chunk_id=start THEN v END) AS chunk0,
+    //   MAX(CASE WHEN chunk_id=start+1 THEN v END) AS chunk1, ...
     // FROM table_name GROUP BY row_id
     std::string sql = "SELECT row_id";
-    for (int i = 0; i < n_chunks; ++i) {
-        sql += ", MAX(CASE WHEN chunk_id = " + std::to_string(i) +
+    for (int i = 0; i < chunk_count; ++i) {
+        sql += ", MAX(CASE WHEN chunk_id = " + std::to_string(chunk_start + i) +
                " THEN v END) AS chunk" + std::to_string(i);
     }
     sql += " FROM " + table_name + " GROUP BY row_id";
@@ -226,33 +238,47 @@ SqlSteps TransqlPostOpt::PivotedMatMulDotProduct(
         const std::string& act_pivot,
         const std::string& weight_pivot,
         const std::string& dp_out,
-        int n_chunks) {
-    SqlSteps steps;
+        int n_cols, int subquery_width) {
+    if (subquery_width <= 0) subquery_width = 1;
 
-    // Per-chunk CTEs: c0, c1, ..., c{n-1}
-    for (int i = 0; i < n_chunks; ++i) {
-        std::string ci = "c" + std::to_string(i);
-        std::string chunk_col = "chunk" + std::to_string(i);
+    SqlSteps steps;
+    int n_sq = (n_cols + subquery_width - 1) / subquery_width;
+
+    for (int sq = 0; sq < n_sq; ++sq) {
+        std::string ci = dp_out + "_sq" + std::to_string(sq);
+        int col_start = sq * subquery_width;
+        int col_end   = std::min(col_start + subquery_width, n_cols);
+
+        // Build sum of dot products for this subquery's columns
+        std::string dot_expr;
+        for (int c = col_start; c < col_end; ++c) {
+            std::string col = "chunk" + std::to_string(c);
+            if (c > col_start) dot_expr += " + ";
+            dot_expr += "list_dot_product(a." + col + ", w." + col + ")";
+        }
+
         std::string sql =
             "SELECT a.row_id AS act_row, w.row_id AS out_col, "
-            "list_dot_product(a." + chunk_col + ", w." + chunk_col + ") AS v" +
-            std::to_string(i) + " "
+            + dot_expr + " AS v" + std::to_string(sq) + " "
             "FROM " + act_pivot + " a CROSS JOIN " + weight_pivot + " w "
             "ORDER BY a.row_id, w.row_id";
         steps.push_back({sql, ci});
     }
 
-    // Final reduction: POSITIONAL JOIN all chunk CTEs and sum
-    std::string sum_expr = "c0.v0";
-    for (int i = 1; i < n_chunks; ++i)
-        sum_expr += " + c" + std::to_string(i) + ".v" + std::to_string(i);
+    // POSITIONAL JOIN reduction
+    std::string first = dp_out + "_sq0";
+    std::string sum_expr = first + ".v0";
+    for (int i = 1; i < n_sq; ++i)
+        sum_expr += " + " + dp_out + "_sq" + std::to_string(i) +
+                    ".v" + std::to_string(i);
 
-    std::string from_clause = "c0";
-    for (int i = 1; i < n_chunks; ++i)
-        from_clause += " POSITIONAL JOIN c" + std::to_string(i);
+    std::string from_clause = first;
+    for (int i = 1; i < n_sq; ++i)
+        from_clause += " POSITIONAL JOIN " + dp_out + "_sq" + std::to_string(i);
 
     std::string final_sql =
-        "SELECT c0.act_row, c0.out_col, " + sum_expr + " AS val "
+        "SELECT " + first + ".act_row, " + first + ".out_col, "
+        + sum_expr + " AS val "
         "FROM " + from_clause;
 
     steps.push_back({final_sql, dp_out});
@@ -263,25 +289,59 @@ SqlSteps TransqlPostOpt::PivotedMatMulSQL(
         const std::string& act_table,
         const std::string& weight_table,
         const std::string& out_table,
-        int n_chunks, int chunk_size) {
+        int n_chunks, int chunk_size,
+        int pivot_width, int subquery_width) {
     std::string cs = std::to_string(chunk_size);
+    std::string dp_name = out_table + "_dp";
 
-    std::string act_piv_name = out_table + "_act_piv";
-    std::string wt_piv_name  = weight_table + "_pivot";  // pre-pivoted table name
-    std::string dp_name      = out_table + "_dp";
+    // Defaults: all chunks at once, one column per CTE
+    if (pivot_width <= 0)    pivot_width = n_chunks;
+    if (subquery_width <= 0) subquery_width = 1;
+
+    int n_groups = (n_chunks + pivot_width - 1) / pivot_width;
 
     SqlSteps steps;
+    std::vector<std::string> group_dp_names;
 
-    // Pivot activation at runtime
-    steps.push_back({PivotSQL(act_table, n_chunks), act_piv_name});
+    for (int g = 0; g < n_groups; ++g) {
+        int chunk_start = g * pivot_width;
+        int chunk_count = std::min(pivot_width, n_chunks - chunk_start);
 
-    // Pivot weight at runtime (TODO: detect pre-pivoted table and skip)
-    steps.push_back({PivotSQL(weight_table, n_chunks), wt_piv_name});
+        std::string g_sfx = (n_groups > 1)
+            ? "_g" + std::to_string(g) : "";
+        std::string act_piv = out_table + "_act_piv" + g_sfx;
+        std::string wt_piv  = weight_table + "_piv" + g_sfx;
+        std::string g_dp    = (n_groups > 1)
+            ? dp_name + "_g" + std::to_string(g) : dp_name;
 
-    // Per-chunk CROSS JOINs + POSITIONAL JOIN reduction
-    auto dp_steps = PivotedMatMulDotProduct(
-            act_piv_name, wt_piv_name, dp_name, n_chunks);
-    steps.insert(steps.end(), dp_steps.begin(), dp_steps.end());
+        // Pivot activation and weight for this group's chunk range
+        steps.push_back({PivotSQL(act_table,    chunk_count, chunk_start), act_piv});
+        steps.push_back({PivotSQL(weight_table, chunk_count, chunk_start), wt_piv});
+
+        // Subquery CROSS JOINs + POSITIONAL JOIN within group
+        auto dp_steps = PivotedMatMulDotProduct(
+                act_piv, wt_piv, g_dp, chunk_count, subquery_width);
+        steps.insert(steps.end(), dp_steps.begin(), dp_steps.end());
+
+        group_dp_names.push_back(g_dp);
+    }
+
+    // Sum across pivot groups via POSITIONAL JOIN
+    if (n_groups > 1) {
+        std::string sum_expr = group_dp_names[0] + ".val";
+        for (int i = 1; i < n_groups; ++i)
+            sum_expr += " + " + group_dp_names[i] + ".val";
+
+        std::string from_clause = group_dp_names[0];
+        for (int i = 1; i < n_groups; ++i)
+            from_clause += " POSITIONAL JOIN " + group_dp_names[i];
+
+        steps.push_back({
+            "SELECT " + group_dp_names[0] + ".act_row, " +
+            group_dp_names[0] + ".out_col, " + sum_expr + " AS val "
+            "FROM " + from_clause,
+            dp_name});
+    }
 
     // Re-chunk: same as MatMul step2
     std::string rechunk =
@@ -433,7 +493,8 @@ TransqlPostOpt::Convert(const TensorComputeDAG& dag) {
 
             auto pivoted = PivotedMatMulSQL(
                     node.input_tables[0], node.input_tables[1],
-                    node.output_table, n_chunks, cs);
+                    node.output_table, n_chunks, cs,
+                    opts_.pivot_width, opts_.subquery_width);
             node_groups.push_back({std::move(pivoted),
                                    node.is_shared || at_output});
             continue;

@@ -81,6 +81,24 @@ TensorDagSplitter::ExpandNode(const TensorDagNode& node) {
         sql_steps = ResidualAddSQL(in[0], in[1], out);
         break;
 
+    case TensorOpType::TopKRouting:
+        sql_steps = TopKRoutingSQL(in[0], in[1], out,
+                                   GetIntParam(node, "num_experts"),
+                                   GetIntParam(node, "top_k"),
+                                   GetIntParam(node, "chunk_size"));
+        break;
+
+    case TensorOpType::ExpertFFN:
+        sql_steps = ExpertFFNSQL(in[0], in[1], in[2], in[3], in[4], out,
+                                 GetIntParam(node, "expert_ffn_dim"),
+                                 GetIntParam(node, "chunk_size"));
+        break;
+
+    case TensorOpType::MoeAggregate:
+        sql_steps = MoeAggregateSQL(in[0], in[1], out,
+                                    GetIntParam(node, "chunk_size"));
+        break;
+
     default:
         throw std::runtime_error("TensorDagSplitter: unknown TensorOpType");
     }

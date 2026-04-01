@@ -48,6 +48,7 @@ SqlSteps RoPESQL(const std::string& q_table,
 // QK attention scores with GQA.
 // Inputs use the RoPE split layout (v_even, v_odd columns).
 // Output: (q_tok, k_tok, head_id, score FLOAT) — scalar layout.
+// Note: 1/sqrt(d_k) scaling is absorbed into W_Q during preprocessing (constant folding).
 SqlSteps QKAttnSQL(const std::string& q_rope_table,
                    const std::string& k_rope_table,
                    const std::string& out_table,
@@ -84,5 +85,46 @@ SqlSteps SwiGLUSQL(const std::string& gate_table,
 SqlSteps ResidualAddSQL(const std::string& table_a,
                         const std::string& table_b,
                         const std::string& out_table);
+
+// ---------------------------------------------------------------------------
+// MOE (Mixture of Experts) operations
+// ---------------------------------------------------------------------------
+
+// Top-k expert routing: compute gating logits, select top-k experts per token,
+// and softmax-normalize their scores.
+// act_table: (row_id, chunk_id, v FLOAT[]) — token activations.
+// gate_weight: (row_id, chunk_id, v FLOAT[]) — gating linear [num_experts, hidden].
+// Output: (row_id, expert_id, gate_score FLOAT) — one row per (token, selected expert).
+SqlSteps TopKRoutingSQL(const std::string& act_table,
+                        const std::string& gate_weight,
+                        const std::string& out_table,
+                        int num_experts,
+                        int top_k,
+                        int chunk_size = 32);
+
+// Expert FFN with index-filtered weight retrieval.
+// The JOIN with routing on expert_id causes DuckDB to use the expert_id index
+// to read only the activated expert weights.
+// act_table: (row_id, chunk_id, v FLOAT[]) — token activations.
+// routing_table: (row_id, expert_id, gate_score) — from TopKRouting.
+// gate/up/down_proj: (expert_id, row_id, chunk_id, v FLOAT[]) — expert weights.
+// Output: (row_id, expert_id, chunk_id, v FLOAT[]) — per-expert FFN output.
+SqlSteps ExpertFFNSQL(const std::string& act_table,
+                      const std::string& routing_table,
+                      const std::string& gate_proj,
+                      const std::string& up_proj,
+                      const std::string& down_proj,
+                      const std::string& out_table,
+                      int expert_ffn_dim,
+                      int chunk_size = 32);
+
+// Weighted aggregation of expert outputs.
+// expert_out: (row_id, expert_id, chunk_id, v FLOAT[]) — from ExpertFFN.
+// routing_table: (row_id, expert_id, gate_score) — from TopKRouting.
+// Output: (row_id, chunk_id, v FLOAT[]) — weighted sum across experts.
+SqlSteps MoeAggregateSQL(const std::string& expert_out,
+                         const std::string& routing_table,
+                         const std::string& out_table,
+                         int chunk_size = 32);
 
 } // namespace transql

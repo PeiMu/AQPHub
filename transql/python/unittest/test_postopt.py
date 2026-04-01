@@ -147,7 +147,7 @@ def qk_attn_sql(q_rope, k_rope, out,
         f"SELECT q.row_id AS q_tok, k.row_id AS k_tok, "
         f"q.chunk_id // {cph} AS head_id, "
         f"SUM(list_dot_product(q.v_even, k.v_even) + "
-        f"list_dot_product(q.v_odd, k.v_odd)) * (1.0 / sqrt({head_dim}.0)) AS score "
+        f"list_dot_product(q.v_odd, k.v_odd)) AS score "
         f"FROM {q_rope} q JOIN {k_rope} k "
         f"ON q.chunk_id % {cph} = k.chunk_id % {cph} "
         f"AND q.chunk_id // {cphg} = k.chunk_id // {cph} "
@@ -221,46 +221,84 @@ def residual_add_sql(a, b, out):
 # Optimized SQL generators
 # ===========================================================================
 
-def _pivot_sql(table_name, n_chunks):
-    """Generate pivot CTE body: (row_id, chunk_id, v) -> (row_id, chunk0, ..., chunkN)."""
+def _pivot_sql(table_name, chunk_count, chunk_start=0):
+    """Generate pivot CTE body: (row_id, chunk_id, v) -> (row_id, chunk0, ..., chunkN).
+    chunk_start: first chunk_id to include; column names are always chunk0..chunk{count-1}."""
     cols = ", ".join(
-        f"MAX(CASE WHEN chunk_id = {i} THEN v END) AS chunk{i}"
-        for i in range(n_chunks))
+        f"MAX(CASE WHEN chunk_id = {chunk_start + i} THEN v END) AS chunk{i}"
+        for i in range(chunk_count))
     return f"SELECT row_id, {cols} FROM {table_name} GROUP BY row_id"
 
 
-def _pivoted_matmul_dp(act_pivot, weight_pivot, dp_out, n_chunks):
-    """Per-chunk CTEs with CROSS JOIN + POSITIONAL JOIN reduction."""
-    prefix = dp_out
+def _pivoted_matmul_dp(act_pivot, weight_pivot, dp_out, n_cols,
+                       subquery_width=1):
+    """Subquery CTEs with CROSS JOIN + POSITIONAL JOIN reduction.
+    subquery_width: columns per CROSS JOIN CTE (1 = one per column)."""
+    if subquery_width <= 0:
+        subquery_width = 1
+    n_sq = (n_cols + subquery_width - 1) // subquery_width
     steps = []
-    for i in range(n_chunks):
-        ci = f"{prefix}_c{i}"
-        col = f"chunk{i}"
+
+    for sq in range(n_sq):
+        ci = f"{dp_out}_sq{sq}"
+        col_start = sq * subquery_width
+        col_end = min(col_start + subquery_width, n_cols)
+        dot_expr = " + ".join(
+            f"list_dot_product(a.chunk{c}, w.chunk{c})"
+            for c in range(col_start, col_end))
         sql = (f"SELECT a.row_id AS act_row, w.row_id AS out_col, "
-               f"list_dot_product(a.{col}, w.{col}) AS v{i} "
+               f"{dot_expr} AS v{sq} "
                f"FROM {act_pivot} a CROSS JOIN {weight_pivot} w "
                f"ORDER BY a.row_id, w.row_id")
         steps.append((sql, ci))
 
-    sum_expr = " + ".join(f"{prefix}_c{i}.v{i}" for i in range(n_chunks))
-    from_clause = " POSITIONAL JOIN ".join(f"{prefix}_c{i}" for i in range(n_chunks))
+    first = f"{dp_out}_sq0"
+    sum_expr = " + ".join(f"{dp_out}_sq{i}.v{i}" for i in range(n_sq))
+    from_clause = " POSITIONAL JOIN ".join(f"{dp_out}_sq{i}" for i in range(n_sq))
     steps.append((
-        f"SELECT {prefix}_c0.act_row, {prefix}_c0.out_col, {sum_expr} AS val FROM {from_clause}",
-        dp_out))
+        f"SELECT {first}.act_row, {first}.out_col, {sum_expr} AS val "
+        f"FROM {from_clause}", dp_out))
     return steps
 
 
-def pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE):
-    """Full pivoted MatMul: pivot + CROSS JOIN + POSITIONAL JOIN + re-chunk."""
-    act_piv = out + "_act_piv"
-    wt_piv  = out + "_wt_piv"
-    dp      = out + "_dp"
+def pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE,
+                       pivot_width=0, subquery_width=0):
+    """Full pivoted MatMul with configurable grouping.
+    pivot_width: columns per pivoted sub-table (0 = all at once).
+    subquery_width: columns per CROSS JOIN CTE (0 = 1 per column)."""
+    if pivot_width <= 0:
+        pivot_width = n_chunks
+    if subquery_width <= 0:
+        subquery_width = 1
 
-    steps = [
-        (_pivot_sql(act, n_chunks), act_piv),
-        (_pivot_sql(weight, n_chunks), wt_piv),
-    ]
-    steps += _pivoted_matmul_dp(act_piv, wt_piv, dp, n_chunks)
+    dp = out + "_dp"
+    n_groups = (n_chunks + pivot_width - 1) // pivot_width
+
+    steps = []
+    group_dp_names = []
+
+    for g in range(n_groups):
+        chunk_start = g * pivot_width
+        chunk_count = min(pivot_width, n_chunks - chunk_start)
+        g_sfx = f"_g{g}" if n_groups > 1 else ""
+        act_piv = f"{out}_act_piv{g_sfx}"
+        wt_piv = f"{weight}_piv{g_sfx}"
+        g_dp = f"{dp}_g{g}" if n_groups > 1 else dp
+
+        steps.append((_pivot_sql(act, chunk_count, chunk_start), act_piv))
+        steps.append((_pivot_sql(weight, chunk_count, chunk_start), wt_piv))
+        steps += _pivoted_matmul_dp(act_piv, wt_piv, g_dp,
+                                    chunk_count, subquery_width)
+        group_dp_names.append(g_dp)
+
+    # Sum across pivot groups via POSITIONAL JOIN
+    if n_groups > 1:
+        sum_expr = " + ".join(f"{n}.val" for n in group_dp_names)
+        from_clause = " POSITIONAL JOIN ".join(group_dp_names)
+        steps.append((
+            f"SELECT {group_dp_names[0]}.act_row, {group_dp_names[0]}.out_col, "
+            f"{sum_expr} AS val FROM {from_clause}", dp))
+
     steps.append((
         f"SELECT act_row AS row_id, out_col // {cs} AS chunk_id, "
         f"array_agg(val ORDER BY out_col) AS v "
@@ -460,7 +498,9 @@ class TestPostOpt(unittest.TestCase):
         cls.x      = (rng.standard_normal((SEQ_LEN, HIDDEN_DIM)) * scale).astype(np.float32)
         cls.norm1  = rng.uniform(0.8, 1.2, HIDDEN_DIM).astype(np.float32)
         cls.norm2  = rng.uniform(0.8, 1.2, HIDDEN_DIM).astype(np.float32)
-        cls.w_q    = (rng.standard_normal((HIDDEN_DIM, HIDDEN_DIM)) * scale).astype(np.float32)
+        # Constant folding: absorb 1/sqrt(head_dim) into W_Q
+        cls.w_q    = (rng.standard_normal((HIDDEN_DIM, HIDDEN_DIM)) * scale
+                      * np.float32(1.0 / np.sqrt(HEAD_DIM))).astype(np.float32)
         cls.w_k    = (rng.standard_normal((KV_DIM, HIDDEN_DIM)) * scale).astype(np.float32)
         cls.w_v    = (rng.standard_normal((KV_DIM, HIDDEN_DIM)) * scale).astype(np.float32)
         cls.w_o    = (rng.standard_normal((HIDDEN_DIM, HIDDEN_DIM)) * scale).astype(np.float32)
@@ -520,9 +560,37 @@ class TestPostOpt(unittest.TestCase):
         np.testing.assert_allclose(result, self.baseline, atol=ATOL, rtol=1e-3,
                                    err_msg="ROW2COL pivot mismatch")
 
+    def test_row2col_grouped_pivot(self):
+        """ROW2COL with grouped pivoting (pivot_width=8, subquery_width=4)."""
+        pw, sq = 8, 4
+        nc = N_CHUNKS_HIDDEN
+        nc_ffn = N_CHUNKS_FFN
+        steps = []
+        steps += rmsnorm_sql("x", "norm1", "x_norm1")
+        steps += pivoted_matmul_sql("x_norm1", "w_q", "q_proj", nc, CHUNK_SIZE, pw, sq)
+        steps += pivoted_matmul_sql("x_norm1", "w_k", "k_proj", nc, CHUNK_SIZE, pw, sq)
+        steps += pivoted_matmul_sql("x_norm1", "w_v", "v_proj", nc, CHUNK_SIZE, pw, sq)
+        steps += rope_sql("q_proj", "rope", "q_rope")
+        steps += rope_sql("k_proj", "rope", "k_rope")
+        steps += qk_attn_sql("q_rope", "k_rope", "qk_scores")
+        steps += softmax_sql("qk_scores", "attn_weights")
+        steps += attn_vmul_sql("attn_weights", "v_proj", "attn_out")
+        steps += pivoted_matmul_sql("attn_out", "w_o", "o_proj", nc, CHUNK_SIZE, pw, sq)
+        steps += residual_add_sql("x", "o_proj", "x_after_attn")
+        steps += rmsnorm_sql("x_after_attn", "norm2", "x_norm2")
+        steps += pivoted_matmul_sql("x_norm2", "w_gate", "gate", nc, CHUNK_SIZE, pw, sq)
+        steps += pivoted_matmul_sql("x_norm2", "w_up", "up", nc, CHUNK_SIZE, pw, sq)
+        steps += swiglu_sql("gate", "up", "ffn_act")
+        steps += pivoted_matmul_sql("ffn_act", "w_down", "down", nc_ffn, CHUNK_SIZE, pw, sq)
+        steps += residual_add_sql("x_after_attn", "down", "x_out")
+        result = self._run_pipeline(steps)
+        np.testing.assert_allclose(result, self.baseline, atol=ATOL, rtol=1e-3,
+                                   err_msg="Grouped pivot (8/4) mismatch")
+
     def test_all_combined(self):
         """All three optimizations combined produce identical output."""
-        # CTE merge + fusion + ROW2COL
+        # CTE merge + fusion + ROW2COL (grouped: pw=8, sq=4)
+        pw, sq = 8, 4
         nc = N_CHUNKS_HIDDEN
         nc_ffn = N_CHUNKS_FFN
 
@@ -538,7 +606,8 @@ class TestPostOpt(unittest.TestCase):
         g2 += qk_attn_sql("q_rope", "k_rope", "qk_scores")
         g2 += softmax_sql("qk_scores", "attn_weights")
         g2 += attn_vmul_sql("attn_weights", "v_proj", "attn_out")
-        g2 += pivoted_matmul_sql("attn_out", "w_o", "o_proj", nc)
+        g2 += pivoted_matmul_sql("attn_out", "w_o", "o_proj", nc,
+                                 CHUNK_SIZE, pw, sq)
         g2 += residual_add_sql("x", "o_proj", "x_after_attn")
 
         # G3: norm2 (shared)
@@ -548,7 +617,8 @@ class TestPostOpt(unittest.TestCase):
         g4 = []
         g4 += fused_gateup_sql("x_norm2", "w_gate", "w_up", "gate", "up")
         g4 += swiglu_sql("gate", "up", "ffn_act")
-        g4 += pivoted_matmul_sql("ffn_act", "w_down", "down", nc_ffn)
+        g4 += pivoted_matmul_sql("ffn_act", "w_down", "down", nc_ffn,
+                                 CHUNK_SIZE, pw, sq)
         g4 += residual_add_sql("x_after_attn", "down", "x_out")
 
         steps = [_merge_to_cte(g1), _merge_to_cte(g2),

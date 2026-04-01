@@ -12,9 +12,11 @@ namespace transql {
 
 // Options controlling which Section 4 post-optimizations are applied.
 struct PostOptOptions {
-    bool cte_merge     = true;   // §4.1: merge non-shared steps into CTEs
-    bool table_fusion  = true;   // §4.2: fuse QKV / gate+up weight tables via UNION ALL
-    bool row2col_pivot = true;   // §4.3: ROW2COL pivoting for MatMul (CROSS JOIN + POSITIONAL JOIN)
+    bool cte_merge      = true;   // §4.1: merge non-shared steps into CTEs
+    bool table_fusion   = true;   // §4.2: fuse QKV / gate+up weight tables via UNION ALL
+    bool row2col_pivot  = true;   // §4.3: ROW2COL pivoting for MatMul (CROSS JOIN + POSITIONAL JOIN)
+    int pivot_width     = 0;     // §4.3: chunk-columns per pivoted sub-table (0 = all at once)
+    int subquery_width  = 0;     // §4.3: chunk-columns per CROSS JOIN CTE (0 = 1 per CTE)
 };
 
 // Section 4 post-optimizer: produces optimized SQL steps from a TensorComputeDAG.
@@ -68,27 +70,30 @@ private:
 
     // ── ROW2COL Pivoting (§4.3) ─────────────────────────────────────────
 
-    // Generate SQL to pivot (row_id, chunk_id, v) → (row_id, chunk0, ..., chunkN).
-    // Returns a single SELECT statement (used as CTE body).
-    static std::string PivotSQL(const std::string& table_name, int n_chunks);
+    // Generate SQL to pivot a range of chunks into columns.
+    // chunk_start: first chunk_id to include; chunk_count: how many.
+    // Column names are always chunk0..chunk{count-1} (local to the pivot).
+    static std::string PivotSQL(const std::string& table_name,
+                                 int chunk_count, int chunk_start = 0);
 
-    // Generate pivoted MatMul: per-chunk CTEs with CROSS JOIN + POSITIONAL JOIN.
-    // act_pivot, weight_pivot: names of pivoted tables/CTEs.
-    // Returns SqlSteps: [c0, c1, ..., cN-1, matmul_dp].
+    // Generate pivoted MatMul dot product CTEs.
+    // n_cols: number of pivoted columns to process.
+    // subquery_width: columns per CROSS JOIN CTE (0 or 1 = one per column).
     static SqlSteps PivotedMatMulDotProduct(
             const std::string& act_pivot,
             const std::string& weight_pivot,
             const std::string& dp_out,
-            int n_chunks);
+            int n_cols, int subquery_width = 1);
 
-    // Full pivoted MatMul: pivot activation + dot product + re-chunk.
-    // weight_table: original (row_id, chunk_id, v) weight table —
-    //               if a *_pivot table exists, it is used directly.
+    // Full pivoted MatMul with configurable grouping.
+    // pivot_width: columns per pivoted sub-table (0 = all at once).
+    // subquery_width: columns per CROSS JOIN CTE (0 = 1 per CTE).
     static SqlSteps PivotedMatMulSQL(
             const std::string& act_table,
             const std::string& weight_table,
             const std::string& out_table,
-            int n_chunks, int chunk_size);
+            int n_chunks, int chunk_size,
+            int pivot_width = 0, int subquery_width = 0);
 };
 
 } // namespace transql

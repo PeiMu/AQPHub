@@ -98,7 +98,7 @@ TensorComputeDAG TensorComputeDAG::BuildLlama3_8B(int num_layers,
         std::string v_proj = pfx + "v";
         dag.AddNode(TensorOpType::MatMul, v_proj,
                     {norm1_out, WeightTable(l, "v_proj")},
-                    /*is_shared=*/false,
+                    /*is_shared=*/true,   // KV cache: materialized for decoding reuse
                     {});
 
         // -----------------------------------------------------------------
@@ -110,13 +110,13 @@ TensorComputeDAG TensorComputeDAG::BuildLlama3_8B(int num_layers,
         std::string rope_q = pfx + "q_rope";
         dag.AddNode(TensorOpType::RoPE, rope_q,
                     {q_proj, "rope"},
-                    /*is_shared=*/false,
+                    /*is_shared=*/true,   // QKAttn needs it from a separate CTE group
                     {{"chunk_size", std::to_string(chunk_size)}});
 
         std::string rope_k = pfx + "k_rope";
         dag.AddNode(TensorOpType::RoPE, rope_k,
                     {k_proj, "rope"},
-                    /*is_shared=*/false,
+                    /*is_shared=*/true,   // KV cache: materialized for decoding reuse
                     {{"chunk_size", std::to_string(chunk_size)}});
 
         // -----------------------------------------------------------------
@@ -262,6 +262,9 @@ static TensorOpType OpTypeFromString(const std::string& s) {
     if (s == "AttnVMul")     return TensorOpType::AttnVMul;
     if (s == "SwiGLU")       return TensorOpType::SwiGLU;
     if (s == "ResidualAdd")  return TensorOpType::ResidualAdd;
+    if (s == "TopKRouting")  return TensorOpType::TopKRouting;
+    if (s == "ExpertFFN")    return TensorOpType::ExpertFFN;
+    if (s == "MoeAggregate") return TensorOpType::MoeAggregate;
     throw std::runtime_error("Unknown TensorOpType: " + s);
 }
 

@@ -16,7 +16,11 @@ enum class TensorOpType {
     Softmax,
     AttnVMul,
     SwiGLU,
-    ResidualAdd
+    ResidualAdd,
+    // MOE operations
+    TopKRouting,
+    ExpertFFN,
+    MoeAggregate
 };
 
 // A single logical operation in the LLM computation graph.

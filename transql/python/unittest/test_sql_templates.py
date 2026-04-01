@@ -273,7 +273,7 @@ def qk_attn_sql(q_rope, k_rope, out,
         f"SELECT q.row_id AS q_tok, k.row_id AS k_tok, "
         f"q.chunk_id // {cph} AS head_id, "
         f"SUM(list_dot_product(q.v_even, k.v_even) + "
-        f"list_dot_product(q.v_odd, k.v_odd)) * (1.0 / sqrt({head_dim}.0)) AS score "
+        f"list_dot_product(q.v_odd, k.v_odd)) AS score "
         f"FROM {q_rope} q JOIN {k_rope} k "
         f"ON q.chunk_id % {cph} = k.chunk_id % {cph} "
         f"AND q.chunk_id // {cphg} = k.chunk_id // {cph} "
@@ -407,16 +407,16 @@ def ref_rope(q, cos, sin):
 
 
 def ref_qk_attn(q_rot, k_rot, num_q_heads, num_kv_heads, head_dim):
-    """q_rot, k_rot: [seq, dim] (full rotated) -> [q_tok, k_tok, heads]"""
+    """q_rot, k_rot: [seq, dim] (full rotated) -> [q_tok, k_tok, heads]
+    Note: 1/sqrt(d_k) scaling is absorbed into W_Q (constant folding)."""
     seq = q_rot.shape[0]
     gs  = num_q_heads // num_kv_heads
-    scale = np.float32(1.0 / np.sqrt(head_dim))
     out = np.zeros((seq, seq, num_q_heads), dtype=np.float32)
     for h in range(num_q_heads):
         kv_h = h // gs
         q_h  = q_rot[:, h*head_dim:(h+1)*head_dim]
         k_h  = k_rot[:, kv_h*head_dim:(kv_h+1)*head_dim]
-        out[:, :, h] = (q_h @ k_h.T * scale).astype(np.float32)
+        out[:, :, h] = (q_h @ k_h.T).astype(np.float32)
     return out
 
 
@@ -615,7 +615,8 @@ class TestQKAttn(unittest.TestCase):
                                    err_msg="QKAttn mismatch")
 
     def test_scale(self):
-        """Score of identical unit vectors should equal 1/sqrt(head_dim)."""
+        """Score of identical unit vectors: raw dot product (no 1/sqrt scaling).
+        Constant folding absorbs 1/sqrt(d_k) into W_Q during preprocessing."""
         # q = k = e_0 (unit vector along first dim) for every token and head
         q = np.zeros((1, HIDDEN_DIM), dtype=np.float32)
         k = np.zeros((1, KV_DIM),    dtype=np.float32)
@@ -628,9 +629,9 @@ class TestQKAttn(unittest.TestCase):
         run_steps(conn, qk_attn_sql("q_rope", "k_rope", "scores"))
 
         result = read_scores(conn, "scores", 1, NUM_Q_HEADS, "score")
-        # head 0 uses q[0:2] and k[0:2]: dot = 1*1 + 0*0 = 1 → scaled = 1/sqrt(2)
-        # head 1 uses q[2:4] and k[0:2]: dot = 0 → scaled = 0
-        expected_h0 = 1.0 / np.sqrt(HEAD_DIM)
+        # head 0 uses q[0:2] and k[0:2]: dot = 1*1 + 0*0 = 1 (no scale)
+        # head 1 uses q[2:4] and k[0:2]: dot = 0
+        expected_h0 = 1.0
         expected_h1 = 0.0
         self.assertAlmostEqual(float(result[0, 0, 0]), expected_h0, places=5)
         self.assertAlmostEqual(float(result[0, 0, 1]), expected_h1, places=5)

@@ -183,7 +183,7 @@ def qk_attn_sql(q_rope, k_rope, out,
         f"SELECT q.row_id AS q_tok, k.row_id AS k_tok, "
         f"q.chunk_id // {cph} AS head_id, "
         f"SUM(list_dot_product(q.v_even, k.v_even) + "
-        f"list_dot_product(q.v_odd, k.v_odd)) * (1.0 / sqrt({head_dim}.0)) AS score "
+        f"list_dot_product(q.v_odd, k.v_odd)) AS score "
         f"FROM {q_rope} q JOIN {k_rope} k "
         f"ON q.chunk_id % {cph} = k.chunk_id % {cph} "
         f"AND q.chunk_id // {cphg} = k.chunk_id // {cph} "
@@ -286,15 +286,15 @@ def ref_rope(q, cos, sin):
 
 
 def ref_qk_attn(q_rot, k_rot):
+    """Note: 1/sqrt(d_k) scaling is absorbed into W_Q (constant folding)."""
     seq = q_rot.shape[0]
     gs = NUM_Q_HEADS // NUM_KV_HEADS
-    scale = np.float32(1.0 / np.sqrt(HEAD_DIM))
     out = np.zeros((seq, seq, NUM_Q_HEADS), dtype=np.float32)
     for h in range(NUM_Q_HEADS):
         kv_h = h // gs
         q_h = q_rot[:, h*HEAD_DIM:(h+1)*HEAD_DIM]
         k_h = k_rot[:, kv_h*HEAD_DIM:(kv_h+1)*HEAD_DIM]
-        out[:, :, h] = (q_h @ k_h.T * scale).astype(np.float32)
+        out[:, :, h] = (q_h @ k_h.T).astype(np.float32)
     return out
 
 
@@ -377,7 +377,9 @@ class TestSingleLayer(unittest.TestCase):
         cls.x      = (rng.standard_normal((SEQ_LEN, HIDDEN_DIM)) * scale).astype(np.float32)
         cls.norm1  = (rng.uniform(0.8, 1.2, HIDDEN_DIM)).astype(np.float32)
         cls.norm2  = (rng.uniform(0.8, 1.2, HIDDEN_DIM)).astype(np.float32)
-        cls.w_q    = (rng.standard_normal((HIDDEN_DIM, HIDDEN_DIM)) * scale).astype(np.float32)
+        # Constant folding: absorb 1/sqrt(head_dim) into W_Q
+        cls.w_q    = (rng.standard_normal((HIDDEN_DIM, HIDDEN_DIM)) * scale
+                      * np.float32(1.0 / np.sqrt(HEAD_DIM))).astype(np.float32)
         cls.w_k    = (rng.standard_normal((KV_DIM,    HIDDEN_DIM)) * scale).astype(np.float32)
         cls.w_v    = (rng.standard_normal((KV_DIM,    HIDDEN_DIM)) * scale).astype(np.float32)
         cls.w_o    = (rng.standard_normal((HIDDEN_DIM, HIDDEN_DIM)) * scale).astype(np.float32)
