@@ -25,6 +25,7 @@ import numpy as np
 
 
 CHUNK_SIZE = 32
+HEAD_DIM   = 128   # Llama3-8B: hidden_size / num_attention_heads = 4096 / 32
 
 
 def format_list(arr):
@@ -130,6 +131,13 @@ def process_all(npy_dir, csv_dir, chunk_size):
             continue
         arr = np.load(npy_path).astype(np.float32)
         assert arr.ndim == 2, f"{name}: expected 2D, got shape {arr.shape}"
+
+        # Constant folding: absorb 1/sqrt(head_dim) into W_Q (Section 3)
+        if name.endswith("_q_proj"):
+            scale = np.float32(1.0 / np.sqrt(HEAD_DIM))
+            arr = (arr * scale).astype(np.float32)
+            print(f"  {name}: constant folding applied (scale={scale:.6f})")
+
         write_csv(os.path.join(csv_dir, name + ".csv"), chunk_2d(arr, chunk_size))
         print(f"  {name}: {arr.shape} → {arr.shape[0]} rows x "
               f"{arr.shape[1] // chunk_size} chunks/row")

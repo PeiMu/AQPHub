@@ -343,6 +343,28 @@ python -m pytest transql/python/unittest/test_single_layer.py -v 2>&1
 python -m pytest transql/python/unittest/test_moe_sql_templates.py -v 2>&1
 ```
 
+### Measurement
+```bash
+# 1. Extract & preprocess weights (with constant folding)
+python transql/python/extract_weights.py --output-dir weights_npy
+python transql/python/preprocess_weights.py --npy-dir weights_npy --csv-dir weights_csv
+python transql/python/load_weights_duckdb.py --csv-dir weights_csv --db-path weights.duckdb
+
+# 2. Sample prompts
+python measure/sample_prompts.py --output-dir measure/prompts
+
+# 3. TranSQL+ benchmarks
+python measure/run_prefill.py --db-path weights.duckdb
+python measure/run_decode.py --db-path weights.duckdb
+python measure/run_perplexity.py --db-path weights.duckdb
+
+# 4. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
+bash measure/run_llamacpp.sh
+
+# 5. Collect & compare
+python measure/collect_results.py
+```
+
 ## Citation
 
 TBD
