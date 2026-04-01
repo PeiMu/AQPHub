@@ -130,7 +130,7 @@ def extract_pytorch(output_dir: str):
 
     print(f"\nLoading model weights (float32)...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, torch_dtype=torch.float32, device_map="cpu"
+        MODEL_ID, dtype=torch.float32, device_map="cpu"
     )
     sd = {k: v.numpy() for k, v in model.state_dict().items()}
 
