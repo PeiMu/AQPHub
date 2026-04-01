@@ -335,10 +335,12 @@ pip3 install -r requirements.txt
 hf auth login
 ```
 
-## Unit Test
+### Unit Test
 ```bash
 python -m pytest transql/python/unittest/test_sql_templates.py -v 2>&1
+python -m pytest transql/python/unittest/test_postopt.py -v 2>&1
 python -m pytest transql/python/unittest/test_single_layer.py -v 2>&1
+python -m pytest transql/python/unittest/test_moe_sql_templates.py -v 2>&1
 ```
 
 ## Citation
