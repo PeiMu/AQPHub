@@ -350,18 +350,24 @@ python transql/python/extract_weights.py --output-dir weights_npy
 python transql/python/preprocess_weights.py --npy-dir weights_npy --csv-dir weights_csv
 python transql/python/load_weights_duckdb.py --csv-dir weights_csv --db-path weights.duckdb
 
+# To run it in RAM, I copy the weights.duckdb to /dev/shm
+df -h /dev/shm
+sudo mount -o remount,size=40G /dev/shm
+df -h /dev/shm
+cp weights.duckdb /dev/shm/weights.duckdb
+
 # 2. Sample prompts
 python measure/sample_prompts.py --output-dir measure/prompts
 
 # 3. Smoke Test
-python measure/run_prefill.py --db-path weights.duckdb --num-layers 1 --lengths 25
-python measure/run_decode.py --db-path weights.duckdb --num-layers 1 --lengths 25 --decode-steps 2
-python measure/run_perplexity.py --db-path weights.duckdb --num-layers 1 --max-chunks 1
+python measure/run_prefill.py --db-path /dev/shm/weights.duckdb --num-layers 1 --lengths 25
+python measure/run_decode.py --db-path /dev/shm/weights.duckdb --num-layers 1 --lengths 25 --decode-steps 2
+python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb --num-layers 1 --max-chunks 1
 
 # 4. TranSQL+ benchmarks
-python measure/run_prefill.py --db-path weights.duckdb
-python measure/run_decode.py --db-path weights.duckdb
-python measure/run_perplexity.py --db-path weights.duckdb
+python measure/run_prefill.py --db-path /dev/shm/weights.duckdb [--lengths 25]
+python measure/run_decode.py --db-path /dev/shm/weights.duckdb [--lengths 25]
+python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb
 
 # 5. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
 bash measure/run_llamacpp.sh
