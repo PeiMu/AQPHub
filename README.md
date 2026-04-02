@@ -353,15 +353,20 @@ python transql/python/load_weights_duckdb.py --csv-dir weights_csv --db-path wei
 # 2. Sample prompts
 python measure/sample_prompts.py --output-dir measure/prompts
 
-# 3. TranSQL+ benchmarks
+# 3. Smoke Test
+python measure/run_prefill.py --db-path weights.duckdb --num-layers 1 --lengths 25
+python measure/run_decode.py --db-path weights.duckdb --num-layers 1 --lengths 25 --decode-steps 2
+python measure/run_perplexity.py --db-path weights.duckdb --num-layers 1 --max-chunks 1
+
+# 4. TranSQL+ benchmarks
 python measure/run_prefill.py --db-path weights.duckdb
 python measure/run_decode.py --db-path weights.duckdb
 python measure/run_perplexity.py --db-path weights.duckdb
 
-# 4. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
+# 5. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
 bash measure/run_llamacpp.sh
 
-# 5. Collect & compare
+# 6. Collect & compare
 python measure/collect_results.py
 ```
 
