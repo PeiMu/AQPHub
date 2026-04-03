@@ -122,6 +122,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_debug_print = true;
     } else if (arg == "--combine-sub-plans") {
       config.enable_sub_plan_combiner = true;
+    } else if (arg == "--jit") {
+      config.enable_jit = true;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -184,6 +186,9 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --combine-sub-plans              Collect all sub-SQLs and "
                "print combined CTE at end (default: disabled)"
+            << std::endl;
+  std::cout << "  --jit                            JIT-compile filter expressions "
+               "with LLVM (DuckDB only, default: disabled)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

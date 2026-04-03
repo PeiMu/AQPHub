@@ -5,7 +5,14 @@
 #include "adapters/duckdb_adapter.h"
 
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
+
+#ifdef HAVE_LLVM
+#include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/main/prepared_statement_data.hpp"
+#endif
 
 namespace middleware {
 
@@ -290,6 +297,40 @@ DuckDBAdapter::ConvertPlanToIR() {
 QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   QueryResult result;
 
+#ifdef HAVE_LLVM
+  std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: jit_pending_ir_=" << (void*)jit_pending_ir_ << "\n";
+  // If JIT pending IR is set, use Prepare path so we can walk the physical
+  // plan and register compiled filters before execution.
+  if (jit_pending_ir_) {
+    auto prepared = conn->Prepare(sql);
+    if (!prepared->HasError() && prepared->data && prepared->data->physical_plan) {
+      jit_compiler_.reset(); // fresh compiler per query execution
+      RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+    }
+    jit_pending_ir_ = nullptr;
+    duckdb::vector<duckdb::Value> bound;
+    auto duckdb_result = prepared->Execute(bound, false);
+    if (duckdb_result->HasError())
+      throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+    result.num_columns = duckdb_result->ColumnCount();
+    for (size_t i = 0; i < result.num_columns; i++)
+      result.column_names.push_back(duckdb_result->ColumnName(i));
+    result.num_rows = 0;
+    while (true) {
+      auto chunk = duckdb_result->Fetch();
+      if (!chunk || 0 == chunk->size()) break;
+      for (size_t row = 0; row < chunk->size(); row++) {
+        std::vector<std::string> row_data;
+        for (size_t col = 0; col < result.num_columns; col++)
+          row_data.push_back(chunk->GetValue(col, row).ToString());
+        result.rows.push_back(row_data);
+        result.num_rows++;
+      }
+    }
+    return result;
+  }
+#endif
+
   auto duckdb_result = conn->Query(sql);
   if (duckdb_result->HasError()) {
     throw std::runtime_error("Query failed: " + duckdb_result->GetError());
@@ -334,6 +375,16 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     throw std::runtime_error("[DuckDB] Prepare failed: " +
                              prepared->GetError());
   }
+
+#ifdef HAVE_LLVM
+  // JIT: compile filters from the pending IR and register before execution.
+  if (jit_pending_ir_ && prepared->data && prepared->data->physical_plan) {
+    jit_compiler_.reset(); // fresh compiler per sub-plan execution
+    RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+    jit_pending_ir_ = nullptr;
+  }
+#endif
+
   duckdb::vector<duckdb::Value> bound_values;
   auto subquery_result = prepared->ExecuteRow(bound_values, false);
   if (enable_timing) {
@@ -643,6 +694,132 @@ void DuckDBAdapter::CleanUp() {
 duckdb::ClientContext *DuckDBAdapter::GetClientContext() {
   return conn->context.get();
 }
+
+#ifdef HAVE_LLVM
+// Recursively find the first AQPStmt node of type FilterNode in the IR tree.
+static const ir_sql_converter::AQPStmt *
+FindFirstFilterNode(const ir_sql_converter::AQPStmt *ir) {
+  if (!ir) return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode)
+    return ir;
+  for (const auto &child : ir->children)
+    if (auto *f = FindFirstFilterNode(child.get()))
+      return f;
+  return nullptr;
+}
+
+// Recursively find the first table index referenced by any leaf attribute
+// in an AQPExpr tree.  Returns UINT_MAX if no attribute is found.
+static unsigned int FirstTableIdxFromExpr(
+    const ir_sql_converter::AQPExpr *expr) {
+  if (!expr) return UINT_MAX;
+  using ir_sql_converter::SimplestNodeType;
+  switch (expr->GetNodeType()) {
+    case SimplestNodeType::VarConstComparisonNode: {
+      auto *c = static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+      return c->attr ? c->attr->GetTableIndex() : UINT_MAX;
+    }
+    case SimplestNodeType::IsNullExprNode: {
+      auto *n = static_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+      return n->attr ? n->attr->GetTableIndex() : UINT_MAX;
+    }
+    case SimplestNodeType::InExprNode: {
+      auto *i = static_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+      return i->attr ? i->attr->GetTableIndex() : UINT_MAX;
+    }
+    case SimplestNodeType::LogicalExprNode: {
+      auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+      unsigned int t = FirstTableIdxFromExpr(l->left_expr.get());
+      if (t != UINT_MAX) return t;
+      return FirstTableIdxFromExpr(l->right_expr.get());
+    }
+    default: return UINT_MAX;
+  }
+}
+
+void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
+                                       const ir_sql_converter::AQPStmt &ir) {
+  using duckdb::PhysicalOperatorType;
+
+  if (op.type == PhysicalOperatorType::FILTER && !op.children.empty()) {
+    auto &child = op.children[0].get();
+
+    // Determine table_idx from the filter's own expressions (not target_list,
+    // which may belong to an ancestor aggregate in multi-table final IRs).
+    unsigned int ir_table_idx = 0;
+    for (const auto &q : ir.qual_vec) {
+      unsigned int t = FirstTableIdxFromExpr(q.get());
+      if (t != UINT_MAX) { ir_table_idx = t; break; }
+    }
+    if (ir_table_idx == 0 && !ir.target_list.empty())
+      ir_table_idx = ir.target_list[0]->GetTableIndex(); // fallback
+
+    // Build ColSchema: chunk position → (table_idx, col_idx, dtype)
+    std::vector<aqp_jit::ColSchema> schema;
+    if (child.type == PhysicalOperatorType::TABLE_SCAN) {
+      auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
+      for (size_t i = 0; i < scan.column_ids.size(); i++) {
+        aqp_jit::ColSchema cs;
+        cs.table_idx = ir_table_idx;
+        cs.col_idx   = static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
+        cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
+        schema.push_back(cs);
+      }
+    } else {
+      // Non-scan child: position-based fallback (col_idx = chunk position)
+      for (size_t i = 0; i < child.types.size(); i++) {
+        aqp_jit::ColSchema cs;
+        cs.table_idx = ir_table_idx;
+        cs.col_idx   = static_cast<unsigned int>(i);
+        cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
+        schema.push_back(cs);
+      }
+    }
+
+    if (!schema.empty()) {
+      // CompileFilter needs a Filter IR node (with qual_vec), not the root IR
+      // (which may be an Aggregate or Projection with empty qual_vec).
+      const ir_sql_converter::AQPStmt *filter_ir = FindFirstFilterNode(&ir);
+      if (!filter_ir) {
+        std::cerr << "[AQP-JIT] no Filter IR node found in tree, skipping\n";
+        for (auto &child_ref : op.children)
+          RegisterJITFilters(child_ref.get(), ir);
+        return;
+      }
+      // Use the persistent compiler so the LLJIT instance (and its compiled
+      // code memory) stays alive until jit_compiler_ is reset next query.
+      if (!jit_compiler_)
+        jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(/*use_o3=*/false);
+      // CompileFilter returns global ::AQPExprFn (from aqp_jit_abi.h);
+      // duckdb::AQPExprFn has identical layout — reinterpret_cast is safe.
+      ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
+      if (raw_fn) {
+        duckdb::AQPExprFn fn =
+            reinterpret_cast<duckdb::AQPExprFn>(reinterpret_cast<void*>(raw_fn));
+        auto *ctx = GetClientContext();
+        if (!ctx->aqp_jit_context)
+          ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        uint64_t eid = duckdb::ExpressionID(op);
+        ctx->aqp_jit_context->expr_fns[eid] = fn;
+        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
+        std::cerr << "[AQP-JIT] compiled filter eid=0x" << std::hex << eid << std::dec
+                  << "  cols=" << schema.size() << "\n";
+      } else {
+        uint64_t eid = duckdb::ExpressionID(op);
+        std::ostringstream msg;
+        msg << "[AQP-JIT] JIT compilation failed (eid=0x" << std::hex << eid
+            << std::dec << "  cols=" << schema.size()
+            << "). Stopping. Use --no-jit to fall back to interpreter.";
+        throw std::runtime_error(msg.str());
+      }
+    }
+  }
+
+  // Recurse into children
+  for (auto &child_ref : op.children)
+    RegisterJITFilters(child_ref.get(), ir);
+}
+#endif
 
 duckdb::Binder &DuckDBAdapter::GetBinder() { return *planner->binder; }
 

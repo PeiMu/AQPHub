@@ -3,6 +3,49 @@ project(AQP_middleware)
 
 set(CMAKE_CXX_STANDARD 14)
 
+# ---------------------------------------------------------------------------
+# LLVM JIT support
+# LLVM 14 is the default system installation; 17/19 also available.
+# ---------------------------------------------------------------------------
+find_package(LLVM 14 CONFIG
+        HINTS /usr/lib/llvm-14/lib/cmake/llvm
+        QUIET)
+if (NOT LLVM_FOUND)
+    # Try LLVM 17 or 19 as fallback
+    find_package(LLVM CONFIG
+            HINTS /usr/lib/llvm-17/lib/cmake/llvm
+                  /usr/lib/llvm-19/lib/cmake/llvm
+            QUIET)
+endif ()
+
+if (LLVM_FOUND)
+    message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
+    include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+    add_definitions(${LLVM_DEFINITIONS})
+    llvm_map_components_to_libnames(LLVM_LIBS
+            core orcjit native passes analysis support)
+    set(HAVE_LLVM TRUE)
+
+    # aqp_jit_lib: middleware-side LLVM compiler (IR → machine code)
+    # Requires C++17 because LLVM headers use C++17 features.
+    add_library(aqp_jit_lib STATIC
+            src/jit/ir_to_llvm.cpp
+            src/jit/aqp_jit_runtime.cpp
+    )
+    target_include_directories(aqp_jit_lib PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/IR_SQL_Converter/inc
+            ${LLVM_INCLUDE_DIRS}
+    )
+    target_link_libraries(aqp_jit_lib PUBLIC ${LLVM_LIBS})
+    set_property(TARGET aqp_jit_lib PROPERTY CXX_STANDARD 17)
+    target_compile_definitions(aqp_jit_lib PUBLIC HAVE_LLVM)
+    message(STATUS "AQP JIT (LLVM): ENABLED")
+else ()
+    set(HAVE_LLVM FALSE)
+    message(STATUS "LLVM not found — AQP JIT disabled")
+endif ()
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Build split library (common for both DuckDB and PostgreSQL)
@@ -49,6 +92,11 @@ if (EXISTS ${DUCKDB_ROOT})
         target_compile_definitions(split_lib PUBLIC HAVE_DUCKDB)
 
         target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib)
+        if (HAVE_LLVM)
+            target_link_libraries(duckdb_adapter PUBLIC aqp_jit_lib)
+            target_compile_definitions(duckdb_adapter PUBLIC HAVE_LLVM)
+            target_compile_definitions(split_lib PUBLIC HAVE_LLVM)
+        endif ()
 
         add_executable(test_duckdb examples/test_duckdb.cpp)
         target_link_libraries(test_duckdb PRIVATE duckdb_adapter split_lib)
@@ -62,7 +110,7 @@ else ()
 endif ()
 
 # PostgreSQL
-set(POSTGRES_ROOT "/home/pei/Project/project_bins" CACHE PATH "PostgreSQL lib/inc path")
+set(POSTGRES_ROOT "/home/bita/Project/project_bins" CACHE PATH "PostgreSQL lib/inc path")
 set(HAVE_POSTGRES FALSE)
 if (EXISTS ${POSTGRES_ROOT})
     message(STATUS "Found PostgreSQL lib/inc at: ${POSTGRES_ROOT}")

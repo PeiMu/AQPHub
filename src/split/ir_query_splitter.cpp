@@ -311,6 +311,24 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
     query_result = adapter_->ExecuteSQL(combined);
   } else {
+    std::cerr << "[AQP-JIT-TRACE] final SQL path: enable_jit=" << config_.enable_jit
+              << " engine=" << (int)config_.engine << "\n";
+#ifdef HAVE_DUCKDB
+#ifdef HAVE_LLVM
+    std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB+HAVE_LLVM compiled in\n";
+    if (config_.enable_jit && config_.engine == BackendEngine::DUCKDB) {
+      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+      std::cerr << "[AQP-JIT-TRACE] duck=" << (void*)duck
+                << " remaining_ir=" << (void*)remaining_ir.get() << "\n";
+      if (duck && remaining_ir)
+        duck->SetJITPendingIR(remaining_ir.get());
+    }
+#else
+    std::cerr << "[AQP-JIT-TRACE] HAVE_LLVM NOT defined\n";
+#endif
+#else
+    std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB NOT defined\n";
+#endif
     query_result = adapter_->ExecuteSQL(final_sql);
   }
   if (config_.enable_timing) {
@@ -421,6 +439,18 @@ bool IRQuerySplitter::ExecuteOneIteration(
     std::cout << "Executing sub-query and creating temp table: "
               << temp_table_name << std::endl;
   }
+
+#ifdef HAVE_DUCKDB
+#ifdef HAVE_LLVM
+  // JIT: compile filter expressions before execution so DuckDB can dispatch
+  // to compiled code instead of the interpreted expression executor.
+  if (config_.enable_jit && config_.engine == BackendEngine::DUCKDB) {
+    auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+    if (duck)
+      duck->SetJITPendingIR(executable_ir);
+  }
+#endif
+#endif
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
                                          config_.enable_update_temp_card,

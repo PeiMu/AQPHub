@@ -40,6 +40,12 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
+#ifdef HAVE_LLVM
+#include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/execution/aqp_jit.hpp"
+#include "jit/ir_to_llvm.h"
+#endif
+
 #define IN_MEM_TMP_TABLE true
 
 namespace duckdb {
@@ -128,6 +134,14 @@ public:
   // Get context and binder for IR conversion
   duckdb::ClientContext *GetClientContext();
 
+#ifdef HAVE_LLVM
+  // JIT: set the sub-IR whose filters should be compiled before the next
+  // ExecuteSQLandCreateTempTable call. Called by IRQuerySplitter.
+  void SetJITPendingIR(const ir_sql_converter::AQPStmt *ir) {
+    jit_pending_ir_ = ir;
+  }
+#endif
+
   // NodeBasedSplitter support
   // Return the chunk table index allocated by the last
   // ExecuteSQLandCreateTempTable call. SubqueryPreparer::SetNewTableIndex must
@@ -183,6 +197,19 @@ private:
   // Index allocated by the most recent ExecuteSQLandCreateTempTable call;
   // used by ExecuteSplitLoopNodeBased to call sp.SetNewTableIndex correctly.
   duckdb::idx_t temp_table_index_ = 0;
+
+#ifdef HAVE_LLVM
+  // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
+  const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
+
+  // Keeps the LLJIT instance alive until after query execution so that
+  // compiled function pointers stored in AQPJITContext remain valid.
+  std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
+
+  // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
+  void RegisterJITFilters(duckdb::PhysicalOperator &op,
+                          const ir_sql_converter::AQPStmt &ir);
+#endif
 
   // Column names for each chunk table: data_chunk_index → column names as
   // stored in the temp table. Used by ConvertDuckDBPlanToIR to resolve correct

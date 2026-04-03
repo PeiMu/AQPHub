@@ -52,6 +52,7 @@ struct ParamConfig {
   bool enable_timing = false;
   bool enable_debug_print = false;
   bool enable_sub_plan_combiner = false;
+  bool enable_jit = false;  // JIT-compile filter expressions with LLVM (DuckDB only)
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);
