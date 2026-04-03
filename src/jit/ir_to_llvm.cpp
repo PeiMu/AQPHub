@@ -363,64 +363,96 @@ static Value *EmitVarConst(CompileCtx &cc, const SimplestVarConstComparison *cmp
     }
 
     if (cs.dtype == AQP_DTYPE_VARCHAR) {
-        // DuckDB string_t layout: 4-byte length, then either 12 inline bytes
-        // (length ≤ 12) or 4-byte prefix + 8-byte heap pointer.
-        // Emit: extract char* and len, then call aqp_like_match / strcmp helper.
-        Value *str_base = cc.b.CreateBitCast(data, cc.i8p());
-        // Each string_t is 16 bytes
+        if (cv->GetType() != SimplestVarType::StringVar)
+            return ConstantInt::getTrue(cc.llctx);
+
+        // ---- NULL guard ------------------------------------------------
+        // DuckDB does NOT zero-initialise string_t at NULL positions.
+        // Accessing such data yields a garbage length / heap-pointer → crash.
+        // SQL semantics: NULL compared to anything yields NULL → excluded from
+        // WHERE → return false for this row.
+        Value *validity_ptr = cc.col_validity[col_idx];
+        Function *fn = cc.b.GetInsertBlock()->getParent();
+        BasicBlock *chk_bb   = BasicBlock::Create(cc.llctx, "str_chk_null", fn);
+        BasicBlock *cmp_bb   = BasicBlock::Create(cc.llctx, "str_cmp",      fn);
+        BasicBlock *after_bb = BasicBlock::Create(cc.llctx, "str_after",    fn);
+
+        Value *null_vp    = ConstantPointerNull::get(
+            cast<PointerType>(validity_ptr->getType()));
+        Value *has_valvec = cc.b.CreateICmpNE(validity_ptr, null_vp, "has_valvec");
+        // has_valvec=true  → chk_bb (validity vector exists, check individual bit)
+        // has_valvec=false → cmp_bb  (all rows valid, no null check needed)
+        cc.b.CreateCondBr(has_valvec, chk_bb, cmp_bb);
+
+        cc.b.SetInsertPoint(chk_bb);
+        Value *is_valid = EmitValidityCheck(cc, validity_ptr);
+        // is_valid=true  → cmp_bb  (row is not NULL)
+        // is_valid=false → after_bb (row is NULL → result = false)
+        cc.b.CreateCondBr(is_valid, cmp_bb, after_bb);
+        BasicBlock *chk_end = cc.b.GetInsertBlock();
+
+        // ---- string_t extraction + comparison --------------------------
+        // DuckDB string_t layout (16 bytes):
+        //   [0..3]  uint32_t length
+        //   [4..7]  char prefix[4]       (non-inline: first 4 bytes of heap data)
+        //   [8..15] char* ptr            (heap pointer, only valid when length > 12)
+        //   OR (inline, length <= 12):
+        //   [4..15] char inlined[12]
+        cc.b.SetInsertPoint(cmp_bb);
+        Value *str_base   = cc.b.CreateBitCast(data, cc.i8p());
         Value *str_offset = cc.b.CreateMul(cc.row_idx, cc.c64(16));
         Value *str_ptr    = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_base,
                                            str_offset, "str_ptr");
-        // Load length (first 4 bytes)
-        Value *len_ptr = cc.b.CreateBitCast(str_ptr,
-            PointerType::getUnqual(cc.i32()));
-        Value *slen = cc.b.CreateLoad(cc.i32(), len_ptr, "slen");
-        // Determine if inline: len <= 12
-        Value *is_inline = cc.b.CreateICmpSLE(slen, cc.c32(12), "is_inline");
-        // Inline data starts at str_ptr + 4
+        Value *len_ptr    = cc.b.CreateBitCast(str_ptr,
+                                PointerType::getUnqual(cc.i32()));
+        Value *slen       = cc.b.CreateLoad(cc.i32(), len_ptr, "slen");
+        Value *is_inline  = cc.b.CreateICmpSLE(slen, cc.c32(12), "is_inline");
         Value *inline_ptr = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_ptr,
-                                            cc.c64(4), "inline_ptr");
-        // Heap pointer at str_ptr + 8 (skip 4-byte length + 4-byte prefix)
-        Value *heap_pp  = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_ptr,
-                                          cc.c64(8), "heap_pp_raw");
-        Value *heap_ppc = cc.b.CreateBitCast(heap_pp,
-            PointerType::getUnqual(cc.i8p()));
-        Value *heap_ptr = cc.b.CreateLoad(cc.i8p(), heap_ppc, "heap_ptr");
-        Value *char_ptr = cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr,
-                                             "char_ptr");
+                                           cc.c64(4), "inline_ptr");
+        Value *heap_pp    = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_ptr,
+                                           cc.c64(8), "heap_pp_raw");
+        Value *heap_ppc   = cc.b.CreateBitCast(heap_pp,
+                                PointerType::getUnqual(cc.i8p()));
+        Value *heap_ptr   = cc.b.CreateLoad(cc.i8p(), heap_ppc, "heap_ptr");
+        Value *char_ptr   = cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr,
+                                              "char_ptr");
 
-        if (cv->GetType() == SimplestVarType::StringVar) {
-            const std::string &pat = cv->GetStringValue();
-            // Store pattern as a global constant
-            Constant *pat_const = ConstantDataArray::getString(
-                cc.llctx, pat, /*AddNull=*/false);
-            GlobalVariable *pat_gv = new GlobalVariable(
-                cc.mod, pat_const->getType(), /*isConst=*/true,
-                GlobalValue::PrivateLinkage, pat_const, "pat");
-            Value *pat_ptr = cc.b.CreateBitCast(pat_gv, cc.i8p());
-            Value *pat_len = cc.c32((int32_t)pat.size());
+        const std::string &pat = cv->GetStringValue();
+        Constant *pat_const = ConstantDataArray::getString(
+            cc.llctx, pat, /*AddNull=*/false);
+        GlobalVariable *pat_gv = new GlobalVariable(
+            cc.mod, pat_const->getType(), /*isConst=*/true,
+            GlobalValue::PrivateLinkage, pat_const, "pat");
+        Value *pat_ptr = cc.b.CreateBitCast(pat_gv, cc.i8p());
+        Value *pat_len = cc.c32((int32_t)pat.size());
 
-            FunctionType *ft4 = FunctionType::get(cc.i32(),
-                {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
-            if (op == SimplestExprType::Equal || op == SimplestExprType::NotEqual) {
-                // Exact byte equality: length check + memcmp (NOT LIKE semantics).
-                // aqp_like_match would misinterpret '%'/'_' in literal values.
-                FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_str_eq", ft4);
-                Value *result = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
-                Value *match  = cc.b.CreateICmpNE(result, cc.c32(0));
-                return (op == SimplestExprType::NotEqual)
-                    ? cc.b.CreateNot(match)
-                    : match;
-            } else {
-                // TextLike / Text_Not_Like: use LIKE pattern matching
-                FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft4);
-                Value *result = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
-                Value *match  = cc.b.CreateICmpNE(result, cc.c32(0));
-                return (op == SimplestExprType::Text_Not_Like)
-                    ? cc.b.CreateNot(match)
-                    : match;
-            }
+        FunctionType *ft4 = FunctionType::get(cc.i32(),
+            {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
+        Value *cmp_result;
+        if (op == SimplestExprType::Equal || op == SimplestExprType::NotEqual) {
+            FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_str_eq", ft4);
+            Value *r = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
+            Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+            cmp_result = (op == SimplestExprType::NotEqual)
+                         ? cc.b.CreateNot(m) : m;
+        } else {
+            FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft4);
+            Value *r = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
+            Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+            cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(m) : m;
         }
+        cc.b.CreateBr(after_bb);
+        BasicBlock *cmp_end = cc.b.GetInsertBlock();
+
+        // ---- merge: PHI for null-guard result --------------------------
+        cc.b.SetInsertPoint(after_bb);
+        PHINode *phi = cc.b.CreatePHI(cc.i1(), 2, "str_result");
+        // NULL row: excluded from WHERE (false)
+        phi->addIncoming(ConstantInt::getFalse(cc.llctx), chk_end);
+        // non-NULL row: actual comparison result
+        phi->addIncoming(cmp_result, cmp_end);
+        return phi;
     }
 
     return ConstantInt::getTrue(cc.llctx); // unknown type: pass all
