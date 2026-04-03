@@ -5,6 +5,8 @@ git clone --recurse-submodules git@github.com:PeiMu/AQP_middleware.git
 
 ## How to compile
 ```bash
+sudo apt install nlohmann-json3-dev # we need json
+
 mkdir -p build_debug && cd build_debug/
 cmake -DCMAKE_BUILD_TYPE=Debug .. # requires CMake 4.0 or higher
 make -j32
