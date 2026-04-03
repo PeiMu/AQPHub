@@ -330,6 +330,7 @@ We provide a web interface at https://github.com/bitaasudeh/aqp-web-interface
 ## DB as LLM framework
 
 ```bash
+conda create -n llm_db python=3
 conda activate llm_db
 pip3 install -r requirements.txt
 
