@@ -4,14 +4,21 @@
 
 #include "adapters/duckdb_adapter.h"
 
+#include <functional>
 #include <iostream>
+#include <set>
 #include <sstream>
+#include <unordered_set>
 #include <stdexcept>
 
 #ifdef HAVE_LLVM
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/operator/projection/physical_projection.hpp"
+#include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "simplest_ir.h"
 #endif
 
 namespace middleware {
@@ -745,6 +752,87 @@ static unsigned int FirstTableIdxFromExpr(
   }
 }
 
+// Walk the IR tree and build a map: table_name (lowercase) → table_index.
+// Also populates `ambiguous` with names that appear with multiple different indices
+// (e.g. two comp_cast_type aliases with index 1 and 2). JIT is skipped for those.
+static void CollectTableNameToIndex(
+    const ir_sql_converter::AQPStmt *ir,
+    std::unordered_map<std::string, unsigned int> &out,
+    std::unordered_set<std::string> &ambiguous) {
+  if (!ir) return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(ir);
+    std::string name = scan->GetTableName();
+    for (auto &c : name) c = (char)tolower((unsigned char)c);
+    auto it = out.find(name);
+    if (it != out.end() && it->second != scan->GetTableIndex())
+      ambiguous.insert(name);  // same physical table, different IR indices
+    out[name] = scan->GetTableIndex();
+  }
+  for (const auto &child : ir->children)
+    CollectTableNameToIndex(child.get(), out, ambiguous);
+}
+
+// Collect ALL FilterNodes in DFS order.
+static void CollectAllFilterNodes(
+    const ir_sql_converter::AQPStmt *ir,
+    std::vector<const ir_sql_converter::AQPStmt *> &out) {
+  if (!ir) return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode)
+    out.push_back(ir);
+  for (const auto &child : ir->children)
+    CollectAllFilterNodes(child.get(), out);
+}
+
+
+// Returns true if the expr (recursively) references a (table_idx, col_idx) pair
+// that exists in schema.  Used to skip JIT for filters whose predicates don't
+// map to any column in the physical operator's output chunk.
+static bool ExprHasColInSchema(
+    const ir_sql_converter::AQPExpr *expr,
+    const std::vector<aqp_jit::ColSchema> &schema) {
+  if (!expr) return false;
+  using ir_sql_converter::SimplestNodeType;
+  auto attrInSchema = [&](unsigned int t, unsigned int col) -> bool {
+    for (auto &cs : schema)
+      if (cs.table_idx == t && cs.col_idx == col) return true;
+    return false;
+  };
+  switch (expr->GetNodeType()) {
+    case SimplestNodeType::VarConstComparisonNode: {
+      auto *c = static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+      return c->attr && attrInSchema(
+          static_cast<unsigned int>(c->attr->GetTableIndex()),
+          static_cast<unsigned int>(c->attr->GetColumnIndex()));
+    }
+    case SimplestNodeType::IsNullExprNode: {
+      auto *n = static_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+      return n->attr && attrInSchema(
+          static_cast<unsigned int>(n->attr->GetTableIndex()),
+          static_cast<unsigned int>(n->attr->GetColumnIndex()));
+    }
+    case SimplestNodeType::InExprNode: {
+      auto *i = static_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+      return i->attr && attrInSchema(
+          static_cast<unsigned int>(i->attr->GetTableIndex()),
+          static_cast<unsigned int>(i->attr->GetColumnIndex()));
+    }
+    case SimplestNodeType::LogicalExprNode: {
+      auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+      return ExprHasColInSchema(l->left_expr.get(), schema) ||
+             ExprHasColInSchema(l->right_expr.get(), schema);
+    }
+    default: return false;
+  }
+}
+
+static bool HasApplicablePredicate(
+    const ir_sql_converter::AQPStmt *filter_ir,
+    const std::vector<aqp_jit::ColSchema> &schema) {
+  for (const auto &q : filter_ir->qual_vec)
+    if (ExprHasColInSchema(q.get(), schema)) return true;
+  return false;
+}
 
 void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
                                        const ir_sql_converter::AQPStmt &ir) {
@@ -763,10 +851,183 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
               << "  child_type=" << (int)child.type
               << "  child_cols=" << child.types.size() << "\n";
 
-    // Find the Filter IR node first — its qual_vec contains the actual
-    // predicates.  The root IR passed to RegisterJITFilters may be a
-    // Projection/Aggregate whose qual_vec is empty.
-    const ir_sql_converter::AQPStmt *filter_ir = FindFirstFilterNode(&ir);
+    // Dump all IR FilterNodes once per FILTER op (to show the full IR structure)
+    {
+      std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+      CollectAllFilterNodes(&ir, all_filters);
+      std::cerr << "[AQP-JIT-TRACE] IR has " << all_filters.size()
+                << " FilterNode(s):\n";
+      for (size_t fi = 0; fi < all_filters.size(); fi++) {
+        std::cerr << "[AQP-JIT-TRACE]   IR filter[" << fi
+                  << "] qual_vec.size=" << all_filters[fi]->qual_vec.size() << "\n";
+        for (size_t qi = 0; qi < all_filters[fi]->qual_vec.size(); qi++) {
+          std::string qs = all_filters[fi]->qual_vec[qi]->Print(false);
+          std::cerr << "[AQP-JIT-TRACE]     qual[" << qi << "]: " << qs << "\n";
+        }
+      }
+    }
+
+    // Determine the IR table_idx for this physical scan by matching the DuckDB
+    // table name against IR ScanNodes.  This is reliable because each physical
+    // TABLE_SCAN in DuckDB corresponds to exactly one logical table whose name
+    // is stored in both the DuckDB bind_data and the IR SimplestScan node.
+    const ir_sql_converter::AQPStmt *filter_ir = nullptr;
+    unsigned int ir_table_idx = UINT_MAX;
+
+    // Build table-name → IR table_index map from IR ScanNodes
+    std::unordered_map<std::string, unsigned int> ir_table_name_to_idx;
+    std::unordered_set<std::string> ir_ambiguous_names;
+    CollectTableNameToIndex(&ir, ir_table_name_to_idx, ir_ambiguous_names);
+    std::cerr << "[AQP-JIT-TRACE] IR table name map:\n";
+    for (auto &kv : ir_table_name_to_idx)
+      std::cerr << "[AQP-JIT-TRACE]   \"" << kv.first << "\" -> idx=" << kv.second << "\n";
+
+    std::vector<aqp_jit::ColSchema> schema_prelim;
+
+    if (child.type == PhysicalOperatorType::TABLE_SCAN) {
+      auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
+
+      // Get table name from DuckDB scan bind_data (works for regular storage scans)
+      std::string duckdb_table_name;
+      if (scan.bind_data) {
+        auto *tsbd = dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+        if (tsbd) {
+          duckdb_table_name = tsbd->table.name;
+          for (auto &c : duckdb_table_name) c = (char)tolower((unsigned char)c);
+        }
+      }
+      // Fall back: use function name (for temp table scans)
+      if (duckdb_table_name.empty()) {
+        duckdb_table_name = scan.function.name;
+        for (auto &c : duckdb_table_name) c = (char)tolower((unsigned char)c);
+      }
+      std::cerr << "[AQP-JIT-TRACE]   duckdb table_name=\"" << duckdb_table_name << "\"\n";
+
+      // Look up IR table_idx by name
+      auto it = ir_table_name_to_idx.find(duckdb_table_name);
+      if (it != ir_table_name_to_idx.end()) {
+        ir_table_idx = it->second;
+        std::cerr << "[AQP-JIT-TRACE]   resolved ir_table_idx=" << ir_table_idx << "\n";
+      } else {
+        std::cerr << "[AQP-JIT-TRACE]   WARNING: no IR table matches \"" << duckdb_table_name << "\"\n";
+      }
+
+      // Skip JIT for tables that appear under multiple different IR indices
+      // (e.g. self-join on comp_cast_type with alias indices 1 and 2).
+      // The name→index map has only one entry so one side would get the wrong filter.
+      // Leave schema_prelim empty and filter_ir as nullptr → JIT skipped below.
+      if (ir_ambiguous_names.count(duckdb_table_name)) {
+        std::cerr << "[AQP-JIT] ambiguous table \"" << duckdb_table_name
+                  << "\" → skipping JIT for this filter\n";
+      } else {
+        for (size_t i = 0; i < scan.column_ids.size(); i++) {
+          aqp_jit::ColSchema cs;
+          cs.table_idx = ir_table_idx;
+          cs.col_idx   = static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
+          cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
+          schema_prelim.push_back(cs);
+          std::cerr << "[AQP-JIT-TRACE]   scan col[" << i
+                    << "] raw_col=" << cs.col_idx << " dtype=" << cs.dtype
+                    << " table_idx=" << cs.table_idx << "\n";
+        }
+
+        // Find the FilterNode that references ir_table_idx
+        filter_ir = FindFirstFilterNode(&ir); // fallback
+        if (ir_table_idx != UINT_MAX) {
+          std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+          CollectAllFilterNodes(&ir, all_filters);
+          bool found = false;
+          for (auto *f : all_filters) {
+            for (const auto &q : f->qual_vec) {
+              unsigned int t = FirstTableIdxFromExpr(q.get());
+              if (t == ir_table_idx) { filter_ir = f; found = true; break; }
+            }
+            if (found) break;
+          }
+        }
+      }
+    } else if (child.type == PhysicalOperatorType::PROJECTION &&
+               !child.children.empty() &&
+               child.children[0].get().type == PhysicalOperatorType::TABLE_SCAN) {
+      // PROJECTION → TABLE_SCAN: trace projection expressions back to original
+      // scan column indices.  PhysicalProjection::select_list[i] is a
+      // BoundReferenceExpression with index=j meaning "output col i = scan
+      // input col j", so the original table col idx = scan.column_ids[j].
+      auto &proj = static_cast<duckdb::PhysicalProjection &>(child);
+      auto &scan = static_cast<duckdb::PhysicalTableScan &>(child.children[0].get());
+
+      // Get table name → ir_table_idx (same logic as the TABLE_SCAN path)
+      std::string duckdb_table_name;
+      if (scan.bind_data) {
+        auto *tsbd = dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+        if (tsbd) {
+          duckdb_table_name = tsbd->table.name;
+          for (auto &c : duckdb_table_name) c = (char)tolower((unsigned char)c);
+        }
+      }
+      if (duckdb_table_name.empty()) {
+        duckdb_table_name = scan.function.name;
+        for (auto &c : duckdb_table_name) c = (char)tolower((unsigned char)c);
+      }
+      std::cerr << "[AQP-JIT-TRACE]   proj→scan table_name=\"" << duckdb_table_name << "\"\n";
+
+      auto it = ir_table_name_to_idx.find(duckdb_table_name);
+      if (it != ir_table_name_to_idx.end()) {
+        ir_table_idx = it->second;
+        std::cerr << "[AQP-JIT-TRACE]   resolved ir_table_idx=" << ir_table_idx << "\n";
+      } else {
+        std::cerr << "[AQP-JIT-TRACE]   WARNING: proj→scan no IR table matches \"" << duckdb_table_name << "\"\n";
+      }
+
+      if (ir_ambiguous_names.count(duckdb_table_name)) {
+        std::cerr << "[AQP-JIT] ambiguous table \"" << duckdb_table_name
+                  << "\" (proj path) → skipping JIT for this filter\n";
+        // schema_prelim stays empty, filter_ir stays nullptr → JIT skipped below
+      } else {
+
+      // Build schema by tracing each projection expression back to scan col
+      for (size_t i = 0; i < proj.select_list.size(); i++) {
+        aqp_jit::ColSchema cs;
+        cs.table_idx = ir_table_idx;
+        cs.col_idx   = UINT_MAX; // set below if traceable
+        cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
+
+        auto &expr = *proj.select_list[i];
+        if (expr.GetExpressionClass() == duckdb::ExpressionClass::BOUND_REF) {
+          auto &ref = expr.Cast<duckdb::BoundReferenceExpression>();
+          if (ref.index < scan.column_ids.size()) {
+            cs.col_idx = static_cast<unsigned int>(
+                scan.column_ids[ref.index].GetPrimaryIndex());
+          }
+        }
+        schema_prelim.push_back(cs);
+        std::cerr << "[AQP-JIT-TRACE]   proj col[" << i
+                  << "] raw_col=" << cs.col_idx << " dtype=" << cs.dtype
+                  << " table_idx=" << cs.table_idx << "\n";
+      }
+
+      // Find the FilterNode that references ir_table_idx
+      filter_ir = FindFirstFilterNode(&ir); // fallback
+      if (ir_table_idx != UINT_MAX) {
+        std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+        CollectAllFilterNodes(&ir, all_filters);
+        bool found = false;
+        for (auto *f : all_filters) {
+          for (const auto &q : f->qual_vec) {
+            unsigned int t = FirstTableIdxFromExpr(q.get());
+            if (t == ir_table_idx) { filter_ir = f; found = true; break; }
+          }
+          if (found) break;
+        }
+      }
+      } // end else (not ambiguous) for proj path
+    } else {
+      // Unknown child type (HASH_JOIN result, etc.): skip JIT.
+      // schema_prelim stays empty → HasApplicablePredicate won't match → JIT skipped.
+      std::cerr << "[AQP-JIT-TRACE]   child_type=" << (int)child.type
+                << " not JIT-able → interpreter\n";
+    }
+
     if (!filter_ir) {
       std::cerr << "[AQP-JIT] FILTER eid=0x" << std::hex << eid << std::dec
                 << ": no Filter IR node found in tree, using interpreter\n";
@@ -776,47 +1037,30 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
     }
 
     std::cerr << "[AQP-JIT-TRACE] filter_ir node_type=" << (int)filter_ir->GetNodeType()
-              << "  qual_vec.size=" << filter_ir->qual_vec.size() << "\n";
-
-    // Determine table_idx from the FILTER node's own qual_vec.
-    unsigned int ir_table_idx = 0;
-    for (const auto &q : filter_ir->qual_vec) {
-      unsigned int t = FirstTableIdxFromExpr(q.get());
-      if (t != UINT_MAX) { ir_table_idx = t; break; }
+              << "  qual_vec.size=" << filter_ir->qual_vec.size()
+              << "  ir_table_idx=" << ir_table_idx << "\n";
+    for (size_t qi = 0; qi < filter_ir->qual_vec.size(); qi++) {
+      std::string qs = filter_ir->qual_vec[qi]->Print(false);
+      std::cerr << "[AQP-JIT-TRACE]   selected qual[" << qi << "]: " << qs << "\n";
     }
-    if (ir_table_idx == 0 && !ir.target_list.empty())
-      ir_table_idx = ir.target_list[0]->GetTableIndex(); // last-resort fallback
 
-    // Build ColSchema: chunk column position → (table_idx, col_idx, dtype)
-    std::vector<aqp_jit::ColSchema> schema;
-    if (child.type == PhysicalOperatorType::TABLE_SCAN) {
-      auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
-      for (size_t i = 0; i < scan.column_ids.size(); i++) {
-        aqp_jit::ColSchema cs;
-        cs.table_idx = ir_table_idx;
-        cs.col_idx   = static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
-        cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
-        schema.push_back(cs);
-        std::cerr << "[AQP-JIT-TRACE]   schema[" << i << "] table=" << cs.table_idx
-                  << " col=" << cs.col_idx << " dtype=" << cs.dtype << "\n";
-      }
-    } else {
-      // Non-scan child: position-based fallback (col_idx = chunk position)
-      for (size_t i = 0; i < child.types.size(); i++) {
-        aqp_jit::ColSchema cs;
-        cs.table_idx = ir_table_idx;
-        cs.col_idx   = static_cast<unsigned int>(i);
-        cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
-        schema.push_back(cs);
-        std::cerr << "[AQP-JIT-TRACE]   schema[" << i << "] table=" << cs.table_idx
-                  << " col=" << cs.col_idx << " dtype=" << cs.dtype << "\n";
-      }
-    }
+    // Build final ColSchema from schema_prelim.
+    // For TABLE_SCAN and PROJECTION→TABLE_SCAN: schema_prelim already has correct
+    // (table_idx, col_idx, dtype) from the DuckDB table-name → IR table_idx lookup.
+    // For unknown child types: schema_prelim is empty → JIT skipped below.
+    std::vector<aqp_jit::ColSchema> schema = schema_prelim;
+    for (size_t i = 0; i < schema.size(); i++)
+      std::cerr << "[AQP-JIT-TRACE]   schema[" << i << "] table=" << schema[i].table_idx
+                << " col=" << schema[i].col_idx << " dtype=" << schema[i].dtype << "\n";
 
     // Note: VARCHAR predicates (LIKE, NOT LIKE, Equal, NotEqual) are now
     // handled by the JIT via aqp_like_match / aqp_str_eq runtime helpers.
 
-    if (!schema.empty()) {
+    // Only register JIT if at least one predicate references a column in the
+    // schema.  If none do (e.g. the predicate was already applied at scan level
+    // and the physical FILTER's child only projects a different column), skip
+    // JIT for this operator and let DuckDB's interpreter handle it.
+    if (!schema.empty() && HasApplicablePredicate(filter_ir, schema)) {
       // Use the persistent compiler so the LLJIT instance (and its compiled
       // code memory) stays alive until jit_compiler_ is reset next query.
       if (!jit_compiler_)
@@ -841,6 +1085,9 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
             << "). Stopping. Use --no-jit to fall back to interpreter.";
         throw std::runtime_error(msg.str());
       }
+    } else if (!schema.empty()) {
+      std::cerr << "[AQP-JIT] skipping filter eid=0x" << std::hex << eid << std::dec
+                << ": no predicates reference schema columns → interpreter\n";
     }
   }
 

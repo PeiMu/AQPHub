@@ -39,6 +39,7 @@ extern "C" {
     int aqp_like_match(const char *str, int32_t slen, const char *pat, int32_t plen);
     int aqp_ilike_match(const char *str, int32_t slen, const char *pat, int32_t plen);
     int aqp_str_eq(const char *a, int32_t alen, const char *b, int32_t blen);
+    int aqp_str_cmp(const char *a, int32_t alen, const char *b, int32_t blen);
     int aqp_in_set_i32(int32_t val, const int32_t *values, int32_t n);
     int aqp_in_set_i64(int64_t val, const int64_t *values, int32_t n);
     int aqp_in_set_str(const char *str, int32_t slen, const char **ptrs,
@@ -120,6 +121,9 @@ struct IrToLlvmCompiler::Impl {
                                 JITSymbolFlags::Exported)},
             {es.intern("aqp_str_eq"),
              JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_eq),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_str_cmp"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_cmp),
                                 JITSymbolFlags::Exported)},
             {es.intern("aqp_in_set_i32"),
              JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_i32),
@@ -435,12 +439,38 @@ static Value *EmitVarConst(CompileCtx &cc, const SimplestVarConstComparison *cmp
             Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
             cmp_result = (op == SimplestExprType::NotEqual)
                          ? cc.b.CreateNot(m) : m;
-        } else {
+        } else if (op == SimplestExprType::TextLike ||
+                   op == SimplestExprType::Text_Not_Like) {
             FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft4);
             Value *r = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
             Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
             cmp_result = (op == SimplestExprType::Text_Not_Like)
                          ? cc.b.CreateNot(m) : m;
+        } else if (op == SimplestExprType::GreaterEqual ||
+                   op == SimplestExprType::LessEqual    ||
+                   op == SimplestExprType::GreaterThan  ||
+                   op == SimplestExprType::LessThan) {
+            // Lexicographic ordering via aqp_str_cmp (returns <0, 0, or >0)
+            FunctionType *ft_cmp = FunctionType::get(cc.i32(),
+                {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
+            FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_str_cmp", ft_cmp);
+            Value *r    = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
+            Value *zero = cc.c32(0);
+            switch (op) {
+            case SimplestExprType::GreaterEqual:
+                cmp_result = cc.b.CreateICmpSGE(r, zero); break;
+            case SimplestExprType::LessEqual:
+                cmp_result = cc.b.CreateICmpSLE(r, zero); break;
+            case SimplestExprType::GreaterThan:
+                cmp_result = cc.b.CreateICmpSGT(r, zero); break;
+            case SimplestExprType::LessThan:
+                cmp_result = cc.b.CreateICmpSLT(r, zero); break;
+            default:
+                cmp_result = ConstantInt::getTrue(cc.llctx); break;
+            }
+        } else {
+            // Unknown VARCHAR operator: pass all rows
+            cmp_result = ConstantInt::getTrue(cc.llctx);
         }
         cc.b.CreateBr(after_bb);
         BasicBlock *cmp_end = cc.b.GetInsertBlock();
@@ -461,7 +491,9 @@ static Value *EmitVarConst(CompileCtx &cc, const SimplestVarConstComparison *cmp
 // Emit IS NULL / IS NOT NULL check
 static Value *EmitIsNull(CompileCtx &cc, const SimplestIsNullExpr *expr) {
     int col_idx = cc.FindColIdx(*expr->attr);
-    if (col_idx < 0) return ConstantInt::getFalse(cc.llctx);
+    // Column not in schema: predicate doesn't apply to this filter → pass all rows.
+    // (same semantics as EmitVarConst when col_idx < 0)
+    if (col_idx < 0) return ConstantInt::getTrue(cc.llctx);
 
     Value *validity_ptr = cc.col_validity[col_idx];
     // If validity_ptr is null (all-valid), IS NULL is always false
@@ -493,13 +525,44 @@ static Value *EmitIsNull(CompileCtx &cc, const SimplestIsNullExpr *expr) {
     return is_null_check ? cc.b.CreateNot(is_valid) : is_valid;
 }
 
+// Returns true if `expr` references at least one column present in the schema.
+// Used to detect pass-through expressions so that NOT(pass-through) stays pass-through.
+static bool ExprInvolvesSchema(const CompileCtx &cc, const AQPExpr *expr) {
+    if (!expr) return false;
+    switch (expr->GetNodeType()) {
+    case VarConstComparisonNode: {
+        auto *cmp = static_cast<const SimplestVarConstComparison *>(expr);
+        return cc.FindColIdx(*cmp->attr) >= 0;
+    }
+    case IsNullExprNode: {
+        auto *isnull = static_cast<const SimplestIsNullExpr *>(expr);
+        return cc.FindColIdx(*isnull->attr) >= 0;
+    }
+    case LogicalExprNode: {
+        auto *log = static_cast<const SimplestLogicalExpr *>(expr);
+        return ExprInvolvesSchema(cc, log->left_expr.get()) ||
+               ExprInvolvesSchema(cc, log->right_expr.get());
+    }
+    case InExprNode: {
+        auto *in_expr = static_cast<const SimplestInExpr *>(expr);
+        return cc.FindColIdx(*in_expr->attr) >= 0;
+    }
+    default:
+        return false;
+    }
+}
+
 // Emit AND/OR/NOT
 static Value *EmitLogical(CompileCtx &cc, const SimplestLogicalExpr *expr) {
     using Op = SimplestLogicalOp;
     Op op = expr->GetLogicalOp();
 
     if (op == Op::LogicalNot) {
-        // LogicalNot: left_expr is nullptr; operand is in right_expr
+        // If the operand references no column from this schema, the NOT predicate
+        // is not applicable here → pass-through true (don't filter any rows).
+        // Without this guard, NOT(pass-through-true) = false → all rows rejected.
+        if (!ExprInvolvesSchema(cc, expr->right_expr.get()))
+            return ConstantInt::getTrue(cc.llctx);
         Value *child = EmitExpr(cc, expr->right_expr.get());
         return cc.b.CreateNot(child, "not");
     }

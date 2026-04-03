@@ -105,4 +105,13 @@ int aqp_str_eq(const char *a, int32_t alen, const char *b, int32_t blen) {
     return (memcmp(a, b, (size_t)alen) == 0) ? 1 : 0;
 }
 
+// Lexicographic VARCHAR comparison: returns negative if a < b, 0 if a == b,
+// positive if a > b.  Used for SQL '<', '<=', '>', '>=' on string columns.
+int aqp_str_cmp(const char *a, int32_t alen, const char *b, int32_t blen) {
+    int32_t common = alen < blen ? alen : blen;
+    int r = memcmp(a, b, (size_t)common);
+    if (r != 0) return r;
+    return (int)(alen - blen);
+}
+
 } // extern "C"
