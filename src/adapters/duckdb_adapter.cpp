@@ -304,7 +304,11 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   if (jit_pending_ir_) {
     auto prepared = conn->Prepare(sql);
     if (!prepared->HasError() && prepared->data && prepared->data->physical_plan) {
-      jit_compiler_.reset(); // fresh compiler per query execution
+      // Reset both the compiler AND the JIT context so stale function pointers
+      // from a previous sub-query don't get dispatched (addresses can be reused).
+      jit_compiler_.reset();
+      GetClientContext()->aqp_jit_context.reset();
+      std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset jit_compiler + aqp_jit_context\n";
       RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
     }
     jit_pending_ir_ = nullptr;
@@ -379,7 +383,11 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #ifdef HAVE_LLVM
   // JIT: compile filters from the pending IR and register before execution.
   if (jit_pending_ir_ && prepared->data && prepared->data->physical_plan) {
-    jit_compiler_.reset(); // fresh compiler per sub-plan execution
+    // Reset both compiler AND context — stale function pointers from a previous
+    // sub-plan would crash if a new PhysicalFilter lands at the same address.
+    jit_compiler_.reset();
+    GetClientContext()->aqp_jit_context.reset();
+    std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset jit_compiler + aqp_jit_context\n";
     RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
     jit_pending_ir_ = nullptr;
   }
@@ -737,24 +745,49 @@ static unsigned int FirstTableIdxFromExpr(
   }
 }
 
+
 void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
                                        const ir_sql_converter::AQPStmt &ir) {
   using duckdb::PhysicalOperatorType;
 
+  // Diagnostic: show every node in the physical plan tree
+  std::cerr << "[AQP-JIT-TRACE] visit op=" << (int)op.type
+            << " children=" << op.children.size()
+            << " addr=" << (void*)&op << "\n";
+
   if (op.type == PhysicalOperatorType::FILTER && !op.children.empty()) {
     auto &child = op.children[0].get();
+    uint64_t eid = duckdb::ExpressionID(op);
 
-    // Determine table_idx from the filter's own expressions (not target_list,
-    // which may belong to an ancestor aggregate in multi-table final IRs).
+    std::cerr << "[AQP-JIT-TRACE] FILTER eid=0x" << std::hex << eid << std::dec
+              << "  child_type=" << (int)child.type
+              << "  child_cols=" << child.types.size() << "\n";
+
+    // Find the Filter IR node first — its qual_vec contains the actual
+    // predicates.  The root IR passed to RegisterJITFilters may be a
+    // Projection/Aggregate whose qual_vec is empty.
+    const ir_sql_converter::AQPStmt *filter_ir = FindFirstFilterNode(&ir);
+    if (!filter_ir) {
+      std::cerr << "[AQP-JIT] FILTER eid=0x" << std::hex << eid << std::dec
+                << ": no Filter IR node found in tree, using interpreter\n";
+      for (auto &child_ref : op.children)
+        RegisterJITFilters(child_ref.get(), ir);
+      return;
+    }
+
+    std::cerr << "[AQP-JIT-TRACE] filter_ir node_type=" << (int)filter_ir->GetNodeType()
+              << "  qual_vec.size=" << filter_ir->qual_vec.size() << "\n";
+
+    // Determine table_idx from the FILTER node's own qual_vec.
     unsigned int ir_table_idx = 0;
-    for (const auto &q : ir.qual_vec) {
+    for (const auto &q : filter_ir->qual_vec) {
       unsigned int t = FirstTableIdxFromExpr(q.get());
       if (t != UINT_MAX) { ir_table_idx = t; break; }
     }
     if (ir_table_idx == 0 && !ir.target_list.empty())
-      ir_table_idx = ir.target_list[0]->GetTableIndex(); // fallback
+      ir_table_idx = ir.target_list[0]->GetTableIndex(); // last-resort fallback
 
-    // Build ColSchema: chunk position → (table_idx, col_idx, dtype)
+    // Build ColSchema: chunk column position → (table_idx, col_idx, dtype)
     std::vector<aqp_jit::ColSchema> schema;
     if (child.type == PhysicalOperatorType::TABLE_SCAN) {
       auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
@@ -764,6 +797,8 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
         cs.col_idx   = static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
         cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
         schema.push_back(cs);
+        std::cerr << "[AQP-JIT-TRACE]   schema[" << i << "] table=" << cs.table_idx
+                  << " col=" << cs.col_idx << " dtype=" << cs.dtype << "\n";
       }
     } else {
       // Non-scan child: position-based fallback (col_idx = chunk position)
@@ -773,25 +808,19 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
         cs.col_idx   = static_cast<unsigned int>(i);
         cs.dtype     = duckdb::ToDtype(child.types[i].InternalType());
         schema.push_back(cs);
+        std::cerr << "[AQP-JIT-TRACE]   schema[" << i << "] table=" << cs.table_idx
+                  << " col=" << cs.col_idx << " dtype=" << cs.dtype << "\n";
       }
     }
 
+    // Note: VARCHAR predicates (LIKE, NOT LIKE, Equal, NotEqual) are now
+    // handled by the JIT via aqp_like_match / aqp_str_eq runtime helpers.
+
     if (!schema.empty()) {
-      // CompileFilter needs a Filter IR node (with qual_vec), not the root IR
-      // (which may be an Aggregate or Projection with empty qual_vec).
-      const ir_sql_converter::AQPStmt *filter_ir = FindFirstFilterNode(&ir);
-      if (!filter_ir) {
-        std::cerr << "[AQP-JIT] no Filter IR node found in tree, skipping\n";
-        for (auto &child_ref : op.children)
-          RegisterJITFilters(child_ref.get(), ir);
-        return;
-      }
       // Use the persistent compiler so the LLJIT instance (and its compiled
       // code memory) stays alive until jit_compiler_ is reset next query.
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(/*use_o3=*/false);
-      // CompileFilter returns global ::AQPExprFn (from aqp_jit_abi.h);
-      // duckdb::AQPExprFn has identical layout — reinterpret_cast is safe.
       ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
       if (raw_fn) {
         duckdb::AQPExprFn fn =
@@ -799,16 +828,16 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
         auto *ctx = GetClientContext();
         if (!ctx->aqp_jit_context)
           ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-        uint64_t eid = duckdb::ExpressionID(op);
         ctx->aqp_jit_context->expr_fns[eid] = fn;
         ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
         std::cerr << "[AQP-JIT] compiled filter eid=0x" << std::hex << eid << std::dec
-                  << "  cols=" << schema.size() << "\n";
+                  << "  cols=" << schema.size()
+                  << "  table_idx=" << ir_table_idx << "\n";
       } else {
-        uint64_t eid = duckdb::ExpressionID(op);
         std::ostringstream msg;
         msg << "[AQP-JIT] JIT compilation failed (eid=0x" << std::hex << eid
             << std::dec << "  cols=" << schema.size()
+            << "  table_idx=" << ir_table_idx
             << "). Stopping. Use --no-jit to fall back to interpreter.";
         throw std::runtime_error(msg.str());
       }

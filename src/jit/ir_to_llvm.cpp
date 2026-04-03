@@ -38,6 +38,7 @@
 extern "C" {
     int aqp_like_match(const char *str, int32_t slen, const char *pat, int32_t plen);
     int aqp_ilike_match(const char *str, int32_t slen, const char *pat, int32_t plen);
+    int aqp_str_eq(const char *a, int32_t alen, const char *b, int32_t blen);
     int aqp_in_set_i32(int32_t val, const int32_t *values, int32_t n);
     int aqp_in_set_i64(int64_t val, const int64_t *values, int32_t n);
     int aqp_in_set_str(const char *str, int32_t slen, const char **ptrs,
@@ -117,6 +118,9 @@ struct IrToLlvmCompiler::Impl {
             {es.intern("aqp_ilike_match"),
              JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ilike_match),
                                 JITSymbolFlags::Exported)},
+            {es.intern("aqp_str_eq"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_eq),
+                                JITSymbolFlags::Exported)},
             {es.intern("aqp_in_set_i32"),
              JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_i32),
                                 JITSymbolFlags::Exported)},
@@ -169,6 +173,7 @@ struct CompileCtx {
         AQPColViewTy   = StructType::get(ctx, {i8p, i64p, i32, i32});
         AQPChunkViewTy = StructType::get(ctx, {
             PointerType::getUnqual(AQPColViewTy), i64, i64});
+        // sel.indices is sel_t* = uint32_t* in DuckDB (typedefs.hpp: typedef uint32_t sel_t)
         AQPSelViewTy   = StructType::get(ctx, {
             PointerType::getUnqual(i32), i32});
     }
@@ -395,19 +400,20 @@ static Value *EmitVarConst(CompileCtx &cc, const SimplestVarConstComparison *cmp
             Value *pat_ptr = cc.b.CreateBitCast(pat_gv, cc.i8p());
             Value *pat_len = cc.c32((int32_t)pat.size());
 
+            FunctionType *ft4 = FunctionType::get(cc.i32(),
+                {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
             if (op == SimplestExprType::Equal || op == SimplestExprType::NotEqual) {
-                // Simple byte equality: compare length then memcmp via like without wildcards
-                FunctionType *ft = FunctionType::get(cc.i32(), {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
-                FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft);
+                // Exact byte equality: length check + memcmp (NOT LIKE semantics).
+                // aqp_like_match would misinterpret '%'/'_' in literal values.
+                FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_str_eq", ft4);
                 Value *result = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
                 Value *match  = cc.b.CreateICmpNE(result, cc.c32(0));
                 return (op == SimplestExprType::NotEqual)
                     ? cc.b.CreateNot(match)
                     : match;
             } else {
-                // TextLike / Text_Not_Like
-                FunctionType *ft = FunctionType::get(cc.i32(), {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
-                FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft);
+                // TextLike / Text_Not_Like: use LIKE pattern matching
+                FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft4);
                 Value *result = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
                 Value *match  = cc.b.CreateICmpNE(result, cc.c32(0));
                 return (op == SimplestExprType::Text_Not_Like)
@@ -613,6 +619,7 @@ static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
     StructType *ColViewTy   = StructType::get(llctx, {i8p, i64p, i32, i32});
     StructType *ChunkViewTy = StructType::get(llctx, {
         PointerType::getUnqual(ColViewTy), i64, i64});
+    // AQPSelView.indices is sel_t* = uint32_t* (DuckDB typedefs.hpp: typedef uint32_t sel_t)
     StructType *SelViewTy   = StructType::get(llctx, {
         PointerType::getUnqual(i32), i32});
 
@@ -649,7 +656,7 @@ static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
         cc.col_validity[i] = cc.LoadColValidity((unsigned)i);
     }
 
-    // Load sel->indices pointer
+    // Load sel->indices pointer (sel_t* = uint32_t*)
     Value *sel_idx_ptr_ptr = cc.b.CreateStructGEP(SelViewTy, sel_arg, 0);
     Value *sel_idx_ptr     = cc.b.CreateLoad(
         PointerType::getUnqual(i32), sel_idx_ptr_ptr, "sel_indices");
@@ -682,7 +689,7 @@ static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
     BasicBlock *condBr_bb = cc.b.GetInsertBlock();
     cc.b.CreateCondBr(match, store_bb, next_bb);
 
-    // Store matching row index
+    // Store matching row index as sel_t = uint32_t (4-byte stride)
     cc.b.SetInsertPoint(store_bb);
     Value *dst   = cc.b.CreateGEP(i32, sel_idx_ptr, out_count, "dst");
     Value *i_i32 = cc.b.CreateTrunc(i, i32, "i_i32");

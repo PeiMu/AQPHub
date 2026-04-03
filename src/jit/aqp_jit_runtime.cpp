@@ -97,4 +97,12 @@ int aqp_in_set_str(const char *str, int32_t slen,
     return 0;
 }
 
+// Exact VARCHAR equality: returns 1 iff lengths are equal AND bytes match.
+// Used for SQL '=' and '<>' on string columns (as opposed to aqp_like_match
+// which treats '%' and '_' as wildcards and is only correct for LIKE).
+int aqp_str_eq(const char *a, int32_t alen, const char *b, int32_t blen) {
+    if (alen != blen) return 0;
+    return (memcmp(a, b, (size_t)alen) == 0) ? 1 : 0;
+}
+
 } // extern "C"

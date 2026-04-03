@@ -110,7 +110,7 @@ else ()
 endif ()
 
 # PostgreSQL
-set(POSTGRES_ROOT "/home/bita/Project/project_bins" CACHE PATH "PostgreSQL lib/inc path")
+set(POSTGRES_ROOT "/home/pei/Project/project_bins" CACHE PATH "PostgreSQL lib/inc path")
 set(HAVE_POSTGRES FALSE)
 if (EXISTS ${POSTGRES_ROOT})
     message(STATUS "Found PostgreSQL lib/inc at: ${POSTGRES_ROOT}")
