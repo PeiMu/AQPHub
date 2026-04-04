@@ -84,6 +84,22 @@ typedef int64_t (*AQPPipelineFn)(AQPChunkView *source_chunk,
                                  AQPChunkView *sink_chunk,
                                  void *pipeline_state);
 
+/* Sub-plan context: holds all state for a compiled sub-plan.
+ * Managed by the middleware; passed to the coordinator function. */
+typedef struct {
+    void        **hash_tables;     /* array of AQPHashTable pointers              */
+    uint32_t      num_hash_tables;
+    AQPPipelineFn *pipeline_fns;   /* array of compiled pipeline functions         */
+    uint32_t      num_pipelines;
+    void         *scratch;         /* scratch buffer for intermediate chunks       */
+    uint64_t      scratch_size;
+} AQPSubPlanCtx;
+
+/* Sub-plan level: orchestrates multiple pipelines.
+ * The coordinator runs build pipelines, then probe pipelines, manages hash tables.
+ * Returns 0 on success, negative on error. */
+typedef int32_t (*AQPSubPlanFn)(AQPSubPlanCtx *ctx);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

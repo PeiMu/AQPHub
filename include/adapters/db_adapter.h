@@ -87,6 +87,17 @@ public:
 
   virtual std::string GetEngineName() const = 0;
 
+  // Pipeline detection: is this IR node a pipeline breaker?
+  // Default: infer from IR node type (AggregateNode, HashNode, SortNode).
+  // Engines with physical plan access (DuckDB) override with IsSink() check.
+  virtual bool IsPipelineBreaker(
+      const ir_sql_converter::AQPStmt &node) const {
+    auto nt = node.GetNodeType();
+    return nt == ir_sql_converter::SimplestNodeType::AggregateNode ||
+           nt == ir_sql_converter::SimplestNodeType::HashNode ||
+           nt == ir_sql_converter::SimplestNodeType::SortNode;
+  }
+
   virtual void CleanUp() = 0;
 
   unsigned int subquery_index = 0;

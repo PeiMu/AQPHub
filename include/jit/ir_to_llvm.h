@@ -55,12 +55,16 @@ struct ColSchema {
  */
 class IrToLlvmCompiler {
 public:
-    explicit IrToLlvmCompiler(bool use_o3 = false);
+    explicit IrToLlvmCompiler(bool use_o3 = false, bool use_simd = false);
     ~IrToLlvmCompiler();
 
     // Non-copyable, movable
     IrToLlvmCompiler(const IrToLlvmCompiler &) = delete;
     IrToLlvmCompiler &operator=(const IrToLlvmCompiler &) = delete;
+
+    // SIMD configuration (detected at init)
+    unsigned GetVecWidth() const;
+    bool HasSIMD() const;
 
     /**
      * Level 2+: Compile ALL filter expressions inside a SimplestFilter IR node,
@@ -157,8 +161,34 @@ public:
         const ir_sql_converter::AQPStmt *proj_node,
         const std::vector<ColSchema> &in_schema);
 
+    /**
+     * Level 3: Compile Filter + Aggregate fusion.
+     * Fused loop: for each row, evaluate filter; if match, update accumulator.
+     * No intermediate DataChunk between filter and aggregate.
+     *
+     * Signature: void fn(AQPChunkView *in, void *agg_state)
+     * Returns function pointer, or nullptr on failure.
+     */
+    void *CompileFilterAggFusion(
+        const ir_sql_converter::AQPStmt *filter_node,
+        const ir_sql_converter::AQPStmt *agg_node,
+        const std::vector<ColSchema> &in_schema);
+
+    /**
+     * Level 4: Compile an entire sub-plan into a coordinator function.
+     * The coordinator orchestrates multiple pipelines:
+     *   1. Identifies pipeline segments from the IR tree
+     *   2. Runs build-side pipelines first (populating hash tables)
+     *   3. Runs probe-side pipelines using the hash tables
+     *
+     * sub_ir: the complete sub-plan IR tree (from ir_query_splitter)
+     * Returns AQPSubPlanFn, or nullptr if the sub-plan is too complex.
+     */
+    void *CompileSubPlan(const ir_sql_converter::AQPStmt &sub_ir);
+
 private:
     bool use_o3_;
+    bool use_simd_;
 
     // LLVM state — managed via unique_ptr to avoid including LLVM headers here
     struct Impl;

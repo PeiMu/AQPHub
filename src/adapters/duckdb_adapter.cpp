@@ -311,11 +311,11 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   if (jit_pending_ir_) {
     auto prepared = conn->Prepare(sql);
     if (!prepared->HasError() && prepared->data && prepared->data->physical_plan) {
-      // Reset both the compiler AND the JIT context so stale function pointers
-      // from a previous sub-query don't get dispatched (addresses can be reused).
-      jit_compiler_.reset();
+      // Reset JIT context (stale function pointers would crash if dispatched).
+      // Keep jit_compiler_ alive — reusing the LLJIT instance avoids re-registering
+      // 15+ runtime symbols and re-initializing the JIT on every sub-plan.
       GetClientContext()->aqp_jit_context.reset();
-      std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset jit_compiler + aqp_jit_context\n";
+      std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset aqp_jit_context (compiler reused)\n";
       RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
       auto *ctx = GetClientContext();
       if (ctx->aqp_jit_context) {
@@ -324,7 +324,8 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
                   << " op_fns=" << ctx->aqp_jit_context->op_fns.size()
                   << " proj_maps=" << ctx->aqp_jit_context->proj_col_maps.size()
                   << " agg_fns=" << ctx->aqp_jit_context->agg_fns.size()
-                  << " pipeline_fns=" << ctx->aqp_jit_context->pipeline_fns.size() << "\n";
+                  << " pipeline_fns=" << ctx->aqp_jit_context->pipeline_fns.size()
+                  << " scan_filter=" << ctx->aqp_jit_context->scan_filter_fns.size() << "\n";
       }
     }
     jit_pending_ir_ = nullptr;
@@ -399,12 +400,28 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #ifdef HAVE_LLVM
   // JIT: compile filters from the pending IR and register before execution.
   if (jit_pending_ir_ && prepared->data && prepared->data->physical_plan) {
-    // Reset both compiler AND context — stale function pointers from a previous
-    // sub-plan would crash if a new PhysicalFilter lands at the same address.
-    jit_compiler_.reset();
+    // Reset JIT context (stale function pointers would crash if dispatched).
+    // Keep jit_compiler_ alive — reusing LLJIT avoids re-init overhead.
     GetClientContext()->aqp_jit_context.reset();
-    std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset jit_compiler + aqp_jit_context\n";
+    std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset aqp_jit_context (compiler reused)\n";
     RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+
+    // Level 4: Sub-plan compilation — compile the entire sub-IR tree
+    if (jit_flags_ & AQP_JIT_SUBPLAN) {
+      if (!jit_compiler_)
+        jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
+            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
+      void *subplan_result = jit_compiler_->CompileSubPlan(*jit_pending_ir_);
+      if (subplan_result) {
+        auto *ctx_sp = GetClientContext();
+        if (ctx_sp->aqp_jit_context) {
+          ctx_sp->aqp_jit_context->flags |= duckdb::AQPJIT_SUBPLAN;
+          std::cerr << "[AQP-JIT] sub-plan compiled for this sub-IR\n";
+        }
+      }
+    }
+
     auto *ctx2 = GetClientContext();
     if (ctx2->aqp_jit_context) {
       std::cerr << "[AQP-JIT] summary: flags=0x" << std::hex << ctx2->aqp_jit_context->flags
@@ -412,7 +429,8 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
                 << " op_fns=" << ctx2->aqp_jit_context->op_fns.size()
                 << " proj_maps=" << ctx2->aqp_jit_context->proj_col_maps.size()
                 << " agg_fns=" << ctx2->aqp_jit_context->agg_fns.size()
-                << " pipeline_fns=" << ctx2->aqp_jit_context->pipeline_fns.size() << "\n";
+                << " pipeline_fns=" << ctx2->aqp_jit_context->pipeline_fns.size()
+                << " scan_filter=" << ctx2->aqp_jit_context->scan_filter_fns.size() << "\n";
     }
     jit_pending_ir_ = nullptr;
   }
@@ -1131,7 +1149,8 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
       // code memory) stays alive until jit_compiler_ is reset next query.
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0);
+            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
+            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
       ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
       if (raw_fn) {
         duckdb::AQPExprFn fn =
@@ -1141,6 +1160,16 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
           ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
         ctx->aqp_jit_context->expr_fns[eid] = fn;
         ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
+
+        // Scan+Filter fusion: also register filter on the TABLE_SCAN operator
+        // so it can be applied at scan level (pre-filtered chunks).
+        if (child.type == PhysicalOperatorType::TABLE_SCAN) {
+          uint64_t scan_eid = duckdb::ExpressionID(child);
+          ctx->aqp_jit_context->scan_filter_fns[scan_eid] = fn;
+          std::cerr << "[AQP-JIT] scan+filter fusion: scan_eid=0x" << std::hex
+                    << scan_eid << std::dec << "\n";
+        }
+
         std::cerr << "[AQP-JIT] compiled filter eid=0x" << std::hex << eid << std::dec
                   << "  cols=" << schema.size()
                   << "  table_idx=" << ir_table_idx << "\n";
@@ -1164,7 +1193,8 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
 
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0);
+            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
+            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
 
       ::AQPPipelineFn pipe_fn = jit_compiler_->CompilePipeline(
           filter_ir, proj_ir, schema);
@@ -1320,7 +1350,8 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
 
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0);
+            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
+            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
       void *raw_fn = jit_compiler_->CompileAggUpdate(*agg_ir, in_schema);
       if (raw_fn) {
         // Compute state size (same logic as CompileAggUpdate)
