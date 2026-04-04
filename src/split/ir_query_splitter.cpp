@@ -3,6 +3,7 @@
  */
 
 #include "split/ir_query_splitter.h"
+#include "jit/aqp_jit_abi.h"
 
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
@@ -311,17 +312,25 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
     query_result = adapter_->ExecuteSQL(combined);
   } else {
-    std::cerr << "[AQP-JIT-TRACE] final SQL path: enable_jit=" << config_.enable_jit
-              << " engine=" << (int)config_.engine << "\n";
+    std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
+              << config_.jit_flags << std::dec
+              << " (";
+    if (config_.jit_flags & AQP_JIT_EXPR)     std::cerr << "EXPR ";
+    if (config_.jit_flags & AQP_JIT_OPERATOR) std::cerr << "OPERATOR ";
+    if (config_.jit_flags & AQP_JIT_PIPELINE) std::cerr << "PIPELINE ";
+    if (config_.jit_flags & AQP_JIT_SUBPLAN)  std::cerr << "SUBPLAN ";
+    if (config_.jit_flags & AQP_JIT_SIMD)     std::cerr << "SIMD ";
+    if (config_.jit_flags & AQP_JIT_OPT3)     std::cerr << "OPT3 ";
+    std::cerr << ") engine=" << (int)config_.engine << "\n";
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
     std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB+HAVE_LLVM compiled in\n";
-    if (config_.enable_jit && config_.engine == BackendEngine::DUCKDB) {
+    if (config_.jit_flags && config_.engine == BackendEngine::DUCKDB) {
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
       std::cerr << "[AQP-JIT-TRACE] duck=" << (void*)duck
                 << " remaining_ir=" << (void*)remaining_ir.get() << "\n";
       if (duck && remaining_ir)
-        duck->SetJITPendingIR(remaining_ir.get());
+        duck->SetJITPendingIR(remaining_ir.get(), config_.jit_flags);
     }
 #else
     std::cerr << "[AQP-JIT-TRACE] HAVE_LLVM NOT defined\n";
@@ -444,10 +453,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_LLVM
   // JIT: compile filter expressions before execution so DuckDB can dispatch
   // to compiled code instead of the interpreted expression executor.
-  if (config_.enable_jit && config_.engine == BackendEngine::DUCKDB) {
+  if (config_.jit_flags && config_.engine == BackendEngine::DUCKDB) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duck)
-      duck->SetJITPendingIR(executable_ir);
+      duck->SetJITPendingIR(executable_ir, config_.jit_flags);
   }
 #endif
 #endif

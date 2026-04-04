@@ -52,6 +52,16 @@ typedef struct {
 #define AQP_DTYPE_DATE    8
 #define AQP_DTYPE_OTHER   99
 
+/* JIT compilation flags — bitmask, composable.
+ * Prefixed AQP_JIT_ to avoid collision with DuckDB's enum AQPJITFlags. */
+#define AQP_JIT_NONE      0u
+#define AQP_JIT_EXPR      (1u << 0)   /* Level 1: individual expression compilation   */
+#define AQP_JIT_OPERATOR  (1u << 1)   /* Level 2: full operator compilation            */
+#define AQP_JIT_PIPELINE  (1u << 2)   /* Level 3: fused pipeline compilation           */
+#define AQP_JIT_OPT3      (1u << 3)   /* Use LLVM O3 optimization                     */
+#define AQP_JIT_SUBPLAN   (1u << 4)   /* Level 4: multi-pipeline sub-plan compilation  */
+#define AQP_JIT_SIMD      (1u << 5)   /* Enable explicit SIMD vectorization            */
+
 /**
  * Compiled expression function type.
  *
@@ -63,6 +73,16 @@ typedef struct {
  * where hex_hash = FNV-1a hash of the serialised IR subtree.
  */
 typedef uint64_t (*AQPExprFn)(AQPChunkView *chunk, AQPSelView *sel);
+
+/* Operator-level: transforms input chunk to output chunk.
+ * Returns OperatorResultType cast to int32_t. */
+typedef int32_t (*AQPOperatorFn)(AQPChunkView *in, AQPChunkView *out);
+
+/* Pipeline-level: processes one chunk from source through fused operators to sink.
+ * Returns count of output rows, or negative on error. */
+typedef int64_t (*AQPPipelineFn)(AQPChunkView *source_chunk,
+                                 AQPChunkView *sink_chunk,
+                                 void *pipeline_state);
 
 #ifdef __cplusplus
 } // extern "C"

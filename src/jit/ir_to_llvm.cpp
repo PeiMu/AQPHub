@@ -33,8 +33,9 @@
 
 #include "simplest_ir.h"
 
-// Forward-declare C-linkage runtime helpers (defined in aqp_jit_runtime.cpp).
-// Must come before Impl::Impl() which takes their addresses.
+// Forward-declare C-linkage runtime helpers (defined in aqp_jit_runtime.cpp
+// and aqp_jit_hashtable.cpp).  Must come before Impl::Impl() which takes
+// their addresses.
 extern "C" {
     int aqp_like_match(const char *str, int32_t slen, const char *pat, int32_t plen);
     int aqp_ilike_match(const char *str, int32_t slen, const char *pat, int32_t plen);
@@ -44,11 +45,22 @@ extern "C" {
     int aqp_in_set_i64(int64_t val, const int64_t *values, int32_t n);
     int aqp_in_set_str(const char *str, int32_t slen, const char **ptrs,
                        const int32_t *lens, int32_t n);
+    // Hash table (aqp_jit_hashtable.cpp)
+    struct AQPHashTable;
+    AQPHashTable *aqp_ht_create(uint32_t key_width, uint32_t payload_width, uint64_t est_rows);
+    void  aqp_ht_destroy(AQPHashTable *ht);
+    void *aqp_ht_insert(AQPHashTable *ht, const void *key);
+    void *aqp_ht_probe(const AQPHashTable *ht, const void *key);
+    void  aqp_ht_iter_reset(AQPHashTable *ht);
+    int   aqp_ht_next(AQPHashTable *ht, void **key_out, void **payload_out);
+    uint64_t aqp_ht_size(const AQPHashTable *ht);
+    uint64_t aqp_hash(const void *key, uint32_t len);
 }
 
 #include <cstdint>
 #include <functional>
 #include <atomic>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -133,6 +145,31 @@ struct IrToLlvmCompiler::Impl {
                                 JITSymbolFlags::Exported)},
             {es.intern("aqp_in_set_str"),
              JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_str),
+                                JITSymbolFlags::Exported)},
+            // Hash table runtime
+            {es.intern("aqp_ht_create"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_create),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_ht_destroy"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_destroy),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_ht_insert"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_insert),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_ht_probe"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_probe),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_ht_iter_reset"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_iter_reset),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_ht_next"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_next),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_ht_size"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_size),
+                                JITSymbolFlags::Exported)},
+            {es.intern("aqp_hash"),
+             JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_hash),
                                 JITSymbolFlags::Exported)},
         }));
     }
@@ -818,6 +855,773 @@ static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
     return fn;
 }
 
+// Element size in bytes for each AQP dtype.
+static unsigned DtypeElemSize(int32_t dtype) {
+    switch (dtype) {
+    case AQP_DTYPE_BOOL:  case AQP_DTYPE_INT8:    return 1;
+    case AQP_DTYPE_INT16:                          return 2;
+    case AQP_DTYPE_INT32: case AQP_DTYPE_FLOAT:
+    case AQP_DTYPE_DATE:                           return 4;
+    case AQP_DTYPE_INT64: case AQP_DTYPE_DOUBLE:   return 8;
+    case AQP_DTYPE_VARCHAR:                        return 16; // DuckDB string_t
+    default:                                       return 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build a projection function:
+//   int32_t aqp_proj_<id>(AQPChunkView* in, AQPChunkView* out)
+//
+// Copies actual column DATA (memcpy) from input to output for each mapped
+// column.  This is portable — works with any engine that provides flat
+// columnar buffers via AQPChunkView.
+//
+// col_mapping[i]  = input column index for output column i (-1 = skip)
+// col_dtypes[i]   = AQP_DTYPE_* of output column i (determines element size)
+// ---------------------------------------------------------------------------
+static Function *BuildProjectionFunction(LLVMContext &llctx, Module &mod,
+                                         const std::string &fn_name,
+                                         const std::vector<int> &col_mapping,
+                                         const std::vector<int32_t> &col_dtypes) {
+    Type *i8p  = PointerType::getUnqual(Type::getInt8Ty(llctx));
+    Type *i32  = Type::getInt32Ty(llctx);
+    Type *i64  = Type::getInt64Ty(llctx);
+    Type *i64p = PointerType::getUnqual(i64);
+    Type *i1   = Type::getInt1Ty(llctx);
+
+    StructType *ColViewTy   = StructType::get(llctx, {i8p, i64p, i32, i32});
+    StructType *ChunkViewTy = StructType::get(llctx, {
+        PointerType::getUnqual(ColViewTy), i64, i64});
+
+    // int32_t fn(AQPChunkView *in, AQPChunkView *out)
+    FunctionType *fn_ty = FunctionType::get(
+        i32, {PointerType::getUnqual(ChunkViewTy),
+              PointerType::getUnqual(ChunkViewTy)}, false);
+    Function *fn = Function::Create(fn_ty, Function::ExternalLinkage,
+                                    fn_name, &mod);
+
+    Value *in_arg  = fn->getArg(0);  in_arg->setName("in");
+    Value *out_arg = fn->getArg(1);  out_arg->setName("out");
+
+    BasicBlock *entry = BasicBlock::Create(llctx, "entry", fn);
+    IRBuilder<> b(entry);
+
+    // Load in->nrows
+    Value *in_nrows_ptr  = b.CreateStructGEP(ChunkViewTy, in_arg, 1);
+    Value *in_nrows      = b.CreateLoad(i64, in_nrows_ptr, "in_nrows");
+
+    // Load in->cols and out->cols base pointers
+    Value *in_cols_pp  = b.CreateStructGEP(ChunkViewTy, in_arg, 0);
+    Value *in_cols     = b.CreateLoad(PointerType::getUnqual(ColViewTy), in_cols_pp, "in_cols");
+    Value *out_cols_pp = b.CreateStructGEP(ChunkViewTy, out_arg, 0);
+    Value *out_cols    = b.CreateLoad(PointerType::getUnqual(ColViewTy), out_cols_pp, "out_cols");
+
+    // Declare llvm.memcpy intrinsic
+    Function *memcpy_fn = Intrinsic::getDeclaration(&mod, Intrinsic::memcpy,
+        {i8p, i8p, i64});
+
+    // Validity size in bytes: ceil(nrows / 64) * 8
+    Value *nrows_plus_63 = b.CreateAdd(in_nrows, ConstantInt::get(i64, 63));
+    Value *nwords = b.CreateLShr(nrows_plus_63, ConstantInt::get(i64, 6));
+    Value *val_bytes = b.CreateMul(nwords, ConstantInt::get(i64, 8), "val_bytes");
+
+    // For each output column, memcpy actual data from input column
+    for (size_t out_i = 0; out_i < col_mapping.size(); out_i++) {
+        int in_i = col_mapping[out_i];
+        if (in_i < 0) continue;
+
+        unsigned elem_size = DtypeElemSize(col_dtypes[out_i]);
+        if (elem_size == 0) continue;  // unknown dtype, skip
+
+        Value *src_col = b.CreateGEP(ColViewTy, in_cols,
+            ConstantInt::get(i64, (uint64_t)in_i), "src_col");
+        Value *dst_col = b.CreateGEP(ColViewTy, out_cols,
+            ConstantInt::get(i64, (uint64_t)out_i), "dst_col");
+
+        // Load source and dest data pointers
+        Value *src_data = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, src_col, 0), "src_data");
+        Value *dst_data = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, dst_col, 0), "dst_data");
+
+        // memcpy(dst_data, src_data, nrows * elem_size)
+        Value *data_bytes = b.CreateMul(in_nrows,
+            ConstantInt::get(i64, (uint64_t)elem_size), "data_bytes");
+        b.CreateCall(memcpy_fn, {dst_data, src_data, data_bytes,
+                                 ConstantInt::getFalse(llctx)});
+
+        // Copy validity: if src validity is not null, memcpy it
+        Value *src_val = b.CreateLoad(i64p,
+            b.CreateStructGEP(ColViewTy, src_col, 1), "src_val");
+        Value *dst_val = b.CreateLoad(i64p,
+            b.CreateStructGEP(ColViewTy, dst_col, 1), "dst_val");
+        Value *src_val_nonnull = b.CreateICmpNE(
+            b.CreatePtrToInt(src_val, i64), ConstantInt::get(i64, 0), "val_nonnull");
+
+        // Conditional memcpy for validity
+        BasicBlock *copy_val_bb = BasicBlock::Create(llctx,
+            "copy_val_" + std::to_string(out_i), fn);
+        BasicBlock *next_col_bb = BasicBlock::Create(llctx,
+            "next_col_" + std::to_string(out_i), fn);
+        b.CreateCondBr(src_val_nonnull, copy_val_bb, next_col_bb);
+
+        b.SetInsertPoint(copy_val_bb);
+        Value *src_val_i8 = b.CreateBitCast(src_val, i8p);
+        Value *dst_val_i8 = b.CreateBitCast(dst_val, i8p);
+        b.CreateCall(memcpy_fn, {dst_val_i8, src_val_i8, val_bytes,
+                                 ConstantInt::getFalse(llctx)});
+        b.CreateBr(next_col_bb);
+
+        b.SetInsertPoint(next_col_bb);
+    }
+
+    // Return 0 (NEED_MORE_INPUT)
+    b.CreateRet(ConstantInt::get(i32, 0));
+
+    return fn;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Build a fused pipeline function (Filter → Projection):
+//   int64_t aqp_pipe_<id>(AQPChunkView* in, AQPChunkView* out, i8* state)
+//
+// Single row loop: for each input row, evaluate filter predicates (AND).
+// If match: for each output column, copy element from input to output.
+// Returns count of output rows. No intermediate DataChunk materialization.
+//
+// filter_exprs:   list of filter expressions (AND'd), may be empty
+// col_mapping:    out_col_i → in_col_i (projection mapping)
+// col_dtypes:     dtype per output column (for element size)
+// ---------------------------------------------------------------------------
+static Function *BuildPipelineFunction(LLVMContext &llctx, Module &mod,
+                                       const std::string &fn_name,
+                                       const std::vector<const AQPExpr*> &filter_exprs,
+                                       const std::vector<int> &col_mapping,
+                                       const std::vector<int32_t> &col_dtypes,
+                                       const std::vector<ColSchema> &schema) {
+    Type *i8p  = PointerType::getUnqual(Type::getInt8Ty(llctx));
+    Type *i32  = Type::getInt32Ty(llctx);
+    Type *i64  = Type::getInt64Ty(llctx);
+    Type *i64p = PointerType::getUnqual(i64);
+
+    StructType *ColViewTy   = StructType::get(llctx, {i8p, i64p, i32, i32});
+    StructType *ChunkViewTy = StructType::get(llctx, {
+        PointerType::getUnqual(ColViewTy), i64, i64});
+
+    // int64_t fn(AQPChunkView *in, AQPChunkView *out, i8 *state)
+    FunctionType *fn_ty = FunctionType::get(
+        i64, {PointerType::getUnqual(ChunkViewTy),
+              PointerType::getUnqual(ChunkViewTy), i8p}, false);
+    Function *fn = Function::Create(fn_ty, Function::ExternalLinkage,
+                                    fn_name, &mod);
+
+    Value *in_arg    = fn->getArg(0); in_arg->setName("in");
+    Value *out_arg   = fn->getArg(1); out_arg->setName("out");
+    Value *state_arg = fn->getArg(2); state_arg->setName("state");
+    (void)state_arg; // reserved for future use (hash tables, etc.)
+
+    BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
+    BasicBlock *loop_bb  = BasicBlock::Create(llctx, "loop", fn);
+    BasicBlock *body_bb  = BasicBlock::Create(llctx, "body", fn);
+    BasicBlock *write_bb = BasicBlock::Create(llctx, "write", fn);
+    BasicBlock *next_bb  = BasicBlock::Create(llctx, "next", fn);
+    BasicBlock *exit_bb  = BasicBlock::Create(llctx, "exit", fn);
+
+    // Use CompileCtx for filter expression emission (reuses EmitExpr infrastructure)
+    // We use a dummy AQPSelView since CompileCtx requires it, but we don't use it
+    CompileCtx cc(llctx, mod, schema, in_arg, out_arg /* repurposed as sel_arg placeholder */);
+    cc.b.SetInsertPoint(entry_bb);
+
+    // Load in->nrows
+    Value *nrows = cc.b.CreateLoad(i64, cc.b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
+
+    // Load input column data + validity (for filter expression evaluation)
+    cc.col_data.resize(schema.size());
+    cc.col_validity.resize(schema.size());
+    for (size_t i = 0; i < schema.size(); i++) {
+        cc.col_data[i]     = cc.LoadColData((unsigned)i);
+        cc.col_validity[i] = cc.LoadColValidity((unsigned)i);
+    }
+
+    // Load output column data pointers
+    Value *out_cols_pp = cc.b.CreateStructGEP(ChunkViewTy, out_arg, 0);
+    Value *out_cols    = cc.b.CreateLoad(PointerType::getUnqual(ColViewTy), out_cols_pp, "out_cols");
+
+    std::vector<Value*> out_data_ptrs;
+    for (size_t oi = 0; oi < col_mapping.size(); oi++) {
+        Value *col_i = cc.b.CreateGEP(ColViewTy, out_cols, ConstantInt::get(i64, oi));
+        out_data_ptrs.push_back(
+            cc.b.CreateLoad(i8p, cc.b.CreateStructGEP(ColViewTy, col_i, 0),
+                            "out_data_" + std::to_string(oi)));
+    }
+
+    cc.b.CreateBr(loop_bb);
+
+    // Loop header
+    cc.b.SetInsertPoint(loop_bb);
+    PHINode *row_i     = cc.b.CreatePHI(i64, 2, "i");
+    PHINode *out_count = cc.b.CreatePHI(i64, 2, "out_count");
+    row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    cc.b.CreateCondBr(cc.b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
+
+    // Body: evaluate filter expressions
+    cc.b.SetInsertPoint(body_bb);
+    cc.row_idx = row_i;
+
+    Value *match = ConstantInt::getTrue(llctx);
+    if (!filter_exprs.empty()) {
+        for (const AQPExpr *e : filter_exprs) {
+            Value *res = EmitExpr(cc, e);
+            match = cc.b.CreateAnd(match, res);
+        }
+    }
+    BasicBlock *condBr_bb = cc.b.GetInsertBlock();
+    cc.b.CreateCondBr(match, write_bb, next_bb);
+
+    // Write: copy projected columns for this row to output
+    cc.b.SetInsertPoint(write_bb);
+    for (size_t oi = 0; oi < col_mapping.size(); oi++) {
+        int in_i = col_mapping[oi];
+        if (in_i < 0) continue;
+        unsigned elem_size = DtypeElemSize(col_dtypes[oi]);
+        if (elem_size == 0) continue;
+
+        // src = in_cols[in_i].data + row_i * elem_size
+        Value *src = cc.b.CreateGEP(Type::getInt8Ty(llctx), cc.col_data[in_i],
+            cc.b.CreateMul(row_i, ConstantInt::get(i64, elem_size)));
+        // dst = out_cols[oi].data + out_count * elem_size
+        Value *dst = cc.b.CreateGEP(Type::getInt8Ty(llctx), out_data_ptrs[oi],
+            cc.b.CreateMul(out_count, ConstantInt::get(i64, elem_size)));
+        cc.b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
+                          ConstantInt::get(i64, elem_size));
+    }
+    Value *out_count1 = cc.b.CreateAdd(out_count, ConstantInt::get(i64, 1));
+    cc.b.CreateBr(next_bb);
+
+    // Next
+    cc.b.SetInsertPoint(next_bb);
+    PHINode *oc_next = cc.b.CreatePHI(i64, 2, "oc_next");
+    oc_next->addIncoming(out_count, condBr_bb);
+    oc_next->addIncoming(out_count1, write_bb);
+    Value *i_next = cc.b.CreateAdd(row_i, ConstantInt::get(i64, 1));
+    row_i->addIncoming(i_next, next_bb);
+    out_count->addIncoming(oc_next, next_bb);
+    cc.b.CreateBr(loop_bb);
+
+    // Exit: store output nrows and return count
+    cc.b.SetInsertPoint(exit_bb);
+    Value *out_nrows_ptr = cc.b.CreateStructGEP(ChunkViewTy, out_arg, 1);
+    cc.b.CreateStore(out_count, out_nrows_ptr);
+    cc.b.CreateRet(out_count);
+
+    return fn;
+}
+
+// ---------------------------------------------------------------------------
+// Build a hash join build function:
+//   void aqp_hbuild_<id>(AQPChunkView* in, i8* hash_table)
+//
+// For each row: extracts key columns into a stack buffer, calls aqp_ht_insert,
+// then copies payload columns into the returned payload slot.
+//
+// key_col_indices[i] = input chunk column index for key column i
+// key_elem_sizes[i]  = byte size of key column i
+// payload_col_indices/sizes = same for payload columns
+// ---------------------------------------------------------------------------
+struct HashColDesc {
+    int      col_idx;   // chunk column index
+    unsigned elem_size; // bytes per element
+    int32_t  dtype;
+};
+
+static Function *BuildHashBuildFunction(LLVMContext &llctx, Module &mod,
+                                        const std::string &fn_name,
+                                        const std::vector<HashColDesc> &key_cols,
+                                        unsigned key_width,
+                                        const std::vector<HashColDesc> &payload_cols,
+                                        unsigned payload_width,
+                                        const std::vector<ColSchema> &schema) {
+    Type *i8    = Type::getInt8Ty(llctx);
+    Type *i8p   = PointerType::getUnqual(i8);
+    Type *i32   = Type::getInt32Ty(llctx);
+    Type *i64   = Type::getInt64Ty(llctx);
+    Type *i64p  = PointerType::getUnqual(i64);
+    Type *voidTy = Type::getVoidTy(llctx);
+
+    StructType *ColViewTy   = StructType::get(llctx, {i8p, i64p, i32, i32});
+    StructType *ChunkViewTy = StructType::get(llctx, {
+        PointerType::getUnqual(ColViewTy), i64, i64});
+
+    // void fn(AQPChunkView *in, i8 *hash_table)
+    FunctionType *fn_ty = FunctionType::get(
+        voidTy, {PointerType::getUnqual(ChunkViewTy), i8p}, false);
+    Function *fn = Function::Create(fn_ty, Function::ExternalLinkage,
+                                    fn_name, &mod);
+
+    Value *in_arg = fn->getArg(0); in_arg->setName("in");
+    Value *ht_arg = fn->getArg(1); ht_arg->setName("ht");
+
+    BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
+    BasicBlock *loop_bb  = BasicBlock::Create(llctx, "loop", fn);
+    BasicBlock *body_bb  = BasicBlock::Create(llctx, "body", fn);
+    BasicBlock *next_bb  = BasicBlock::Create(llctx, "next", fn);
+    BasicBlock *exit_bb  = BasicBlock::Create(llctx, "exit", fn);
+
+    IRBuilder<> b(entry_bb);
+
+    // Load nrows
+    Value *nrows = b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
+
+    // Load column data pointers
+    Value *cols = b.CreateLoad(PointerType::getUnqual(ColViewTy),
+        b.CreateStructGEP(ChunkViewTy, in_arg, 0), "cols");
+
+    std::map<int, Value*> col_data;
+    auto load_col = [&](int ci) {
+        if (col_data.find(ci) == col_data.end()) {
+            Value *col_i = b.CreateGEP(ColViewTy, cols, ConstantInt::get(i64, (uint64_t)ci));
+            col_data[ci] = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
+                "data_" + std::to_string(ci));
+        }
+    };
+    for (auto &kc : key_cols) load_col(kc.col_idx);
+    for (auto &pc : payload_cols) load_col(pc.col_idx);
+
+    // Alloca for key buffer (stack, fixed size)
+    Value *key_buf = b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
+
+    // Declare aqp_ht_insert: void* aqp_ht_insert(void* ht, void* key)
+    FunctionType *insert_ft = FunctionType::get(i8p, {i8p, i8p}, false);
+    FunctionCallee insert_fn = mod.getOrInsertFunction("aqp_ht_insert", insert_ft);
+
+    b.CreateBr(loop_bb);
+
+    // Loop
+    b.SetInsertPoint(loop_bb);
+    PHINode *row_i = b.CreatePHI(i64, 2, "i");
+    row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
+
+    // Body: build key, insert, copy payload
+    b.SetInsertPoint(body_bb);
+
+    // Extract key columns into key_buf
+    unsigned key_off = 0;
+    for (auto &kc : key_cols) {
+        Value *src = col_data[kc.col_idx];
+        Value *elem_ptr = b.CreateGEP(i8, src,
+            b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
+        Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
+        b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                        ConstantInt::get(i64, kc.elem_size));
+        key_off += kc.elem_size;
+    }
+
+    // Insert into hash table → get payload pointer
+    Value *payload_ptr = b.CreateCall(insert_fn, {ht_arg, key_buf});
+
+    // Copy payload columns into payload slot
+    unsigned pay_off = 0;
+    for (auto &pc : payload_cols) {
+        Value *src = col_data[pc.col_idx];
+        Value *elem_ptr = b.CreateGEP(i8, src,
+            b.CreateMul(row_i, ConstantInt::get(i64, pc.elem_size)));
+        Value *dst = b.CreateGEP(i8, payload_ptr, ConstantInt::get(i64, pay_off));
+        b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                        ConstantInt::get(i64, pc.elem_size));
+        pay_off += pc.elem_size;
+    }
+
+    b.CreateBr(next_bb);
+
+    // Next
+    b.SetInsertPoint(next_bb);
+    Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
+    row_i->addIncoming(i_next, next_bb);
+    b.CreateBr(loop_bb);
+
+    // Exit
+    b.SetInsertPoint(exit_bb);
+    b.CreateRetVoid();
+
+    return fn;
+}
+
+// ---------------------------------------------------------------------------
+// Build a hash join probe function:
+//   uint64_t aqp_hprobe_<id>(AQPChunkView* probe, i8* hash_table, AQPSelView* sel)
+//
+// For each probe row: extracts key, calls aqp_ht_probe; if found, writes
+// row index to selection vector.  Returns count of matching rows.
+// ---------------------------------------------------------------------------
+static Function *BuildHashProbeFunction(LLVMContext &llctx, Module &mod,
+                                        const std::string &fn_name,
+                                        const std::vector<HashColDesc> &probe_key_cols,
+                                        unsigned key_width) {
+    Type *i8    = Type::getInt8Ty(llctx);
+    Type *i8p   = PointerType::getUnqual(i8);
+    Type *i32   = Type::getInt32Ty(llctx);
+    Type *i64   = Type::getInt64Ty(llctx);
+    Type *i64p  = PointerType::getUnqual(i64);
+
+    StructType *ColViewTy   = StructType::get(llctx, {i8p, i64p, i32, i32});
+    StructType *ChunkViewTy = StructType::get(llctx, {
+        PointerType::getUnqual(ColViewTy), i64, i64});
+    StructType *SelViewTy   = StructType::get(llctx, {
+        PointerType::getUnqual(i32), i32});
+
+    // uint64_t fn(AQPChunkView *probe, i8 *ht, AQPSelView *sel)
+    FunctionType *fn_ty = FunctionType::get(
+        i64, {PointerType::getUnqual(ChunkViewTy), i8p,
+              PointerType::getUnqual(SelViewTy)}, false);
+    Function *fn = Function::Create(fn_ty, Function::ExternalLinkage,
+                                    fn_name, &mod);
+
+    Value *probe_arg = fn->getArg(0); probe_arg->setName("probe");
+    Value *ht_arg    = fn->getArg(1); ht_arg->setName("ht");
+    Value *sel_arg   = fn->getArg(2); sel_arg->setName("sel");
+
+    BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
+    BasicBlock *loop_bb  = BasicBlock::Create(llctx, "loop", fn);
+    BasicBlock *body_bb  = BasicBlock::Create(llctx, "body", fn);
+    BasicBlock *found_bb = BasicBlock::Create(llctx, "found", fn);
+    BasicBlock *next_bb  = BasicBlock::Create(llctx, "next", fn);
+    BasicBlock *exit_bb  = BasicBlock::Create(llctx, "exit", fn);
+
+    IRBuilder<> b(entry_bb);
+
+    Value *nrows = b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
+    Value *cols = b.CreateLoad(PointerType::getUnqual(ColViewTy),
+        b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
+
+    // Load probe column data
+    std::map<int, Value*> col_data;
+    for (auto &kc : probe_key_cols) {
+        if (col_data.find(kc.col_idx) == col_data.end()) {
+            Value *col_i = b.CreateGEP(ColViewTy, cols, ConstantInt::get(i64, (uint64_t)kc.col_idx));
+            col_data[kc.col_idx] = b.CreateLoad(i8p,
+                b.CreateStructGEP(ColViewTy, col_i, 0), "data_" + std::to_string(kc.col_idx));
+        }
+    }
+
+    Value *key_buf = b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
+
+    // Load sel->indices
+    Value *sel_idx_ptr = b.CreateLoad(PointerType::getUnqual(i32),
+        b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
+
+    // Declare aqp_ht_probe: void* aqp_ht_probe(void* ht, void* key)
+    FunctionType *probe_ft = FunctionType::get(i8p, {i8p, i8p}, false);
+    FunctionCallee probe_fn = mod.getOrInsertFunction("aqp_ht_probe", probe_ft);
+
+    b.CreateBr(loop_bb);
+
+    // Loop
+    b.SetInsertPoint(loop_bb);
+    PHINode *row_i     = b.CreatePHI(i64, 2, "i");
+    PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
+    row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
+
+    // Body: extract key, probe
+    b.SetInsertPoint(body_bb);
+    unsigned key_off = 0;
+    for (auto &kc : probe_key_cols) {
+        Value *src = col_data[kc.col_idx];
+        Value *elem_ptr = b.CreateGEP(i8, src,
+            b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
+        Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
+        b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                        ConstantInt::get(i64, kc.elem_size));
+        key_off += kc.elem_size;
+    }
+
+    Value *result = b.CreateCall(probe_fn, {ht_arg, key_buf});
+    Value *is_found = b.CreateICmpNE(
+        b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
+    b.CreateCondBr(is_found, found_bb, next_bb);
+
+    // Found: store row index in selection vector
+    b.SetInsertPoint(found_bb);
+    Value *dst = b.CreateGEP(i32, sel_idx_ptr, out_count);
+    b.CreateStore(b.CreateTrunc(row_i, i32), dst);
+    Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
+    b.CreateBr(next_bb);
+
+    // Next
+    b.SetInsertPoint(next_bb);
+    PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
+    oc_next->addIncoming(out_count, body_bb);
+    oc_next->addIncoming(out_count1, found_bb);
+    Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
+    row_i->addIncoming(i_next, next_bb);
+    out_count->addIncoming(oc_next, next_bb);
+    b.CreateBr(loop_bb);
+
+    // Exit
+    b.SetInsertPoint(exit_bb);
+    b.CreateStore(b.CreateTrunc(out_count, i32),
+        b.CreateStructGEP(SelViewTy, sel_arg, 1));
+    b.CreateRet(out_count);
+
+    return fn;
+}
+
+// ---------------------------------------------------------------------------
+// Build an ungrouped aggregate update function:
+//   void aqp_agg_<id>(AQPChunkView* in, i8* agg_state)
+//
+// Loops over input rows and updates accumulator state.
+// agg_state layout: 8 bytes per aggregate (16 for AVG: sum + count).
+//
+// agg_ops[i] = { input_col_idx, agg_type, state_offset, dtype }
+// ---------------------------------------------------------------------------
+struct AggOp {
+    int           col_idx;       // input chunk column index (-1 for COUNT*)
+    int32_t       agg_type;      // SimplestAggFnType cast to int32_t
+    unsigned      state_offset;  // byte offset in agg_state
+    int32_t       dtype;         // AQP_DTYPE_* of the column
+};
+
+static Function *BuildAggUpdateFunction(LLVMContext &llctx, Module &mod,
+                                        const std::string &fn_name,
+                                        const std::vector<AggOp> &agg_ops,
+                                        unsigned total_state_size,
+                                        const std::vector<ColSchema> &schema) {
+    Type *i8p  = PointerType::getUnqual(Type::getInt8Ty(llctx));
+    Type *i32  = Type::getInt32Ty(llctx);
+    Type *i64  = Type::getInt64Ty(llctx);
+    Type *i64p = PointerType::getUnqual(i64);
+    Type *f64  = Type::getDoubleTy(llctx);
+    Type *voidTy = Type::getVoidTy(llctx);
+
+    StructType *ColViewTy   = StructType::get(llctx, {i8p, i64p, i32, i32});
+    StructType *ChunkViewTy = StructType::get(llctx, {
+        PointerType::getUnqual(ColViewTy), i64, i64});
+
+    // void fn(AQPChunkView *in, i8 *agg_state)
+    FunctionType *fn_ty = FunctionType::get(
+        voidTy, {PointerType::getUnqual(ChunkViewTy), i8p}, false);
+    Function *fn = Function::Create(fn_ty, Function::ExternalLinkage,
+                                    fn_name, &mod);
+
+    Value *in_arg    = fn->getArg(0); in_arg->setName("in");
+    Value *state_arg = fn->getArg(1); state_arg->setName("state");
+
+    BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
+    BasicBlock *loop_bb  = BasicBlock::Create(llctx, "loop", fn);
+    BasicBlock *body_bb  = BasicBlock::Create(llctx, "body", fn);
+    BasicBlock *next_bb  = BasicBlock::Create(llctx, "next", fn);
+    BasicBlock *exit_bb  = BasicBlock::Create(llctx, "exit", fn);
+
+    IRBuilder<> b(entry_bb);
+
+    // Load nrows
+    Value *nrows_ptr = b.CreateStructGEP(ChunkViewTy, in_arg, 1);
+    Value *nrows     = b.CreateLoad(i64, nrows_ptr, "nrows");
+
+    // Load column data pointers
+    Value *cols_pp = b.CreateStructGEP(ChunkViewTy, in_arg, 0);
+    Value *cols    = b.CreateLoad(PointerType::getUnqual(ColViewTy), cols_pp, "cols");
+
+    // Pre-load data pointers for columns used by agg functions
+    std::map<int, Value*> col_data_ptrs;
+    std::map<int, Value*> col_validity_ptrs;
+    for (const auto &op : agg_ops) {
+        if (op.col_idx >= 0 && col_data_ptrs.find(op.col_idx) == col_data_ptrs.end()) {
+            Value *col_i = b.CreateGEP(ColViewTy, cols,
+                ConstantInt::get(i64, (uint64_t)op.col_idx));
+            col_data_ptrs[op.col_idx] = b.CreateLoad(i8p,
+                b.CreateStructGEP(ColViewTy, col_i, 0), "data_" + std::to_string(op.col_idx));
+            col_validity_ptrs[op.col_idx] = b.CreateLoad(i64p,
+                b.CreateStructGEP(ColViewTy, col_i, 1), "val_" + std::to_string(op.col_idx));
+        }
+    }
+
+    b.CreateBr(loop_bb);
+
+    // Loop header
+    b.SetInsertPoint(loop_bb);
+    PHINode *row_i = b.CreatePHI(i64, 2, "i");
+    row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    Value *done = b.CreateICmpEQ(row_i, nrows, "done");
+    b.CreateCondBr(done, exit_bb, body_bb);
+
+    // Loop body — update accumulators
+    b.SetInsertPoint(body_bb);
+
+    for (const auto &op : agg_ops) {
+        // CountStar: always increment, no column needed
+        if (op.agg_type == 6 /* CountStar */) {
+            Value *acc_ptr = b.CreateBitCast(
+                b.CreateGEP(Type::getInt8Ty(llctx), state_arg,
+                    ConstantInt::get(i64, op.state_offset)),
+                PointerType::getUnqual(i64));
+            Value *acc = b.CreateLoad(i64, acc_ptr, "count_star");
+            b.CreateStore(b.CreateAdd(acc, ConstantInt::get(i64, 1)), acc_ptr);
+            continue;
+        }
+
+        if (op.col_idx < 0) continue;
+
+        // Check validity (skip NULL rows)
+        Value *validity = col_validity_ptrs[op.col_idx];
+
+        // Capture current block — may be body_bb (first op) or previous op's cont_bb
+        BasicBlock *pre_check_bb = b.GetInsertBlock();
+
+        BasicBlock *check_bb = BasicBlock::Create(llctx, "check_val", fn);
+        BasicBlock *valid_bb = BasicBlock::Create(llctx, "valid", fn);
+        BasicBlock *cont_bb  = BasicBlock::Create(llctx, "cont", fn);
+
+        // If validity pointer is non-null, check the bit; else all valid
+        Value *val_nonnull = b.CreateICmpNE(
+            b.CreatePtrToInt(validity, i64), ConstantInt::get(i64, 0));
+        b.CreateCondBr(val_nonnull, check_bb, valid_bb);
+
+        b.SetInsertPoint(check_bb);
+        Value *word_idx = b.CreateLShr(row_i, ConstantInt::get(i64, 6));
+        Value *bit_idx  = b.CreateAnd(row_i, ConstantInt::get(i64, 63));
+        Value *word     = b.CreateLoad(i64, b.CreateGEP(i64, validity, word_idx));
+        Value *bit      = b.CreateAnd(b.CreateLShr(word, bit_idx), ConstantInt::get(i64, 1));
+        Value *bit_valid = b.CreateICmpNE(bit, ConstantInt::get(i64, 0));
+        b.CreateCondBr(bit_valid, valid_bb, cont_bb);
+
+        // Valid path: update accumulator
+        b.SetInsertPoint(valid_bb);
+        PHINode *came_from = b.CreatePHI(Type::getInt1Ty(llctx), 2, "from_valid");
+        came_from->addIncoming(ConstantInt::getTrue(llctx), pre_check_bb); // all-valid path
+        came_from->addIncoming(ConstantInt::getTrue(llctx), check_bb);     // bit-valid path
+        (void)came_from;
+
+        Value *data_ptr = col_data_ptrs[op.col_idx];
+        Value *acc_ptr = b.CreateBitCast(
+            b.CreateGEP(Type::getInt8Ty(llctx), state_arg,
+                ConstantInt::get(i64, op.state_offset)),
+            PointerType::getUnqual(i64));
+
+        bool is_float = (op.dtype == AQP_DTYPE_FLOAT || op.dtype == AQP_DTYPE_DOUBLE);
+
+        // Load current row value
+        Value *val = nullptr;
+        if (op.dtype == AQP_DTYPE_INT32 || op.dtype == AQP_DTYPE_DATE) {
+            Value *typed_ptr = b.CreateBitCast(data_ptr, PointerType::getUnqual(i32));
+            Value *elem = b.CreateLoad(i32, b.CreateGEP(i32, typed_ptr, row_i));
+            val = b.CreateSExt(elem, i64); // extend to i64 for accumulator
+        } else if (op.dtype == AQP_DTYPE_INT64) {
+            Value *typed_ptr = b.CreateBitCast(data_ptr, PointerType::getUnqual(i64));
+            val = b.CreateLoad(i64, b.CreateGEP(i64, typed_ptr, row_i));
+        } else if (op.dtype == AQP_DTYPE_INT8) {
+            Value *elem = b.CreateLoad(Type::getInt8Ty(llctx),
+                b.CreateGEP(Type::getInt8Ty(llctx), data_ptr, row_i));
+            val = b.CreateSExt(elem, i64);
+        } else if (op.dtype == AQP_DTYPE_INT16) {
+            Value *typed_ptr = b.CreateBitCast(data_ptr, PointerType::getUnqual(Type::getInt16Ty(llctx)));
+            Value *elem = b.CreateLoad(Type::getInt16Ty(llctx), b.CreateGEP(Type::getInt16Ty(llctx), typed_ptr, row_i));
+            val = b.CreateSExt(elem, i64);
+        } else if (op.dtype == AQP_DTYPE_DOUBLE) {
+            acc_ptr = b.CreateBitCast(
+                b.CreateGEP(Type::getInt8Ty(llctx), state_arg,
+                    ConstantInt::get(i64, op.state_offset)),
+                PointerType::getUnqual(f64));
+            Value *typed_ptr = b.CreateBitCast(data_ptr, PointerType::getUnqual(f64));
+            val = b.CreateLoad(f64, b.CreateGEP(f64, typed_ptr, row_i));
+        } else if (op.dtype == AQP_DTYPE_FLOAT) {
+            acc_ptr = b.CreateBitCast(
+                b.CreateGEP(Type::getInt8Ty(llctx), state_arg,
+                    ConstantInt::get(i64, op.state_offset)),
+                PointerType::getUnqual(f64));
+            Value *typed_ptr = b.CreateBitCast(data_ptr, PointerType::getUnqual(Type::getFloatTy(llctx)));
+            Value *fval = b.CreateLoad(Type::getFloatTy(llctx),
+                b.CreateGEP(Type::getFloatTy(llctx), typed_ptr, row_i));
+            val = b.CreateFPExt(fval, f64); // promote to double for accumulator
+        } else {
+            // Unsupported dtype — skip
+            b.CreateBr(cont_bb);
+            b.SetInsertPoint(cont_bb);
+            continue;
+        }
+
+        // Update accumulator based on agg type
+        // SimplestAggFnType: Min=1, Max=2, Sum=3, Average=4, Count=5, CountStar=6
+        Value *acc = is_float ? b.CreateLoad(f64, acc_ptr, "acc_f")
+                              : b.CreateLoad(i64, acc_ptr, "acc_i");
+
+        switch (op.agg_type) {
+        case 3: /* Sum */ {
+            Value *new_acc = is_float ? b.CreateFAdd(acc, val) : b.CreateAdd(acc, val);
+            b.CreateStore(new_acc, acc_ptr);
+            break;
+        }
+        case 5: /* Count */ {
+            // Count non-null: just increment i64 accumulator
+            Value *cnt_ptr = b.CreateBitCast(
+                b.CreateGEP(Type::getInt8Ty(llctx), state_arg,
+                    ConstantInt::get(i64, op.state_offset)),
+                PointerType::getUnqual(i64));
+            Value *cnt = b.CreateLoad(i64, cnt_ptr);
+            b.CreateStore(b.CreateAdd(cnt, ConstantInt::get(i64, 1)), cnt_ptr);
+            break;
+        }
+        case 1: /* Min */ {
+            Value *cmp = is_float ? b.CreateFCmpOLT(val, acc) : b.CreateICmpSLT(val, acc);
+            Value *new_acc = b.CreateSelect(cmp, val, acc);
+            b.CreateStore(new_acc, acc_ptr);
+            break;
+        }
+        case 2: /* Max */ {
+            Value *cmp = is_float ? b.CreateFCmpOGT(val, acc) : b.CreateICmpSGT(val, acc);
+            Value *new_acc = b.CreateSelect(cmp, val, acc);
+            b.CreateStore(new_acc, acc_ptr);
+            break;
+        }
+        case 4: /* Average */ {
+            // AVG uses 16 bytes: [sum:8, count:8]
+            Value *sum_ptr = acc_ptr; // already points to state_offset
+            Value *cnt_ptr = b.CreateBitCast(
+                b.CreateGEP(Type::getInt8Ty(llctx), state_arg,
+                    ConstantInt::get(i64, op.state_offset + 8)),
+                PointerType::getUnqual(i64));
+            if (is_float) {
+                Value *sum = b.CreateLoad(f64, sum_ptr);
+                b.CreateStore(b.CreateFAdd(sum, val), sum_ptr);
+            } else {
+                // For integer AVG, accumulate as i64 then divide at finalize
+                Value *sum_i = b.CreateLoad(i64, b.CreateBitCast(sum_ptr, PointerType::getUnqual(i64)));
+                b.CreateStore(b.CreateAdd(sum_i, val), b.CreateBitCast(sum_ptr, PointerType::getUnqual(i64)));
+            }
+            Value *cnt = b.CreateLoad(i64, cnt_ptr);
+            b.CreateStore(b.CreateAdd(cnt, ConstantInt::get(i64, 1)), cnt_ptr);
+            break;
+        }
+        default:
+            break;
+        }
+
+        b.CreateBr(cont_bb);
+        b.SetInsertPoint(cont_bb);
+    }
+
+    // After processing all agg ops for this row, go to next
+    // (cont_bb from the last agg op, or body_bb if no ops ran)
+    BasicBlock *cur_bb = b.GetInsertBlock();
+    if (cur_bb != next_bb) {
+        b.CreateBr(next_bb);
+        b.SetInsertPoint(next_bb);
+    }
+
+    Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1), "i_next");
+    row_i->addIncoming(i_next, next_bb);
+    b.CreateBr(loop_bb);
+
+    // Exit
+    b.SetInsertPoint(exit_bb);
+    b.CreateRetVoid();
+
+    return fn;
+}
+
 // ---------------------------------------------------------------------------
 // Optimise the module with O0 (mem2reg only) or O3
 // ---------------------------------------------------------------------------
@@ -937,6 +1741,407 @@ AQPExprFn IrToLlvmCompiler::CompileFilter(
     }
 
     return jitTargetAddressToFunction<AQPExprFn>(sym->getAddress());
+}
+
+AQPOperatorFn IrToLlvmCompiler::CompileProjection(
+        const AQPStmt &proj_node,
+        const std::vector<ColSchema> &in_schema) {
+
+    // Build column mapping and dtype list:
+    // col_mapping[i] = input column index for output column i
+    // col_dtypes[i]  = AQP_DTYPE_* for output column i (determines element size for memcpy)
+    std::vector<int> col_mapping;
+    std::vector<int32_t> col_dtypes;
+    for (const auto &attr : proj_node.target_list) {
+        int found = -1;
+        int32_t dtype = AQP_DTYPE_OTHER;
+        for (int i = 0; i < (int)in_schema.size(); i++) {
+            if (in_schema[i].table_idx == attr->GetTableIndex() &&
+                in_schema[i].col_idx  == attr->GetColumnIndex()) {
+                found = i;
+                dtype = in_schema[i].dtype;
+                break;
+            }
+        }
+        col_mapping.push_back(found);
+        col_dtypes.push_back(dtype);
+    }
+    if (col_mapping.empty()) return nullptr;
+
+    uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+    std::string fn_name = "aqp_proj_" + std::to_string(fn_id);
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("aqp_proj_mod", *ctx);
+
+    Function *fn = BuildProjectionFunction(*ctx, *mod, fn_name, col_mapping, col_dtypes);
+    if (!fn) return nullptr;
+
+    std::string err;
+    raw_string_ostream es(err);
+    if (verifyFunction(*fn, &es)) {
+        std::cerr << "[AQP-JIT] verifyFunction failed (proj): " << es.str() << "\n";
+        return nullptr;
+    }
+
+    OptimiseModule(*mod, use_o3_);
+
+    auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+    if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+        std::cerr << "[AQP-JIT] addIRModule failed (proj)\n";
+        logAllUnhandledErrors(std::move(e), errs());
+        return nullptr;
+    }
+
+    auto sym = impl_->jit->lookup(fn_name);
+    if (!sym) {
+        std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+        logAllUnhandledErrors(sym.takeError(), errs());
+        return nullptr;
+    }
+
+    return jitTargetAddressToFunction<AQPOperatorFn>(sym->getAddress());
+}
+
+void *IrToLlvmCompiler::CompileAggUpdate(
+        const AQPStmt &agg_node,
+        const std::vector<ColSchema> &in_schema) {
+
+    auto *agg = dynamic_cast<const ir_sql_converter::SimplestAggregate *>(&agg_node);
+    if (!agg || agg->agg_fns.empty()) return nullptr;
+
+    // For now: only ungrouped aggregates (no GROUP BY).
+    // Grouped aggregates use the hash table and will be added in Phase 2C.
+    if (!agg->groups.empty()) {
+        std::cerr << "[AQP-JIT] grouped aggregate not yet supported → interpreter\n";
+        return nullptr;
+    }
+
+    // Build AggOp descriptors and compute state layout
+    std::vector<AggOp> agg_ops;
+    unsigned state_offset = 0;
+    for (const auto &fn_pair : agg->agg_fns) {
+        AggOp op;
+        op.agg_type = static_cast<int32_t>(fn_pair.second);
+        op.state_offset = state_offset;
+
+        if (fn_pair.second == ir_sql_converter::SimplestAggFnType::CountStar) {
+            op.col_idx = -1;
+            op.dtype   = AQP_DTYPE_INT64;
+            state_offset += 8;
+        } else {
+            // Find column in input schema
+            op.col_idx = -1;
+            op.dtype   = AQP_DTYPE_OTHER;
+            for (int i = 0; i < (int)in_schema.size(); i++) {
+                if (in_schema[i].table_idx == fn_pair.first->GetTableIndex() &&
+                    in_schema[i].col_idx  == fn_pair.first->GetColumnIndex()) {
+                    op.col_idx = i;
+                    op.dtype   = in_schema[i].dtype;
+                    break;
+                }
+            }
+            if (op.col_idx < 0) {
+                std::cerr << "[AQP-JIT] agg col not in schema: table="
+                          << fn_pair.first->GetTableIndex()
+                          << " col=" << fn_pair.first->GetColumnIndex() << "\n";
+                continue;  // skip this agg function
+            }
+            if (fn_pair.second == ir_sql_converter::SimplestAggFnType::Average)
+                state_offset += 16;  // sum + count
+            else
+                state_offset += 8;
+        }
+        agg_ops.push_back(op);
+    }
+    if (agg_ops.empty()) return nullptr;
+
+    uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+    std::string fn_name = "aqp_agg_" + std::to_string(fn_id);
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("aqp_agg_mod", *ctx);
+
+    Function *fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, state_offset, in_schema);
+    if (!fn) return nullptr;
+
+    std::string err;
+    raw_string_ostream es(err);
+    if (verifyFunction(*fn, &es)) {
+        std::cerr << "[AQP-JIT] verifyFunction failed (agg): " << es.str() << "\n";
+        return nullptr;
+    }
+
+    OptimiseModule(*mod, use_o3_);
+
+    auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+    if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+        std::cerr << "[AQP-JIT] addIRModule failed (agg)\n";
+        logAllUnhandledErrors(std::move(e), errs());
+        return nullptr;
+    }
+
+    auto sym = impl_->jit->lookup(fn_name);
+    if (!sym) {
+        std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+        logAllUnhandledErrors(sym.takeError(), errs());
+        return nullptr;
+    }
+
+    std::cerr << "[AQP-JIT] compiled agg fn=" << fn_name
+              << "  ops=" << agg_ops.size()
+              << "  state_bytes=" << state_offset << "\n";
+
+    return reinterpret_cast<void*>(sym->getAddress());
+}
+
+void *IrToLlvmCompiler::CompileHashBuild(
+        const AQPStmt &hash_node,
+        const std::vector<ColSchema> &in_schema) {
+
+    auto *hash = dynamic_cast<const ir_sql_converter::SimplestHash *>(&hash_node);
+    if (!hash || hash->hash_keys.empty()) return nullptr;
+
+    // Build key column descriptors from hash_keys
+    std::vector<HashColDesc> key_cols;
+    unsigned key_width = 0;
+    for (const auto &hk : hash->hash_keys) {
+        HashColDesc kc;
+        kc.col_idx = -1;
+        kc.dtype = AQP_DTYPE_OTHER;
+        for (int i = 0; i < (int)in_schema.size(); i++) {
+            if (in_schema[i].table_idx == hk->GetTableIndex() &&
+                in_schema[i].col_idx  == hk->GetColumnIndex()) {
+                kc.col_idx = i;
+                kc.dtype   = in_schema[i].dtype;
+                break;
+            }
+        }
+        if (kc.col_idx < 0) {
+            std::cerr << "[AQP-JIT] hash key not in schema: table="
+                      << hk->GetTableIndex() << " col=" << hk->GetColumnIndex() << "\n";
+            return nullptr;
+        }
+        kc.elem_size = DtypeElemSize(kc.dtype);
+        if (kc.elem_size == 0) return nullptr;
+        key_width += kc.elem_size;
+        key_cols.push_back(kc);
+    }
+
+    // Payload = all input columns (for now; could be optimized to needed cols only)
+    std::vector<HashColDesc> payload_cols;
+    unsigned payload_width = 0;
+    for (int i = 0; i < (int)in_schema.size(); i++) {
+        HashColDesc pc;
+        pc.col_idx = i;
+        pc.dtype = in_schema[i].dtype;
+        pc.elem_size = DtypeElemSize(pc.dtype);
+        if (pc.elem_size == 0) continue;
+        payload_width += pc.elem_size;
+        payload_cols.push_back(pc);
+    }
+
+    uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+    std::string fn_name = "aqp_hbuild_" + std::to_string(fn_id);
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("aqp_hbuild_mod", *ctx);
+
+    Function *fn = BuildHashBuildFunction(*ctx, *mod, fn_name,
+                                          key_cols, key_width,
+                                          payload_cols, payload_width, in_schema);
+    if (!fn) return nullptr;
+
+    std::string err;
+    raw_string_ostream es(err);
+    if (verifyFunction(*fn, &es)) {
+        std::cerr << "[AQP-JIT] verifyFunction failed (hbuild): " << es.str() << "\n";
+        return nullptr;
+    }
+
+    OptimiseModule(*mod, use_o3_);
+
+    auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+    if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+        logAllUnhandledErrors(std::move(e), errs());
+        return nullptr;
+    }
+
+    auto sym = impl_->jit->lookup(fn_name);
+    if (!sym) {
+        logAllUnhandledErrors(sym.takeError(), errs());
+        return nullptr;
+    }
+
+    std::cerr << "[AQP-JIT] compiled hash build fn=" << fn_name
+              << "  key_width=" << key_width
+              << "  payload_width=" << payload_width << "\n";
+
+    return reinterpret_cast<void*>(sym->getAddress());
+}
+
+void *IrToLlvmCompiler::CompileHashProbe(
+        const AQPStmt &join_node,
+        const std::vector<ColSchema> &probe_schema) {
+
+    auto *join = dynamic_cast<const ir_sql_converter::SimplestJoin *>(&join_node);
+    if (!join || join->join_conditions.empty()) return nullptr;
+
+    // For inner/equi-join: extract probe-side key columns from join conditions.
+    // Each condition is attr_left OP attr_right; the probe side is the one
+    // that matches the probe_schema.
+    std::vector<HashColDesc> probe_key_cols;
+    unsigned key_width = 0;
+    for (const auto &cond : join->join_conditions) {
+        // Try left attr first
+        HashColDesc kc;
+        kc.col_idx = -1;
+        for (int i = 0; i < (int)probe_schema.size(); i++) {
+            if (probe_schema[i].table_idx == cond->left_attr->GetTableIndex() &&
+                probe_schema[i].col_idx  == cond->left_attr->GetColumnIndex()) {
+                kc.col_idx = i;
+                kc.dtype = probe_schema[i].dtype;
+                break;
+            }
+        }
+        // Try right attr if left didn't match
+        if (kc.col_idx < 0) {
+            for (int i = 0; i < (int)probe_schema.size(); i++) {
+                if (probe_schema[i].table_idx == cond->right_attr->GetTableIndex() &&
+                    probe_schema[i].col_idx  == cond->right_attr->GetColumnIndex()) {
+                    kc.col_idx = i;
+                    kc.dtype = probe_schema[i].dtype;
+                    break;
+                }
+            }
+        }
+        if (kc.col_idx < 0) {
+            std::cerr << "[AQP-JIT] probe key not in schema\n";
+            return nullptr;
+        }
+        kc.elem_size = DtypeElemSize(kc.dtype);
+        if (kc.elem_size == 0) return nullptr;
+        key_width += kc.elem_size;
+        probe_key_cols.push_back(kc);
+    }
+
+    uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+    std::string fn_name = "aqp_hprobe_" + std::to_string(fn_id);
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("aqp_hprobe_mod", *ctx);
+
+    Function *fn = BuildHashProbeFunction(*ctx, *mod, fn_name,
+                                           probe_key_cols, key_width);
+    if (!fn) return nullptr;
+
+    std::string err;
+    raw_string_ostream es(err);
+    if (verifyFunction(*fn, &es)) {
+        std::cerr << "[AQP-JIT] verifyFunction failed (hprobe): " << es.str() << "\n";
+        return nullptr;
+    }
+
+    OptimiseModule(*mod, use_o3_);
+
+    auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+    if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+        logAllUnhandledErrors(std::move(e), errs());
+        return nullptr;
+    }
+
+    auto sym = impl_->jit->lookup(fn_name);
+    if (!sym) {
+        logAllUnhandledErrors(sym.takeError(), errs());
+        return nullptr;
+    }
+
+    std::cerr << "[AQP-JIT] compiled hash probe fn=" << fn_name
+              << "  key_width=" << key_width
+              << "  probe_cols=" << probe_key_cols.size() << "\n";
+
+    return reinterpret_cast<void*>(sym->getAddress());
+}
+
+AQPPipelineFn IrToLlvmCompiler::CompilePipeline(
+        const AQPStmt *filter_node,
+        const AQPStmt *proj_node,
+        const std::vector<ColSchema> &in_schema) {
+
+    // Collect filter expressions
+    std::vector<const AQPExpr*> filter_exprs;
+    if (filter_node) {
+        for (const auto &qe : filter_node->qual_vec)
+            filter_exprs.push_back(qe.get());
+    }
+
+    // Build projection column mapping
+    std::vector<int> col_mapping;
+    std::vector<int32_t> col_dtypes;
+    if (proj_node && !proj_node->target_list.empty()) {
+        for (const auto &attr : proj_node->target_list) {
+            int found = -1;
+            int32_t dtype = AQP_DTYPE_OTHER;
+            for (int i = 0; i < (int)in_schema.size(); i++) {
+                if (in_schema[i].table_idx == attr->GetTableIndex() &&
+                    in_schema[i].col_idx  == attr->GetColumnIndex()) {
+                    found = i;
+                    dtype = in_schema[i].dtype;
+                    break;
+                }
+            }
+            col_mapping.push_back(found);
+            col_dtypes.push_back(dtype);
+        }
+    } else {
+        // No projection: pass-through all input columns
+        for (int i = 0; i < (int)in_schema.size(); i++) {
+            col_mapping.push_back(i);
+            col_dtypes.push_back(in_schema[i].dtype);
+        }
+    }
+
+    if (filter_exprs.empty() && !proj_node) return nullptr; // nothing to fuse
+
+    uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+    std::string fn_name = "aqp_pipe_" + std::to_string(fn_id);
+
+    auto ctx = std::make_unique<LLVMContext>();
+    auto mod = std::make_unique<Module>("aqp_pipe_mod", *ctx);
+
+    Function *fn = BuildPipelineFunction(*ctx, *mod, fn_name,
+                                          filter_exprs, col_mapping,
+                                          col_dtypes, in_schema);
+    if (!fn) return nullptr;
+
+    std::string err;
+    raw_string_ostream es(err);
+    if (verifyFunction(*fn, &es)) {
+        std::cerr << "[AQP-JIT] verifyFunction failed (pipeline): " << es.str() << "\n";
+        return nullptr;
+    }
+
+    OptimiseModule(*mod, use_o3_);
+
+    auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+    if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+        std::cerr << "[AQP-JIT] addIRModule failed (pipeline)\n";
+        logAllUnhandledErrors(std::move(e), errs());
+        return nullptr;
+    }
+
+    auto sym = impl_->jit->lookup(fn_name);
+    if (!sym) {
+        std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+        logAllUnhandledErrors(sym.takeError(), errs());
+        return nullptr;
+    }
+
+    std::cerr << "[AQP-JIT] compiled pipeline fn=" << fn_name
+              << "  filter_exprs=" << filter_exprs.size()
+              << "  out_cols=" << col_mapping.size() << "\n";
+
+    return jitTargetAddressToFunction<AQPPipelineFn>(sym->getAddress());
 }
 
 } // namespace aqp_jit

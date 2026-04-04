@@ -135,10 +135,11 @@ public:
   duckdb::ClientContext *GetClientContext();
 
 #ifdef HAVE_LLVM
-  // JIT: set the sub-IR whose filters should be compiled before the next
+  // JIT: set the sub-IR and flags for compilation before the next
   // ExecuteSQLandCreateTempTable call. Called by IRQuerySplitter.
-  void SetJITPendingIR(const ir_sql_converter::AQPStmt *ir) {
+  void SetJITPendingIR(const ir_sql_converter::AQPStmt *ir, uint32_t flags = 0) {
     jit_pending_ir_ = ir;
+    jit_flags_ = flags;
   }
 #endif
 
@@ -201,6 +202,7 @@ private:
 #ifdef HAVE_LLVM
   // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
   const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
+  uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
 
   // Keeps the LLJIT instance alive until after query execution so that
   // compiled function pointers stored in AQPJITContext remain valid.

@@ -31,6 +31,7 @@ if (LLVM_FOUND)
     add_library(aqp_jit_lib STATIC
             src/jit/ir_to_llvm.cpp
             src/jit/aqp_jit_runtime.cpp
+            src/jit/aqp_jit_hashtable.cpp
     )
     target_include_directories(aqp_jit_lib PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -3,6 +3,7 @@
  */
 
 #include "util/param_config.h"
+#include "jit/aqp_jit_abi.h"
 #include <algorithm>
 #include <cctype>
 
@@ -123,7 +124,35 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     } else if (arg == "--combine-sub-plans") {
       config.enable_sub_plan_combiner = true;
     } else if (arg == "--jit") {
-      config.enable_jit = true;
+      // Backward-compatible: --jit alone enables expression-level JIT
+      config.jit_flags |= AQP_JIT_EXPR;
+    } else if (arg.find("--jit-level=") == 0) {
+      std::string level = to_lower(arg.substr(12));
+      if (level == "expr") {
+        config.jit_flags |= AQP_JIT_EXPR;
+      } else if (level == "operator") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+      } else if (level == "pipeline") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE;
+      } else if (level == "subplan") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SUBPLAN;
+      } else {
+        throw std::runtime_error(
+            "Unknown JIT level: " + arg.substr(12) +
+            " (valid: expr, operator, pipeline, subplan)");
+      }
+    } else if (arg == "--jit-simd") {
+      config.jit_flags |= AQP_JIT_SIMD;
+    } else if (arg.find("--jit-opt=") == 0) {
+      std::string opt = arg.substr(10);
+      if (opt == "3") {
+        config.jit_flags |= AQP_JIT_OPT3;
+      } else if (opt != "0") {
+        throw std::runtime_error(
+            "Unknown JIT opt level: " + opt + " (valid: 0, 3)");
+      }
+    } else if (arg == "--no-jit") {
+      config.jit_flags = AQP_JIT_NONE;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -188,7 +217,18 @@ void ParamConfig::PrintUsage() {
                "print combined CTE at end (default: disabled)"
             << std::endl;
   std::cout << "  --jit                            JIT-compile filter expressions "
-               "with LLVM (DuckDB only, default: disabled)"
+               "(same as --jit-level=expr)"
+            << std::endl;
+  std::cout << "  --jit-level=<level>              JIT granularity: expr, "
+               "operator, pipeline, subplan"
+            << std::endl;
+  std::cout << "  --jit-simd                       Enable SIMD vectorization "
+               "in JIT (orthogonal to level)"
+            << std::endl;
+  std::cout << "  --jit-opt=<0|3>                  JIT optimization level "
+               "(default: 0)"
+            << std::endl;
+  std::cout << "  --no-jit                         Disable JIT compilation"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;
