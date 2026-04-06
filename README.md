@@ -349,11 +349,18 @@ python -m pytest transql/python/unit_tests/test_moe_sql_templates.py -v 2>&1
 ### Measurement
 ```bash
 # 1. Extract & preprocess weights (with constant folding)
+# Verify SQL operators (no weights needed, ~1 second)                                                                                                                      
+python measure/verify_ops_numpy.py -v
+# Test the full weight pipeline with tiny synthetic data (~2 seconds)                                                                                                      
+python measure/test_weight_pipeline.py
+# Extract weights from HuggingFace (slow, downloads ~15GB model)                                                                                                           
 python transql/python/extract_weights.py --output-dir weights_npy
-python transql/python/preprocess_weights.py --npy-dir weights_npy --csv-dir weights_csv
-python transql/python/load_weights_duckdb.py --csv-dir weights_csv --db-path weights.duckdb
+# Convert .npy to chunked CSV                                                                                                                                              
+python transql/python/preprocess_weights.py --npy-dir weights_npy --csv-dir weights_csv --chunk-size 32
+# Load CSV into DuckDB                                                                                                                                                     
+python transql/python/load_weights_duckdb.py --csv-dir weights_csv --db-path weights.duckdb --chunk-size 32
 
-# To run it in RAM, I copy the weights.duckdb to /dev/shm
+# if you want to run it in RAM, I copy the weights.duckdb to /dev/shm
 df -h /dev/shm
 sudo mount -o remount,size=40G /dev/shm
 df -h /dev/shm
@@ -363,14 +370,24 @@ cp weights.duckdb /dev/shm/weights.duckdb
 python measure/sample_prompts.py --output-dir measure/prompts
 
 # 3. Smoke Test
-python measure/run_prefill.py --db-path /dev/shm/weights.duckdb --num-layers 1 --lengths 25
-python measure/run_decode.py --db-path /dev/shm/weights.duckdb --num-layers 1 --lengths 25 --decode-steps 2
+# Verify the generated database structure
+python measure/verify_weights_db.py --db-path weights.duckdb --num-layers 1 -v   # quick + verbose
+# Verify 1-layer inference matches NumPy reference                                                                                                                         
+python measure/verify_single_layer.py --db-path weights.duckdb
+# Smoke test prefill (1 layer, fast)                                                                                                                                       
+python measure/run_prefill.py --db-path weights.duckdb --num-layers 1 --lengths 25 --breakdow
+# Smoke test decode (1 layer, 2 steps)                                                                                                                                     
+python measure/run_decode.py --db-path weights.duckdb --num-layers 1 --lengths 25 --decode-steps 2  
+# Smoke perplexity check
 python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb --num-layers 1 --max-chunks 1
 
 # 4. TranSQL+ benchmarks
-python measure/run_prefill.py --db-path /dev/shm/weights.duckdb [--lengths 25]
-python measure/run_decode.py --db-path /dev/shm/weights.duckdb [--lengths 25]
-python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb
+# Full prefill benchmark                                                                                                                                                   
+python measure/run_prefill.py --db-path weights.duckdb --breakdown [--lengths 25]
+# Full decode benchmark                                                                                                                                                   
+python measure/run_decode.py --db-path weights.duckdb [--lengths 25]
+# Full perplexity check 
+python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb --max-chunks 64
 
 # 5. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
 bash measure/run_llamacpp.sh
