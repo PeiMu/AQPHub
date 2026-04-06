@@ -375,11 +375,11 @@ python measure/verify_weights_db.py --db-path weights.duckdb --num-layers 1 -v  
 # Verify 1-layer inference matches NumPy reference                                                                                                                         
 python measure/verify_single_layer.py --db-path weights.duckdb
 # Smoke test prefill (1 layer, fast)                                                                                                                                       
-python measure/run_prefill.py --db-path weights.duckdb --num-layers 1 --lengths 25 --breakdow
+python measure/run_prefill.py --db-path weights.duckdb --num-layers 1 --lengths 25 --breakdown
 # Smoke test decode (1 layer, 2 steps)                                                                                                                                     
 python measure/run_decode.py --db-path weights.duckdb --num-layers 1 --lengths 25 --decode-steps 2  
 # Smoke perplexity check
-python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb --num-layers 1 --max-chunks 1
+python measure/run_perplexity.py --db-path weights.duckdb --num-layers 1 --max-chunks 1
 
 # 4. TranSQL+ benchmarks
 # Full prefill benchmark                                                                                                                                                   
@@ -387,7 +387,7 @@ python measure/run_prefill.py --db-path weights.duckdb --breakdown [--lengths 25
 # Full decode benchmark                                                                                                                                                   
 python measure/run_decode.py --db-path weights.duckdb [--lengths 25]
 # Full perplexity check 
-python measure/run_perplexity.py --db-path /dev/shm/weights.duckdb --max-chunks 64
+python measure/run_perplexity.py --db-path weights.duckdb --max-chunks 64
 
 # 5. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
 bash measure/run_llamacpp.sh
