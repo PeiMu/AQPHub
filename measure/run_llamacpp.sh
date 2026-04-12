@@ -7,18 +7,25 @@
 #   2. HuggingFace model access for meta-llama/Meta-Llama-3-8B
 #
 # Usage:
-#   bash measure/run_llamacpp.sh [--lengths "25 50 100 200"] [--output-dir DIR]
+#   bash measure/run_llamacpp.sh [--lengths "25 50 100 200"] [--quants "f32"] [--output-dir DIR]
 #
-# Benchmarks:
-#   1. F32 (unquantized) -- same precision as TranSQL+
-#   2. Q4_K_M -- SOTA 4-bit quantization (best quality/size ratio)
-#   3. Q8_0 -- 8-bit quantization (middle ground)
+# Options:
+#   --lengths   Prompt lengths to benchmark (default: "25 50 100 200")
+#   --quants    Quantizations to test (default: "f32" for paper reproduction)
+#               Use "f32 q4_k_m q8_0" for all variants
+#   --output-dir  Results directory (default: measure/results)
+#
+# Quantization levels:
+#   f32     -- unquantized full-precision (matches TranSQL+ / paper)
+#   q4_k_m  -- 4-bit quantization (best quality/size ratio)
+#   q8_0    -- 8-bit quantization (middle ground)
 
 set -euo pipefail
 
 # Parse arguments
 LENGTHS="25 50 100 200"
 OUTPUT_DIR="measure/results"
+QUANTS="f32"  # Default: F32 only (matches paper: "unquantized full-precision")
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -28,6 +35,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --output-dir)
             OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --quants)
+            QUANTS="$2"  # e.g., "f32 q4_k_m q8_0" for all
             shift 2
             ;;
         *)
@@ -40,6 +51,7 @@ done
 
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-/home/pei/Project/llama.cpp}"
 MODEL_DIR="${MODEL_DIR:-/home/pei/Project/llama3_gguf}"
+HF_MODEL_PATH="${HF_MODEL_PATH:-/home/pei/.cache/huggingface/hub/models--meta-llama--Meta-Llama-3-8B/snapshots/8cde5ca8380496c9a6cc7ef3a8b46a0372a1d920}"
 NTHREADS=$(nproc)
 
 mkdir -p "$OUTPUT_DIR" "$MODEL_DIR"
@@ -71,29 +83,28 @@ if [ ! -f "$GGUF_F32" ]; then
     echo ""
     echo "=== Converting Llama3-8B to GGUF F32 ==="
     python "$CONVERT_SCRIPT" \
-        "meta-llama/Meta-Llama-3-8B" \
+        "$HF_MODEL_PATH" \
         --outfile "$GGUF_F32" \
         --outtype f32
 fi
 
-if [ ! -f "$GGUF_Q4KM" ]; then
+# Only quantize if requested
+if [[ "$QUANTS" == *"q4_k_m"* ]] && [ ! -f "$GGUF_Q4KM" ]; then
     echo ""
     echo "=== Quantizing to Q4_K_M ==="
     "$LLAMA_QUANT" "$GGUF_F32" "$GGUF_Q4KM" Q4_K_M
 fi
 
-if [ ! -f "$GGUF_Q8" ]; then
+if [[ "$QUANTS" == *"q8_0"* ]] && [ ! -f "$GGUF_Q8" ]; then
     echo ""
     echo "=== Quantizing to Q8_0 ==="
     "$LLAMA_QUANT" "$GGUF_F32" "$GGUF_Q8" Q8_0
 fi
 
 echo ""
-echo "=== Model file sizes ==="
-ls -lh "$GGUF_F32" "$GGUF_Q4KM" "$GGUF_Q8"
-echo ""
 echo "=== Benchmark config ==="
 echo "  Prompt lengths: $LENGTHS"
+echo "  Quantizations: $QUANTS"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -109,12 +120,13 @@ run_bench() {
     echo "--- $label: pp=$pp tg=$tg ---"
 
     # Use /usr/bin/time for peak RSS measurement
+    # New llama-bench CLI: -p for prompt tokens, -n for generation tokens
     /usr/bin/time -v "$LLAMA_BENCH" \
         -m "$model_path" \
         -t "$NTHREADS" \
         -ngl 0 \
-        -pp "$pp" \
-        -tg "$tg" \
+        -p "$pp" \
+        -n "$tg" \
         -r 3 \
         2>&1 | tee "$outfile"
     echo ""
@@ -123,7 +135,7 @@ run_bench() {
 # ---------------------------------------------------------------------------
 # Step 2: Prefill + Decoding benchmarks
 # ---------------------------------------------------------------------------
-for QUANT in "f32" "q4_k_m" "q8_0"; do
+for QUANT in $QUANTS; do
     case "$QUANT" in
         f32)    MODEL="$GGUF_F32";   LABEL="F32" ;;
         q4_k_m) MODEL="$GGUF_Q4KM"; LABEL="Q4_K_M" ;;
@@ -165,7 +177,7 @@ print('Saved to $WIKITEXT')
 "
 fi
 
-for QUANT in "f32" "q4_k_m" "q8_0"; do
+for QUANT in $QUANTS; do
     case "$QUANT" in
         f32)    MODEL="$GGUF_F32";   LABEL="F32" ;;
         q4_k_m) MODEL="$GGUF_Q4KM"; LABEL="Q4_K_M" ;;

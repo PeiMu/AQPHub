@@ -24,17 +24,31 @@ def parse_llama_bench(filepath):
 
     result = {}
 
-    # Parse pp (prompt processing) throughput: "pp XXX: ... t/s"
-    pp_match = re.search(r"pp\s+(\d+).*?(\d+\.\d+)\s+t/s", text)
+    # New llama-bench format (markdown table):
+    # | llama 8B all F32 | 29.92 GiB | 8.03 B | CPU | 12 | pp25 | 19.40 ± 0.05 |
+    # Match: pp<N> | <throughput> ± <stddev> |
+    pp_match = re.search(r"pp\s*(\d+)\s*\|\s*(\d+\.?\d*)\s*±", text)
     if pp_match:
         result["pp_tokens"] = int(pp_match.group(1))
         result["pp_tok_per_s"] = float(pp_match.group(2))
+    else:
+        # Legacy format: "pp XXX: ... t/s"
+        pp_match = re.search(r"pp\s+(\d+).*?(\d+\.\d+)\s+t/s", text)
+        if pp_match:
+            result["pp_tokens"] = int(pp_match.group(1))
+            result["pp_tok_per_s"] = float(pp_match.group(2))
 
-    # Parse tg (token generation) throughput: "tg XXX: ... t/s"
-    tg_match = re.search(r"tg\s+(\d+).*?(\d+\.\d+)\s+t/s", text)
+    # Match: tg<N> | <throughput> ± <stddev> |
+    tg_match = re.search(r"tg\s*(\d+)\s*\|\s*(\d+\.?\d*)\s*±", text)
     if tg_match:
         result["tg_tokens"] = int(tg_match.group(1))
         result["tg_tok_per_s"] = float(tg_match.group(2))
+    else:
+        # Legacy format: "tg XXX: ... t/s"
+        tg_match = re.search(r"tg\s+(\d+).*?(\d+\.\d+)\s+t/s", text)
+        if tg_match:
+            result["tg_tokens"] = int(tg_match.group(1))
+            result["tg_tok_per_s"] = float(tg_match.group(2))
 
     # Parse peak RSS from /usr/bin/time -v output
     rss_match = re.search(r"Maximum resident set size.*?:\s*(\d+)", text)
