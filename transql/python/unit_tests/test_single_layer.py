@@ -237,10 +237,11 @@ def attn_vmul_sql(attn_table, v_table, out,
 
 
 def swiglu_sql(gate, up, out):
+    # SwiGLU: SiLU(gate) * up (Llama's formula)
     sql = (
         f"SELECT g.row_id, g.chunk_id, "
         f"list_transform(generate_series(1, len(g.v)), "
-        f"i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+        f"i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
         f"FROM {gate} g "
         f"JOIN {up} u ON g.row_id=u.row_id AND g.chunk_id=u.chunk_id"
     )
@@ -356,8 +357,9 @@ def ref_transformer_layer(x, norm1, norm2, w_q, w_k, w_v, w_o,
     # FFN
     gate = (x_norm2 @ w_gate.T).astype(np.float32)
     up   = (x_norm2 @ w_up.T).astype(np.float32)
-    silu_up = (up / (1.0 + np.exp(-up.astype(np.float64)))).astype(np.float32)
-    ffn_act = (gate * silu_up).astype(np.float32)
+    # SwiGLU: SiLU(gate) * up
+    silu_gate = (gate / (1.0 + np.exp(-gate.astype(np.float64)))).astype(np.float32)
+    ffn_act = (silu_gate * up).astype(np.float32)
     down = (ffn_act @ w_down.T).astype(np.float32)
 
     return (x_after_attn + down).astype(np.float32)

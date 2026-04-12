@@ -76,7 +76,7 @@ SqlSteps AttnVMulSQL(const std::string& attn_table,
                      int head_dim,
                      int chunk_size = 32);
 
-// SwiGLU activation: gate * SiLU(up), element-wise over chunks.
+// SwiGLU activation: SiLU(gate) * up, element-wise over chunks (Llama's formula).
 SqlSteps SwiGLUSQL(const std::string& gate_table,
                    const std::string& up_table,
                    const std::string& out_table);

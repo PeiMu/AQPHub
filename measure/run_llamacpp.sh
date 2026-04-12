@@ -7,7 +7,7 @@
 #   2. HuggingFace model access for meta-llama/Meta-Llama-3-8B
 #
 # Usage:
-#   bash measure/run_llamacpp.sh [OUTPUT_DIR]
+#   bash measure/run_llamacpp.sh [--lengths "25 50 100 200"] [--output-dir DIR]
 #
 # Benchmarks:
 #   1. F32 (unquantized) -- same precision as TranSQL+
@@ -16,9 +16,30 @@
 
 set -euo pipefail
 
+# Parse arguments
+LENGTHS="25 50 100 200"
+OUTPUT_DIR="measure/results"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --lengths)
+            LENGTHS="$2"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        *)
+            # Legacy: first positional arg is output dir
+            OUTPUT_DIR="$1"
+            shift
+            ;;
+    esac
+done
+
 LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-/home/pei/Project/llama.cpp}"
 MODEL_DIR="${MODEL_DIR:-/home/pei/Project/llama3_gguf}"
-OUTPUT_DIR="${1:-measure/results}"
 NTHREADS=$(nproc)
 
 mkdir -p "$OUTPUT_DIR" "$MODEL_DIR"
@@ -71,6 +92,9 @@ echo ""
 echo "=== Model file sizes ==="
 ls -lh "$GGUF_F32" "$GGUF_Q4KM" "$GGUF_Q8"
 echo ""
+echo "=== Benchmark config ==="
+echo "  Prompt lengths: $LENGTHS"
+echo ""
 
 # ---------------------------------------------------------------------------
 # Helper: run llama-bench and capture output + peak RSS
@@ -112,13 +136,13 @@ for QUANT in "f32" "q4_k_m" "q8_0"; do
     echo "=========================================="
 
     # Prefill-only
-    for PP in 25 50 100 200; do
+    for PP in $LENGTHS; do
         run_bench "$MODEL" "$LABEL" "$PP" 0 \
             "$OUTPUT_DIR/llamacpp_${QUANT}_pp${PP}.txt"
     done
 
     # Prefill + decode (50 tokens)
-    for PP in 25 50 100 200; do
+    for PP in $LENGTHS; do
         run_bench "$MODEL" "$LABEL" "$PP" 50 \
             "$OUTPUT_DIR/llamacpp_${QUANT}_pp${PP}_tg50.txt"
     done

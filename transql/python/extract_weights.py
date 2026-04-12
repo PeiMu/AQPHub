@@ -68,12 +68,15 @@ def precompute_rope(config, max_seq_len: int, chunk_size: int):
     cos_table = np.zeros((max_seq_len, num_chunks, half), dtype=np.float32)
     sin_table = np.zeros((max_seq_len, num_chunks, half), dtype=np.float32)
 
+    rope_base = getattr(config, "rope_theta", 10000.0)
+    print(f"  RoPE base (from config): {rope_base}")
+
     for c in range(num_chunks):
         for i in range(half):
             global_dim = c * chunk_size + 2 * i
             d = global_dim % head_dim  # dim index within head (0..127)
             pair_idx = d // 2          # pair index (0..63)
-            theta = 1.0 / (10000.0 ** (2.0 * pair_idx / head_dim))
+            theta = 1.0 / (rope_base ** (2.0 * pair_idx / head_dim))
             for pos in range(max_seq_len):
                 cos_table[pos, c, i] = np.cos(pos * theta)
                 sin_table[pos, c, i] = np.sin(pos * theta)
@@ -130,9 +133,9 @@ def extract_pytorch(output_dir: str):
 
     print(f"\nLoading model weights (float32)...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, dtype=torch.float32, device_map="cpu"
+        MODEL_ID, torch_dtype=torch.float32, device_map="cpu"
     )
-    sd = {k: v.numpy() for k, v in model.state_dict().items()}
+    sd = {k: v.float().numpy() for k, v in model.state_dict().items()}
 
     _save_pytorch_weights(config, sd, output_dir)
 

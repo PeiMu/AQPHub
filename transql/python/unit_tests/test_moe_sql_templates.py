@@ -146,10 +146,11 @@ def expert_ffn_sql(act, routing, gate_proj, up_proj, down_proj, out,
         f"array_agg(val ORDER BY out_col) AS v "
         f"FROM {up_dp} "
         f"GROUP BY act_row, expert_id, out_col // {cs}")
+    # SwiGLU: SiLU(gate) * up
     step5 = (
         f"SELECT g.row_id, g.expert_id, g.chunk_id, "
         f"list_transform(generate_series(1, len(g.v)), "
-        f"i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+        f"i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
         f"FROM {gate_rechunk} g "
         f"JOIN {up_rechunk} u "
         f"ON g.row_id = u.row_id AND g.expert_id = u.expert_id "
@@ -230,8 +231,9 @@ def ref_expert_ffn(x, expert_ids, gate_proj_3d, up_proj_3d, down_proj_3d):
             e = expert_ids[t, ki]
             gate = (x[t] @ gate_proj_3d[e].T).astype(np.float32)
             up   = (x[t] @ up_proj_3d[e].T).astype(np.float32)
-            silu_up = (up / (1.0 + np.exp(-up.astype(np.float64)))).astype(np.float32)
-            ffn_act = (gate * silu_up).astype(np.float32)
+            # SwiGLU: SiLU(gate) * up
+            silu_gate = (gate / (1.0 + np.exp(-gate.astype(np.float64)))).astype(np.float32)
+            ffn_act = (silu_gate * up).astype(np.float32)
             out[t, ki] = (ffn_act @ down_proj_3d[e].T).astype(np.float32)
     return out
 
@@ -405,10 +407,11 @@ class TestMoeTemplates(unittest.TestCase):
             f"SELECT act_row AS row_id, out_col // {CHUNK_SIZE} AS chunk_id, "
             f"array_agg(val ORDER BY out_col) AS v "
             f"FROM s_up_dp GROUP BY act_row, out_col // {CHUNK_SIZE}", "s_up"))
+        # SwiGLU: SiLU(gate) * up
         steps.append((
             f"SELECT g.row_id, g.chunk_id, "
             f"list_transform(generate_series(1, len(g.v)), "
-            f"i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+            f"i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
             f"FROM s_gate g JOIN s_up u "
             f"ON g.row_id=u.row_id AND g.chunk_id=u.chunk_id", "s_ffn_act"))
         steps.append((

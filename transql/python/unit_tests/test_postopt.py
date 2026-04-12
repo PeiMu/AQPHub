@@ -200,10 +200,11 @@ def attn_vmul_sql(attn_table, v_table, out,
 
 
 def swiglu_sql(gate, up, out):
+    # SwiGLU: SiLU(gate) * up (Llama's formula)
     return [(
         f"SELECT g.row_id, g.chunk_id, "
         f"list_transform(generate_series(1, len(g.v)), "
-        f"i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+        f"i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
         f"FROM {gate} g "
         f"JOIN {up} u ON g.row_id=u.row_id AND g.chunk_id=u.chunk_id", out)]
 

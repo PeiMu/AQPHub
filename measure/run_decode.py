@@ -7,7 +7,8 @@ Usage:
         --prompts-dir measure/prompts \
         --output results/decode.json \
         [--num-layers 32] \
-        [--decode-steps 49]
+        [--decode-steps 49] \
+        [--breakdown]
 
 After prefill, K_rope and V_proj tables persist as the KV cache.
 Each decoding step processes a single new token, appends its K/V to the cache,
@@ -39,8 +40,9 @@ FFN_DIM      = 14336
 EPS          = 1e-5
 NUM_LAYERS   = 32
 
-N_CHUNKS_HIDDEN = HIDDEN_DIM // CHUNK_SIZE
-N_CHUNKS_KV     = (NUM_KV_HEADS * HEAD_DIM) // CHUNK_SIZE
+N_CHUNKS_HIDDEN = HIDDEN_DIM // CHUNK_SIZE   # 128
+N_CHUNKS_FFN    = FFN_DIM // CHUNK_SIZE      # 448
+N_CHUNKS_KV     = (NUM_KV_HEADS * HEAD_DIM) // CHUNK_SIZE  # 32
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +74,78 @@ def _decode_matmul_sql(act, weight, out, cs=CHUNK_SIZE):
     ]
 
 
+# ---------------------------------------------------------------------------
+# ROW2COL pivoted matmul for decode (single-token)
+# ---------------------------------------------------------------------------
+
+def _pivot_sql(table_name, n_chunks, chunk_start=0):
+    """Pivot chunked table to wide format."""
+    cols = ", ".join(
+        f"MAX(CASE WHEN chunk_id = {chunk_start + i} "
+        f"THEN CAST(v AS FLOAT[]) END) AS chunk{i}"
+        for i in range(n_chunks))
+    return f"SELECT row_id, {cols} FROM {table_name} GROUP BY row_id"
+
+
+def _decode_pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE,
+                                cached_wt_pivot=False, wt_piv_override=None):
+    """ROW2COL pivoted matmul for decode. Explicit pivot tables + CROSS JOIN.
+    wt_piv_override: use this name for the weight pivot table instead of out+'_wt_piv'."""
+    act_piv_name = out + "_act_piv"
+    wt_piv_name = wt_piv_override if wt_piv_override else out + "_wt_piv"
+    dp = out + "_dp"
+
+    dot_expr = " + ".join(
+        f"list_dot_product(a.chunk{c}, w.chunk{c})"
+        for c in range(n_chunks))
+
+    cross = (
+        f"SELECT a.row_id AS act_row, w.row_id AS out_col, "
+        f"{dot_expr} AS val "
+        f"FROM {act_piv_name} a CROSS JOIN {wt_piv_name} w")
+
+    rechunk = (
+        f"SELECT act_row AS row_id, out_col // {cs} AS chunk_id, "
+        f"array_agg(val ORDER BY out_col) AS v "
+        f"FROM {dp} GROUP BY act_row, out_col // {cs}")
+
+    steps = [(_pivot_sql(act, n_chunks), act_piv_name)]
+    if not cached_wt_pivot:
+        steps.append((_pivot_sql(weight, n_chunks), wt_piv_name))
+    steps.append((cross, dp))
+    steps.append((rechunk, out))
+    return steps
+
+
+def _decode_weight_pivot_steps(num_layers):
+    """Generate all weight pivot steps for decode (run once, cache across steps)."""
+    steps = []
+    for l in range(num_layers):
+        pfx = f"dec_l{l}_"
+        wt = lambda name, layer=l: f"layer_{layer}_{name}"
+        for proj, out_name, n_chunks in [
+            ("q_proj", "q", N_CHUNKS_HIDDEN),
+            ("k_proj", "k", N_CHUNKS_HIDDEN),
+            ("v_proj", "v", N_CHUNKS_HIDDEN),
+            ("o_proj", "o_proj", N_CHUNKS_HIDDEN),
+            ("gate_proj", "gate", N_CHUNKS_HIDDEN),
+            ("up_proj", "up", N_CHUNKS_HIDDEN),
+            ("down_proj", "down", N_CHUNKS_FFN),
+        ]:
+            steps.append((
+                _pivot_sql(wt(proj), n_chunks),
+                pfx + out_name + "_wt_piv"))
+    # lm_head + final_norm (decode uses dec_ prefix for logits)
+    steps.append((
+        _pivot_sql("lm_head", N_CHUNKS_HIDDEN),
+        "dec_logits_wt_piv"))
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# Other decode SQL operators
+# ---------------------------------------------------------------------------
+
 def _decode_rmsnorm_sql(inp, gamma, out, hidden_dim=HIDDEN_DIM, eps=EPS):
     sq = out + "_sq"
     return [
@@ -89,11 +163,12 @@ def _decode_rmsnorm_sql(inp, gamma, out, hidden_dim=HIDDEN_DIM, eps=EPS):
 def _decode_rope_sql(q_table, rope_table, pos, out, cs=CHUNK_SIZE):
     """RoPE for a single token at given position."""
     half = cs // 2
+    # DuckDB lists are 1-based: generate_series(1, half)
     return [(
         f"SELECT q.row_id, q.chunk_id, "
-        f"list_transform(generate_series(0, {half}-1), "
-        f"i -> CAST(q.v[2*i] * r.cos[i] - q.v[2*i+1] * r.sin[i] AS FLOAT)) AS v_even, "
-        f"list_transform(generate_series(0, {half}-1), "
+        f"list_transform(generate_series(1, {half}), "
+        f"i -> CAST(q.v[2*i-1] * r.cos[i] - q.v[2*i] * r.sin[i] AS FLOAT)) AS v_even, "
+        f"list_transform(generate_series(1, {half}), "
         f"i -> CAST(q.v[2*i] * r.cos[i] + q.v[2*i-1] * r.sin[i] AS FLOAT)) AS v_odd "
         f"FROM {q_table} q "
         f"JOIN {rope_table} r ON r.chunk_id = q.chunk_id "
@@ -151,14 +226,12 @@ def _decode_attn_vmul_sql(attn, v_cache, out,
          f"UNNEST(v.v) AS val "
          f"FROM {v_cache} v", scalar_t),
         (f"SELECT a.q_tok AS row_id, "
-         f"a.head_id * {cph} + s.chunk_id AS chunk_id, "
+         f"a.head_id * {cph} + s.chunk_id % {cph} AS chunk_id, "
          f"s.dim_idx, SUM(a.attn_weight * s.val) AS val "
          f"FROM {attn} a JOIN {scalar_t} s ON a.k_tok = s.tok "
-         f"AND s.chunk_id = (a.head_id // {gs}) * {cph} + "
-         f"(a.head_id * {cph} + s.chunk_id) % {cph} "
          f"WHERE s.chunk_id >= (a.head_id // {gs}) * {cph} "
          f"AND s.chunk_id < (a.head_id // {gs} + 1) * {cph} "
-         f"GROUP BY a.q_tok, a.head_id * {cph} + s.chunk_id, s.dim_idx",
+         f"GROUP BY a.q_tok, a.head_id * {cph} + s.chunk_id % {cph}, s.dim_idx",
          weighted_t),
         (f"SELECT row_id, chunk_id, "
          f"array_agg(CAST(val AS FLOAT) ORDER BY dim_idx) AS v "
@@ -170,7 +243,7 @@ def _swiglu_sql(gate, up, out):
     return [(
         f"SELECT g.row_id, g.chunk_id, "
         f"list_transform(list_zip(g.v, u.v), x -> "
-        f"CAST(x[1] * (x[2] / (1.0 + EXP(-CAST(x[2] AS DOUBLE)))) AS FLOAT)) AS v "
+        f"CAST((x[1] / (1.0 + EXP(-CAST(x[1] AS DOUBLE)))) * x[2] AS FLOAT)) AS v "
         f"FROM {gate} g JOIN {up} u "
         f"ON g.row_id = u.row_id AND g.chunk_id = u.chunk_id", out)]
 
@@ -185,13 +258,23 @@ def _residual_add_sql(a, b, out):
 
 
 # ---------------------------------------------------------------------------
-# Decoding pipeline
+# Execution helpers
 # ---------------------------------------------------------------------------
 
 def run_steps(conn, steps):
-    """Execute SQL steps, creating temp tables."""
-    for sql, table_name in steps:
-        conn.execute(f"CREATE TEMP TABLE {table_name} AS ({sql})")
+    """Execute SQL steps, creating temp tables. Returns per-step timings."""
+    timings = []
+    for i, (sql, table_name) in enumerate(steps):
+        t0 = time.perf_counter()
+        try:
+            conn.execute(f"CREATE TEMP TABLE {table_name} AS ({sql})")
+        except Exception as e:
+            print(f"  FAILED at step {i}: {table_name}")
+            print(f"  SQL (first 500 chars): {sql[:500]}")
+            raise
+        dt = time.perf_counter() - t0
+        timings.append((table_name, dt))
+    return timings
 
 
 def drop_temp_tables(conn, table_names):
@@ -200,10 +283,14 @@ def drop_temp_tables(conn, table_names):
         conn.execute(f"DROP TABLE IF EXISTS {t}")
 
 
-def run_prefill(conn, token_ids, num_layers):
+# ---------------------------------------------------------------------------
+# Decoding pipeline
+# ---------------------------------------------------------------------------
+
+def run_prefill(conn, token_ids, num_layers, use_pivot=True):
     """Run prefill and return list of KV cache table names."""
-    # Import prefill pipeline builder
-    from run_prefill import build_full_pipeline, embed_lookup_sql
+    from run_prefill import build_full_pipeline, embed_lookup_sql, \
+        weight_pivot_steps, run_steps as prefill_run_steps
 
     # Load tokens
     conn.execute("CREATE TEMP TABLE input_tokens "
@@ -211,15 +298,21 @@ def run_prefill(conn, token_ids, num_layers):
     conn.executemany("INSERT INTO input_tokens VALUES (?, ?)",
                      [(i, tid) for i, tid in enumerate(token_ids)])
 
-    pipeline = build_full_pipeline(num_layers)
-    run_steps(conn, pipeline)
+    # Pre-pivot weights for prefill
+    if use_pivot:
+        wt_steps = weight_pivot_steps(num_layers)
+        prefill_run_steps(conn, wt_steps)
+
+    pipeline = build_full_pipeline(num_layers, cached_wt=use_pivot)
+    prefill_run_steps(conn, pipeline)
 
 
-def run_decode_step(conn, token_id, pos, num_layers):
+def run_decode_step(conn, token_id, pos, num_layers, use_pivot=True):
     """Run one decoding step for a single new token at position `pos`.
     Appends new K/V to the KV cache tables from prefill."""
 
     tables_to_drop = []
+    c = use_pivot
 
     # Embed the new token
     x_name = f"dec_x_{pos}"
@@ -242,10 +335,18 @@ def run_decode_step(conn, token_id, pos, num_layers):
         q = pfx + "q"
         k = pfx + "k"
         v = pfx + "v"
-        for name, weight in [(q, "q_proj"), (k, "k_proj"), (v, "v_proj")]:
-            steps = _decode_matmul_sql(norm1, _wt(l, weight), name)
-            run_steps(conn, steps)
-            tables_to_drop.extend([name + "_dp", name])
+        if use_pivot:
+            for name, n_chunks in [(q, N_CHUNKS_HIDDEN), (k, N_CHUNKS_HIDDEN),
+                                    (v, N_CHUNKS_HIDDEN)]:
+                steps = _decode_pivoted_matmul_sql(
+                    norm1, None, name, n_chunks, cached_wt_pivot=True)
+                run_steps(conn, steps)
+                tables_to_drop.extend([name + "_act_piv", name + "_dp", name])
+        else:
+            for name, weight in [(q, "q_proj"), (k, "k_proj"), (v, "v_proj")]:
+                steps = _decode_matmul_sql(norm1, _wt(l, weight), name)
+                run_steps(conn, steps)
+                tables_to_drop.extend([name + "_dp", name])
 
         # RoPE
         q_rope = pfx + "q_rope"
@@ -293,9 +394,15 @@ def run_decode_step(conn, token_id, pos, num_layers):
 
         # O projection
         o = pfx + "o_proj"
-        steps = _decode_matmul_sql(attn_out, _wt(l, "o_proj"), o)
-        run_steps(conn, steps)
-        tables_to_drop.extend([o + "_dp", o])
+        if use_pivot:
+            steps = _decode_pivoted_matmul_sql(
+                attn_out, None, o, N_CHUNKS_HIDDEN, cached_wt_pivot=True)
+            run_steps(conn, steps)
+            tables_to_drop.extend([o + "_act_piv", o + "_dp", o])
+        else:
+            steps = _decode_matmul_sql(attn_out, _wt(l, "o_proj"), o)
+            run_steps(conn, steps)
+            tables_to_drop.extend([o + "_dp", o])
 
         # Residual add
         x_after = pfx + "x_after"
@@ -315,21 +422,35 @@ def run_decode_step(conn, token_id, pos, num_layers):
         ffn_act = pfx + "ffn_act"
         down = pfx + "down"
 
-        steps = _decode_matmul_sql(norm2, _wt(l, "gate_proj"), gate)
-        run_steps(conn, steps)
-        tables_to_drop.extend([gate + "_dp", gate])
+        if use_pivot:
+            for name, n_chunks, src in [(gate, N_CHUNKS_HIDDEN, norm2),
+                                         (up, N_CHUNKS_HIDDEN, norm2),
+                                         (down, N_CHUNKS_FFN, ffn_act)]:
+                if name == down:
+                    # SwiGLU first
+                    steps = _swiglu_sql(gate, up, ffn_act)
+                    run_steps(conn, steps)
+                    tables_to_drop.append(ffn_act)
+                steps = _decode_pivoted_matmul_sql(
+                    src, None, name, n_chunks, cached_wt_pivot=True)
+                run_steps(conn, steps)
+                tables_to_drop.extend([name + "_act_piv", name + "_dp", name])
+        else:
+            steps = _decode_matmul_sql(norm2, _wt(l, "gate_proj"), gate)
+            run_steps(conn, steps)
+            tables_to_drop.extend([gate + "_dp", gate])
 
-        steps = _decode_matmul_sql(norm2, _wt(l, "up_proj"), up)
-        run_steps(conn, steps)
-        tables_to_drop.extend([up + "_dp", up])
+            steps = _decode_matmul_sql(norm2, _wt(l, "up_proj"), up)
+            run_steps(conn, steps)
+            tables_to_drop.extend([up + "_dp", up])
 
-        steps = _swiglu_sql(gate, up, ffn_act)
-        run_steps(conn, steps)
-        tables_to_drop.append(ffn_act)
+            steps = _swiglu_sql(gate, up, ffn_act)
+            run_steps(conn, steps)
+            tables_to_drop.append(ffn_act)
 
-        steps = _decode_matmul_sql(ffn_act, _wt(l, "down_proj"), down)
-        run_steps(conn, steps)
-        tables_to_drop.extend([down + "_dp", down])
+            steps = _decode_matmul_sql(ffn_act, _wt(l, "down_proj"), down)
+            run_steps(conn, steps)
+            tables_to_drop.extend([down + "_dp", down])
 
         # Residual add 2
         x_out = pfx + "x_out"
@@ -350,9 +471,16 @@ def run_decode_step(conn, token_id, pos, num_layers):
     tables_to_drop.extend([final_norm + "_sq", final_norm])
 
     logits = f"dec_logits_{pos}"
-    steps = _decode_matmul_sql(final_norm, "lm_head", logits)
-    run_steps(conn, steps)
-    tables_to_drop.extend([logits + "_dp", logits])
+    if use_pivot:
+        steps = _decode_pivoted_matmul_sql(
+            final_norm, None, logits, N_CHUNKS_HIDDEN, cached_wt_pivot=True,
+            wt_piv_override="dec_logits_wt_piv")
+        run_steps(conn, steps)
+        tables_to_drop.extend([logits + "_act_piv", logits + "_dp", logits])
+    else:
+        steps = _decode_matmul_sql(final_norm, "lm_head", logits)
+        run_steps(conn, steps)
+        tables_to_drop.extend([logits + "_dp", logits])
 
     # Get argmax token
     result = conn.execute(
@@ -374,7 +502,8 @@ def get_peak_rss_mb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
-def measure_decode(db_path, prompt_path, num_layers, decode_steps):
+def measure_decode(db_path, prompt_path, num_layers, decode_steps,
+                   use_pivot=True):
     with open(prompt_path) as f:
         prompt = json.load(f)
     token_ids = prompt["token_ids"]
@@ -382,10 +511,19 @@ def measure_decode(db_path, prompt_path, num_layers, decode_steps):
 
     conn = duckdb.connect(db_path, read_only=False)
 
+    # Pre-pivot decode weight tables
+    if use_pivot:
+        print(f"  Pre-pivoting decode weight tables...")
+        t0 = time.perf_counter()
+        wt_steps = _decode_weight_pivot_steps(num_layers)
+        run_steps(conn, wt_steps)
+        pivot_time = time.perf_counter() - t0
+        print(f"  Decode weight pivoting: {pivot_time:.3f}s ({len(wt_steps)} tables)")
+
     # Prefill
     print(f"  Prefill (seq_len={seq_len})...")
     t0 = time.perf_counter()
-    run_prefill(conn, token_ids, num_layers)
+    run_prefill(conn, token_ids, num_layers, use_pivot=use_pivot)
     prefill_time = time.perf_counter() - t0
     print(f"  Prefill: {prefill_time:.3f}s  "
           f"({seq_len / prefill_time:.2f} tok/s)")
@@ -397,11 +535,12 @@ def measure_decode(db_path, prompt_path, num_layers, decode_steps):
     for step in range(decode_steps):
         pos = seq_len + step
         t0 = time.perf_counter()
-        next_token = run_decode_step(conn, current_token, pos, num_layers)
+        next_token = run_decode_step(conn, current_token, pos, num_layers,
+                                     use_pivot=use_pivot)
         dt = time.perf_counter() - t0
         decode_latencies.append(dt)
         current_token = next_token
-        if (step + 1) % 10 == 0:
+        if (step + 1) % 10 == 0 or step == 0:
             print(f"  Decode step {step+1}/{decode_steps}: {dt:.3f}s  "
                   f"({1.0/dt:.2f} tok/s)")
 
@@ -435,6 +574,8 @@ def main():
     parser.add_argument("--decode-steps", type=int, default=49)
     parser.add_argument("--lengths", type=int, nargs="+",
                         default=[25, 50, 100, 200])
+    parser.add_argument("--no-pivot", action="store_true",
+                        help="Use basic matmul instead of pivoted")
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -448,7 +589,8 @@ def main():
 
         print(f"\nPrompt length {length}:")
         result = measure_decode(args.db_path, prompt_path,
-                                args.num_layers, args.decode_steps)
+                                args.num_layers, args.decode_steps,
+                                use_pivot=not args.no_pivot)
         results.append({
             "prompt_length": length,
             **result,

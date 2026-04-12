@@ -256,7 +256,7 @@ SqlSteps AttnVMulSQL(const std::string& attn_table,
 // ---------------------------------------------------------------------------
 // SwiGLU
 // ---------------------------------------------------------------------------
-// SiLU(x) = x / (1 + exp(-x)), output = gate * SiLU(up)
+// SiLU(x) = x / (1 + exp(-x)), output = SiLU(gate) * up (Llama's SwiGLU)
 // Uses generate_series + array subscripts to avoid list_zip struct extraction.
 SqlSteps SwiGLUSQL(const std::string& gate_table,
                    const std::string& up_table,
@@ -264,7 +264,7 @@ SqlSteps SwiGLUSQL(const std::string& gate_table,
     std::string sql =
         "SELECT g.row_id, g.chunk_id, "
         "list_transform(generate_series(1, len(g.v)), "
-        "i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+        "i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
         "FROM " + gate_table + " g "
         "JOIN " + up_table + " u "
         "ON g.row_id = u.row_id AND g.chunk_id = u.chunk_id";
@@ -390,11 +390,11 @@ SqlSteps ExpertFFNSQL(const std::string& act_table,
         "FROM " + up_dp + " "
         "GROUP BY act_row, expert_id, out_col // " + cs;
 
-    // Step 5: SwiGLU per expert
+    // Step 5: SwiGLU per expert: SiLU(gate) * up
     std::string step5 =
         "SELECT g.row_id, g.expert_id, g.chunk_id, "
         "list_transform(generate_series(1, len(g.v)), "
-        "i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+        "i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
         "FROM " + gate_rechunk + " g "
         "JOIN " + up_rechunk + " u "
         "ON g.row_id = u.row_id AND g.expert_id = u.expert_id "

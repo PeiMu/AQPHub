@@ -351,10 +351,11 @@ def attn_vmul_sql(attn_table, v_table, out,
 
 
 def swiglu_sql(gate, up, out):
+    # SwiGLU: SiLU(gate) * up (Llama's formula)
     sql = (
         f"SELECT g.row_id, g.chunk_id, "
         f"list_transform(generate_series(1, len(g.v)), "
-        f"i -> CAST(g.v[i] * (u.v[i] / (1.0 + exp(-u.v[i]))) AS FLOAT)) AS v "
+        f"i -> CAST((g.v[i] / (1.0 + exp(-g.v[i]))) * u.v[i] AS FLOAT)) AS v "
         f"FROM {gate} g "
         f"JOIN {up} u ON g.row_id = u.row_id AND g.chunk_id = u.chunk_id"
     )
@@ -440,8 +441,9 @@ def ref_attn_vmul(attn, v, num_q_heads, num_kv_heads, head_dim):
 
 
 def ref_swiglu(gate, up):
-    silu_up = up / (1.0 + np.exp(-up.astype(np.float64)))
-    return (gate * silu_up).astype(np.float32)
+    # SwiGLU: SiLU(gate) * up (NOT gate * SiLU(up))
+    silu_gate = gate / (1.0 + np.exp(-gate.astype(np.float64)))
+    return (silu_gate * up).astype(np.float32)
 
 
 def ref_residual_add(a, b):
@@ -714,7 +716,7 @@ class TestAttnVMul(unittest.TestCase):
 
 
 class TestSwiGLU(unittest.TestCase):
-    """SwiGLUSQL: gate * SiLU(up) element-wise via list_transform + list_zip."""
+    """SwiGLUSQL: SiLU(gate) * up element-wise via list_transform + list_zip."""
 
     def test_basic(self):
         gate_np = rng.standard_normal((SEQ_LEN, FFN_DIM)).astype(np.float32)
@@ -730,10 +732,10 @@ class TestSwiGLU(unittest.TestCase):
         np.testing.assert_allclose(result, expected, atol=ATOL, rtol=RTOL,
                                    err_msg="SwiGLU mismatch")
 
-    def test_silu_positive_gate(self):
-        """With gate=1 everywhere, output = SiLU(up) = up * sigmoid(up)."""
-        gate_np = np.ones((SEQ_LEN, FFN_DIM), dtype=np.float32)
-        up_np   = rng.standard_normal((SEQ_LEN, FFN_DIM)).astype(np.float32)
+    def test_silu_applied_to_gate(self):
+        """With up=1 everywhere, output = SiLU(gate) = gate * sigmoid(gate)."""
+        gate_np = rng.standard_normal((SEQ_LEN, FFN_DIM)).astype(np.float32)
+        up_np   = np.ones((SEQ_LEN, FFN_DIM), dtype=np.float32)
 
         conn = new_conn()
         load_2d(conn, "gate", gate_np)
@@ -741,9 +743,10 @@ class TestSwiGLU(unittest.TestCase):
         run_steps(conn, swiglu_sql("gate", "up", "out"))
 
         result   = read_2d(conn, "out", SEQ_LEN, FFN_DIM)
-        expected = (up_np / (1.0 + np.exp(-up_np.astype(np.float64)))).astype(np.float32)
+        # SiLU(gate) * 1 = SiLU(gate)
+        expected = (gate_np / (1.0 + np.exp(-gate_np.astype(np.float64)))).astype(np.float32)
         np.testing.assert_allclose(result, expected, atol=ATOL, rtol=RTOL,
-                                   err_msg="SwiGLU SiLU(up) mismatch")
+                                   err_msg="SwiGLU SiLU(gate) mismatch")
 
 
 class TestResidualAdd(unittest.TestCase):

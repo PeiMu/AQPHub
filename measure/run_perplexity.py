@@ -52,7 +52,7 @@ def read_logits(conn, seq_len, vocab_size):
 def compute_perplexity(db_path, num_layers, max_chunks):
     print(f"Loading tokenizer for {MODEL_ID}...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    vocab_size = tokenizer.vocab_size
+    vocab_size = len(tokenizer)  # includes special tokens (e.g. 128256 for Llama-3)
 
     print("Loading WikiText-2 test set...")
     ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
