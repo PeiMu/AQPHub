@@ -390,7 +390,7 @@ python measure/run_decode.py --db-path weights.duckdb [--lengths 25]
 python measure/run_perplexity.py --db-path weights.duckdb --max-chunks 64
 
 # 5. llama.cpp benchmarks (F32 + Q4_K_M + Q8_0)
-bash measure/run_llamacpp.sh
+bash measure/run_llamacpp.sh [--lengths "25"]
 
 # 6. Collect & compare
 python measure/collect_results.py
