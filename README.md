@@ -373,7 +373,7 @@ python measure/sample_prompts.py --output-dir measure/prompts
 # Verify the generated database structure
 python measure/verify_weights_db.py --db-path weights.duckdb --num-layers 1 -v   # quick + verbose
 # Verify 1-layer inference matches NumPy reference                                                                                                                         
-python measure/verify_single_layer.py --db-path weights.duckdb
+python measure/verify_single_layer.py --db-path weights.duckdb --check-numpy
 # Smoke test prefill (1 layer, fast)                                                                                                                                       
 python measure/run_prefill.py --db-path weights.duckdb --num-layers 1 --lengths 25 --breakdown
 # Smoke test decode (1 layer, 2 steps)                                                                                                                                     
