@@ -1,6 +1,6 @@
 ## Clone Project
 ```bash
-git clone --recurse-submodules git@github.com:PeiMu/AQP_middleware.git
+git clone --recurse-submodules git@github.com:PeiMu/AQPHub.git
 ```
 
 ## How to compile
