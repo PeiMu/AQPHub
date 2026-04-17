@@ -68,7 +68,10 @@ def precompute_rope(config, max_seq_len: int, chunk_size: int):
     cos_table = np.zeros((max_seq_len, num_chunks, half), dtype=np.float32)
     sin_table = np.zeros((max_seq_len, num_chunks, half), dtype=np.float32)
 
-    rope_base = getattr(config, "rope_theta", 10000.0)
+    # Llama-3 nests rope_theta inside rope_parameters; Llama-2 has it top-level
+    rope_params = getattr(config, "rope_parameters", {})
+    rope_base = (rope_params.get("rope_theta")
+                 or getattr(config, "rope_theta", 10000.0))
     print(f"  RoPE base (from config): {rope_base}")
 
     for c in range(num_chunks):

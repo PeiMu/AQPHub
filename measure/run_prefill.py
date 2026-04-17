@@ -68,7 +68,7 @@ def matmul_sql(act, weight, out, cs=CHUNK_SIZE):
          f"FROM {act} a JOIN {weight} w ON a.chunk_id = w.chunk_id "
          f"GROUP BY a.row_id, w.row_id", dp),
         (f"SELECT act_row AS row_id, out_col // {cs} AS chunk_id, "
-         f"array_agg(val ORDER BY out_col) AS v "
+         f"array_agg(CAST(val AS FLOAT) ORDER BY out_col) AS v "
          f"FROM {dp} GROUP BY act_row, out_col // {cs}", out),
     ]
 
@@ -78,12 +78,13 @@ def matmul_sql(act, weight, out, cs=CHUNK_SIZE):
 # ---------------------------------------------------------------------------
 
 def pivot_sql(table_name, n_chunks, chunk_start=0):
-    """Pivot chunked table to wide format: one row per row_id, chunks as columns."""
-    cols = ", ".join(
-        f"MAX(CASE WHEN chunk_id = {chunk_start + i} "
-        f"THEN CAST(v AS FLOAT[]) END) AS chunk{i}"
+    """Pivot chunked table to wide format using DuckDB native PIVOT syntax.
+    Produces (row_id, chunk0, ..., chunk{n_chunks-1}) with FLOAT[32] columns."""
+    in_cols = ", ".join(
+        f"{chunk_start + i} AS chunk{i}"
         for i in range(n_chunks))
-    return f"SELECT row_id, {cols} FROM {table_name} GROUP BY row_id"
+    return (f"SELECT * FROM (PIVOT {table_name} "
+            f"ON chunk_id IN ({in_cols}) USING FIRST(v) GROUP BY row_id)")
 
 
 def pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE,
@@ -94,6 +95,10 @@ def pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE,
     wt_piv_name = out + "_wt_piv"
     dp = out + "_dp"
 
+    # list_dot_product(FLOAT[], FLOAT[]) → FLOAT in DuckDB; FLOAT+FLOAT=FLOAT.
+    # Per-layer float32 error is ~1.68e-4, within acceptable range (~5e-3 over
+    # 32 layers) given RMSNorm normalizes between layers. Matches llama.cpp
+    # semantics (float32 throughout). Use DOUBLE[] inputs only if PPL degrades.
     dot_expr = " + ".join(
         f"list_dot_product(a.chunk{c}, w.chunk{c})"
         for c in range(n_chunks))
@@ -166,9 +171,9 @@ def rope_sql(q_table, rope_table, out, cs=CHUNK_SIZE):
     return [(
         f"SELECT q.row_id, q.chunk_id, "
         f"list_transform(generate_series(1, {half}), "
-        f"i -> CAST(q.v[2*i-1] * r.cos[i] - q.v[2*i] * r.sin[i] AS FLOAT)) AS v_even, "
+        f"i -> q.v[2*i-1] * r.cos[i] - q.v[2*i] * r.sin[i]) AS v_even, "
         f"list_transform(generate_series(1, {half}), "
-        f"i -> CAST(q.v[2*i] * r.cos[i] + q.v[2*i-1] * r.sin[i] AS FLOAT)) AS v_odd "
+        f"i -> q.v[2*i] * r.cos[i] + q.v[2*i-1] * r.sin[i]) AS v_odd "
         f"FROM {q_table} q "
         f"JOIN {rope_table} r ON r.chunk_id = q.chunk_id AND r.row_id = q.row_id",
         out)]
@@ -239,7 +244,7 @@ def swiglu_sql(gate, up, out):
     return [(
         f"SELECT g.row_id, g.chunk_id, "
         f"list_transform(list_zip(g.v, u.v), x -> "
-        f"CAST((x[1] / (1.0 + EXP(-CAST(x[1] AS DOUBLE)))) * x[2] AS FLOAT)) AS v "
+        f"CAST((x[1] / (1.0 + EXP(-x[1]))) * x[2] AS FLOAT)) AS v "
         f"FROM {gate} g JOIN {up} u "
         f"ON g.row_id = u.row_id AND g.chunk_id = u.chunk_id", out)]
 
@@ -247,8 +252,7 @@ def swiglu_sql(gate, up, out):
 def residual_add_sql(a, b, out):
     return [(
         f"SELECT a.row_id, a.chunk_id, "
-        f"list_transform(list_zip(a.v, b.v), x -> "
-        f"CAST(x[1] + x[2] AS FLOAT)) AS v "
+        f"list_transform(list_zip(a.v, b.v), x -> x[1] + x[2]) AS v "
         f"FROM {a} a JOIN {b} b "
         f"ON a.row_id = b.row_id AND a.chunk_id = b.chunk_id", out)]
 
@@ -457,8 +461,9 @@ def measure_prefill(conn, prompt_path, num_layers, breakdown=False,
     if breakdown:
         print_breakdown(timings)
 
-    return {"seq_len": seq_len, "latency_s": latency,
-            "throughput_tok_per_s": throughput,
+    return {"seq_len": seq_len,
+            "prefill_latency_s": latency,
+            "prefill_throughput_tok_per_s": throughput,
             "peak_rss_mb": peak_rss_mb,
             "steps": len(pipeline)}
 
@@ -485,7 +490,8 @@ def main():
     print(f"DuckDB file size: {db_size_gb:.2f} GB")
 
     # Open connection once, reuse across all runs
-    conn = duckdb.connect(args.db_path, read_only=True)
+    conn = duckdb.connect(args.db_path, read_only=True,
+                          config={"threads": os.cpu_count()})
     print("Connection opened (weights loaded once, reused across runs)")
 
     # Pre-pivot all weight tables once
@@ -514,27 +520,27 @@ def main():
             result = measure_prefill(conn, prompt_path,
                                      args.num_layers, show_breakdown,
                                      cached_wt=not args.no_pivot)
-            latencies.append(result["latency_s"])
-            throughputs.append(result["throughput_tok_per_s"])
+            latencies.append(result["prefill_latency_s"])
+            throughputs.append(result["prefill_throughput_tok_per_s"])
             peak_rss = max(peak_rss, result["peak_rss_mb"])
-            print(f"  Run {r+1}: {result['latency_s']:.3f}s  "
-                  f"({result['throughput_tok_per_s']:.2f} tok/s)  "
+            print(f"  Run {r+1}: {result['prefill_latency_s']:.3f}s  "
+                  f"({result['prefill_throughput_tok_per_s']:.2f} tok/s)  "
                   f"RSS: {result['peak_rss_mb']:.0f} MB")
 
         results.append({
             "prompt_length": length,
-            "latencies_s": latencies,
-            "mean_latency_s": float(np.mean(latencies)),
-            "std_latency_s": float(np.std(latencies)),
-            "mean_throughput_tok_per_s": float(np.mean(throughputs)),
+            "prefill_latencies_s": latencies,
+            "prefill_latency_s": float(np.mean(latencies)),
+            "prefill_latency_std_s": float(np.std(latencies)),
+            "prefill_throughput_tok_per_s": float(np.mean(throughputs)),
             "peak_rss_mb": peak_rss,
             "db_size_gb": db_size_gb,
             "num_layers": args.num_layers,
             "num_steps": result["steps"],
         })
-        print(f"  Mean: {results[-1]['mean_latency_s']:.3f}s "
-              f"(+/- {results[-1]['std_latency_s']:.3f}s)  "
-              f"Throughput: {results[-1]['mean_throughput_tok_per_s']:.2f} tok/s  "
+        print(f"  Mean: {results[-1]['prefill_latency_s']:.3f}s "
+              f"(+/- {results[-1]['prefill_latency_std_s']:.3f}s)  "
+              f"Throughput: {results[-1]['prefill_throughput_tok_per_s']:.2f} tok/s  "
               f"Peak RSS: {peak_rss:.0f} MB")
 
     conn.close()

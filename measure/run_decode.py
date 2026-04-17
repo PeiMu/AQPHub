@@ -69,7 +69,7 @@ def _decode_matmul_sql(act, weight, out, cs=CHUNK_SIZE):
          f"FROM {act} a JOIN {weight} w ON a.chunk_id = w.chunk_id "
          f"GROUP BY a.row_id, w.row_id", dp),
         (f"SELECT act_row AS row_id, out_col // {cs} AS chunk_id, "
-         f"array_agg(val ORDER BY out_col) AS v "
+         f"array_agg(CAST(val AS FLOAT) ORDER BY out_col) AS v "
          f"FROM {dp} GROUP BY act_row, out_col // {cs}", out),
     ]
 
@@ -79,12 +79,13 @@ def _decode_matmul_sql(act, weight, out, cs=CHUNK_SIZE):
 # ---------------------------------------------------------------------------
 
 def _pivot_sql(table_name, n_chunks, chunk_start=0):
-    """Pivot chunked table to wide format."""
-    cols = ", ".join(
-        f"MAX(CASE WHEN chunk_id = {chunk_start + i} "
-        f"THEN CAST(v AS FLOAT[]) END) AS chunk{i}"
+    """Pivot chunked table to wide format using DuckDB native PIVOT syntax.
+    Produces (row_id, chunk0, ..., chunk{n_chunks-1}) with FLOAT[32] columns."""
+    in_cols = ", ".join(
+        f"{chunk_start + i} AS chunk{i}"
         for i in range(n_chunks))
-    return f"SELECT row_id, {cols} FROM {table_name} GROUP BY row_id"
+    return (f"SELECT * FROM (PIVOT {table_name} "
+            f"ON chunk_id IN ({in_cols}) USING FIRST(v) GROUP BY row_id)")
 
 
 def _decode_pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE,
@@ -167,9 +168,9 @@ def _decode_rope_sql(q_table, rope_table, pos, out, cs=CHUNK_SIZE):
     return [(
         f"SELECT q.row_id, q.chunk_id, "
         f"list_transform(generate_series(1, {half}), "
-        f"i -> CAST(q.v[2*i-1] * r.cos[i] - q.v[2*i] * r.sin[i] AS FLOAT)) AS v_even, "
+        f"i -> q.v[2*i-1] * r.cos[i] - q.v[2*i] * r.sin[i]) AS v_even, "
         f"list_transform(generate_series(1, {half}), "
-        f"i -> CAST(q.v[2*i] * r.cos[i] + q.v[2*i-1] * r.sin[i] AS FLOAT)) AS v_odd "
+        f"i -> q.v[2*i] * r.cos[i] + q.v[2*i-1] * r.sin[i]) AS v_odd "
         f"FROM {q_table} q "
         f"JOIN {rope_table} r ON r.chunk_id = q.chunk_id "
         f"WHERE r.row_id = {pos}", out)]
@@ -243,7 +244,7 @@ def _swiglu_sql(gate, up, out):
     return [(
         f"SELECT g.row_id, g.chunk_id, "
         f"list_transform(list_zip(g.v, u.v), x -> "
-        f"CAST((x[1] / (1.0 + EXP(-CAST(x[1] AS DOUBLE)))) * x[2] AS FLOAT)) AS v "
+        f"CAST((x[1] / (1.0 + EXP(-x[1]))) * x[2] AS FLOAT)) AS v "
         f"FROM {gate} g JOIN {up} u "
         f"ON g.row_id = u.row_id AND g.chunk_id = u.chunk_id", out)]
 
@@ -251,8 +252,7 @@ def _swiglu_sql(gate, up, out):
 def _residual_add_sql(a, b, out):
     return [(
         f"SELECT a.row_id, a.chunk_id, "
-        f"list_transform(list_zip(a.v, b.v), x -> "
-        f"CAST(x[1] + x[2] AS FLOAT)) AS v "
+        f"list_transform(list_zip(a.v, b.v), x -> x[1] + x[2]) AS v "
         f"FROM {a} a JOIN {b} b "
         f"ON a.row_id = b.row_id AND a.chunk_id = b.chunk_id", out)]
 
@@ -503,13 +503,14 @@ def get_peak_rss_mb():
 
 
 def measure_decode(db_path, prompt_path, num_layers, decode_steps,
-                   use_pivot=True):
+                   use_pivot=True, warmup_steps=0):
     with open(prompt_path) as f:
         prompt = json.load(f)
     token_ids = prompt["token_ids"]
     seq_len = len(token_ids)
 
-    conn = duckdb.connect(db_path, read_only=False)
+    conn = duckdb.connect(db_path, read_only=False,
+                          config={"threads": os.cpu_count()})
 
     # Pre-pivot decode weight tables
     if use_pivot:
@@ -547,7 +548,12 @@ def measure_decode(db_path, prompt_path, num_layers, decode_steps,
     peak_rss_mb = get_peak_rss_mb()
     conn.close()
 
-    mean_decode = float(np.mean(decode_latencies))
+    # decode_latency_s: average per-token time after the first token (prefill).
+    # Exclude the first `warmup_steps` decode steps from the mean (cold-start
+    # DuckDB page-cache effects make early steps anomalously slow).
+    measured = decode_latencies[warmup_steps:] if warmup_steps < decode_steps \
+        else decode_latencies
+    decode_latency = float(np.mean(measured))
     e2e = prefill_time + sum(decode_latencies)
     total_tokens = seq_len + decode_steps
 
@@ -556,8 +562,10 @@ def measure_decode(db_path, prompt_path, num_layers, decode_steps,
         "prefill_latency_s": prefill_time,
         "prefill_throughput_tok_per_s": seq_len / prefill_time,
         "decode_latencies_s": decode_latencies,
-        "mean_decode_latency_s": mean_decode,
-        "decode_throughput_tok_per_s": 1.0 / mean_decode,
+        "decode_latency_s": decode_latency,
+        "decode_latency_std_s": float(np.std(measured)),
+        "decode_throughput_tok_per_s": 1.0 / decode_latency,
+        "warmup_steps_excluded": warmup_steps,
         "end_to_end_latency_s": e2e,
         "end_to_end_throughput_tok_per_s": total_tokens / e2e,
         "peak_rss_mb": peak_rss_mb,
@@ -572,6 +580,9 @@ def main():
     parser.add_argument("--output", default="measure/results/decode.json")
     parser.add_argument("--num-layers", type=int, default=NUM_LAYERS)
     parser.add_argument("--decode-steps", type=int, default=49)
+    parser.add_argument("--warmup-steps", type=int, default=0,
+                        help="Exclude first N decode steps from decode_latency_s "
+                             "(cold DuckDB page-cache warm-up). Default: 0 (all steps).")
     parser.add_argument("--lengths", type=int, nargs="+",
                         default=[25, 50, 100, 200])
     parser.add_argument("--no-pivot", action="store_true",
@@ -590,13 +601,15 @@ def main():
         print(f"\nPrompt length {length}:")
         result = measure_decode(args.db_path, prompt_path,
                                 args.num_layers, args.decode_steps,
-                                use_pivot=not args.no_pivot)
+                                use_pivot=not args.no_pivot,
+                                warmup_steps=args.warmup_steps)
         results.append({
             "prompt_length": length,
             **result,
         })
-        print(f"  Mean decode: {result['mean_decode_latency_s']:.3f}s/step  "
-              f"({result['decode_throughput_tok_per_s']:.2f} tok/s)  "
+        excl = f" (excl. {args.warmup_steps} warmup)" if args.warmup_steps else ""
+        print(f"  Decode latency: {result['decode_latency_s']:.3f}s/tok{excl}  "
+              f"({result['decode_throughput_tok_per_s']:.4f} tok/s)  "
               f"E2E: {result['end_to_end_latency_s']:.3f}s  "
               f"Peak RSS: {result['peak_rss_mb']:.0f} MB")
 

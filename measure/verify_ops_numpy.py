@@ -140,11 +140,9 @@ def matmul_sql(act, weight, out, cs=CHUNK_SIZE):
 
 
 def pivot_sql(table_name, n_chunks):
-    cols = ", ".join(
-        f"MAX(CASE WHEN chunk_id = {i} "
-        f"THEN CAST(v AS FLOAT[]) END) AS chunk{i}"
-        for i in range(n_chunks))
-    return f"SELECT row_id, {cols} FROM {table_name} GROUP BY row_id"
+    in_cols = ", ".join(f"{i} AS chunk{i}" for i in range(n_chunks))
+    return (f"SELECT * FROM (PIVOT {table_name} "
+            f"ON chunk_id IN ({in_cols}) USING FIRST(v) GROUP BY row_id)")
 
 
 def pivoted_matmul_sql(act, weight, out, n_chunks, cs=CHUNK_SIZE):

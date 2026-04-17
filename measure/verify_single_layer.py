@@ -370,14 +370,22 @@ def main():
             )
             model.eval()
 
-            # Run single layer
+            # Run single layer (compatible with transformers >= 4.38 which
+            # requires cache_position; fall back to full model pass if needed)
             with torch.no_grad():
-                emb = model.model.embed_tokens(
-                    torch.tensor([token_ids]))  # [1, seq, hidden]
+                input_ids = torch.tensor([token_ids])
+                emb = model.model.embed_tokens(input_ids)  # [1, seq, hidden]
                 layer = model.model.layers[0]
                 pos_ids = torch.arange(args.seq_len).unsqueeze(0)
-                pt_out = layer(emb, position_ids=pos_ids)[0]
-                pt_out = pt_out.squeeze(0).numpy()
+                cache_pos = torch.arange(args.seq_len)
+
+                try:
+                    result = layer(emb, position_ids=pos_ids,
+                                   cache_position=cache_pos)
+                except TypeError:
+                    result = layer(emb, position_ids=pos_ids)
+
+                pt_out = result[0].squeeze(0).numpy()
 
             max_diff = np.max(np.abs(sql_out - pt_out))
             print(f"  Max abs diff: {max_diff:.8f}")
