@@ -209,7 +209,7 @@ private:
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
 
   // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
-  void RegisterJITFilters(duckdb::PhysicalOperator &op,
+  void RegisterJIT(duckdb::PhysicalOperator &op,
                           const ir_sql_converter::AQPStmt &ir);
 #endif
 

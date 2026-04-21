@@ -316,7 +316,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       // 15+ runtime symbols and re-initializing the JIT on every sub-plan.
       GetClientContext()->aqp_jit_context.reset();
       std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset aqp_jit_context (compiler reused)\n";
-      RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+      RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
       auto *ctx = GetClientContext();
       if (ctx->aqp_jit_context) {
         std::cerr << "[AQP-JIT] summary: flags=0x" << std::hex << ctx->aqp_jit_context->flags
@@ -404,7 +404,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     // Keep jit_compiler_ alive — reusing LLJIT avoids re-init overhead.
     GetClientContext()->aqp_jit_context.reset();
     std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset aqp_jit_context (compiler reused)\n";
-    RegisterJITFilters(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+    RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
     // Level 4: Sub-plan compilation — compile the entire sub-IR tree
     if (jit_flags_ & AQP_JIT_SUBPLAN) {
@@ -918,7 +918,7 @@ static bool HasApplicablePredicate(
   return false;
 }
 
-void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
+void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                                        const ir_sql_converter::AQPStmt &ir) {
   using duckdb::PhysicalOperatorType;
 
@@ -968,6 +968,10 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
 
     std::vector<aqp_jit::ColSchema> schema_prelim;
 
+    // schema/column index mapping
+
+    // The scan's column_ids[i] directly gives the physical column index.
+    // Build ColSchema from those.
     if (child.type == PhysicalOperatorType::TABLE_SCAN) {
       auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
 
@@ -1116,7 +1120,7 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
       std::cerr << "[AQP-JIT] FILTER eid=0x" << std::hex << eid << std::dec
                 << ": no Filter IR node found in tree, using interpreter\n";
       for (auto &child_ref : op.children)
-        RegisterJITFilters(child_ref.get(), ir);
+        RegisterJIT(child_ref.get(), ir);
       return;
     }
 
@@ -1482,7 +1486,7 @@ void DuckDBAdapter::RegisterJITFilters(duckdb::PhysicalOperator &op,
 
   // Recurse into children
   for (auto &child_ref : op.children)
-    RegisterJITFilters(child_ref.get(), ir);
+    RegisterJIT(child_ref.get(), ir);
 }
 #endif
 
