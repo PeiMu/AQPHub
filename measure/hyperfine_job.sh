@@ -2,8 +2,9 @@
 
 engine=$1
 split=$2
+jit_level=$3
 
-log_name=aqp_middleware_${engine}_${split}_job.csv
+log_name=aqp_middleware_${engine}_${split}_${jit_level}_job.csv
 if [[ "$engine" == "mariadb" ]]; then
     dir="$JOB_PATH/mariadb_queries"
 else 
@@ -71,7 +72,7 @@ for sql in "${dir}"/*.sql; do
     \"${helper_db_arg}\" \
     --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
     --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-    --split=\"${split}\" --no-analyze ${sql}"
+    --split=\"${split}\" --no-analyze --jit-level=${jit_level} ${sql}"
     cat temp.csv >> "${log_name}"
 done
 

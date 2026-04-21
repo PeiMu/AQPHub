@@ -2,6 +2,7 @@
 
 engine=$1
 split=$2
+jit_level=$3
 log_name=aqp_middleware_${engine}_${split}_job.txt
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
@@ -185,7 +186,7 @@ for sql in "$dir"/*.sql; do
         --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
         --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
         --split="${split}" \
-        --no-analyze \
+        --no-analyze --jit-level=${jit_level} \
         "${sql}" \
         2>&1 | tee -a "$log_name"
 done
