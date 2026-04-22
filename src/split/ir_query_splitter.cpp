@@ -11,7 +11,8 @@
 
 namespace middleware {
 
-IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config)
+IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
+                                 const ParamConfig &config)
     : adapter_(adapter), config_(config) {
 
   if (config_.enable_debug_print) {
@@ -194,8 +195,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir) {
 
   iteration_count_ = 0;
-  std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir =
-      std::move(whole_ir);
+  std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir = std::move(whole_ir);
 
   // === Strategy Preprocessing ===
   if (config_.enable_debug_print) {
@@ -312,23 +312,31 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
     query_result = adapter_->ExecuteSQL(combined);
   } else {
-    std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
-              << config_.jit_flags << std::dec
-              << " (";
-    if (config_.jit_flags & AQP_JIT_EXPR)     std::cerr << "EXPR ";
-    if (config_.jit_flags & AQP_JIT_OPERATOR) std::cerr << "OPERATOR ";
-    if (config_.jit_flags & AQP_JIT_PIPELINE) std::cerr << "PIPELINE ";
-    if (config_.jit_flags & AQP_JIT_SUBPLAN)  std::cerr << "SUBPLAN ";
-    if (config_.jit_flags & AQP_JIT_SIMD)     std::cerr << "SIMD ";
-    if (config_.jit_flags & AQP_JIT_OPT3)     std::cerr << "OPT3 ";
-    std::cerr << ") engine=" << (int)config_.engine << "\n";
+    if (config_.enable_debug_print) {
+      std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
+                << config_.jit_flags << std::dec << " (";
+      if (config_.jit_flags & AQP_JIT_EXPR)
+        std::cerr << "EXPR ";
+      if (config_.jit_flags & AQP_JIT_OPERATOR)
+        std::cerr << "OPERATOR ";
+      if (config_.jit_flags & AQP_JIT_PIPELINE)
+        std::cerr << "PIPELINE ";
+      if (config_.jit_flags & AQP_JIT_SUBPLAN)
+        std::cerr << "SUBPLAN ";
+      if (config_.jit_flags & AQP_JIT_SIMD)
+        std::cerr << "SIMD ";
+      if (config_.jit_flags & AQP_JIT_OPT3)
+        std::cerr << "OPT3 ";
+      std::cerr << ") engine=" << (int)config_.engine << "\n";
+    }
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
-    std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB+HAVE_LLVM compiled in\n";
     if (config_.jit_flags && config_.engine == BackendEngine::DUCKDB) {
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-      std::cerr << "[AQP-JIT-TRACE] duck=" << (void*)duck
-                << " remaining_ir=" << (void*)remaining_ir.get() << "\n";
+      if (config_.enable_debug_print) {
+        std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
+                  << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
+      }
       if (duck && remaining_ir)
         duck->SetJITPendingIR(remaining_ir.get(), config_.jit_flags);
     }
@@ -867,8 +875,7 @@ void IRQuerySplitter::UpdateNodeIndices(
 }
 
 void IRQuerySplitter::UpdateRemainingIRIndices(
-    ir_sql_converter::AQPStmt *remaining_ir,
-    const TempTableInfo &temp_table,
+    ir_sql_converter::AQPStmt *remaining_ir, const TempTableInfo &temp_table,
     const std::set<unsigned int> &old_table_indices) {
 
   if (!remaining_ir) {
