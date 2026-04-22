@@ -140,10 +140,12 @@ struct IrToLlvmCompiler::Impl {
         else if (has_sse42)  vec_width = 4;
         else                 vec_width = 1;
 
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] CPU=" << host_cpu
                   << " AVX2=" << has_avx2
                   << " AVX512=" << has_avx512f
                   << " vec_width=" << vec_width << "\n";
+#endif
 
         // Create LLJIT with detected CPU features for optimal codegen
         auto jtmb = JITTargetMachineBuilder::detectHost();
