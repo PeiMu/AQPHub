@@ -179,7 +179,7 @@ fi
 for sql in "$dir"/*.sql; do
     echo "Running benchmark for $sql..." | tee -a "$log_name"
 
-    $cmd_prefix ../build/aqp_middleware \
+    $cmd_prefix ../build_release/aqp_middleware \
         --engine="${engine}" \
         --db="${db_conn}" \
         "${helper_db_arg}" \
