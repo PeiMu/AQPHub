@@ -128,7 +128,9 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_flags |= AQP_JIT_EXPR;
     } else if (arg.find("--jit-level=") == 0) {
       std::string level = to_lower(arg.substr(12));
-      if (level == "expr") {
+      if (level == "none") {
+        config.jit_flags |= AQP_JIT_NONE;
+      } else if (level == "expr") {
         config.jit_flags |= AQP_JIT_EXPR;
       } else if (level == "operator") {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
@@ -151,8 +153,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         throw std::runtime_error(
             "Unknown JIT opt level: " + opt + " (valid: 0, 3)");
       }
-    } else if (arg == "--no-jit") {
-      config.jit_flags = AQP_JIT_NONE;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
