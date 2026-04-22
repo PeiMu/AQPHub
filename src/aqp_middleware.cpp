@@ -173,6 +173,15 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
         std::cout << "\n=== Direct Execution (No Splitting) ===" << std::endl;
       }
 
+#ifdef HAVE_LLVM
+      // Pass JIT flags to the adapter so ExecuteSQL can trigger the JIT path
+      // even without a splitter.
+      auto *duckdb_adp = dynamic_cast<DuckDBAdapter *>(adapter);
+      if (duckdb_adp) {
+        duckdb_adp->SetJITFlags(config.jit_flags);
+      }
+#endif
+
       query_result = adapter->ExecuteSQL(sql);
     }
     result.num_rows = query_result.num_rows;

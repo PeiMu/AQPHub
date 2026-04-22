@@ -141,6 +141,10 @@ public:
     jit_pending_ir_ = ir;
     jit_flags_ = flags;
   }
+
+  // Set JIT flags independently (used in no-split path where SetJITPendingIR
+  // is not called by the splitter).
+  void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
 #endif
 
   // NodeBasedSplitter support
@@ -203,6 +207,8 @@ private:
   // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
   const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
   uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
+  // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
+  std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
 
   // Keeps the LLJIT instance alive until after query execution so that
   // compiled function pointers stored in AQPJITContext remain valid.

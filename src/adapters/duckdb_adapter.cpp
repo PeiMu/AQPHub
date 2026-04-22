@@ -305,7 +305,26 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   QueryResult result;
 
 #ifdef HAVE_LLVM
-  std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: jit_pending_ir_=" << (void*)jit_pending_ir_ << "\n";
+  std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: jit_pending_ir_=" << (void*)jit_pending_ir_
+            << " jit_flags_=0x" << std::hex << jit_flags_ << std::dec << "\n";
+
+  // When JIT is requested but no pending IR (e.g. --split=none --jit-level=expr),
+  // build the IR pipeline: parse -> filter optimize -> convert to IR.
+  if (!jit_pending_ir_ && jit_flags_) {
+    ParseSQL(sql);
+    FilterOptimize();
+    auto whole_ir = ConvertPlanToIR();
+    if (whole_ir) {
+      SetJITPendingIR(whole_ir.get(), jit_flags_);
+      // Ownership: whole_ir must stay alive until RegisterJIT reads it below.
+      // Store it so it isn't destroyed when this scope ends.
+      owned_jit_ir_ = std::move(whole_ir);
+      jit_pending_ir_ = owned_jit_ir_.get();
+    } else {
+      std::cerr << "[AQP-JIT] ConvertPlanToIR failed → interpreter fallback\n";
+    }
+  }
+
   // If JIT pending IR is set, use Prepare path so we can walk the physical
   // plan and register compiled filters before execution.
   if (jit_pending_ir_) {
@@ -1008,7 +1027,10 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
         std::cerr << "[AQP-JIT] ambiguous table \"" << duckdb_table_name
                   << "\" → skipping JIT for this filter\n";
       } else {
-        for (size_t i = 0; i < scan.column_ids.size(); i++) {
+        // child.types may be shorter than scan.column_ids when DuckDB's
+        // filter-prune / projection-pushdown strips columns that are only
+        // needed for table filters but not returned in the output chunk.
+        for (size_t i = 0; i < child.types.size(); i++) {
           aqp_jit::ColSchema cs;
           cs.table_idx = ir_table_idx;
           cs.col_idx   = static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
@@ -1256,7 +1278,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
         if (it != ir_table_name_to_idx.end())
           ir_table_idx = it->second;
 
-        for (size_t i = 0; i < scan.column_ids.size(); i++) {
+        for (size_t i = 0; i < child.types.size(); i++) {
           aqp_jit::ColSchema cs;
           cs.table_idx = ir_table_idx;
           cs.col_idx   = static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
