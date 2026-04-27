@@ -3,7 +3,7 @@
  */
 
 #include "split/ir_query_splitter.h"
-
+#include "adapters/postgres_adapter.h"  
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
 #endif
@@ -422,6 +422,35 @@ bool IRQuerySplitter::ExecuteOneIteration(
               << temp_table_name << std::endl;
   }
 
+    // JIT profiling: measure compilation vs execution time per sub-plan                        
+    if (config_.enable_jit_profiling &&                                                        
+        config_.engine == BackendEngine::POSTGRESQL) {                                          
+      auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+      if (pg) {                                                                                
+        auto profile = pg->GetJITProfile(sub_sql);
+        std::ofstream jit_log;                                                                  
+        jit_log.open("jit_profile.csv", std::ios_base::app);
+        if (jit_log.tellp() == 0) {                                                             
+          jit_log << "query,iteration,temp_table,estimated_cost,estimated_rows,"
+                  << "planning_ms,execution_ms,jit_functions,"
+                  << "jit_generation_ms,jit_inlining_ms,"
+                  << "jit_optimization_ms,jit_emission_ms,jit_total_ms\n";
+        }
+        // Extract query filename from path
+        std::string qname = config_.query_path;
+        auto slash = qname.rfind('/');
+        if (slash != std::string::npos) qname = qname.substr(slash + 1);
+        jit_log << std::fixed << std::setprecision(3)
+                << qname << "," << iteration_count_ << "," << temp_table_name << ","                            
+                << profile.estimated_cost << "," << profile.estimated_rows << ","               
+                << profile.planning_time_ms << "," << profile.execution_time_ms << ","         
+                << profile.jit_functions << ","                                                 
+                << profile.jit_generation_ms << "," << profile.jit_inlining_ms << ","
+                << profile.jit_optimization_ms << "," << profile.jit_emission_ms << ","        
+                << profile.jit_total_ms << "\n";                                                
+        jit_log.close();                  
+      }                                                                                         
+    }   
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
                                          config_.enable_update_temp_card,
                                          config_.enable_timing);

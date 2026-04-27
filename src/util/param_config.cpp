@@ -120,7 +120,9 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_timing = true;
     } else if (arg == "--debug") {
       config.enable_debug_print = true;
-    } else if (arg == "--combine-sub-plans") {
+    } else if (arg == "--jit-profiling") {                                                    
+        config.enable_jit_profiling = true;
+      } else if (arg == "--combine-sub-plans") {
       config.enable_sub_plan_combiner = true;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
