@@ -98,6 +98,119 @@ static void EnsureLLVMInit() {
 }
 
 // ---------------------------------------------------------------------------
+// SIMD ISA → vector width resolution
+// ---------------------------------------------------------------------------
+static unsigned ResolveVecWidth(SimdISA simd,
+                                const StringMap<bool> &host_features) {
+  auto has = [&](const char *f) -> bool {
+    auto it = host_features.find(f);
+    return it != host_features.end() && it->second;
+  };
+  bool has_sse2 = has("sse2");
+  bool has_avx = has("avx");
+  bool has_avx2 = has("avx2");
+  bool has_avx512f = has("avx512f");
+
+  switch (simd) {
+  case SimdISA::OFF:
+    return 1;
+  case SimdISA::SSE2:
+    return has_sse2 ? 4 : 1;
+  case SimdISA::AVX:
+    return has_avx ? 8 : (has_sse2 ? 4 : 1);
+  case SimdISA::AVX2:
+    return has_avx2 ? 8 : (has_avx ? 8 : (has_sse2 ? 4 : 1));
+  case SimdISA::AVX512:
+    return has_avx512f ? 16 : (has_avx2 ? 8 : (has_sse2 ? 4 : 1));
+  case SimdISA::AUTO:
+    if (has_avx512f)
+      return 16;
+    if (has_avx2)
+      return 8;
+    if (has_sse2)
+      return 4;
+    return 1;
+  }
+  return 1;
+}
+
+// Build LLVM target-features string constrained to the requested ISA.
+// e.g. --jit-simd=avx2 includes +avx2,+sse4.2 but NOT +avx512f
+static std::string BuildFeatureStr(SimdISA simd,
+                                   const StringMap<bool> &host_features) {
+  if (simd == SimdISA::OFF)
+    return "";
+
+  // ISA level → maximum feature set allowed
+  // SSE2: only up to SSE4.2 features
+  // AVX:  up to AVX (no AVX2)
+  // AVX2: up to AVX2 (no AVX-512)
+  // AVX512 / AUTO: all host features
+  if (simd == SimdISA::AUTO || simd == SimdISA::AVX512) {
+    std::string fs;
+    for (auto &kv : host_features) {
+      if (!fs.empty())
+        fs += ",";
+      fs += (kv.second ? "+" : "-");
+      fs += kv.first().str();
+    }
+    return fs;
+  }
+
+  // For constrained ISA levels, build feature string with only allowed features
+  static const char *const sse2_only[] = {"sse2",   "sse3", "ssse3", "sse4.1",
+                                          "sse4.2", "cmov", "cx8",   "mmx",
+                                          "fxsr",   "cx16", "popcnt"};
+  static const char *const avx_extra[] = {"avx",   "xsave", "xsaveopt",
+                                          "rdrnd", "f16c",  "fsgsbase"};
+  static const char *const avx2_extra[] = {"avx2", "bmi",   "bmi2",
+                                           "fma",  "lzcnt", "movbe"};
+
+  // SSE2 base features
+  auto is_in_list = [](const char *name, const char *const *list,
+                       size_t n) -> bool {
+    for (size_t i = 0; i < n; i++)
+      if (name == std::string(list[i]))
+        return true;
+    return false;
+  };
+
+  std::string fs;
+  auto add_feature = [&](const char *name, bool enabled) {
+    if (!fs.empty())
+      fs += ",";
+    fs += (enabled ? "+" : "-");
+    fs += name;
+  };
+
+  // Always include SSE2-level features
+  for (auto feat : sse2_only) {
+    auto it = host_features.find(feat);
+    bool enabled = it != host_features.end() && it->second;
+    add_feature(feat, enabled);
+  }
+  if (simd == SimdISA::SSE2)
+    return fs;
+
+  // AVX-level features
+  for (auto feat : avx_extra) {
+    auto it = host_features.find(feat);
+    bool enabled = it != host_features.end() && it->second;
+    add_feature(feat, enabled);
+  }
+  if (simd == SimdISA::AVX)
+    return fs;
+
+  // AVX2-level features
+  for (auto feat : avx2_extra) {
+    auto it = host_features.find(feat);
+    bool enabled = it != host_features.end() && it->second;
+    add_feature(feat, enabled);
+  }
+  return fs;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: FNV-1a hash of a string — used to generate unique function names
 // ---------------------------------------------------------------------------
 static uint64_t FNV1a(const std::string &s) {
@@ -124,7 +237,7 @@ struct IrToLlvmCompiler::Impl {
   bool has_avx512f = false;
   bool has_sse42 = false;
 
-  Impl() {
+  Impl(SimdISA simd_isa) {
     EnsureLLVMInit();
 
     // Detect CPU features for SIMD
@@ -132,26 +245,15 @@ struct IrToLlvmCompiler::Impl {
     StringMap<bool> host_features;
     sys::getHostCPUFeatures(host_features);
 
-    // Build feature string: "+avx2,+sse4.2,..."
-    for (auto &kv : host_features) {
-      if (!feature_str.empty())
-        feature_str += ",";
-      feature_str += (kv.second ? "+" : "-");
-      feature_str += kv.first().str();
-    }
-
     has_sse42 = host_features.count("sse4.2") && host_features["sse4.2"];
     has_avx2 = host_features.count("avx2") && host_features["avx2"];
     has_avx512f = host_features.count("avx512f") && host_features["avx512f"];
 
-    if (has_avx512f)
-      vec_width = 16;
-    else if (has_avx2)
-      vec_width = 8;
-    else if (has_sse42)
-      vec_width = 4;
-    else
-      vec_width = 1;
+    // Resolve vector width from requested ISA level
+    vec_width = ResolveVecWidth(simd_isa, host_features);
+
+    // Build feature string constrained to the requested ISA level
+    feature_str = BuildFeatureStr(simd_isa, host_features);
 
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT] CPU=" << host_cpu << " AVX2=" << has_avx2
@@ -626,7 +728,8 @@ static Value *EmitVarConst(CompileCtx &cc,
                op == SimplestExprType::Text_Not_Like) {
 #ifndef NDEBUG
       std::cerr << "[AQP-JIT-TRACE] EmitVarConst: compiling "
-                << (op == SimplestExprType::Text_Not_Like ? "Text_Not_Like" : "TextLike")
+                << (op == SimplestExprType::Text_Not_Like ? "Text_Not_Like"
+                                                          : "TextLike")
                 << "\n";
 #endif
       FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft4);
@@ -769,14 +872,17 @@ static Value *EmitLogical(CompileCtx &cc, const SimplestLogicalExpr *expr) {
     if (expr->right_expr &&
         expr->right_expr->GetNodeType() ==
             ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
-      auto *cmp = static_cast<const ir_sql_converter::SimplestVarConstComparison *>(
-          expr->right_expr.get());
+      auto *cmp =
+          static_cast<const ir_sql_converter::SimplestVarConstComparison *>(
+              expr->right_expr.get());
       if (cmp->GetSimplestExprType() == SimplestExprType::TextLike) {
         // Re-emit as Text_Not_Like (NOT applied inside NULL guard)
-        auto not_like = std::make_unique<ir_sql_converter::SimplestVarConstComparison>(
-            SimplestExprType::Text_Not_Like,
-            std::make_unique<ir_sql_converter::SimplestAttr>(*cmp->attr),
-            std::make_unique<ir_sql_converter::SimplestConstVar>(*cmp->const_var));
+        auto not_like =
+            std::make_unique<ir_sql_converter::SimplestVarConstComparison>(
+                SimplestExprType::Text_Not_Like,
+                std::make_unique<ir_sql_converter::SimplestAttr>(*cmp->attr),
+                std::make_unique<ir_sql_converter::SimplestConstVar>(
+                    *cmp->const_var));
         return EmitVarConst(cc, not_like.get());
       }
     }
@@ -2284,6 +2390,453 @@ BuildProjectionFunction(LLVMContext &llctx, Module &mod,
 }
 
 // ---------------------------------------------------------------------------
+// SIMD version of BuildPipelineFunction: vectorized filter + projection fusion.
+// Phase 1: vector loop (VW rows at a time) — load, compare, extract matches,
+//           copy projected columns for matching rows.
+// Phase 2: scalar tail for remainder rows < VW.
+// ---------------------------------------------------------------------------
+static Function *BuildPipelineFunctionSIMD(
+    LLVMContext &llctx, Module &mod, const std::string &fn_name,
+    const std::vector<const AQPExpr *> &filter_exprs,
+    const std::vector<int> &col_mapping, const std::vector<int32_t> &col_dtypes,
+    const std::vector<ColSchema> &schema, unsigned VW) {
+  Type *i8p = PointerType::getUnqual(Type::getInt8Ty(llctx));
+  Type *i1 = Type::getInt1Ty(llctx);
+  Type *i32 = Type::getInt32Ty(llctx);
+  Type *i64 = Type::getInt64Ty(llctx);
+  Type *i64p = PointerType::getUnqual(i64);
+
+  StructType *ColViewTy = StructType::get(llctx, {i8p, i64p, i32, i32});
+  StructType *ChunkViewTy =
+      StructType::get(llctx, {PointerType::getUnqual(ColViewTy), i64, i64});
+
+  FunctionType *fn_ty =
+      FunctionType::get(i64,
+                        {PointerType::getUnqual(ChunkViewTy),
+                         PointerType::getUnqual(ChunkViewTy), i8p},
+                        false);
+  Function *fn =
+      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, &mod);
+
+  Value *in_arg = fn->getArg(0);
+  in_arg->setName("in");
+  Value *out_arg = fn->getArg(1);
+  out_arg->setName("out");
+  Value *state_arg = fn->getArg(2);
+  state_arg->setName("state");
+  (void)state_arg;
+
+  BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
+  BasicBlock *vec_loop_bb = BasicBlock::Create(llctx, "vec_loop", fn);
+  BasicBlock *vec_body_bb = BasicBlock::Create(llctx, "vec_body", fn);
+  BasicBlock *vec_scatter_bb = BasicBlock::Create(llctx, "vec_scatter", fn);
+  BasicBlock *vec_next_bb = BasicBlock::Create(llctx, "vec_next", fn);
+  BasicBlock *tail_bb = BasicBlock::Create(llctx, "tail", fn);
+  BasicBlock *tail_body_bb = BasicBlock::Create(llctx, "tail_body", fn);
+  BasicBlock *tail_write_bb = BasicBlock::Create(llctx, "tail_write", fn);
+  BasicBlock *tail_next_bb = BasicBlock::Create(llctx, "tail_next", fn);
+  BasicBlock *exit_bb = BasicBlock::Create(llctx, "exit", fn);
+
+  IRBuilder<> b(entry_bb);
+
+  // Load nrows, input/output column pointers
+  Value *nrows_ptr = b.CreateStructGEP(ChunkViewTy, in_arg, 1);
+  Value *nrows = b.CreateLoad(i64, nrows_ptr, "nrows");
+  Value *in_cols_pp = b.CreateStructGEP(ChunkViewTy, in_arg, 0);
+  Value *in_cols =
+      b.CreateLoad(PointerType::getUnqual(ColViewTy), in_cols_pp, "in_cols");
+  Value *out_cols_pp = b.CreateStructGEP(ChunkViewTy, out_arg, 0);
+  Value *out_cols =
+      b.CreateLoad(PointerType::getUnqual(ColViewTy), out_cols_pp, "out_cols");
+
+  // Pre-load input column data pointers
+  std::vector<Value *> col_data(schema.size());
+  std::vector<Value *> col_validity(schema.size());
+  for (size_t ci = 0; ci < schema.size(); ci++) {
+    Value *col_i = b.CreateGEP(ColViewTy, in_cols, ConstantInt::get(i64, ci));
+    col_data[ci] = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
+                                "cd" + std::to_string(ci));
+    col_validity[ci] =
+        b.CreateLoad(i64p, b.CreateStructGEP(ColViewTy, col_i, 1),
+                     "cv" + std::to_string(ci));
+  }
+
+  // Pre-load output column data pointers
+  std::vector<Value *> out_data_ptrs(col_mapping.size());
+  for (size_t oi = 0; oi < col_mapping.size(); oi++) {
+    Value *col_i = b.CreateGEP(ColViewTy, out_cols, ConstantInt::get(i64, oi));
+    out_data_ptrs[oi] = b.CreateLoad(
+        i8p, b.CreateStructGEP(ColViewTy, col_i, 0), "od" + std::to_string(oi));
+  }
+
+  // vec_limit = nrows & ~(VW-1)
+  Value *vw_const = ConstantInt::get(i64, VW);
+  Value *vw_mask = ConstantInt::get(i64, ~(uint64_t)(VW - 1));
+  Value *vec_limit = b.CreateAnd(nrows, vw_mask, "vec_limit");
+
+  b.CreateBr(vec_loop_bb);
+
+  // ========== PHASE 1: Vectorized main loop ==========
+  b.SetInsertPoint(vec_loop_bb);
+  PHINode *vi = b.CreatePHI(i64, 2, "vi");
+  PHINode *voc = b.CreatePHI(i64, 2, "voc"); // vectorized out_count
+  vi->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  voc->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  b.CreateCondBr(b.CreateICmpULT(vi, vec_limit), vec_body_bb, tail_bb);
+
+  // vec_body: evaluate all filter expressions as vector comparisons
+  b.SetInsertPoint(vec_body_bb);
+
+  // Evaluate each filter expression — produce <VW x i1> mask
+  Value *combined_mask = ConstantVector::getSplat(ElementCount::getFixed(VW),
+                                                  ConstantInt::getTrue(llctx));
+
+  for (const AQPExpr *e : filter_exprs) {
+    auto *cmp = dynamic_cast<const SimplestVarConstComparison *>(e);
+    if (!cmp) {
+      fn->eraseFromParent();
+      return nullptr;
+    }
+
+    // Find column index in schema
+    int ci = -1;
+    for (int j = 0; j < (int)schema.size(); j++) {
+      if (schema[j].table_idx == cmp->attr->GetTableIndex() &&
+          schema[j].col_idx == cmp->attr->GetColumnIndex()) {
+        ci = j;
+        break;
+      }
+    }
+    if (ci < 0) {
+      fn->eraseFromParent();
+      return nullptr;
+    }
+
+    int32_t dtype = schema[ci].dtype;
+    Value *data_ptr = col_data[ci];
+
+    // Vector load of VW elements from the column
+    Value *data_vec = nullptr;
+    Value *const_vec = nullptr;
+    bool is_fp = false;
+
+    if (dtype == AQP_DTYPE_INT32 || dtype == AQP_DTYPE_DATE) {
+      auto *vty = FixedVectorType::get(i32, VW);
+      data_vec = b.CreateLoad(
+          vty,
+          b.CreateBitCast(
+              b.CreateGEP(
+                  i32, b.CreateBitCast(data_ptr, PointerType::getUnqual(i32)),
+                  vi),
+              PointerType::getUnqual(vty)));
+      const_vec = ConstantVector::getSplat(
+          ElementCount::getFixed(VW),
+          ConstantInt::get(
+              i32, (uint64_t)(uint32_t)cmp->const_var->GetIntValue(), true));
+    } else if (dtype == AQP_DTYPE_INT64) {
+      auto *vty = FixedVectorType::get(i64, VW);
+      data_vec = b.CreateLoad(
+          vty,
+          b.CreateBitCast(
+              b.CreateGEP(
+                  i64, b.CreateBitCast(data_ptr, PointerType::getUnqual(i64)),
+                  vi),
+              PointerType::getUnqual(vty)));
+      const_vec = ConstantVector::getSplat(
+          ElementCount::getFixed(VW),
+          ConstantInt::get(i64, (uint64_t)cmp->const_var->GetIntValue(), true));
+    } else if (dtype == AQP_DTYPE_DOUBLE) {
+      Type *f64 = Type::getDoubleTy(llctx);
+      auto *vty = FixedVectorType::get(f64, VW);
+      data_vec = b.CreateLoad(
+          vty,
+          b.CreateBitCast(
+              b.CreateGEP(
+                  f64, b.CreateBitCast(data_ptr, PointerType::getUnqual(f64)),
+                  vi),
+              PointerType::getUnqual(vty)));
+      const_vec = ConstantVector::getSplat(
+          ElementCount::getFixed(VW),
+          ConstantFP::get(f64, cmp->const_var->GetFloatValue()));
+      is_fp = true;
+    } else {
+      fn->eraseFromParent();
+      return nullptr;
+    }
+
+    // Vector comparison
+    auto et = cmp->GetSimplestExprType();
+    Value *expr_mask = nullptr;
+    if (is_fp) {
+      switch (et) {
+      case SimplestExprType::Equal:
+        expr_mask = b.CreateFCmpOEQ(data_vec, const_vec);
+        break;
+      case SimplestExprType::NotEqual:
+        expr_mask = b.CreateFCmpONE(data_vec, const_vec);
+        break;
+      case SimplestExprType::LessThan:
+        expr_mask = b.CreateFCmpOLT(data_vec, const_vec);
+        break;
+      case SimplestExprType::GreaterThan:
+        expr_mask = b.CreateFCmpOGT(data_vec, const_vec);
+        break;
+      case SimplestExprType::LessEqual:
+        expr_mask = b.CreateFCmpOLE(data_vec, const_vec);
+        break;
+      case SimplestExprType::GreaterEqual:
+        expr_mask = b.CreateFCmpOGE(data_vec, const_vec);
+        break;
+      default:
+        fn->eraseFromParent();
+        return nullptr;
+      }
+    } else {
+      switch (et) {
+      case SimplestExprType::Equal:
+        expr_mask = b.CreateICmpEQ(data_vec, const_vec);
+        break;
+      case SimplestExprType::NotEqual:
+        expr_mask = b.CreateICmpNE(data_vec, const_vec);
+        break;
+      case SimplestExprType::LessThan:
+        expr_mask = b.CreateICmpSLT(data_vec, const_vec);
+        break;
+      case SimplestExprType::GreaterThan:
+        expr_mask = b.CreateICmpSGT(data_vec, const_vec);
+        break;
+      case SimplestExprType::LessEqual:
+        expr_mask = b.CreateICmpSLE(data_vec, const_vec);
+        break;
+      case SimplestExprType::GreaterEqual:
+        expr_mask = b.CreateICmpSGE(data_vec, const_vec);
+        break;
+      default:
+        fn->eraseFromParent();
+        return nullptr;
+      }
+    }
+
+    // AND validity mask
+    Value *val_ptr = col_validity[ci];
+    Value *val_nonnull = b.CreateICmpNE(b.CreatePtrToInt(val_ptr, i64),
+                                        ConstantInt::get(i64, 0));
+    BasicBlock *has_val_bb = BasicBlock::Create(llctx, "has_val", fn);
+    BasicBlock *no_val_bb = BasicBlock::Create(llctx, "no_val", fn);
+    BasicBlock *val_done_bb = BasicBlock::Create(llctx, "val_done", fn);
+    b.CreateCondBr(val_nonnull, has_val_bb, no_val_bb);
+
+    b.SetInsertPoint(has_val_bb);
+    Value *validity_word = b.CreateLoad(
+        i64,
+        b.CreateGEP(i64, val_ptr, b.CreateLShr(vi, ConstantInt::get(i64, 6))));
+    Value *shifted = b.CreateLShr(
+        validity_word, b.CreateAnd(vi, ConstantInt::get(i64, VW - 1)));
+    unsigned mask_bits = (1u << VW) - 1;
+    Value *vbits = b.CreateAnd(shifted, ConstantInt::get(i64, mask_bits));
+    auto *mask_int_ty = IntegerType::get(llctx, VW);
+    Value *vbits_narrow = b.CreateTrunc(vbits, mask_int_ty);
+    Value *val_mask =
+        b.CreateBitCast(vbits_narrow, FixedVectorType::get(i1, VW));
+    Value *expr_mask_valid = b.CreateAnd(expr_mask, val_mask);
+    b.CreateBr(val_done_bb);
+
+    b.SetInsertPoint(no_val_bb);
+    b.CreateBr(val_done_bb);
+
+    b.SetInsertPoint(val_done_bb);
+    PHINode *final_expr_mask = b.CreatePHI(expr_mask->getType(), 2);
+    final_expr_mask->addIncoming(expr_mask_valid, has_val_bb);
+    final_expr_mask->addIncoming(expr_mask, no_val_bb);
+
+    combined_mask = b.CreateAnd(combined_mask, final_expr_mask);
+  }
+
+  // If no filter expressions, all rows pass
+  if (filter_exprs.empty()) {
+    combined_mask = ConstantVector::getSplat(ElementCount::getFixed(VW),
+                                             ConstantInt::getTrue(llctx));
+  }
+
+  // Scatter: extract matching indices and copy projected columns
+  b.SetInsertPoint(vec_scatter_bb);
+  auto *mask_int_ty = IntegerType::get(llctx, VW);
+  Value *sc_mask = b.CreateBitCast(combined_mask, mask_int_ty, "sc_mask");
+  Value *sc_mask_wide = b.CreateZExt(sc_mask, i64);
+
+  Function *cttz_fn = Intrinsic::getDeclaration(&mod, Intrinsic::cttz, {i64});
+
+  // For each set bit: copy all projected columns
+  BasicBlock *scatter_loop_bb = BasicBlock::Create(llctx, "scatter_loop", fn);
+  BasicBlock *scatter_body_bb = BasicBlock::Create(llctx, "scatter_body", fn);
+  BasicBlock *scatter_done_bb = BasicBlock::Create(llctx, "scatter_done", fn);
+
+  b.CreateBr(scatter_loop_bb);
+
+  b.SetInsertPoint(scatter_loop_bb);
+  PHINode *s_mask_phi = b.CreatePHI(i64, 2, "s_mask");
+  PHINode *s_oc = b.CreatePHI(i64, 2, "s_oc");
+  s_mask_phi->addIncoming(sc_mask_wide, vec_scatter_bb);
+  s_oc->addIncoming(voc, vec_scatter_bb);
+  b.CreateCondBr(b.CreateICmpEQ(s_mask_phi, ConstantInt::get(i64, 0)),
+                 scatter_done_bb, scatter_body_bb);
+
+  b.SetInsertPoint(scatter_body_bb);
+  Value *tz =
+      b.CreateCall(cttz_fn, {s_mask_phi, ConstantInt::getTrue(llctx)}, "tz");
+  Value *row_idx_in_vec = b.CreateZExt(tz, i64);
+  Value *src_row = b.CreateAdd(vi, row_idx_in_vec, "src_row");
+
+  // Copy projected columns for this matching row
+  for (size_t oi = 0; oi < col_mapping.size(); oi++) {
+    int in_i = col_mapping[oi];
+    if (in_i < 0)
+      continue;
+    unsigned elem_size = DtypeElemSize(col_dtypes[oi]);
+    if (elem_size == 0)
+      continue;
+
+    Value *src =
+        b.CreateGEP(Type::getInt8Ty(llctx), col_data[in_i],
+                    b.CreateMul(src_row, ConstantInt::get(i64, elem_size)));
+    Value *dst =
+        b.CreateGEP(Type::getInt8Ty(llctx), out_data_ptrs[oi],
+                    b.CreateMul(s_oc, ConstantInt::get(i64, elem_size)));
+    b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
+                   ConstantInt::get(i64, elem_size));
+  }
+
+  // Clear lowest set bit and advance
+  Value *new_mask = b.CreateAnd(
+      s_mask_phi, b.CreateSub(s_mask_phi, ConstantInt::get(i64, 1)));
+  Value *new_oc = b.CreateAdd(s_oc, ConstantInt::get(i64, 1));
+  s_mask_phi->addIncoming(new_mask, scatter_body_bb);
+  s_oc->addIncoming(new_oc, scatter_body_bb);
+  b.CreateBr(scatter_loop_bb);
+
+  b.SetInsertPoint(scatter_done_bb);
+  PHINode *vec_oc_out = b.CreatePHI(i64, 2, "vec_oc_out");
+  vec_oc_out->addIncoming(voc, vec_scatter_bb);
+  vec_oc_out->addIncoming(new_oc, scatter_body_bb);
+
+  Value *vi_next = b.CreateAdd(vi, vw_const, "vi_next");
+  vi->addIncoming(vi_next, scatter_done_bb);
+  voc->addIncoming(vec_oc_out, scatter_done_bb);
+  b.CreateBr(vec_loop_bb);
+
+  // Wire vec_body → vec_scatter
+  {
+    BasicBlock *last_bb = b.GetInsertBlock();
+    // The combined_mask computation may have split into multiple BBs
+    // Find the BB that computed combined_mask last
+    b.SetInsertPoint(vec_scatter_bb);
+    // Move vec_scatter_bb after the last combined_mask BB
+    // Need to branch from last combined_mask BB to vec_scatter_bb
+  }
+  // We need to fix this: the vec_body block needs to fall through to
+  // vec_scatter Get the last BB created during mask computation
+  IRBuilder<> b_fix(vec_scatter_bb);
+  // The issue is that the mask computation creates branches (for validity).
+  // The val_done_bb needs to branch to vec_scatter_bb instead of falling
+  // through. Let's redirect val_done_bb to vec_scatter_bb. Actually, the last
+  // val_done_bb was the one from the last expression. We need to branch from
+  // there to vec_scatter_bb. Since the builder is now set to scatter_loop_bb
+  // area, let's fix the flow: After all expressions, the last val_done_bb
+  // should br to vec_scatter_bb. We'll add a terminator to val_done_bb at the
+  // end.
+
+  // ========== PHASE 2: Scalar tail ==========
+  b.SetInsertPoint(tail_bb);
+  PHINode *tail_i = b.CreatePHI(i64, 2, "ti");
+  PHINode *tail_oc = b.CreatePHI(i64, 2, "toc");
+  tail_i->addIncoming(vec_limit, tail_bb);
+  tail_oc->addIncoming(vec_oc_out, tail_bb); // will be fixed below
+  // Need to also add incoming from scatter_done for the loop backedge
+  b.CreateCondBr(b.CreateICmpULT(tail_i, nrows), tail_body_bb, exit_bb);
+
+  // Use CompileCtx for scalar tail expression evaluation
+  CompileCtx cc(llctx, mod, schema, in_arg, out_arg);
+  cc.b.SetInsertPoint(tail_body_bb);
+  cc.col_data = col_data;
+  cc.col_validity = col_validity;
+  cc.row_idx = tail_i;
+
+  Value *match = ConstantInt::getTrue(llctx);
+  for (const AQPExpr *e : filter_exprs) {
+    Value *res = EmitExpr(cc, e);
+    match = cc.b.CreateAnd(match, res);
+  }
+  BasicBlock *tail_cond_bb = cc.b.GetInsertBlock();
+  cc.b.CreateCondBr(match, tail_write_bb, tail_next_bb);
+
+  cc.b.SetInsertPoint(tail_write_bb);
+  for (size_t oi = 0; oi < col_mapping.size(); oi++) {
+    int in_i = col_mapping[oi];
+    if (in_i < 0)
+      continue;
+    unsigned elem_size = DtypeElemSize(col_dtypes[oi]);
+    if (elem_size == 0)
+      continue;
+
+    Value *src = cc.b.CreateGEP(
+        Type::getInt8Ty(llctx), col_data[in_i],
+        cc.b.CreateMul(tail_i, ConstantInt::get(i64, elem_size)));
+    Value *dst = cc.b.CreateGEP(
+        Type::getInt8Ty(llctx), out_data_ptrs[oi],
+        cc.b.CreateMul(tail_oc, ConstantInt::get(i64, elem_size)));
+    cc.b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
+                      ConstantInt::get(i64, elem_size));
+  }
+  Value *toc1 = cc.b.CreateAdd(tail_oc, ConstantInt::get(i64, 1));
+  cc.b.CreateBr(tail_next_bb);
+
+  cc.b.SetInsertPoint(tail_next_bb);
+  PHINode *toc_next = cc.b.CreatePHI(i64, 2, "toc_next");
+  toc_next->addIncoming(tail_oc, tail_cond_bb);
+  toc_next->addIncoming(toc1, tail_write_bb);
+  Value *ti_next = cc.b.CreateAdd(tail_i, ConstantInt::get(i64, 1));
+  tail_i->addIncoming(ti_next, tail_next_bb);
+  tail_oc->addIncoming(toc_next, tail_next_bb);
+  cc.b.CreateBr(tail_bb);
+
+  // Exit: store output nrows and return count
+  b.SetInsertPoint(exit_bb);
+  PHINode *final_oc = b.CreatePHI(i64, 2, "final_oc");
+  final_oc->addIncoming(tail_oc, tail_bb); // from tail loop header (not taken)
+  final_oc->addIncoming(vec_oc_out, scatter_done_bb); // if vec_limit == nrows
+  Value *out_nrows_ptr = b.CreateStructGEP(ChunkViewTy, out_arg, 1);
+  b.CreateStore(final_oc, out_nrows_ptr);
+  b.CreateRet(final_oc);
+
+  // Fix: the last val_done_bb from the expression loop needs to branch to
+  // vec_scatter_bb. We need to track the last val_done_bb.
+  // Unfortunately we don't have a clean reference. Walk the function's BB list
+  // to find the val_done BBs and redirect the last one.
+  // Alternative: we collect val_done BBs in a vector during expression eval.
+  // For now, we rely on the fact that the IR builder was left in val_done_bb
+  // after the last expression. We can find the last BB that doesn't have a
+  // terminator and add a branch to vec_scatter_bb.
+  // Since we moved the builder around, let's just find any BB without
+  // terminator.
+  for (auto &bb : *fn) {
+    if (bb.getTerminator() == nullptr && bb.getName().startswith("val_done")) {
+      IRBuilder<> b_term(&bb);
+      b_term.CreateBr(vec_scatter_bb);
+    }
+  }
+
+  // Also handle case where no filter expressions: vec_body needs to br to
+  // scatter
+  if (filter_exprs.empty()) {
+    IRBuilder<> b_vb(vec_body_bb);
+    if (!vec_body_bb->getTerminator())
+      b_vb.CreateBr(vec_scatter_bb);
+  }
+
+  return fn;
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Build a fused pipeline function (Filter → Projection):
 //   int64_t aqp_pipe_<id>(AQPChunkView* in, AQPChunkView* out, i8* state)
@@ -3399,9 +3952,25 @@ static Function *BuildAggUpdateFunction(LLVMContext &llctx, Module &mod,
 }
 
 // ---------------------------------------------------------------------------
-// Optimise the module with O0 (mem2reg only) or O3
+// Optimise the module with the specified optimization level
 // ---------------------------------------------------------------------------
-static void OptimiseModule(Module &mod, bool use_o3) {
+static void OptimiseModule(Module &mod, OptLevel opt) {
+  OptimizationLevel llvm_opt;
+  switch (opt) {
+  case OptLevel::O0:
+    llvm_opt = OptimizationLevel::O0;
+    break;
+  case OptLevel::O1:
+    llvm_opt = OptimizationLevel::O1;
+    break;
+  case OptLevel::O2:
+    llvm_opt = OptimizationLevel::O2;
+    break;
+  case OptLevel::O3:
+    llvm_opt = OptimizationLevel::O3;
+    break;
+  }
+
   PassBuilder pb;
   LoopAnalysisManager lam;
   FunctionAnalysisManager fam;
@@ -3413,17 +3982,16 @@ static void OptimiseModule(Module &mod, bool use_o3) {
   pb.registerLoopAnalyses(lam);
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-  ModulePassManager mpm =
-      use_o3 ? pb.buildPerModuleDefaultPipeline(OptimizationLevel::O3)
-             : pb.buildPerModuleDefaultPipeline(OptimizationLevel::O1);
+  ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm_opt);
   mpm.run(mod, mam);
 }
 
 // ---------------------------------------------------------------------------
 // IrToLlvmCompiler public API
 // ---------------------------------------------------------------------------
-IrToLlvmCompiler::IrToLlvmCompiler(bool use_o3, bool use_simd)
-    : use_o3_(use_o3), use_simd_(use_simd), impl_(std::make_unique<Impl>()) {}
+IrToLlvmCompiler::IrToLlvmCompiler(OptLevel opt, SimdISA simd)
+    : opt_level_(opt), simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
+      impl_(std::make_unique<Impl>(simd)) {}
 
 IrToLlvmCompiler::~IrToLlvmCompiler() = default;
 
@@ -3449,7 +4017,16 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
   std::string fn_name = "aqp_expr_" + std::to_string(fn_id);
 
   std::vector<const AQPExpr *> exprs = {&expr};
-  Function *fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
+
+  // Try SIMD if enabled and expression is SIMD-friendly
+  Function *fn = nullptr;
+  if (use_simd_ && impl_->vec_width > 1 &&
+      AllExprsSIMDFriendly(exprs, schema)) {
+    fn = BuildFilterFunctionSIMD(*ctx, *mod, fn_name, exprs, schema,
+                                 impl_->vec_width);
+  }
+  if (!fn)
+    fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -3462,7 +4039,7 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   // Add module to ORC JIT
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -3571,7 +4148,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     }
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -3636,7 +4213,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -3745,7 +4322,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -3840,7 +4417,7 @@ IrToLlvmCompiler::CompileHashBuild(const AQPStmt &hash_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -3928,7 +4505,7 @@ IrToLlvmCompiler::CompileHashProbe(const AQPStmt &join_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -3996,8 +4573,26 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_pipe_mod", *ctx);
 
-  Function *fn = BuildPipelineFunction(*ctx, *mod, fn_name, filter_exprs,
-                                       col_mapping, col_dtypes, in_schema);
+  // Try SIMD pipeline if enabled and all filter expressions are SIMD-friendly
+  // TODO: SIMD pipeline has control flow issues — disabled until fixed
+  Function *fn = nullptr;
+  bool used_simd = false;
+  if (false && use_simd_ && impl_->vec_width > 1 &&
+      (filter_exprs.empty() || AllExprsSIMDFriendly(filter_exprs, in_schema))) {
+    fn = BuildPipelineFunctionSIMD(*ctx, *mod, fn_name, filter_exprs,
+                                   col_mapping, col_dtypes, in_schema,
+                                   impl_->vec_width);
+    if (fn) {
+      used_simd = true;
+      std::cerr << "[AQP-JIT] using SIMD pipeline (VW=" << impl_->vec_width
+                << ")\n";
+    } else {
+      std::cerr << "[AQP-JIT] SIMD pipeline failed → scalar fallback\n";
+    }
+  }
+  if (!fn)
+    fn = BuildPipelineFunction(*ctx, *mod, fn_name, filter_exprs, col_mapping,
+                               col_dtypes, in_schema);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -4010,7 +4605,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -4251,7 +4846,7 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
     return nullptr;
   }
 
-  OptimiseModule(*mod, use_o3_);
+  OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
@@ -4522,6 +5117,10 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
   return (compiled_count > 0)
              ? reinterpret_cast<void *>((uintptr_t)compiled_count)
              : nullptr;
+}
+
+void *IrToLlvmCompiler::CompileSQL(const AQPStmt &sql_ir) {
+  return CompileSubPlan(sql_ir);
 }
 
 } // namespace aqp_jit

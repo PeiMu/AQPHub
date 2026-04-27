@@ -136,23 +136,49 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
       } else if (level == "pipeline") {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE;
-      } else if (level == "subplan") {
-        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SUBPLAN;
+      } else if (level == "sql" || "subplan") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SQL;
       } else {
         throw std::runtime_error(
             "Unknown JIT level: " + arg.substr(12) +
-            " (valid: expr, operator, pipeline, subplan)");
+            " (valid: expr, operator, pipeline, sql, subplan)");
       }
-    } else if (arg == "--jit-simd") {
-      config.jit_flags |= AQP_JIT_SIMD;
-    } else if (arg.find("--jit-opt=") == 0) {
-      std::string opt = arg.substr(10);
-      if (opt == "3") {
-        config.jit_flags |= AQP_JIT_OPT3;
-      } else if (opt != "0") {
+    } else if (arg.find("--jit-simd=") == 0) {
+      std::string simd = to_lower(arg.substr(11));
+      config.jit_flags &= ~AQP_JIT_SIMD_MASK;
+      if (simd == "off" || simd == "none")
+        config.jit_flags |= AQP_JIT_SIMD_OFF;
+      else if (simd == "sse2")
+        config.jit_flags |= AQP_JIT_SIMD_SSE2;
+      else if (simd == "avx")
+        config.jit_flags |= AQP_JIT_SIMD_AVX;
+      else if (simd == "avx2")
+        config.jit_flags |= AQP_JIT_SIMD_AVX2;
+      else if (simd == "avx512")
+        config.jit_flags |= AQP_JIT_SIMD_AVX512;
+      else if (simd == "auto")
+        config.jit_flags |= AQP_JIT_SIMD_AUTO;
+      else
         throw std::runtime_error(
-            "Unknown JIT opt level: " + opt + " (valid: 0, 3)");
-      }
+            "Unknown SIMD level: " + simd +
+            " (valid: off, sse2, avx, avx2, avx512, auto)");
+    } else if (arg == "--jit-simd") {
+      config.jit_flags = (config.jit_flags & ~AQP_JIT_SIMD_MASK) | AQP_JIT_SIMD_AUTO;
+    } else if (arg.find("--jit-opt=") == 0) {
+      std::string opt = to_lower(arg.substr(10));
+      config.jit_flags &= ~AQP_JIT_OPT_MASK;
+      if (opt == "o0" || opt == "0")
+        config.jit_flags |= AQP_JIT_OPT_O0;
+      else if (opt == "o1" || opt == "1")
+        config.jit_flags |= AQP_JIT_OPT_O1;
+      else if (opt == "o2" || opt == "2")
+        config.jit_flags |= AQP_JIT_OPT_O2;
+      else if (opt == "o3" || opt == "3")
+        config.jit_flags |= AQP_JIT_OPT_O3;
+      else
+        throw std::runtime_error(
+            "Unknown JIT opt level: " + opt +
+            " (valid: O0, O1, O2, O3)");
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -220,13 +246,13 @@ void ParamConfig::PrintUsage() {
                "(same as --jit-level=expr)"
             << std::endl;
   std::cout << "  --jit-level=<level>              JIT granularity: expr, "
-               "operator, pipeline, subplan"
+               "operator, pipeline, sql (alias: subplan)"
             << std::endl;
-  std::cout << "  --jit-simd                       Enable SIMD vectorization "
-               "in JIT (orthogonal to level)"
+  std::cout << "  --jit-simd[=<level>]             Enable SIMD: sse2, avx, "
+               "avx2, avx512, auto (default: auto)"
             << std::endl;
-  std::cout << "  --jit-opt=<0|3>                  JIT optimization level "
-               "(default: 0)"
+  std::cout << "  --jit-opt=<O0|O1|O2|O3>         LLVM optimization level "
+               "(default: O1)"
             << std::endl;
   std::cout << "  --no-jit                         Disable JIT compilation"
             << std::endl;

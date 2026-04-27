@@ -6,6 +6,8 @@ rm -rf compile.log
 engine=$1
 split=$2
 jit_level=$3
+jit_opt=$4
+jit_simd=$5
 
 ########################################
 # Start / Stop PostgreSQL
@@ -130,6 +132,6 @@ elif [[ "$engine" == "opengauss" ]]; then
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}"
+cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_opt}" "${jit_simd}"
 
 #mv compile.log job_result/.

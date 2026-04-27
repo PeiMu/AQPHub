@@ -19,6 +19,45 @@
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "simplest_ir.h"
+
+// Resolve jit_flags bitfields to typed enums for IrToLlvmCompiler
+static aqp_jit::OptLevel ResolveOptLevel(uint32_t flags) {
+  // Legacy AQP_JIT_OPT3 (0x08) maps to O3
+  if (flags & AQP_JIT_OPT3)
+    return aqp_jit::OptLevel::O3;
+  switch (flags & AQP_JIT_OPT_MASK) {
+  case AQP_JIT_OPT_O0:
+    return aqp_jit::OptLevel::O0;
+  case AQP_JIT_OPT_O1:
+    return aqp_jit::OptLevel::O1;
+  case AQP_JIT_OPT_O2:
+    return aqp_jit::OptLevel::O2;
+  case AQP_JIT_OPT_O3:
+    return aqp_jit::OptLevel::O3;
+  }
+  return aqp_jit::OptLevel::O1; // default
+}
+
+static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
+  // Legacy AQP_JIT_SIMD (0x20) maps to AUTO
+  if (flags & AQP_JIT_SIMD)
+    return aqp_jit::SimdISA::AUTO;
+  switch (flags & AQP_JIT_SIMD_MASK) {
+  case AQP_JIT_SIMD_OFF:
+    return aqp_jit::SimdISA::OFF;
+  case AQP_JIT_SIMD_SSE2:
+    return aqp_jit::SimdISA::SSE2;
+  case AQP_JIT_SIMD_AVX:
+    return aqp_jit::SimdISA::AVX;
+  case AQP_JIT_SIMD_AVX2:
+    return aqp_jit::SimdISA::AVX2;
+  case AQP_JIT_SIMD_AVX512:
+    return aqp_jit::SimdISA::AVX512;
+  case AQP_JIT_SIMD_AUTO:
+    return aqp_jit::SimdISA::AUTO;
+  }
+  return aqp_jit::SimdISA::OFF;
+}
 #endif
 
 namespace middleware {
@@ -411,6 +450,24 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
                    "(compiler reused)\n";
 #endif
       RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+
+      // Level 4: SQL-level compilation — compile the entire IR tree
+      if (jit_flags_ & AQP_JIT_SQL) {
+        if (!jit_compiler_)
+          jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+              ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
+        void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
+        if (sql_result) {
+          auto *ctx_sql = GetClientContext();
+          if (ctx_sql->aqp_jit_context) {
+            ctx_sql->aqp_jit_context->flags |= duckdb::AQPJIT_SQL;
+#ifndef NDEBUG
+            std::cerr << "[AQP-JIT] SQL-level compiled for this IR\n";
+#endif
+          }
+        }
+      }
+
       auto *ctx = GetClientContext();
 #ifndef NDEBUG
       if (ctx->aqp_jit_context) {
@@ -509,19 +566,18 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #endif
     RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
-    // Level 4: Sub-plan compilation — compile the entire sub-IR tree
-    if (jit_flags_ & AQP_JIT_SUBPLAN) {
+    // Level 4: SQL-level compilation — compile the sub-SQL IR tree
+    if (jit_flags_ & AQP_JIT_SQL) {
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
-            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
-      void *subplan_result = jit_compiler_->CompileSubPlan(*jit_pending_ir_);
-      if (subplan_result) {
+            ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
+      void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
+      if (sql_result) {
         auto *ctx_sp = GetClientContext();
         if (ctx_sp->aqp_jit_context) {
-          ctx_sp->aqp_jit_context->flags |= duckdb::AQPJIT_SUBPLAN;
+          ctx_sp->aqp_jit_context->flags |= duckdb::AQPJIT_SQL;
 #ifndef NDEBUG
-          std::cerr << "[AQP-JIT] sub-plan compiled for this sub-IR\n";
+          std::cerr << "[AQP-JIT] SQL-level compiled for this sub-IR\n";
 #endif
         }
       }
@@ -1036,8 +1092,9 @@ HasApplicablePredicate(const ir_sql_converter::AQPStmt *filter_ir,
 // replace that sub-expression with "pass-all" (true), corrupting the filter
 // logic (e.g. "gender='m' OR (gender='f' AND name LIKE 'B%')" becomes
 // "gender='m' OR gender='f'" = all rows pass when 'name' col is absent).
-static bool AllColsInExprAvailable(const ir_sql_converter::AQPExpr *expr,
-                                   const std::vector<aqp_jit::ColSchema> &schema) {
+static bool
+AllColsInExprAvailable(const ir_sql_converter::AQPExpr *expr,
+                       const std::vector<aqp_jit::ColSchema> &schema) {
   if (!expr)
     return true;
   using ir_sql_converter::SimplestNodeType;
@@ -1076,8 +1133,9 @@ static bool AllColsInExprAvailable(const ir_sql_converter::AQPExpr *expr,
     auto *c =
         static_cast<const ir_sql_converter::SimplestVarComparison *>(expr);
     return c->left_attr &&
-           inSchema(static_cast<unsigned int>(c->left_attr->GetTableIndex()),
-                    static_cast<unsigned int>(c->left_attr->GetColumnIndex())) &&
+           inSchema(
+               static_cast<unsigned int>(c->left_attr->GetTableIndex()),
+               static_cast<unsigned int>(c->left_attr->GetColumnIndex())) &&
            c->right_attr &&
            inSchema(static_cast<unsigned int>(c->right_attr->GetTableIndex()),
                     static_cast<unsigned int>(c->right_attr->GetColumnIndex()));
@@ -1495,8 +1553,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
       // code memory) stays alive until jit_compiler_ is reset next query.
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
-            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
+            ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
       ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
       if (raw_fn) {
         duckdb::AQPExprFn fn = reinterpret_cast<duckdb::AQPExprFn>(
@@ -1555,8 +1612,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
-            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
+            ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
 
       ::AQPPipelineFn pipe_fn =
           jit_compiler_->CompilePipeline(filter_ir, proj_ir, schema);
@@ -1635,7 +1691,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
       if (!in_schema.empty()) {
         if (!jit_compiler_)
           jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-              /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0);
+              ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
         // Build column mapping: out_col_i → in_col_i
         duckdb::vector<int> col_map;
         for (const auto &attr : proj_ir->target_list) {
@@ -1730,8 +1786,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 
       if (!jit_compiler_)
         jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-            /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0,
-            /*use_simd=*/(jit_flags_ & AQP_JIT_SIMD) != 0);
+            ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
       void *raw_fn = jit_compiler_->CompileAggUpdate(*agg_ir, in_schema);
       if (raw_fn) {
         // Compute state size (same logic as CompileAggUpdate)
@@ -1867,7 +1922,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 
             if (!jit_compiler_)
               jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-                  /*use_o3=*/(jit_flags_ & AQP_JIT_OPT3) != 0);
+                  ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
 
             void *build_fn =
                 jit_compiler_->CompileHashBuild(synth_hash, build_schema);
