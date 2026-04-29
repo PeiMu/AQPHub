@@ -6,8 +6,14 @@
 
 namespace middleware {
 
-PostgreSQLAdapter::PostgreSQLAdapter(const std::string &connection_string)
+PostgreSQLAdapter::PostgreSQLAdapter(const std::string &connection_string,
+                                     bool no_jit, bool force_jit)
     : conn(nullptr), parse_tree() {
+  if (no_jit && force_jit) {
+    throw std::runtime_error(
+        "--no-jit and --force-jit cannot be combined");
+  }
+
   // Connect to PostgreSQL
   conn = PQconnectdb(connection_string.c_str());
 
@@ -26,6 +32,24 @@ PostgreSQLAdapter::PostgreSQLAdapter(const std::string &connection_string)
   PGresult *sync_result = PQexec(conn, "SET synchronous_commit = off");
   if (sync_result)
     PQclear(sync_result);
+
+  // Apply JIT mode for this session
+  const char *jit_sql = nullptr;
+  if (no_jit) {
+    jit_sql = "SET jit = off";
+  } else if (force_jit) {
+    jit_sql = "SET jit = on; "
+              "SET jit_above_cost = 0; "
+              "SET jit_inline_above_cost = 0; "
+              "SET jit_optimize_above_cost = 0; "
+              "SET jit_expressions = on; "
+              "SET jit_tuple_deforming = on";
+  }
+  if (jit_sql) {
+    PGresult *jit_result = PQexec(conn, jit_sql);
+    if (jit_result)
+      PQclear(jit_result);
+  }
 }
 
 PostgreSQLAdapter::~PostgreSQLAdapter() { CleanUp(); }
@@ -427,75 +451,4 @@ void PostgreSQLAdapter::CheckConnection() {
   }
 }
 
-PostgreSQLAdapter::JITProfileResult
-  PostgreSQLAdapter::GetJITProfile(const std::string &sql) {                                    
-    CheckConnection();
-    JITProfileResult result;                                                                   
-                                                                                                
-    // Force JIT on with all optimizations
-    PGresult *r = PQexec(conn,                                                                  
-        "SET jit_above_cost = 0;"                                                               
-        "SET jit_inline_above_cost = 0;"                                                       
-        "SET jit_optimize_above_cost = 0;");                                                    
-    if (r) PQclear(r);
-                                                                                                
-    // Run EXPLAIN ANALYZE with JSON output                                                     
-    std::string explain_sql = "EXPLAIN (ANALYZE, FORMAT JSON) " + sql;                         
-    PGresult *pg_result = PQexec(conn, explain_sql.c_str());                                    
-                                                                                                
-    if (PQresultStatus(pg_result) == PGRES_TUPLES_OK &&                                        
-        PQntuples(pg_result) > 0) {                                                             
-      std::string json_str = PQgetvalue(pg_result, 0, 0);                                       
-      try {                                                                                     
-        json ej = json::parse(json_str);                                                        
-        if (ej.is_array() && !ej.empty()) {                                                     
-          auto &top = ej[0];                                                                    
-          auto &plan = top["Plan"];                                                            
-          if (plan.contains("Total Cost"))                                                      
-            result.estimated_cost = plan["Total Cost"].get<double>();
-          if (plan.contains("Plan Rows"))                                                       
-            result.estimated_rows = plan["Plan Rows"].get<double>();                            
-          if (top.contains("Planning Time"))                                                   
-            result.planning_time_ms = top["Planning Time"].get<double>();                       
-          if (top.contains("Execution Time"))                                                   
-            result.execution_time_ms = top["Execution Time"].get<double>();                    
-          if (top.contains("JIT")) {                                                            
-            auto &jit = top["JIT"];
-            if (jit.contains("Functions"))                                                      
-              result.jit_functions = jit["Functions"].get<int>();
-            if (jit.contains("Timing")) {                                                       
-              auto &t = jit["Timing"];                                                          
-              if (t.contains("Generation")) {
-                auto &gen = t["Generation"];
-                if (gen.is_object() && gen.contains("Total"))
-                  result.jit_generation_ms = gen["Total"].get<double>();
-                else if (gen.is_number())
-                  result.jit_generation_ms = gen.get<double>();
-              }                       
-              if (t.contains("Inlining"))
-                result.jit_inlining_ms = t["Inlining"].get<double>();                          
-              if (t.contains("Optimization"))                                                   
-                result.jit_optimization_ms = t["Optimization"].get<double>();
-              if (t.contains("Emission"))                                                       
-                result.jit_emission_ms = t["Emission"].get<double>();                           
-              if (t.contains("Total"))                                                         
-                result.jit_total_ms = t["Total"].get<double>();                                 
-            }     
-          }                                                                                    
-        }
-      } catch (const std::exception &e) {
-        std::cerr << "[JITProfile] JSON parse error: " << e.what() << std::endl;                
-      }                                                                                         
-    }                                                                                           
-    if (pg_result) PQclear(pg_result);                                                          
-                                                                                               
-    // Reset JIT to defaults                                                                    
-    r = PQexec(conn,
-        "SET jit_above_cost = 100000;"                                                          
-        "SET jit_inline_above_cost = 500000;"
-        "SET jit_optimize_above_cost = 500000;");                                               
-    if (r) PQclear(r);
-                                                                                                
-    return result;
-  }                              
 } // namespace middleware

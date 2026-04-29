@@ -25,7 +25,9 @@ using json = nlohmann::json;
 namespace middleware {
 class PostgreSQLAdapter : public EngineAdapter {
 public:
-  explicit PostgreSQLAdapter(const std::string &connection_string);
+  explicit PostgreSQLAdapter(const std::string &connection_string,
+                             bool no_jit = false,
+                             bool force_jit = false);
   ~PostgreSQLAdapter() override;
 
   // Parse SQL and return logical plan
@@ -71,20 +73,7 @@ public:
   PGconn *GetConnection() { return conn; }
 
   void CheckConnection();
-  // JIT profiling: run EXPLAIN ANALYZE with JIT forced on                                    
-    struct JITProfileResult {                                                                   
-      double planning_time_ms = 0;                                                              
-      double execution_time_ms = 0;                                                             
-      int    jit_functions = 0;                                                                 
-      double jit_generation_ms = 0;                                                             
-      double jit_inlining_ms = 0;                                                               
-      double jit_optimization_ms = 0;                                                          
-      double jit_emission_ms = 0;                                                               
-      double jit_total_ms = 0;                                                                  
-      double estimated_cost = 0;                                                               
-      double estimated_rows = 0;                                                                
-    };                                                                                          
-    JITProfileResult GetJITProfile(const std::string &sql); 
+
 private:
   PGconn *conn;
   json parse_tree;

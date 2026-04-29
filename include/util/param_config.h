@@ -52,7 +52,8 @@ struct ParamConfig {
   bool enable_timing = false;
   bool enable_debug_print = false;
   bool enable_sub_plan_combiner = false;
-  bool enable_jit_profiling=false;
+  bool enable_no_jit = false;     // PostgreSQL: SET jit = off
+  bool enable_force_jit = false;  // PostgreSQL: force JIT on with all options
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);
 

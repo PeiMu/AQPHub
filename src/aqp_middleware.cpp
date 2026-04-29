@@ -57,7 +57,9 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
       std::cout << "[AQP Middleware] Creating PostgreSQL adapter: "
                 << config.db_path_or_connection << std::endl;
     }
-    return std::make_unique<PostgreSQLAdapter>(config.db_path_or_connection);
+    return std::make_unique<PostgreSQLAdapter>(config.db_path_or_connection,
+                                               config.enable_no_jit,
+                                               config.enable_force_jit);
   }
 #endif
 
