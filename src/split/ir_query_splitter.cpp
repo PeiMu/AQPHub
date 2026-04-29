@@ -331,7 +331,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
-    if (config_.jit_flags && config_.engine == BackendEngine::DUCKDB) {
+    if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
@@ -461,7 +461,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_LLVM
   // JIT: compile filter expressions before execution so DuckDB can dispatch
   // to compiled code instead of the interpreted expression executor.
-  if (config_.jit_flags && config_.engine == BackendEngine::DUCKDB) {
+  if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duck)
       duck->SetJITPendingIR(executable_ir, config_.jit_flags);

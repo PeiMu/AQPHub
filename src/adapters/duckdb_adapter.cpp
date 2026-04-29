@@ -421,7 +421,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   // When JIT is requested but no pending IR (e.g. --split=none
   // --jit-level=expr), build the IR pipeline: parse -> filter optimize ->
   // convert to IR.
-  if (!jit_pending_ir_ && jit_flags_) {
+  if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
     ParseSQL(sql);
     FilterOptimize();
     auto whole_ir = ConvertPlanToIR();

@@ -65,6 +65,11 @@ typedef struct {
   (1u << 4) /* Level 4: SQL / sub-SQL compilation             */
 #define AQP_JIT_SUBPLAN AQP_JIT_SQL /* Legacy alias                           */
 
+/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE / SQL).
+ * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
+#define AQP_JIT_LEVEL_MASK                                                       \
+  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SQL)
+
 /* Legacy aliases (backward compat) */
 #define AQP_JIT_OPT3                                                           \
   (1u << 3) /* Use LLVM O3 optimization                     */
