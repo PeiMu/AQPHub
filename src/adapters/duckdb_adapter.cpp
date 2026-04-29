@@ -432,7 +432,9 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   // --jit-level=expr), build the IR pipeline: parse -> filter optimize ->
   // convert to IR.
   auto timer = chrono_tic();
+  bool jit_active = false;
   if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
+    jit_active = true;
     ParseSQL(sql);
     FilterOptimize();
     auto whole_ir = ConvertPlanToIR();
@@ -534,37 +536,42 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
         result.num_rows++;
       }
     }
-    return result;
-  }
+  } else
 #endif
+  {
+    auto duckdb_result = conn->Query(sql);
+    if (enable_timing_) {
+      auto run_us =
+          chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
+      WriteJitTimingColumn(run_us);
+    }
+    if (duckdb_result->HasError()) {
+      throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+    }
+    //  auto intermediate_results = std::move(duckdb_result->Collection());
 
-  auto duckdb_result = conn->Query(sql);
-  if (duckdb_result->HasError()) {
-    throw std::runtime_error("Query failed: " + duckdb_result->GetError());
-  }
-  //  auto intermediate_results = std::move(duckdb_result->Collection());
+    // Get columns
+    result.num_columns = duckdb_result->ColumnCount();
+    for (size_t i = 0; i < result.num_columns; i++) {
+      result.column_names.push_back(duckdb_result->ColumnName(i));
+    }
 
-  // Get columns
-  result.num_columns = duckdb_result->ColumnCount();
-  for (size_t i = 0; i < result.num_columns; i++) {
-    result.column_names.push_back(duckdb_result->ColumnName(i));
-  }
+    // Get rows
+    result.num_rows = 0;
+    while (true) {
+      auto chunk = duckdb_result->Fetch();
+      if (!chunk || 0 == chunk->size())
+        break;
 
-  // Get rows
-  result.num_rows = 0;
-  while (true) {
-    auto chunk = duckdb_result->Fetch();
-    if (!chunk || 0 == chunk->size())
-      break;
-
-    for (size_t row = 0; row < chunk->size(); row++) {
-      std::vector<std::string> row_data;
-      row_data.reserve(result.num_columns);
-      for (size_t col = 0; col < result.num_columns; col++) {
-        row_data.push_back(chunk->GetValue(col, row).ToString());
+      for (size_t row = 0; row < chunk->size(); row++) {
+        std::vector<std::string> row_data;
+        row_data.reserve(result.num_columns);
+        for (size_t col = 0; col < result.num_columns; col++) {
+          row_data.push_back(chunk->GetValue(col, row).ToString());
+        }
+        result.rows.push_back(std::move(row_data));
+        result.num_rows++;
       }
-      result.rows.push_back(std::move(row_data));
-      result.num_rows++;
     }
   }
   return result;
