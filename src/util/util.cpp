@@ -112,7 +112,7 @@ long chrono_toc(std::chrono::high_resolution_clock::time_point *start_time,
                        current_time - *start_time)
                        .count();
   std::string str = prefix + std::to_string(time_diff) + " us";
-  if (print)
+  if (true)
     std::cout << str << std::endl;
   *start_time = current_time;
   return time_diff;

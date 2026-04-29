@@ -4,7 +4,9 @@
 
 #include "adapters/duckdb_adapter.h"
 
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <set>
 #include <sstream>
@@ -12,7 +14,6 @@
 #include <unordered_set>
 
 #ifdef HAVE_LLVM
-#include "jit/aqp_jit_hashtable.h"
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
@@ -20,6 +21,7 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "jit/aqp_jit_hashtable.h"
 #include "simplest_ir.h"
 
 // Resolve jit_flags bitfields to typed enums for IrToLlvmCompiler
@@ -61,6 +63,14 @@ static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
   return aqp_jit::SimdISA::OFF;
 }
 #endif
+
+// Write one JIT timing value (in ms) as a CSV column.
+static void WriteJitTimingColumn(long us) {
+  std::ofstream log_file;
+  log_file.open("time_log.csv", std::ios_base::app);
+  log_file << std::fixed << std::setprecision(3) << (us / 1000.0) << ", ";
+  log_file.close();
+}
 
 namespace middleware {
 
@@ -421,6 +431,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   // When JIT is requested but no pending IR (e.g. --split=none
   // --jit-level=expr), build the IR pipeline: parse -> filter optimize ->
   // convert to IR.
+  auto timer = chrono_tic();
   if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
     ParseSQL(sql);
     FilterOptimize();
@@ -456,7 +467,11 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       // Level 4: SQL-level compilation — compile the entire IR tree
       if (jit_flags_ & AQP_JIT_SQL) {
         EnsureJITCompiler();
+        auto compile_sql_timer = chrono_tic();
         void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
+        if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+          chrono_toc(&compile_sql_timer, "ExecuteSQL::CompileSQL\n", false);
+        }
         if (sql_result) {
           auto *ctx_sql = GetClientContext();
           if (ctx_sql->aqp_jit_context) {
@@ -466,6 +481,14 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
 #endif
           }
         }
+      }
+
+      if (enable_timing_) {
+        // Record total JIT compile time (includes Prepare + RegisterJIT +
+        // CompileSQL) Record total JIT compile time
+        auto jit_compile_time =
+            chrono_toc(&timer, "ExecuteSQL::jit compile time\n", false);
+        WriteJitTimingColumn(jit_compile_time);
       }
 
       auto *ctx = GetClientContext();
@@ -484,9 +507,15 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       }
 #endif
     }
+
     jit_pending_ir_ = nullptr;
     duckdb::vector<duckdb::Value> bound;
     auto duckdb_result = prepared->Execute(bound, false);
+    if (enable_timing_) {
+      auto run_us =
+          chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
+      WriteJitTimingColumn(run_us);
+    }
     if (duckdb_result->HasError())
       throw std::runtime_error("Query failed: " + duckdb_result->GetError());
     result.num_columns = duckdb_result->ColumnCount();
@@ -544,10 +573,12 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
 #if IN_MEM_TMP_TABLE
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card, bool enable_timing) {
+    bool update_temp_card) {
   std::chrono::high_resolution_clock::time_point timer;
-  if (enable_timing)
+  bool jit_active = false;
+  if (enable_timing_) {
     timer = chrono_tic();
+  }
   auto prepared = conn->Prepare(sql);
   if (prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
@@ -557,6 +588,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #ifdef HAVE_LLVM
   // JIT: compile filters from the pending IR and register before execution.
   if (jit_pending_ir_ && prepared->data && prepared->data->physical_plan) {
+    jit_active = true;
     // Reset JIT context (stale function pointers would crash if dispatched).
     // Keep jit_compiler_ alive — reusing LLJIT avoids re-init overhead.
     GetClientContext()->aqp_jit_context.reset();
@@ -569,7 +601,12 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     // Level 4: SQL-level compilation — compile the sub-SQL IR tree
     if (jit_flags_ & AQP_JIT_SQL) {
       EnsureJITCompiler();
+      auto compile_sql_timer = chrono_tic();
       void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&compile_sql_timer,
+                   "ExecuteSQLandCreateTempTable::CompileSQL\n", false);
+      }
       if (sql_result) {
         auto *ctx_sp = GetClientContext();
         if (ctx_sp->aqp_jit_context) {
@@ -579,6 +616,14 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #endif
         }
       }
+    }
+
+    if (enable_timing_) {
+      // Record total JIT compile time (includes Prepare + RegisterJIT +
+      // CompileSQL) Record total JIT compile time
+      auto jit_compile_time = chrono_toc(
+          &timer, "ExecuteSQLandCreateTempTable::jit compile time\n", false);
+      WriteJitTimingColumn(jit_compile_time);
     }
 
     auto *ctx2 = GetClientContext();
@@ -601,15 +646,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
   duckdb::vector<duckdb::Value> bound_values;
   auto subquery_result = prepared->ExecuteRow(bound_values, false);
-  if (enable_timing) {
-    auto execute_sub_sql_time =
-        chrono_toc(&timer, "Execute sub-SQL time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3)
-             << (execute_sub_sql_time / 1000.0) << ", ";
-    log_file.close();
+  if (enable_timing_) {
+    auto run_us = chrono_toc(
+        &timer, "ExecuteSQLandCreateTempTable::Execute sub-SQL time\n", false);
+    WriteJitTimingColumn(run_us);
   }
 
   int64_t chunk_size = subquery_result->Count();
@@ -651,7 +691,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
   temp_table_card_.emplace(temp_table_name, chunk_size);
 
-  if (enable_timing) {
+  if (enable_timing_) {
     auto extra_materialize_time =
         chrono_toc(&timer, "Extra materialize time is\n", false);
     // save time to a file
@@ -1559,7 +1599,11 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     if (!schema.empty() && HasApplicablePredicate(filter_ir, schema) &&
         FilterAllColsAvailable(filter_ir, schema)) {
       EnsureJITCompiler();
+      auto t_filter = chrono_tic();
       ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_filter, "RegisterJIT::CompileFilter\n", false);
+      }
       if (raw_fn) {
         duckdb::AQPExprFn fn = reinterpret_cast<duckdb::AQPExprFn>(
             reinterpret_cast<void *>(raw_fn));
@@ -1617,8 +1661,12 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 
       EnsureJITCompiler();
 
+      auto t_pipe = chrono_tic();
       ::AQPPipelineFn pipe_fn =
           jit_compiler_->CompilePipeline(filter_ir, proj_ir, schema);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_pipe, "RegisterJIT::CompilePipeline\n", false);
+      }
       if (pipe_fn) {
         auto fn = reinterpret_cast<duckdb::AQPPipelineFn>(
             reinterpret_cast<void *>(pipe_fn));
@@ -1707,8 +1755,12 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
           col_map.push_back(found);
         }
 
+        auto t_proj = chrono_tic();
         ::AQPOperatorFn raw_fn =
             jit_compiler_->CompileProjection(*proj_ir, in_schema);
+        if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+          chrono_toc(&t_proj, "RegisterJIT::CompileProjection\n", false);
+        }
         if (raw_fn) {
           auto fn = reinterpret_cast<duckdb::AQPOperatorFn>(
               reinterpret_cast<void *>(raw_fn));
@@ -1786,7 +1838,11 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 #endif
 
       EnsureJITCompiler();
+      auto t_agg = chrono_tic();
       void *raw_fn = jit_compiler_->CompileAggUpdate(*agg_ir, in_schema);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_agg, "RegisterJIT::CompileAggUpdate\n", false);
+      }
       if (raw_fn) {
         // Compute state size (same logic as CompileAggUpdate)
         auto *agg =
@@ -1956,39 +2012,46 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                           << " not supported for pipeline fusion, "
                              "falling back to separate operators\n";
               } else {
-              const ir_sql_converter::AQPStmt *filter_ir =
-                  FindFirstFilterNode(&ir);
-              if (filter_ir) {
-                void *fused_fn =
-                    jit_compiler_->CompileFilterHashBuildFusion(
-                        filter_ir, synth_hash, build_schema,
-                        needed_payload);
-                if (fused_fn) {
-                  auto *ctx = GetClientContext();
-                  if (!ctx->aqp_jit_context)
-                    ctx->aqp_jit_context =
-                        duckdb::make_uniq<duckdb::AQPJITContext>();
-                  ctx->aqp_jit_context->pipeline_fns[eid] =
-                      reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
-                  ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
-                  fused = true;
+                const ir_sql_converter::AQPStmt *filter_ir =
+                    FindFirstFilterNode(&ir);
+                if (filter_ir) {
+                  auto t_fhb = chrono_tic();
+                  void *fused_fn = jit_compiler_->CompileFilterHashBuildFusion(
+                      filter_ir, synth_hash, build_schema, needed_payload);
+                  if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+                    chrono_toc(&t_fhb,
+                               "RegisterJIT::CompileFilterHashBuildFusion\n",
+                               false);
+                  }
+                  if (fused_fn) {
+                    auto *ctx = GetClientContext();
+                    if (!ctx->aqp_jit_context)
+                      ctx->aqp_jit_context =
+                          duckdb::make_uniq<duckdb::AQPJITContext>();
+                    ctx->aqp_jit_context->pipeline_fns[eid] =
+                        reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
+                    ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
+                    fused = true;
 #ifndef NDEBUG
-                  std::cerr << "[AQP-JIT] compiled filter+hash_build fusion "
-                               "eid=0x"
-                            << std::hex << eid << std::dec
-                            << " keys=" << join->join_conditions.size()
-                            << "\n";
+                    std::cerr << "[AQP-JIT] compiled filter+hash_build fusion "
+                                 "eid=0x"
+                              << std::hex << eid << std::dec
+                              << " keys=" << join->join_conditions.size()
+                              << "\n";
 #endif
+                  }
                 }
-              }
               } // else (supported join type)
             }
 
             // Fallback: standalone hash build (Level 2)
             if (!fused) {
-              void *build_fn =
-                  jit_compiler_->CompileHashBuild(synth_hash, build_schema,
-                                                  needed_payload);
+              auto t_hb = chrono_tic();
+              void *build_fn = jit_compiler_->CompileHashBuild(
+                  synth_hash, build_schema, needed_payload);
+              if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+                chrono_toc(&t_hb, "RegisterJIT::CompileHashBuild", false);
+              }
               if (build_fn) {
                 auto *ctx = GetClientContext();
                 if (!ctx->aqp_jit_context)
@@ -2014,9 +2077,8 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                 // Build probe schema from IR probe child (children[0] of
                 // JoinNode)
                 const ir_sql_converter::AQPStmt *probe_child =
-                    (join_ir->children.size() > 0)
-                        ? join_ir->children[0].get()
-                        : nullptr;
+                    (join_ir->children.size() > 0) ? join_ir->children[0].get()
+                                                   : nullptr;
                 if (probe_child && !probe_child->target_list.empty()) {
                   std::vector<aqp_jit::ColSchema> probe_schema;
                   for (const auto &attr : probe_child->target_list) {
@@ -2046,8 +2108,8 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                     probe_schema.push_back(cs);
                   }
 
-                  // Build payload schema: the build-side columns actually stored
-                  // in the hash table (respecting payload pruning).
+                  // Build payload schema: the build-side columns actually
+                  // stored in the hash table (respecting payload pruning).
                   std::vector<aqp_jit::ColSchema> payload_schema;
                   if (!needed_payload.empty()) {
                     for (int ci : needed_payload) {
@@ -2089,14 +2151,10 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                   unsigned build_key_width = 0;
                   for (const auto &cond : join->join_conditions) {
                     for (const auto &cs : build_schema) {
-                      if ((cs.table_idx ==
-                               cond->left_attr->GetTableIndex() &&
-                           cs.col_idx ==
-                               cond->left_attr->GetColumnIndex()) ||
-                          (cs.table_idx ==
-                               cond->right_attr->GetTableIndex() &&
-                           cs.col_idx ==
-                               cond->right_attr->GetColumnIndex())) {
+                      if ((cs.table_idx == cond->left_attr->GetTableIndex() &&
+                           cs.col_idx == cond->left_attr->GetColumnIndex()) ||
+                          (cs.table_idx == cond->right_attr->GetTableIndex() &&
+                           cs.col_idx == cond->right_attr->GetColumnIndex())) {
                         build_key_width += DtypeWidth(cs.dtype);
                         break;
                       }
@@ -2108,8 +2166,8 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                     build_payload_width += DtypeWidth(cs.dtype);
 
                   if (build_key_width > 0 && build_payload_width > 0) {
-                    AQPHashTable *ht = aqp_ht_create(
-                        build_key_width, build_payload_width, 4096);
+                    AQPHashTable *ht = aqp_ht_create(build_key_width,
+                                                     build_payload_width, 4096);
                     if (ht) {
                       auto *ctx = GetClientContext();
                       if (!ctx->aqp_jit_context)
@@ -2122,10 +2180,17 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                       ctx->aqp_jit_context->pipeline_states[eid] =
                           static_cast<void *>(ht);
 
+                      auto t_fpp = chrono_tic();
                       void *probe_fused_fn =
                           jit_compiler_->CompileFilterProbeProjectFusion(
                               probe_filter_ir, *join_ir, probe_proj_ir,
                               probe_schema, payload_schema);
+                      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+                        chrono_toc(
+                            &t_fpp,
+                            "RegisterJIT::CompileFilterProbeProjectFusion\n",
+                            false);
+                      }
                       if (probe_fused_fn) {
                         ctx->aqp_jit_context->pipeline_fns[eid] =
                             reinterpret_cast<duckdb::AQPPipelineFn>(

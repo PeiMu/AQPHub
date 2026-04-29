@@ -131,6 +131,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       std::cout << "\n========================================" << std::endl;
       std::cout << "Testing: " << result.query_file << std::endl;
     }
+    adapter->enable_timing_ = config.enable_timing;
 
     std::chrono::high_resolution_clock::time_point timer;
     if (config.enable_timing)

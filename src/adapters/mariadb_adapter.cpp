@@ -172,7 +172,7 @@ QueryResult MariaDBAdapter::ExecuteSQL(const std::string &sql) {
 
 void MariaDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card, bool enable_timing) {
+    bool update_temp_card) {
   CheckConnection();
 
 #ifndef NDEBUG

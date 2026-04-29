@@ -108,8 +108,7 @@ public:
   QueryResult ExecuteSQL(const std::string &sql) override;
   void ExecuteSQLandCreateTempTable(const std::string &sql,
                                     const std::string &temp_table_name,
-                                    bool update_temp_card,
-                                    bool enable_timing) override;
+                                    bool update_temp_card) override;
 
   // Temp table management
   void CreateTempTable(const std::string &table_name,
@@ -219,6 +218,22 @@ private:
   duckdb::idx_t temp_table_index_ = 0;
 
 #ifdef HAVE_LLVM
+#define BREAK_DOWN_COMPILE_TIME false
+//  // Per-phase JIT compilation timing (microseconds), accumulated by RegisterJIT.
+//  struct JitTimingStats {
+//    long compile_filter_us = 0;
+//    long compile_projection_us = 0;
+//    long compile_aggregate_us = 0;
+//    long compile_hash_build_us = 0;
+//    long compile_hash_probe_us = 0;
+//    long compile_pipeline_us = 0; // filter+project, filter+agg, filter+hashbuild, filter+probe+proj
+//    long compile_sql_us = 0;
+//    long register_jit_us = 0;
+//    long run_us = 0;
+//    void Reset() { memset(this, 0, sizeof(JitTimingStats)); }
+//  };
+//  JitTimingStats jit_timing_;
+
   // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
   const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
   uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config

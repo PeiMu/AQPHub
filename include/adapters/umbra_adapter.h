@@ -12,8 +12,7 @@ public:
   // Skip ANALYZE on temp tables (Umbra auto-collects stats)
   void ExecuteSQLandCreateTempTable(const std::string &sql,
                                     const std::string &temp_table_name,
-                                    bool update_temp_card,
-                                    bool enable_timing) override;
+                                    bool update_temp_card) override;
 
   void SetTempTableCardinality(const std::string &temp_table_name,
                                uint64_t estimated_rows) override;

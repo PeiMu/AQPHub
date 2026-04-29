@@ -470,8 +470,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                         config_.enable_update_temp_card,
-                                         config_.enable_timing);
+                                         config_.enable_update_temp_card);
 
   if (config_.enable_timing)
     timer = chrono_tic();
@@ -583,8 +582,7 @@ TempTableInfo IRQuerySplitter::ExecuteSubIR(
       adapter_->GenerateSQL(*sub_ir, adapter_->subquery_index++);
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                         config_.enable_update_temp_card,
-                                         config_.enable_timing);
+                                         config_.enable_update_temp_card);
 
   unsigned int temp_table_index = adapter_->subquery_index - 1;
   // TODO: support estimated_rows for enable_update_temp_card=false path

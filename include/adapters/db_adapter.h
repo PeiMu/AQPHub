@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,8 +47,7 @@ public:
   virtual QueryResult ExecuteSQL(const std::string &sql) = 0;
   virtual void ExecuteSQLandCreateTempTable(const std::string &sql,
                                             const std::string &temp_table_name,
-                                            bool update_temp_card,
-                                            bool enable_timing) = 0;
+                                            bool update_temp_card) = 0;
 
   // Temp table management
   virtual void CreateTempTable(const std::string &table_name,
@@ -104,5 +104,7 @@ public:
 
   // std::string intermediate_table_name, int64_t created_table_size
   std::unordered_map<std::string, int64_t> temp_table_card_;
+
+  bool enable_timing_ = false;
 };
 } // namespace middleware
