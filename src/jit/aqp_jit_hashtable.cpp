@@ -83,18 +83,20 @@ void aqp_ht_destroy(AQPHashTable *ht) {
 
 void *aqp_ht_insert(AQPHashTable *ht, const void *key) {
     if (!ht) return nullptr;
+    return aqp_ht_insert_prehash(ht, key, aqp_hash(key, ht->key_width));
+}
 
-    // Grow if load factor > 70%
+void *aqp_ht_insert_prehash(AQPHashTable *ht, const void *key, uint64_t hash) {
+    if (!ht) return nullptr;
+
     if (ht->count * 10 > ht->capacity * 7)
         ht_grow(ht);
 
-    uint64_t h = aqp_hash(key, ht->key_width);
-    uint64_t idx = h & ht->mask;
+    uint64_t idx = hash & ht->mask;
 
     while (true) {
         uint8_t *s = slot_ptr(ht, idx);
         if (!slot_occupied(s)) {
-            // Empty slot — insert
             s[0] = 1;
             memcpy(slot_key(s), key, ht->key_width);
             memset(slot_payload(s, ht->key_width), 0, ht->payload_width);
@@ -102,7 +104,6 @@ void *aqp_ht_insert(AQPHashTable *ht, const void *key) {
             return slot_payload(s, ht->key_width);
         }
         if (memcmp(slot_key(s), key, ht->key_width) == 0) {
-            // Key match — return existing payload
             return slot_payload(s, ht->key_width);
         }
         idx = (idx + 1) & ht->mask;
@@ -111,16 +112,21 @@ void *aqp_ht_insert(AQPHashTable *ht, const void *key) {
 
 void *aqp_ht_probe(const AQPHashTable *ht, const void *key) {
     if (!ht) return nullptr;
+    return aqp_ht_probe_prehash(ht, key, aqp_hash(key, ht->key_width));
+}
 
-    uint64_t h = aqp_hash(key, ht->key_width);
-    uint64_t idx = h & ht->mask;
+void *aqp_ht_probe_prehash(const AQPHashTable *ht, const void *key,
+                             uint64_t hash) {
+    if (!ht) return nullptr;
+
+    uint64_t idx = hash & ht->mask;
 
     while (true) {
         const uint8_t *s = ((AQPHashTable*)ht)->slots + idx * ht->slot_size;
         if (!slot_occupied(s))
-            return nullptr;  // empty slot — not found
+            return nullptr;
         if (memcmp(s + 1, key, ht->key_width) == 0)
-            return (void *)(s + 1 + ht->key_width);  // found
+            return (void *)(s + 1 + ht->key_width);
         idx = (idx + 1) & ht->mask;
     }
 }
@@ -145,6 +151,18 @@ int aqp_ht_next(AQPHashTable *ht, void **key_out, void **payload_out) {
 
 uint64_t aqp_ht_size(const AQPHashTable *ht) {
     return ht ? ht->count : 0;
+}
+
+uint8_t *aqp_ht_slots_base(const AQPHashTable *ht) {
+    return ht ? ht->slots : nullptr;
+}
+
+uint64_t aqp_ht_mask(const AQPHashTable *ht) {
+    return ht ? ht->mask : 0;
+}
+
+uint32_t aqp_ht_slot_size(const AQPHashTable *ht) {
+    return ht ? ht->slot_size : 0;
 }
 
 } // extern "C"

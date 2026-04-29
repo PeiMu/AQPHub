@@ -145,6 +145,21 @@ public:
   // Set JIT flags independently (used in no-split path where SetJITPendingIR
   // is not called by the splitter).
   void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
+
+  void SetJITOptFlags(bool fusion_build, bool fusion_probe, bool inline_hash,
+                      bool payload_prune, bool prefetch, int prefetch_dist,
+                      bool batch_probe, bool cache,
+                      const std::string &cache_dir) {
+    jit_fusion_build_ = fusion_build;
+    jit_fusion_probe_ = fusion_probe;
+    jit_inline_hash_ = inline_hash;
+    jit_payload_prune_ = payload_prune;
+    jit_prefetch_ = prefetch;
+    jit_prefetch_distance_ = prefetch_dist;
+    jit_batch_probe_ = batch_probe;
+    jit_cache_ = cache;
+    jit_cache_dir_ = cache_dir;
+  }
 #endif
 
   // NodeBasedSplitter support
@@ -207,12 +222,26 @@ private:
   // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
   const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
   uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
+
+  // Per-optimization toggles (from ParamConfig)
+  bool jit_fusion_build_ = true;
+  bool jit_fusion_probe_ = true;
+  bool jit_inline_hash_ = true;
+  bool jit_payload_prune_ = true;
+  bool jit_prefetch_ = true;
+  int  jit_prefetch_distance_ = 8;
+  bool jit_batch_probe_ = true;
+  bool jit_cache_ = false;
+  std::string jit_cache_dir_;
   // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
   std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
 
   // Keeps the LLJIT instance alive until after query execution so that
   // compiled function pointers stored in AQPJITContext remain valid.
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
+
+  // Lazily create and configure the JIT compiler with all flags.
+  void EnsureJITCompiler();
 
   // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
   void RegisterJIT(duckdb::PhysicalOperator &op,

@@ -115,7 +115,8 @@ public:
    * Returns function pointer, or nullptr on failure.
    */
   void *CompileHashBuild(const ir_sql_converter::AQPStmt &hash_node,
-                         const std::vector<ColSchema> &in_schema);
+                         const std::vector<ColSchema> &in_schema,
+                         const std::vector<int> &needed_payload_cols = {});
 
   /**
    * Level 2: Compile hash join probe side.
@@ -177,6 +178,49 @@ public:
                                const std::vector<ColSchema> &in_schema);
 
   /**
+   * Level 3: Compile Filter + HashBuild fusion.
+   * Fused loop: for each row, evaluate filter; if match, extract key,
+   * hash inline (FNV-1a), insert into hash table, copy payload.
+   * No intermediate DataChunk between filter and hash build.
+   *
+   * Signature: int64_t fn(AQPChunkView *in, AQPChunkView *, void *ht)
+   * Uses AQPPipelineFn signature. The hash table pointer is passed via
+   * pipeline_state (3rd arg). Returns 0 (no output rows — data is sunk
+   * into the hash table).
+   */
+  void *
+  CompileFilterHashBuildFusion(const ir_sql_converter::AQPStmt *filter_node,
+                               const ir_sql_converter::AQPStmt &hash_node,
+                               const std::vector<ColSchema> &in_schema,
+                               const std::vector<int> &needed_payload_cols = {});
+
+  /**
+   * Level 3: Compile Filter + HashProbe + Projection fusion (probe pipeline).
+   * Fused loop: for each probe row, evaluate filter; if match, extract key,
+   * hash inline (FNV-1a), probe hash table; if found, copy projected columns
+   * from BOTH the probe input chunk AND the build-side payload to the output.
+   * Eliminates two intermediate DataChunks (filter→probe, probe→projection).
+   *
+   * Signature: int64_t fn(AQPChunkView *in, AQPChunkView *out, void *ht)
+   * Uses AQPPipelineFn signature. The hash table pointer is passed via
+   * pipeline_state (3rd arg). Returns count of output rows.
+   *
+   * filter_node: may be null (no filter before probe).
+   * join_node: SimplestJoin with join_conditions defining probe keys.
+   * proj_node: may be null (output all probe + payload columns).
+   * probe_schema: column layout of the probe input chunk.
+   * payload_schema: column layout of the build-side payload (in the order
+   *   columns were written by CompileHashBuild / fusion). Needed to map
+   *   projection attrs to payload byte offsets.
+   */
+  void *CompileFilterProbeProjectFusion(
+      const ir_sql_converter::AQPStmt *filter_node,
+      const ir_sql_converter::AQPStmt &join_node,
+      const ir_sql_converter::AQPStmt *proj_node,
+      const std::vector<ColSchema> &probe_schema,
+      const std::vector<ColSchema> &payload_schema);
+
+  /**
    * Level 4: Compile an entire sub-plan into a coordinator function.
    * The coordinator orchestrates multiple pipelines:
    *   1. Identifies pipeline segments from the IR tree
@@ -194,10 +238,24 @@ public:
    */
   void *CompileSQL(const ir_sql_converter::AQPStmt &sql_ir);
 
+  void SetPrefetch(bool enable, int distance = 8) {
+    prefetch_ = enable;
+    prefetch_distance_ = distance;
+  }
+
+  void SetBatchProbe(bool enable) { batch_probe_ = enable; }
+
+  void SetCache(bool enable, const std::string &dir = "");
+
 private:
   OptLevel opt_level_;
   SimdISA simd_isa_;
   bool use_simd_; // derived: true if simd_isa_ != OFF
+  bool prefetch_ = false;
+  int prefetch_distance_ = 8;
+  bool batch_probe_ = false;
+  bool cache_enabled_ = false;
+  std::string cache_dir_;
 
   // LLVM state — managed via unique_ptr to avoid including LLVM headers here
   struct Impl;

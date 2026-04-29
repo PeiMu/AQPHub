@@ -179,6 +179,11 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       auto *duckdb_adp = dynamic_cast<DuckDBAdapter *>(adapter);
       if (duckdb_adp) {
         duckdb_adp->SetJITFlags(config.jit_flags);
+        duckdb_adp->SetJITOptFlags(
+            config.jit_fusion_build, config.jit_fusion_probe,
+            config.jit_inline_hash, config.jit_payload_prune,
+            config.jit_prefetch, config.jit_prefetch_distance,
+            config.jit_batch_probe, config.jit_cache, config.jit_cache_dir);
       }
 #endif
 

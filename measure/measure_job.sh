@@ -8,6 +8,13 @@ split=$2
 jit_level=$3
 jit_opt=$4
 jit_simd=$5
+fusion_build=${6:-on}
+fusion_probe=${7:-on}
+inline_hash=${8:-on}
+payload_prune=${9:-on}
+prefetch=${10:-on}
+batch_probe=${11:-on}
+cache=${12:-off}
 
 ########################################
 # Start / Stop PostgreSQL
@@ -132,6 +139,8 @@ elif [[ "$engine" == "opengauss" ]]; then
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_opt}" "${jit_simd}"
+cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_opt}" "${jit_simd}" \
+    "${fusion_build}" "${fusion_probe}" "${inline_hash}" "${payload_prune}" \
+    "${prefetch}" "${batch_probe}" "${cache}"
 
 #mv compile.log job_result/.

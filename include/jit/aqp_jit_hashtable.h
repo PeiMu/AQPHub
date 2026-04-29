@@ -48,6 +48,18 @@ int  aqp_ht_next(AQPHashTable *ht, void **key_out, void **payload_out);
 /* Number of entries currently in the table. */
 uint64_t aqp_ht_size(const AQPHashTable *ht);
 
+/* Insert/probe with a pre-computed hash (avoids redundant hashing when the
+ * JIT compiler inlines FNV-1a). */
+void *aqp_ht_insert_prehash(AQPHashTable *ht, const void *key, uint64_t hash);
+void *aqp_ht_probe_prehash(const AQPHashTable *ht, const void *key,
+                            uint64_t hash);
+
+/* Accessors for prefetching: let JIT compute slot addresses without
+ * exposing the full struct layout. */
+uint8_t *aqp_ht_slots_base(const AQPHashTable *ht);
+uint64_t aqp_ht_mask(const AQPHashTable *ht);
+uint32_t aqp_ht_slot_size(const AQPHashTable *ht);
+
 /* Hash function for arbitrary byte keys (FNV-1a). */
 uint64_t aqp_hash(const void *key, uint32_t len);
 
