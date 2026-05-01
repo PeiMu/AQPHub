@@ -112,10 +112,10 @@ stop_umbra() {
 ########################################
 Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data
+  pg_ctl start -l $Project_path/logfile -D $Project_path/data_18_3
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data -m smart -s
+  pg_ctl stop -D $Project_path/data_18_3 -m smart -s
 }
 rm_pg_log() {
   rm $Project_path/logfile
