@@ -424,6 +424,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     return false;
   }
 
+#ifndef NDEBUG
   // Assert no CROSS_PRODUCT in sub-IR — cross products are extremely slow
   // and indicate a bug in split-point selection or IR re-optimization.
   std::function<bool(const ir_sql_converter::AQPStmt *)> has_cross_product =
@@ -437,16 +438,15 @@ bool IRQuerySplitter::ExecuteOneIteration(
     return false;
   };
   if (has_cross_product(executable_ir)) {
-    if (config_.enable_debug_print) {
-      std::cerr << "[Iteration " << iteration_count_
-                << "] FATAL: Sub-IR contains CROSS_PRODUCT node!\n";
-      executable_ir->Print();
-    }
+    std::cerr << "[Iteration " << iteration_count_
+              << "] FATAL: Sub-IR contains CROSS_PRODUCT node!\n";
+    executable_ir->Print();
     throw std::runtime_error(
         "Sub-IR contains CROSS_PRODUCT node — aborting to prevent "
         "catastrophic performance. Check split-point selection or "
         "ReOptimizeIR.");
   }
+#endif
 
   if (config_.enable_debug_print) {
     std::cout << "\n=== Sub-IR to Execute ===" << std::endl;

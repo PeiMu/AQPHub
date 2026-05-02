@@ -89,6 +89,23 @@ std::string TopDownSplitter::LookupColumnName(const std::string &table_name,
   return "";
 }
 
+// Find the maximum table_index across all attributes in the IR tree.
+// DuckDB assigns indices to projection/aggregate nodes too, and those
+// can be higher than the scan/chunk indices. We must track them so that
+// newly created temp table indices don't collide.
+static unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
+  if (!node)
+    return 0;
+  unsigned int mx = 0;
+  for (const auto &attr : node->target_list) {
+    if (attr->GetTableIndex() > mx)
+      mx = attr->GetTableIndex();
+  }
+  for (const auto &child : node->children)
+    mx = std::max(mx, FindMaxAttrIndex(child.get()));
+  return mx;
+}
+
 void TopDownSplitter::Preprocess(
     std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {
 
@@ -108,6 +125,7 @@ void TopDownSplitter::Preprocess(
   // corrupt names through DuckDB's equivalent-column binding resolution).
   BuildColumnNameMap(ir.get());
 
+  bool did_reoptimize = false;
   if (enable_reorder_) {
 #ifndef NDEBUG
     std::cout << "[TopDownSplitter] Running ReOptimizeIR in Preprocess"
@@ -116,9 +134,7 @@ void TopDownSplitter::Preprocess(
     auto re_optimized = adapter_->ReOptimizeIR(std::move(ir));
     if (re_optimized) {
       ir = std::move(re_optimized);
-      table_index_to_name_.clear();
-      CollectTableNames(ir.get());
-      FixAllAttrNames(ir.get());
+      did_reoptimize = true;
 #ifndef NDEBUG
       std::cout << "[TopDownSplitter] ReOptimizeIR completed successfully"
                 << std::endl;
@@ -128,19 +144,16 @@ void TopDownSplitter::Preprocess(
           << "[TopDownSplitter] ReOptimizeIR returned null, using original IR"
           << std::endl;
     }
-  } else {
-#ifndef NDEBUG
-    std::cout << "[TopDownSplitter] ReorderGet disabled, skipping" << std::endl;
-#endif
   }
 
-  // Collect table names and find max index
+  // Collect table names and find max index (once for all paths)
   table_index_to_name_.clear();
   CollectTableNames(ir.get());
-  for (const auto &[idx, name] : table_index_to_name_) {
-    if (idx > max_table_index_) {
-      max_table_index_ = idx;
-    }
+  max_table_index_ = FindMaxAttrIndex(ir.get());
+
+  // Fix attr names corrupted by ReOptimizeIR's equivalent-column resolution
+  if (did_reoptimize) {
+    FixAllAttrNames(ir.get());
   }
 #ifndef NDEBUG
   std::cout << "[TopDownSplitter] Max table index: " << max_table_index_
@@ -255,21 +268,65 @@ void TopDownSplitter::Visit(ir_sql_converter::AQPStmt *node) {
   }
 }
 
-// Find the maximum table_index across all attributes in the IR tree.
-// DuckDB assigns indices to projection/aggregate nodes too, and those
-// can be higher than the scan/chunk indices. We must track them so that
-// newly created temp table indices don't collide.
-static unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
-  if (!node)
-    return 0;
-  unsigned int mx = 0;
-  for (const auto &attr : node->target_list) {
-    if (attr->GetTableIndex() > mx)
-      mx = attr->GetTableIndex();
+// Walk an expression tree and invoke cb(attr_ptr) on every SimplestAttr.
+// Shared visitor used by both FixExprNames and CollectRequiredAttrs.
+template <typename Callback>
+static void ForEachAttrInExpr(const ir_sql_converter::AQPExpr *expr,
+                              Callback &&cb) {
+  if (!expr)
+    return;
+  auto nt = expr->GetNodeType();
+  if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode) {
+    auto *vc =
+        dynamic_cast<const ir_sql_converter::SimplestVarComparison *>(expr);
+    if (vc) {
+      cb(vc->left_attr.get());
+      cb(vc->right_attr.get());
+    }
+  } else if (nt == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
+    auto *vcc =
+        dynamic_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+    if (vcc)
+      cb(vcc->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::IsNullExprNode) {
+    auto *isn =
+        dynamic_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+    if (isn)
+      cb(isn->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::VarParamComparisonNode) {
+    auto *vp =
+        dynamic_cast<const ir_sql_converter::SimplestVarParamComparison *>(expr);
+    if (vp)
+      cb(vp->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::SingleAttrExprNode) {
+    auto *sa =
+        dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(expr);
+    if (sa)
+      cb(sa->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
+    auto *le =
+        dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    if (le) {
+      ForEachAttrInExpr(le->left_expr.get(), cb);
+      ForEachAttrInExpr(le->right_expr.get(), cb);
+    }
+  } else if (nt == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *in = dynamic_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    if (in)
+      cb(in->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *ar =
+        dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(expr);
+    if (ar) {
+      ForEachAttrInExpr(ar->left.get(), cb);
+      ForEachAttrInExpr(ar->right.get(), cb);
+    }
+  } else if (nt == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *cast =
+        dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(expr);
+    if (cast)
+      ForEachAttrInExpr(cast->child.get(), cb);
   }
-  for (const auto &child : node->children)
-    mx = std::max(mx, FindMaxAttrIndex(child.get()));
-  return mx;
 }
 
 // Fix a single attr's column name using the col_name_map_.
@@ -287,55 +344,9 @@ void TopDownSplitter::FixAttrName(ir_sql_converter::SimplestAttr *attr) const {
 
 // Walk an expression tree and fix all attr names.
 void TopDownSplitter::FixExprNames(ir_sql_converter::AQPExpr *expr) const {
-  if (!expr)
-    return;
-  auto nt = expr->GetNodeType();
-  if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode) {
-    auto *vc = dynamic_cast<ir_sql_converter::SimplestVarComparison *>(expr);
-    if (vc) {
-      FixAttrName(vc->left_attr.get());
-      FixAttrName(vc->right_attr.get());
-    }
-  } else if (nt == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
-    auto *vcc =
-        dynamic_cast<ir_sql_converter::SimplestVarConstComparison *>(expr);
-    if (vcc)
-      FixAttrName(vcc->attr.get());
-  } else if (nt == ir_sql_converter::SimplestNodeType::IsNullExprNode) {
-    auto *isn = dynamic_cast<ir_sql_converter::SimplestIsNullExpr *>(expr);
-    if (isn)
-      FixAttrName(isn->attr.get());
-  } else if (nt == ir_sql_converter::SimplestNodeType::VarParamComparisonNode) {
-    auto *vp =
-        dynamic_cast<ir_sql_converter::SimplestVarParamComparison *>(expr);
-    if (vp)
-      FixAttrName(vp->attr.get());
-  } else if (nt == ir_sql_converter::SimplestNodeType::SingleAttrExprNode) {
-    auto *sa =
-        dynamic_cast<ir_sql_converter::SimplestSingleAttrExpr *>(expr);
-    if (sa)
-      FixAttrName(sa->attr.get());
-  } else if (nt == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
-    auto *le = dynamic_cast<ir_sql_converter::SimplestLogicalExpr *>(expr);
-    if (le) {
-      FixExprNames(le->left_expr.get());
-      FixExprNames(le->right_expr.get());
-    }
-  } else if (nt == ir_sql_converter::SimplestNodeType::InExprNode) {
-    auto *in = dynamic_cast<ir_sql_converter::SimplestInExpr *>(expr);
-    if (in)
-      FixAttrName(in->attr.get());
-  } else if (nt == ir_sql_converter::SimplestNodeType::ArithExprNode) {
-    auto *ar = dynamic_cast<ir_sql_converter::SimplestArithExpr *>(expr);
-    if (ar) {
-      FixExprNames(ar->left.get());
-      FixExprNames(ar->right.get());
-    }
-  } else if (nt == ir_sql_converter::SimplestNodeType::CastExprNode) {
-    auto *cast = dynamic_cast<ir_sql_converter::SimplestCastExpr *>(expr);
-    if (cast)
-      FixExprNames(cast->child.get());
-  }
+  ForEachAttrInExpr(expr, [this](ir_sql_converter::SimplestAttr *a) {
+    FixAttrName(a);
+  });
 }
 
 // Recursively fix all attr names in the IR tree.
@@ -941,71 +952,15 @@ TopDownSplitter::CollectRequiredAttrs(
   CollectCrossBoundary(full_ir);
 
   // (d) Filter predicates (qual_vec) referencing subquery tables
-  std::function<void(const ir_sql_converter::AQPExpr *)> CollectExprAttrs;
-  CollectExprAttrs = [&](const ir_sql_converter::AQPExpr *expr) {
-    if (!expr)
-      return;
-    auto nt = expr->GetNodeType();
-    if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode) {
-      auto *vc =
-          dynamic_cast<const ir_sql_converter::SimplestVarComparison *>(expr);
-      if (vc) {
-        AddIfSubqueryAttr(vc->left_attr.get());
-        AddIfSubqueryAttr(vc->right_attr.get());
-      }
-    } else if (nt == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
-      auto *vcc =
-          dynamic_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
-      if (vcc)
-        AddIfSubqueryAttr(vcc->attr.get());
-    } else if (nt == ir_sql_converter::SimplestNodeType::IsNullExprNode) {
-      auto *isn =
-          dynamic_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
-      if (isn)
-        AddIfSubqueryAttr(isn->attr.get());
-    } else if (nt == ir_sql_converter::SimplestNodeType::VarParamComparisonNode) {
-      auto *vp =
-          dynamic_cast<const ir_sql_converter::SimplestVarParamComparison *>(expr);
-      if (vp)
-        AddIfSubqueryAttr(vp->attr.get());
-    } else if (nt == ir_sql_converter::SimplestNodeType::SingleAttrExprNode) {
-      auto *sa =
-          dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(expr);
-      if (sa)
-        AddIfSubqueryAttr(sa->attr.get());
-    } else if (nt == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
-      auto *le =
-          dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
-      if (le) {
-        CollectExprAttrs(le->left_expr.get());
-        CollectExprAttrs(le->right_expr.get());
-      }
-    } else if (nt == ir_sql_converter::SimplestNodeType::InExprNode) {
-      auto *in = dynamic_cast<const ir_sql_converter::SimplestInExpr *>(expr);
-      if (in)
-        AddIfSubqueryAttr(in->attr.get());
-    } else if (nt == ir_sql_converter::SimplestNodeType::ArithExprNode) {
-      auto *ar =
-          dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(expr);
-      if (ar) {
-        CollectExprAttrs(ar->left.get());
-        CollectExprAttrs(ar->right.get());
-      }
-    } else if (nt == ir_sql_converter::SimplestNodeType::CastExprNode) {
-      auto *cast =
-          dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(expr);
-      if (cast)
-        CollectExprAttrs(cast->child.get());
-    }
-  };
-
   std::function<void(const ir_sql_converter::AQPStmt *)> CollectFilterAttrs;
   CollectFilterAttrs = [&](const ir_sql_converter::AQPStmt *node) {
     if (!node)
       return;
     if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode) {
       for (const auto &qual : node->qual_vec) {
-        CollectExprAttrs(qual.get());
+        ForEachAttrInExpr(qual.get(), [&](ir_sql_converter::SimplestAttr *a) {
+          AddIfSubqueryAttr(a);
+        });
       }
     }
     for (const auto &child : node->children) {

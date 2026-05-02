@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include "split/ir_reorder_get.h"
 #include "split/split_algorithm.h"
 #include <map>
 #include <queue>
@@ -16,8 +15,7 @@ namespace middleware {
 class TopDownSplitter : public AQPSplitter {
 public:
   explicit TopDownSplitter(EngineAdapter *adapter, bool enable_reorder = true)
-      : AQPSplitter(adapter), reorder_get_(adapter),
-        enable_reorder_(enable_reorder) {}
+      : AQPSplitter(adapter), enable_reorder_(enable_reorder) {}
 
   // Preprocess: Run IR-level ReorderGet if enabled
   void Preprocess(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
@@ -108,7 +106,6 @@ private:
   void FixExprNames(ir_sql_converter::AQPExpr *expr) const;
   void FixAllAttrNames(ir_sql_converter::AQPStmt *node) const;
 
-  IRReorderGet reorder_get_;
   bool enable_reorder_;
 
   // Pointer to the found split point during SplitIR traversal
