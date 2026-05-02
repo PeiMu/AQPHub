@@ -106,16 +106,22 @@ void IRReorderGet::CollectTableScans(ir_sql_converter::AQPStmt *node,
                           scan->GetTableName(), nullptr);
     }
   }
-  // Check for Chunk nodes (temp tables from previous iterations)
+  // Chunk nodes (temp tables from previous iterations) participate in
+  // reordering just like scan nodes — their actual cardinality drives
+  // join order decisions in subsequent iterations.
   else if (node->GetNodeType() ==
            ir_sql_converter::SimplestNodeType::ChunkNode) {
     auto *chunk = dynamic_cast<ir_sql_converter::SimplestChunk *>(node);
-#ifndef NDEBUG
     if (chunk) {
+      uint64_t cardinality = chunk->GetEstimatedCardinality();
+      tables.emplace_back(chunk->GetTableIndex(), cardinality,
+                          chunk->GetChunkName(), nullptr, true);
+#ifndef NDEBUG
       std::cout << "[IRReorderGet] Found Chunk node (table_index="
-                << chunk->GetTableIndex() << "), skipping reorder" << std::endl;
-    }
+                << chunk->GetTableIndex()
+                << ", cardinality=" << cardinality << ")" << std::endl;
 #endif
+    }
   }
 
   // Recursively collect from children
@@ -193,19 +199,29 @@ std::unique_ptr<ir_sql_converter::AQPStmt> IRReorderGet::RebuildJoinTree(
               << table_info.table_name << ")" << std::endl;
 #endif
 
-    // Create scan node for this table
+    // Create leaf node: SimplestChunk for temp tables, SimplestScan for base tables
     std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> empty_children;
     std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> empty_attrs;
     auto base_stmt = std::make_unique<ir_sql_converter::AQPStmt>(
         std::move(empty_children), std::move(empty_attrs),
         ir_sql_converter::SimplestNodeType::StmtNode);
-    auto scan_node = std::make_unique<ir_sql_converter::SimplestScan>(
-        std::move(base_stmt), current_table_idx, table_info.table_name);
-    scan_node->SetEstimatedCardinality(table_info.cardinality);
+
+    std::unique_ptr<ir_sql_converter::AQPStmt> leaf_node;
+    if (table_info.is_chunk) {
+      auto chunk = std::make_unique<ir_sql_converter::SimplestChunk>(
+          std::move(base_stmt), current_table_idx,
+          table_info.table_name, std::vector<std::string>{table_info.table_name});
+      chunk->SetEstimatedCardinality(table_info.cardinality);
+      leaf_node = std::move(chunk);
+    } else {
+      auto scan = std::make_unique<ir_sql_converter::SimplestScan>(
+          std::move(base_stmt), current_table_idx, table_info.table_name);
+      scan->SetEstimatedCardinality(table_info.cardinality);
+      leaf_node = std::move(scan);
+    }
 
     if (i == 0) {
-      // First table - becomes the base of the tree
-      current_tree = std::move(scan_node);
+      current_tree = std::move(leaf_node);
       joined_tables.insert(current_table_idx);
       continue;
     }
@@ -231,7 +247,7 @@ std::unique_ptr<ir_sql_converter::AQPStmt> IRReorderGet::RebuildJoinTree(
 
     std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> join_children;
     join_children.push_back(std::move(current_tree));
-    join_children.push_back(std::move(scan_node));
+    join_children.push_back(std::move(leaf_node));
     base_stmt = std::make_unique<ir_sql_converter::AQPStmt>(
         std::move(join_children),
         std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>(),
@@ -277,7 +293,9 @@ IRReorderGet::PreserveTopOperators(
     std::unique_ptr<ir_sql_converter::AQPStmt> original_ir,
     std::unique_ptr<ir_sql_converter::AQPStmt> reordered_join_tree) {
 
+#ifndef NDEBUG
   std::cout << "[IRReorderGet] Preserving top-level operators" << std::endl;
+#endif
 
   // Recursively find the JOIN/SCAN subtree and replace it
   return ReplaceJoinSubtree(std::move(original_ir),
@@ -295,12 +313,15 @@ IRReorderGet::ReplaceJoinSubtree(
 
   auto node_type = node->GetNodeType();
 
-  // If this node is a JOIN/SCAN/CROSS_PRODUCT, replace the whole subtree
+  // If this node is a JOIN/SCAN/CHUNK/CROSS_PRODUCT, replace the whole subtree
   if (node_type == ir_sql_converter::SimplestNodeType::JoinNode ||
       node_type == ir_sql_converter::SimplestNodeType::ScanNode ||
+      node_type == ir_sql_converter::SimplestNodeType::ChunkNode ||
       node_type == ir_sql_converter::SimplestNodeType::CrossProductNode) {
+#ifndef NDEBUG
     std::cout << "[IRReorderGet] Replacing join subtree at "
               << GetNodeTypeName(node_type) << " node" << std::endl;
+#endif
     return new_subtree;
   }
 

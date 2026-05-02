@@ -102,6 +102,11 @@ public:
   // / UpdateTableExpr handle all index updates internally.
   virtual bool SkipUpdateIndices() const { return false; }
 
+  // Per-iteration IR reorder hook. Called by ExecuteSplitLoop before SplitIR()
+  // on each iteration (except the first, which is handled by Preprocess).
+  // Default: no-op. TopDownSplitter overrides to reorder by actual cardinality.
+  virtual void ReorderBeforeSplit(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {}
+
   // Get the maximum table index in the original IR
   // Used to generate new table indices for temp tables
   unsigned int GetMaxTableIndex() const { return max_table_index_; }
@@ -129,6 +134,12 @@ protected:
       auto *scan = dynamic_cast<const ir_sql_converter::SimplestScan *>(ir);
       if (scan) {
         table_index_to_name_[scan->GetTableIndex()] = scan->GetTableName();
+      }
+    } else if (ir->GetNodeType() ==
+               ir_sql_converter::SimplestNodeType::ChunkNode) {
+      auto *chunk = dynamic_cast<const ir_sql_converter::SimplestChunk *>(ir);
+      if (chunk) {
+        table_index_to_name_[chunk->GetTableIndex()] = chunk->GetChunkName();
       }
     }
     for (const auto &child : ir->children) {

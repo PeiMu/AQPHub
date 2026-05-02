@@ -28,11 +28,13 @@ private:
     uint64_t cardinality;
     std::string table_name;
     std::unique_ptr<ir_sql_converter::SimplestScan> scan_node;
+    bool is_chunk = false;
 
     TableInfo(unsigned int idx, uint64_t card, std::string name,
-              std::unique_ptr<ir_sql_converter::SimplestScan> scan)
+              std::unique_ptr<ir_sql_converter::SimplestScan> scan,
+              bool chunk = false)
         : table_index(idx), cardinality(card), table_name(std::move(name)),
-          scan_node(std::move(scan)) {}
+          scan_node(std::move(scan)), is_chunk(chunk) {}
   };
 
   // Collect all table scans from IR tree

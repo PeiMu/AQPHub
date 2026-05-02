@@ -372,6 +372,81 @@ void DuckDBAdapter::PostOptimizePlan() {
   }
 }
 
+// Walk a logical plan tree and update intermediate_table_map for any
+// LogicalGet nodes that reference temp tables via the scan_temp_collection
+// table function.  After ReOptimizeIR re-parses SQL, DuckDB assigns fresh
+// table indices; this function synchronises them with the map so that
+// ConvertDuckDBPlanToIR can identify temp tables correctly.
+static void RebuildTempTableIndices(
+    duckdb::LogicalOperator *op,
+    std::unordered_map<unsigned int, std::string> &intermediate_table_map,
+    std::unordered_map<unsigned int, std::vector<std::string>> &chunk_col_names,
+    const std::unordered_map<std::string, StoredTempResult> &temp_collections) {
+  if (!op)
+    return;
+  if (op->type == duckdb::LogicalOperatorType::LOGICAL_GET) {
+    auto &get_op = op->Cast<duckdb::LogicalGet>();
+    if (get_op.function.name == "scan_temp_collection" &&
+        !get_op.parameters.empty()) {
+      auto temp_name = get_op.parameters[0].GetValue<std::string>();
+      auto it = temp_collections.find(temp_name);
+      if (it != temp_collections.end()) {
+        intermediate_table_map[get_op.table_index] = temp_name;
+        chunk_col_names[get_op.table_index] = it->second.column_names;
+      }
+    }
+  }
+  for (auto &child : op->children)
+    RebuildTempTableIndices(child.get(), intermediate_table_map, chunk_col_names,
+                            temp_collections);
+}
+
+std::unique_ptr<ir_sql_converter::AQPStmt>
+DuckDBAdapter::ReOptimizeIR(std::unique_ptr<ir_sql_converter::AQPStmt> ir) {
+  if (!ir)
+    return ir;
+
+  auto sql = GenerateSQL(*ir, subquery_index);
+
+  ParseSQL(sql);
+
+  // Run full optimization (PreOptimize + MiddleOptimize on the fork,
+  // Optimize() on vanilla DuckDB) so join ordering uses actual cardinalities.
+  auto context = GetClientContext();
+  if (context->transaction.IsAutoCommit())
+    context->transaction.BeginTransaction();
+
+  if (planner && planner->binder && plan && plan->RequireOptimizer()) {
+    duckdb::Optimizer optimizer(*planner->binder, *context);
+    // Temporarily disable the split flag so Optimize() runs the full
+    // pipeline including JOIN_ORDER (the fork skips it when the flag is on).
+    // This makes the code forward-compatible with vanilla DuckDB where
+    // Optimize() always includes JOIN_ORDER.
+    auto &cfg = context->config;
+    bool saved = cfg.enable_dbshaker_query_split;
+    cfg.enable_dbshaker_query_split = false;
+    plan = optimizer.Optimize(std::move(plan));
+    cfg.enable_dbshaker_query_split = saved;
+  }
+
+  if (context->transaction.IsAutoCommit())
+    context->transaction.Commit();
+
+  // After re-parsing, DuckDB assigned fresh table indices to temp tables
+  // (they come through as LogicalGet via replacement scan, not as
+  // LogicalColumnDataGet).  Update intermediate_table_map so that
+  // ConvertPlanToIR can identify them and create SimplestChunk nodes.
+  if (plan) {
+    intermediate_table_map.clear();
+    chunk_col_names_.clear();
+    RebuildTempTableIndices(plan.get(), intermediate_table_map,
+                            chunk_col_names_, temp_collections_);
+  }
+
+  // Convert re-optimized plan back to IR
+  return ConvertPlanToIR();
+}
+
 void *DuckDBAdapter::GetLogicalPlan() {
   return static_cast<void *>(plan.get());
 }

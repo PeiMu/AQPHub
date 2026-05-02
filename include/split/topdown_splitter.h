@@ -7,6 +7,7 @@
 
 #include "split/ir_reorder_get.h"
 #include "split/split_algorithm.h"
+#include <map>
 #include <queue>
 #include <set>
 
@@ -27,6 +28,10 @@ public:
   bool IsComplete(const ir_sql_converter::AQPStmt *remaining_ir) override;
 
   std::string GetStrategyName() const override { return "TopDown"; }
+
+  // Re-run IR-level reorder before each split iteration so that temp tables
+  // (with actual cardinalities) influence join ordering.
+  void ReorderBeforeSplit(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
 
   // Update remaining IR by replacing subtree (DuckDB style)
   // Because split points align with subtree boundaries
@@ -60,6 +65,17 @@ private:
   CheckSameTableInSubtree(ir_sql_converter::AQPStmt *node,
                           std::unordered_set<std::string> &seen_tables) const;
 
+  // Fallback for when Visit() finds no split point: pick the deepest
+  // right child (build side) in the tree.
+  ir_sql_converter::AQPStmt *
+  FindDeepestRightChild(ir_sql_converter::AQPStmt *node) const;
+
+  // Find the deepest JoinNode in a left-deep chain.  Used when Visit()
+  // picks a split that covers the entire tree — we drill down to the
+  // smallest join (2-3 tables) as the first subquery instead.
+  ir_sql_converter::AQPStmt *
+  FindDeepestJoin(ir_sql_converter::AQPStmt *node) const;
+
   // Collect the minimum set of attributes that the remaining IR needs from
   // found_split_node_'s subtree.  Mirrors FK-splitter's required_attrs logic:
   // (a) top-level target_list attrs from subquery tables,
@@ -79,6 +95,19 @@ private:
                    std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
                        required_attrs);
 
+  // Build column name map from the IR (before ReOptimizeIR corrupts names).
+  // Maps (table_name, col_idx) → correct column name.
+  void BuildColumnNameMap(const ir_sql_converter::AQPStmt *ir);
+
+  // Look up the correct column name for a given table and col_idx.
+  std::string LookupColumnName(const std::string &table_name,
+                               unsigned int col_idx) const;
+
+  // Fix corrupted attr names in the IR after ReOptimizeIR.
+  void FixAttrName(ir_sql_converter::SimplestAttr *attr) const;
+  void FixExprNames(ir_sql_converter::AQPExpr *expr) const;
+  void FixAllAttrNames(ir_sql_converter::AQPStmt *node) const;
+
   IRReorderGet reorder_get_;
   bool enable_reorder_;
 
@@ -96,8 +125,10 @@ private:
   // Current subquery index
   int query_split_index_ = 0;
 
-  // table_index -> chunk_name
-  std::unordered_map<unsigned int, std::string> table_names_;
+  // Correct column names from the original IR (before ReOptimizeIR).
+  // Key: (table_name, col_idx), Value: correct column name.
+  std::map<std::pair<std::string, unsigned int>, std::string> col_name_map_;
+
 };
 
 } // namespace middleware

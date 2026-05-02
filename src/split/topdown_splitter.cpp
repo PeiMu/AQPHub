@@ -8,10 +8,93 @@
 
 namespace middleware {
 
+// Recursively walk the IR and record (table_name, col_idx) → col_name
+// for every attribute that references a ScanNode table.
+static void ExtractColumnNames(
+    const ir_sql_converter::AQPStmt *node,
+    const std::map<unsigned int, std::string> &idx_to_name,
+    std::map<std::pair<std::string, unsigned int>, std::string> &out) {
+  if (!node)
+    return;
+
+  // From target_list
+  for (const auto &attr : node->target_list) {
+    unsigned int tidx = attr->GetTableIndex();
+    auto it = idx_to_name.find(tidx);
+    if (it != idx_to_name.end()) {
+      auto key = std::make_pair(it->second, attr->GetColumnIndex());
+      if (out.find(key) == out.end())
+        out[key] = attr->GetColumnName();
+    }
+  }
+
+  // From join conditions
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
+    auto *join = dynamic_cast<const ir_sql_converter::SimplestJoin *>(node);
+    if (join) {
+      for (const auto &cond : join->join_conditions) {
+        if (cond->left_attr) {
+          auto it = idx_to_name.find(cond->left_attr->GetTableIndex());
+          if (it != idx_to_name.end()) {
+            auto key =
+                std::make_pair(it->second, cond->left_attr->GetColumnIndex());
+            if (out.find(key) == out.end())
+              out[key] = cond->left_attr->GetColumnName();
+          }
+        }
+        if (cond->right_attr) {
+          auto it = idx_to_name.find(cond->right_attr->GetTableIndex());
+          if (it != idx_to_name.end()) {
+            auto key =
+                std::make_pair(it->second, cond->right_attr->GetColumnIndex());
+            if (out.find(key) == out.end())
+              out[key] = cond->right_attr->GetColumnName();
+          }
+        }
+      }
+    }
+  }
+
+  for (const auto &child : node->children)
+    ExtractColumnNames(child.get(), idx_to_name, out);
+}
+
+void TopDownSplitter::BuildColumnNameMap(
+    const ir_sql_converter::AQPStmt *ir) {
+  // First collect table_index → table_name mapping
+  std::map<unsigned int, std::string> idx_to_name;
+  std::function<void(const ir_sql_converter::AQPStmt *)> CollectTables;
+  CollectTables = [&](const ir_sql_converter::AQPStmt *node) {
+    if (!node)
+      return;
+    if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+      auto *scan = dynamic_cast<const ir_sql_converter::SimplestScan *>(node);
+      if (scan)
+        idx_to_name[scan->GetTableIndex()] = scan->GetTableName();
+    }
+    for (const auto &child : node->children)
+      CollectTables(child.get());
+  };
+  CollectTables(ir);
+
+  // Then extract column names from all attrs in the IR
+  ExtractColumnNames(ir, idx_to_name, col_name_map_);
+}
+
+std::string TopDownSplitter::LookupColumnName(const std::string &table_name,
+                                              unsigned int col_idx) const {
+  auto it = col_name_map_.find(std::make_pair(table_name, col_idx));
+  if (it != col_name_map_.end())
+    return it->second;
+  return "";
+}
+
 void TopDownSplitter::Preprocess(
     std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {
 
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] Preprocessing IR" << std::endl;
+#endif
 
   // Reset state
   executed_tables_.clear();
@@ -19,22 +102,36 @@ void TopDownSplitter::Preprocess(
   query_split_index_ = 0;
   split_iteration_ = 0;
   max_table_index_ = 0;
+  col_name_map_.clear();
+
+  // Build column name map from the ORIGINAL IR (before ReOptimizeIR may
+  // corrupt names through DuckDB's equivalent-column binding resolution).
+  BuildColumnNameMap(ir.get());
 
   if (enable_reorder_) {
-    std::cout << "[TopDownSplitter] Running IR-level ReorderGet" << std::endl;
-    auto reordered = reorder_get_.Reorder(std::move(ir));
-
-    if (reordered) {
-      ir = std::move(reordered);
-      std::cout << "[TopDownSplitter] ReorderGet completed successfully"
+#ifndef NDEBUG
+    std::cout << "[TopDownSplitter] Running ReOptimizeIR in Preprocess"
+              << std::endl;
+#endif
+    auto re_optimized = adapter_->ReOptimizeIR(std::move(ir));
+    if (re_optimized) {
+      ir = std::move(re_optimized);
+      table_index_to_name_.clear();
+      CollectTableNames(ir.get());
+      FixAllAttrNames(ir.get());
+#ifndef NDEBUG
+      std::cout << "[TopDownSplitter] ReOptimizeIR completed successfully"
                 << std::endl;
+#endif
     } else {
       std::cout
-          << "[TopDownSplitter] ReorderGet returned null, using original IR"
+          << "[TopDownSplitter] ReOptimizeIR returned null, using original IR"
           << std::endl;
     }
   } else {
+#ifndef NDEBUG
     std::cout << "[TopDownSplitter] ReorderGet disabled, skipping" << std::endl;
+#endif
   }
 
   // Collect table names and find max index
@@ -45,11 +142,13 @@ void TopDownSplitter::Preprocess(
       max_table_index_ = idx;
     }
   }
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] Max table index: " << max_table_index_
             << std::endl;
 
   std::cout << "[TopDownSplitter] Finish Preprocess with IR: "
             << ir->Print(true) << std::endl;
+#endif
 }
 
 void TopDownSplitter::Visit(ir_sql_converter::AQPStmt *node) {
@@ -88,8 +187,10 @@ void TopDownSplitter::Visit(ir_sql_converter::AQPStmt *node) {
       if (top_most_ && idx == 0) {
         top_most_ = false;
         should_split = true;
+#ifndef NDEBUG
         std::cout << "[TopDownSplitter] Found FILTER split point at child "
                   << idx << " (top-most)" << std::endl;
+#endif
       }
       // else: non-top-most FILTER at idx==0 → follow_pipeline_breaker break
       break;
@@ -103,14 +204,18 @@ void TopDownSplitter::Visit(ir_sql_converter::AQPStmt *node) {
         if (join_type == ir_sql_converter::SimplestJoinType::Semi ||
             join_type == ir_sql_converter::SimplestJoinType::Mark) {
           // DuckDB lines 243-246: skip SEMI/MARK, set split_index=0
+#ifndef NDEBUG
           std::cout << "[TopDownSplitter] Skipping SEMI/MARK join" << std::endl;
+#endif
         } else {
           // DuckDB lines 248-253: split if top_most || right child (idx==1)
           if (top_most_ || idx == 1) {
             should_split = true;
+#ifndef NDEBUG
             std::cout << "[TopDownSplitter] Found JOIN split point at child "
                       << idx << (top_most_ ? " (top-most)" : " (build side)")
                       << std::endl;
+#endif
           }
           top_most_ =
               false; // DuckDB line 274: always clear after any INNER JOIN
@@ -141,10 +246,168 @@ void TopDownSplitter::Visit(ir_sql_converter::AQPStmt *node) {
     if (should_split) {
       query_split_index_++;
       found_split_node_ = child;
+#ifndef NDEBUG
       std::cout << "[TopDownSplitter] Added split point #" << query_split_index_
                 << ": " << GetNodeTypeName(child_type) << std::endl;
+#endif
       return; // One split per Visit call — stop here.
     }
+  }
+}
+
+// Find the maximum table_index across all attributes in the IR tree.
+// DuckDB assigns indices to projection/aggregate nodes too, and those
+// can be higher than the scan/chunk indices. We must track them so that
+// newly created temp table indices don't collide.
+static unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
+  if (!node)
+    return 0;
+  unsigned int mx = 0;
+  for (const auto &attr : node->target_list) {
+    if (attr->GetTableIndex() > mx)
+      mx = attr->GetTableIndex();
+  }
+  for (const auto &child : node->children)
+    mx = std::max(mx, FindMaxAttrIndex(child.get()));
+  return mx;
+}
+
+// Fix a single attr's column name using the col_name_map_.
+void TopDownSplitter::FixAttrName(ir_sql_converter::SimplestAttr *attr) const {
+  if (!attr)
+    return;
+  auto tit = table_index_to_name_.find(attr->GetTableIndex());
+  if (tit == table_index_to_name_.end())
+    return;
+  auto cit =
+      col_name_map_.find(std::make_pair(tit->second, attr->GetColumnIndex()));
+  if (cit != col_name_map_.end() && cit->second != attr->GetColumnName())
+    attr->SetColumnName(cit->second);
+}
+
+// Walk an expression tree and fix all attr names.
+void TopDownSplitter::FixExprNames(ir_sql_converter::AQPExpr *expr) const {
+  if (!expr)
+    return;
+  auto nt = expr->GetNodeType();
+  if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode) {
+    auto *vc = dynamic_cast<ir_sql_converter::SimplestVarComparison *>(expr);
+    if (vc) {
+      FixAttrName(vc->left_attr.get());
+      FixAttrName(vc->right_attr.get());
+    }
+  } else if (nt == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
+    auto *vcc =
+        dynamic_cast<ir_sql_converter::SimplestVarConstComparison *>(expr);
+    if (vcc)
+      FixAttrName(vcc->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::IsNullExprNode) {
+    auto *isn = dynamic_cast<ir_sql_converter::SimplestIsNullExpr *>(expr);
+    if (isn)
+      FixAttrName(isn->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::VarParamComparisonNode) {
+    auto *vp =
+        dynamic_cast<ir_sql_converter::SimplestVarParamComparison *>(expr);
+    if (vp)
+      FixAttrName(vp->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::SingleAttrExprNode) {
+    auto *sa =
+        dynamic_cast<ir_sql_converter::SimplestSingleAttrExpr *>(expr);
+    if (sa)
+      FixAttrName(sa->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
+    auto *le = dynamic_cast<ir_sql_converter::SimplestLogicalExpr *>(expr);
+    if (le) {
+      FixExprNames(le->left_expr.get());
+      FixExprNames(le->right_expr.get());
+    }
+  } else if (nt == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *in = dynamic_cast<ir_sql_converter::SimplestInExpr *>(expr);
+    if (in)
+      FixAttrName(in->attr.get());
+  } else if (nt == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *ar = dynamic_cast<ir_sql_converter::SimplestArithExpr *>(expr);
+    if (ar) {
+      FixExprNames(ar->left.get());
+      FixExprNames(ar->right.get());
+    }
+  } else if (nt == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *cast = dynamic_cast<ir_sql_converter::SimplestCastExpr *>(expr);
+    if (cast)
+      FixExprNames(cast->child.get());
+  }
+}
+
+// Recursively fix all attr names in the IR tree.
+void TopDownSplitter::FixAllAttrNames(ir_sql_converter::AQPStmt *node) const {
+  if (!node)
+    return;
+  for (auto &attr : node->target_list)
+    FixAttrName(attr.get());
+  for (auto &qual : node->qual_vec)
+    FixExprNames(qual.get());
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
+    auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node);
+    if (join) {
+      for (auto &cond : join->join_conditions) {
+        FixAttrName(cond->left_attr.get());
+        FixAttrName(cond->right_attr.get());
+      }
+    }
+  }
+  if (node->GetNodeType() ==
+      ir_sql_converter::SimplestNodeType::AggregateNode) {
+    auto *agg = dynamic_cast<ir_sql_converter::SimplestAggregate *>(node);
+    if (agg) {
+      for (auto &grp : agg->groups)
+        FixAttrName(grp.get());
+      for (auto &fn : agg->agg_fns)
+        FixAttrName(fn.first.get());
+    }
+  }
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::OrderNode) {
+    auto *order = dynamic_cast<ir_sql_converter::SimplestOrderBy *>(node);
+    if (order) {
+      for (auto &ord : order->orders)
+        FixAttrName(ord.attr.get());
+    }
+  }
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::HashNode) {
+    auto *hash = dynamic_cast<ir_sql_converter::SimplestHash *>(node);
+    if (hash) {
+      for (auto &key : hash->hash_keys)
+        FixAttrName(key.get());
+    }
+  }
+  for (auto &child : node->children)
+    FixAllAttrNames(child.get());
+}
+
+void TopDownSplitter::ReorderBeforeSplit(
+    std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {
+  if (!ir)
+    return;
+
+  // Preprocess already ran ReOptimizeIR for iteration 1
+  if (split_iteration_ <= 1)
+    return;
+
+  // Re-plan through the engine's full optimizer.  This converts
+  // CROSS_PRODUCT + filter conditions into proper hash joins, runs
+  // join order optimization with actual temp table cardinalities, and
+  // prunes unused columns.
+  auto re_optimized = adapter_->ReOptimizeIR(std::move(ir));
+  if (re_optimized) {
+    ir = std::move(re_optimized);
+    table_index_to_name_.clear();
+    CollectTableNames(ir.get());
+    max_table_index_ = FindMaxAttrIndex(ir.get());
+    FixAllAttrNames(ir.get());
+#ifndef NDEBUG
+    std::cout << "[TopDownSplitter::ReorderBeforeSplit] Re-optimized IR "
+              << "(max_table_index=" << max_table_index_ << "):\n"
+              << ir->Print(false) << std::endl;
+#endif
   }
 }
 
@@ -152,11 +415,15 @@ std::unique_ptr<SubqueryExtraction>
 TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
 
   split_iteration_++;
+#ifndef NDEBUG
   std::cout << "\n[TopDownSplitter] Iteration " << split_iteration_
             << ": Extracting next subquery" << std::endl;
+#endif
 
   if (!remaining_ir) {
+#ifndef NDEBUG
     std::cout << "[TopDownSplitter] Remaining IR is null" << std::endl;
+#endif
     return nullptr;
   }
 
@@ -167,24 +434,66 @@ TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
   top_most_ = true;
   Visit(remaining_ir);
 
-  // Check if there are more subqueries to execute
+  // If Visit() found no split point but multiple tables remain, fall back to
+  // the deepest right-child subtree.  This handles CROSS_PRODUCT-only trees
+  // and SEMI/MARK subtrees that Visit() skips.
   if (!found_split_node_) {
-    std::cout << "[TopDownSplitter] No more subqueries in queue" << std::endl;
-    return nullptr;
+    if (CountBaseTables(remaining_ir) > 1) {
+      found_split_node_ = FindDeepestRightChild(remaining_ir);
+      if (found_split_node_) {
+#ifndef NDEBUG
+        std::cout << "[TopDownSplitter] Fallback: using deepest right child as "
+                     "split point"
+                  << std::endl;
+#endif
+      }
+    }
+    if (!found_split_node_) {
+#ifndef NDEBUG
+      std::cout << "[TopDownSplitter] No more subqueries in queue" << std::endl;
+#endif
+      return nullptr;
+    }
   }
 
+  // In a left-deep tree, Visit() picks the outermost join which covers
+  // ALL tables.  When that happens, drill down to the deepest join so the
+  // first subquery is the smallest join (2-3 tables), matching DuckDB's
+  // Split+ReorderTables+MergeSubquery+ReSplit cycle behavior.
+  int total_tables = CountBaseTables(remaining_ir);
+  int split_tables = CountBaseTables(found_split_node_);
+  if (split_tables >= total_tables && total_tables > 2) {
+    auto *deeper = FindDeepestJoin(found_split_node_);
+    if (deeper && CountBaseTables(deeper) < split_tables) {
+#ifndef NDEBUG
+      std::cout << "[TopDownSplitter] Split covers all " << total_tables
+                << " tables, drilling down to deepest join ("
+                << CountBaseTables(deeper) << " tables)" << std::endl;
+#endif
+      found_split_node_ = deeper;
+    }
+  }
+
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] Selected subquery node: "
             << GetNodeTypeName(found_split_node_->GetNodeType()) << std::endl;
+#endif
 
   // Collect all table indices in this subquery's subtree
   auto table_indices = CollectTableIndices(found_split_node_);
 
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] Tables involved: ";
+#endif
   for (auto idx : table_indices) {
+#ifndef NDEBUG
     std::cout << idx << " ";
+#endif
     executed_tables_.insert(idx);
   }
+#ifndef NDEBUG
   std::cout << "(" << table_indices.size() << " tables)" << std::endl;
+#endif
 
   std::string temp_table_name = "temp_" + std::to_string(split_iteration_);
 
@@ -196,8 +505,10 @@ TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
   // the remaining IR.  This gives the sub-query a well-defined SELECT list and
   // minimises the columns stored in the temp table.
   auto required_attrs = CollectRequiredAttrs(remaining_ir, table_indices);
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] Wrapping split node in Projection with "
             << required_attrs.size() << " required column(s)" << std::endl;
+#endif
   WrapInProjection(remaining_ir, std::move(required_attrs));
   // found_split_node_ now points to the new Projection node
 
@@ -205,20 +516,60 @@ TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
   // target in UpdateRemainingIR)
   extraction->pipeline_breaker_ptr = found_split_node_;
 
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] Extraction complete for "
             << GetNodeTypeName(found_split_node_->GetNodeType()) << std::endl;
+#endif
 
   // Check for same-table issue
   // DuckDB's same-table handling is also commented out in top_down.cpp — just
   // warn and continue rather than crashing.
   std::unordered_set<std::string> table_names_in_subquery;
   if (CheckSameTableInSubtree(found_split_node_, table_names_in_subquery)) {
+#ifndef NDEBUG
     std::cerr << "[TopDownSplitter] Warning: same table appears multiple times "
                  "in subquery subtree; same-table merge not yet implemented"
               << std::endl;
+#endif
   }
 
   return extraction;
+}
+
+ir_sql_converter::AQPStmt *
+TopDownSplitter::FindDeepestRightChild(ir_sql_converter::AQPStmt *node) const {
+  if (!node || node->children.size() < 2)
+    return nullptr;
+
+  // Recurse into right child first (depth-first)
+  auto *deeper = FindDeepestRightChild(node->children.back().get());
+  if (deeper)
+    return deeper;
+
+  // No deeper right child — this node's right child is the deepest
+  return node->children.back().get();
+}
+
+ir_sql_converter::AQPStmt *
+TopDownSplitter::FindDeepestJoin(ir_sql_converter::AQPStmt *node) const {
+  if (!node)
+    return nullptr;
+
+  // Walk left-deep chain: follow children that are JoinNodes
+  for (auto &child : node->children) {
+    auto ct = child->GetNodeType();
+    if (ct == ir_sql_converter::SimplestNodeType::JoinNode) {
+      auto *deeper = FindDeepestJoin(child.get());
+      if (deeper)
+        return deeper;
+    }
+  }
+
+  // No deeper join found — this node is the deepest join
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode)
+    return node;
+
+  return nullptr;
 }
 
 bool TopDownSplitter::CheckSameTableInSubtree(
@@ -259,8 +610,10 @@ bool TopDownSplitter::IsComplete(
   int remaining_tables = CountBaseTables(remaining_ir);
   bool complete = (remaining_tables <= 1);
 
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter] IsComplete: " << (complete ? "YES" : "NO")
             << " (remaining tables: " << remaining_tables << ")" << std::endl;
+#endif
 
   return complete;
 }
@@ -306,8 +659,8 @@ int TopDownSplitter::CountBaseTables(
 
   int count = 0;
 
-  // Count scan nodes
-  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode ||
+      node->GetNodeType() == ir_sql_converter::SimplestNodeType::ChunkNode) {
     count = 1;
   }
 
@@ -353,10 +706,19 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
     const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
     const std::vector<std::string> &column_names) {
 
+  // Register temp table column names so subsequent ReOptimizeIR roundtrips
+  // can resolve correct names for ChunkNode attributes.
+  for (size_t i = 0; i < column_names.size(); i++) {
+    col_name_map_[std::make_pair(temp_table_name, (unsigned int)i)] =
+        column_names[i];
+  }
+
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter::UpdateRemainingIR] Replacing executed "
                "subtree with temp table: "
             << temp_table_name << " (index " << temp_table_index
             << ", cardinality " << temp_table_cardinality << ")" << std::endl;
+#endif
 
   if (!remaining_ir || !found_split_node_) {
     std::cerr << "[TopDownSplitter::UpdateRemainingIR] Error: null "
@@ -377,9 +739,11 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
     for (size_t i = 0; i < node->children.size(); i++) {
       if (node->children[i].get() == found_split_node_) {
         // Found the split node - create SimplestScan to replace it
+#ifndef NDEBUG
         std::cout
             << "[TopDownSplitter::UpdateRemainingIR] Found split node at child "
             << i << ", replacing with SimplestScan for temp table" << std::endl;
+#endif
 
         // Build target list using pre-computed column names
         std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
@@ -411,9 +775,11 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
         // Replace the child
         node->children[i] = std::move(scan_node);
 
+#ifndef NDEBUG
         std::cout << "[TopDownSplitter::UpdateRemainingIR] Successfully "
                      "replaced subtree"
                   << std::endl;
+#endif
         return true;
       }
 
@@ -440,6 +806,37 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
   return remaining_ir;
 }
 
+// Resolve the correct column name for (table_index, col_index) by finding
+// the ScanNode or ChunkNode in the IR tree and reading its target_list.
+// DuckDB's optimizer may assign equivalent-column names from the wrong side
+// of a join, so we trust the scan node's target_list over join-condition attrs.
+static std::string ResolveColumnName(const ir_sql_converter::AQPStmt *root,
+                                     unsigned int table_index,
+                                     unsigned int col_index) {
+  if (!root)
+    return "";
+  if (root->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan = dynamic_cast<const ir_sql_converter::SimplestScan *>(root);
+    if (scan && scan->GetTableIndex() == table_index) {
+      if (col_index < root->target_list.size())
+        return root->target_list[col_index]->GetColumnName();
+    }
+  } else if (root->GetNodeType() ==
+             ir_sql_converter::SimplestNodeType::ChunkNode) {
+    auto *chunk = dynamic_cast<const ir_sql_converter::SimplestChunk *>(root);
+    if (chunk && chunk->GetTableIndex() == table_index) {
+      if (col_index < root->target_list.size())
+        return root->target_list[col_index]->GetColumnName();
+    }
+  }
+  for (const auto &child : root->children) {
+    auto name = ResolveColumnName(child.get(), table_index, col_index);
+    if (!name.empty())
+      return name;
+  }
+  return "";
+}
+
 std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
 TopDownSplitter::CollectRequiredAttrs(
     const ir_sql_converter::AQPStmt *full_ir,
@@ -455,8 +852,24 @@ TopDownSplitter::CollectRequiredAttrs(
       auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
       if (!seen_attrs.count(key)) {
         seen_attrs.insert(key);
+        // Resolve correct column name: prefer the pre-ReOptimizeIR map
+        // (built from the original IR which has correct names), then
+        // fall back to the scan node in the current IR, then the attr itself.
+        std::string resolved_name;
+        auto tname_it = table_index_to_name_.find(attr->GetTableIndex());
+        if (tname_it != table_index_to_name_.end()) {
+          resolved_name =
+              LookupColumnName(tname_it->second, attr->GetColumnIndex());
+        }
+        if (resolved_name.empty())
+          resolved_name = ResolveColumnName(full_ir, attr->GetTableIndex(),
+                                            attr->GetColumnIndex());
+        if (resolved_name.empty())
+          resolved_name = attr->GetColumnName();
         required_attrs.push_back(
-            std::make_unique<ir_sql_converter::SimplestAttr>(*attr));
+            std::make_unique<ir_sql_converter::SimplestAttr>(
+                attr->GetType(), attr->GetTableIndex(),
+                attr->GetColumnIndex(), resolved_name));
       }
     }
   };
@@ -526,6 +939,80 @@ TopDownSplitter::CollectRequiredAttrs(
     }
   };
   CollectCrossBoundary(full_ir);
+
+  // (d) Filter predicates (qual_vec) referencing subquery tables
+  std::function<void(const ir_sql_converter::AQPExpr *)> CollectExprAttrs;
+  CollectExprAttrs = [&](const ir_sql_converter::AQPExpr *expr) {
+    if (!expr)
+      return;
+    auto nt = expr->GetNodeType();
+    if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode) {
+      auto *vc =
+          dynamic_cast<const ir_sql_converter::SimplestVarComparison *>(expr);
+      if (vc) {
+        AddIfSubqueryAttr(vc->left_attr.get());
+        AddIfSubqueryAttr(vc->right_attr.get());
+      }
+    } else if (nt == ir_sql_converter::SimplestNodeType::VarConstComparisonNode) {
+      auto *vcc =
+          dynamic_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+      if (vcc)
+        AddIfSubqueryAttr(vcc->attr.get());
+    } else if (nt == ir_sql_converter::SimplestNodeType::IsNullExprNode) {
+      auto *isn =
+          dynamic_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+      if (isn)
+        AddIfSubqueryAttr(isn->attr.get());
+    } else if (nt == ir_sql_converter::SimplestNodeType::VarParamComparisonNode) {
+      auto *vp =
+          dynamic_cast<const ir_sql_converter::SimplestVarParamComparison *>(expr);
+      if (vp)
+        AddIfSubqueryAttr(vp->attr.get());
+    } else if (nt == ir_sql_converter::SimplestNodeType::SingleAttrExprNode) {
+      auto *sa =
+          dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(expr);
+      if (sa)
+        AddIfSubqueryAttr(sa->attr.get());
+    } else if (nt == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
+      auto *le =
+          dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+      if (le) {
+        CollectExprAttrs(le->left_expr.get());
+        CollectExprAttrs(le->right_expr.get());
+      }
+    } else if (nt == ir_sql_converter::SimplestNodeType::InExprNode) {
+      auto *in = dynamic_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+      if (in)
+        AddIfSubqueryAttr(in->attr.get());
+    } else if (nt == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+      auto *ar =
+          dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(expr);
+      if (ar) {
+        CollectExprAttrs(ar->left.get());
+        CollectExprAttrs(ar->right.get());
+      }
+    } else if (nt == ir_sql_converter::SimplestNodeType::CastExprNode) {
+      auto *cast =
+          dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(expr);
+      if (cast)
+        CollectExprAttrs(cast->child.get());
+    }
+  };
+
+  std::function<void(const ir_sql_converter::AQPStmt *)> CollectFilterAttrs;
+  CollectFilterAttrs = [&](const ir_sql_converter::AQPStmt *node) {
+    if (!node)
+      return;
+    if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode) {
+      for (const auto &qual : node->qual_vec) {
+        CollectExprAttrs(qual.get());
+      }
+    }
+    for (const auto &child : node->children) {
+      CollectFilterAttrs(child.get());
+    }
+  };
+  CollectFilterAttrs(full_ir);
 
   return required_attrs;
 }
@@ -598,9 +1085,11 @@ ir_sql_converter::AQPStmt *TopDownSplitter::WrapInProjection(
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cout << "[TopDownSplitter::WrapInProjection] Wrapped split node in "
                "Projection with "
             << required_attrs.size() << " column(s)" << std::endl;
+#endif
   return found_split_node_;
 }
 
