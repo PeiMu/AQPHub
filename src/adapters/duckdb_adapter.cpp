@@ -267,6 +267,41 @@ void DuckDBAdapter::ParseSQL(const std::string &sql) {
   }
 }
 
+void DuckDBAdapter::Optimize() {
+  auto context = GetClientContext();
+
+  if (!plan) {
+    throw std::runtime_error("Cannot optimize null plan");
+  }
+
+  // Check if optimization is enabled and required
+  if (!plan->RequireOptimizer()) {
+    std::cout << "[DuckDB] Plan does not require optimization" << std::endl;
+    return;
+  }
+
+  // Begin transaction if in auto-commit mode
+  if (context->transaction.IsAutoCommit()) {
+    context->transaction.BeginTransaction();
+  }
+
+  if (!planner || !planner->binder) {
+    throw std::runtime_error("Binder not available. Call ParseSQL first.");
+  }
+
+  // Create optimizer and run PreOptimize
+  duckdb::Optimizer optimizer(*planner->binder, *context);
+  auto optimized_plan = optimizer.Optimize(std::move(plan));
+
+  // Store the optimized plan
+  plan = std::move(optimized_plan);
+
+  // Commit transaction if in auto-commit mode
+  if (context->transaction.IsAutoCommit()) {
+    context->transaction.Commit();
+  }
+}
+
 void DuckDBAdapter::FilterOptimize() {
   auto context = GetClientContext();
 
@@ -436,7 +471,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
     jit_active = true;
     ParseSQL(sql);
-    FilterOptimize();
+    Optimize();
     auto whole_ir = ConvertPlanToIR();
     if (whole_ir) {
       SetJITPendingIR(whole_ir.get(), jit_flags_);

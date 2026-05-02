@@ -94,6 +94,7 @@ public:
   void ParseSQL(const std::string &sql) override;
 
   // Optimizer
+  void Optimize();
   void FilterOptimize();
   void PostOptimizePlan();
 
