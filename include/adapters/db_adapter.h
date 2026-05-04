@@ -98,6 +98,14 @@ public:
            nt == ir_sql_converter::SimplestNodeType::SortNode;
   }
 
+  // Re-optimize the remaining IR through the engine's full optimizer.
+  // Default: return the IR unchanged (no re-optimization).
+  // DuckDB override: GenerateSQL → ParseSQL → Optimize → ConvertPlanToIR.
+  virtual std::unique_ptr<ir_sql_converter::AQPStmt>
+  ReOptimizeIR(std::unique_ptr<ir_sql_converter::AQPStmt> ir) {
+    return ir;
+  }
+
   virtual void CleanUp() = 0;
 
   unsigned int subquery_index = 0;

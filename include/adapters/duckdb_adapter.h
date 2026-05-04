@@ -27,6 +27,7 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/query_split/query_split.hpp"
 #include "duckdb/optimizer/query_split/subquery_preparer.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
@@ -94,8 +95,15 @@ public:
   void ParseSQL(const std::string &sql) override;
 
   // Optimizer
+  void Optimize();
   void FilterOptimize();
   void PostOptimizePlan();
+
+  // Re-optimize IR by re-planning through DuckDB's full optimizer.
+  // Generates SQL from the IR, parses it (DuckDB binds temp tables from
+  // catalog), runs the full Optimize(), and converts back to IR.
+  std::unique_ptr<ir_sql_converter::AQPStmt>
+  ReOptimizeIR(std::unique_ptr<ir_sql_converter::AQPStmt> ir) override;
 
   void *GetLogicalPlan();
 

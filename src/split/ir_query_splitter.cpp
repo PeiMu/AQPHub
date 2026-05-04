@@ -224,6 +224,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                 << " ==========" << std::endl;
     }
 
+    splitter_->ReorderBeforeSplit(remaining_ir);
+
     if (!ExecuteOneIteration(remaining_ir)) {
       std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
                    "false but IsComplete was false. Breaking loop."
@@ -421,6 +423,30 @@ bool IRQuerySplitter::ExecuteOneIteration(
               << "] Error: No executable IR" << std::endl;
     return false;
   }
+
+#ifndef NDEBUG
+  // Assert no CROSS_PRODUCT in sub-IR — cross products are extremely slow
+  // and indicate a bug in split-point selection or IR re-optimization.
+  std::function<bool(const ir_sql_converter::AQPStmt *)> has_cross_product =
+      [&](const ir_sql_converter::AQPStmt *node) -> bool {
+    if (!node) return false;
+    if (node->GetNodeType() ==
+        ir_sql_converter::SimplestNodeType::CrossProductNode)
+      return true;
+    for (const auto &child : node->children)
+      if (has_cross_product(child.get())) return true;
+    return false;
+  };
+  if (has_cross_product(executable_ir)) {
+    std::cerr << "[Iteration " << iteration_count_
+              << "] FATAL: Sub-IR contains CROSS_PRODUCT node!\n";
+    executable_ir->Print();
+    throw std::runtime_error(
+        "Sub-IR contains CROSS_PRODUCT node — aborting to prevent "
+        "catastrophic performance. Check split-point selection or "
+        "ReOptimizeIR.");
+  }
+#endif
 
   if (config_.enable_debug_print) {
     std::cout << "\n=== Sub-IR to Execute ===" << std::endl;
@@ -901,8 +927,9 @@ IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
   if (!table_name.empty()) {
     return table_name + "_" + std::to_string(table_idx) + "_" + col_name;
   }
-  // Fallback: use table index if name not found
-  return std::to_string(table_idx) + "_" + col_name;
+  // Fallback: prefix with "t" so the alias never starts with a digit
+  // (digits at the start cause SQL parse errors, e.g. table.5_col → ".5")
+  return "t" + std::to_string(table_idx) + "_" + col_name;
 }
 
 // Strip trailing whitespace and semicolons from a SQL string
