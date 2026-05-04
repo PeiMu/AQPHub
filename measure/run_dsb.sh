@@ -14,7 +14,7 @@ if [[ "$engine" == "postgres" ]]; then
     db_conn="host=localhost port=5432 dbname=dsb_10 user=postgres"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb_132/measure/dsb_10.db"
+    db_conn="/home/pei/Project/duckdb/measure/dsb_10.db"
 
 elif [[ "$engine" == "umbra" ]]; then
     db_conn="host=localhost port=15432 user=postgres password=postgres"
@@ -34,7 +34,7 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb_132/measure/dsb_10.db"
+    helper_db_path="/home/pei/Project/duckdb/measure/dsb_10.db"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$engine" == "mariadb" ]]; then
     helper_db_path="host=localhost port=5432 dbname=dsb_10 user=postgres"

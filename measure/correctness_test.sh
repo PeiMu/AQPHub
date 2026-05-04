@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="${SCRIPT_DIR}/../build_release/aqp_middleware"
-DB_PATH="/home/pei/Project/duckdb_132/measure/imdb.db"
+DB_PATH="/home/pei/Project/duckdb/measure/imdb.db"
 SCHEMA="/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql"
 FKEYS="/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql"
 

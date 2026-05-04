@@ -39,7 +39,7 @@ It can select different engines and split strategies.
 ```bash
 ./build_release/aqp_middleware \
 --engine=duckdb \
---db="/home/pei/Project/duckdb_132/measure/imdb.db" \
+--db="/home/pei/Project/duckdb/measure/imdb.db" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
@@ -155,7 +155,7 @@ e.g., `--estimator=postgres --helper-db-path="host=localhost port=5432 dbname=im
 ./build_release/aqp_middleware \
 --engine=postgresql \
 --db="host=localhost port=5432 dbname=imdb user=pei" \
---helper-db-path="/home/pei/Project/duckdb_132/measure/imdb.db" \
+--helper-db-path="/home/pei/Project/duckdb/measure/imdb.db" \
 --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
 --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=node-based \
@@ -225,7 +225,7 @@ These flags control individual pipeline-level optimizations. All default to **en
 ```bash
 ./build_release/aqp_middleware \
   --engine=duckdb \
-  --db="/home/pei/Project/duckdb_132/measure/imdb.db" \
+  --db="/home/pei/Project/duckdb/measure/imdb.db" \
   --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
   --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
   --split=none \
@@ -316,7 +316,7 @@ For "DSB", the config is, e.g.,
 ### DuckDB
 ```bash
 --engine=duckdb \
---db="/home/pei/Project/duckdb_132/measure/dsb_10.db" \
+--db="/home/pei/Project/duckdb/measure/dsb_10.db" \
 --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
 --fkeys=/home/pei/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
 --split=relationship-center \

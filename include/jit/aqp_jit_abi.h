@@ -3,7 +3,7 @@
  * compiler and the DuckDB JIT receiver.
  *
  * MUST stay in sync with:
- *   duckdb_132/src/include/duckdb/execution/aqp_jit.hpp
+ *   duckdb/src/include/duckdb/execution/aqp_jit.hpp
  *
  * Key invariants:
  *   - sel_t in DuckDB is uint32_t  (duckdb/common/typedefs.hpp)
