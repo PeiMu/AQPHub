@@ -4656,6 +4656,21 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_proj_" + std::to_string(fn_id);
 
+  // Cache lookup
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string proj_text =
+        const_cast<AQPStmt &>(proj_node).Print(false, 0);
+    std::string opt_tag = std::to_string((int)opt_level_) + "." +
+                          std::to_string((int)simd_isa_);
+    cache_key = Impl::ComputeCacheKey(
+        BuildCacheContent("proj:" + opt_tag, in_schema, proj_text));
+    fn_name = "aqp_proj_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
+    if (cached)
+      return reinterpret_cast<AQPOperatorFn>(cached);
+  }
+
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_proj_mod", *ctx);
 
@@ -4674,12 +4689,15 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
 
   OptimiseModule(*mod, opt_level_);
 
+  impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+    impl_->pending_cache_key.clear();
     std::cerr << "[AQP-JIT] addIRModule failed (proj)\n";
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
+  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
@@ -4751,6 +4769,21 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_agg_" + std::to_string(fn_id);
 
+  // Cache lookup
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string agg_text =
+        const_cast<AQPStmt &>(agg_node).Print(false, 0);
+    std::string opt_tag = std::to_string((int)opt_level_) + "." +
+                          std::to_string((int)simd_isa_);
+    cache_key = Impl::ComputeCacheKey(
+        BuildCacheContent("agg:" + opt_tag, in_schema, agg_text));
+    fn_name = "aqp_agg_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
+    if (cached)
+      return cached;
+  }
+
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_agg_mod", *ctx);
 
@@ -4783,12 +4816,15 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
 
   OptimiseModule(*mod, opt_level_);
 
+  impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+    impl_->pending_cache_key.clear();
     std::cerr << "[AQP-JIT] addIRModule failed (agg)\n";
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
+  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
@@ -4873,6 +4909,25 @@ IrToLlvmCompiler::CompileHashBuild(const AQPStmt &hash_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_hbuild_" + std::to_string(fn_id);
 
+  // Cache lookup
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string hash_text =
+        const_cast<AQPStmt &>(hash_node).Print(false, 0);
+    std::string payload_str;
+    for (int ci : needed_payload_cols)
+      payload_str += std::to_string(ci) + ",";
+    std::string opt_tag = std::to_string((int)opt_level_) + "." +
+                          std::to_string((int)simd_isa_);
+    cache_key = Impl::ComputeCacheKey(
+        BuildCacheContent("hbuild:" + opt_tag, in_schema,
+                          hash_text + "||" + payload_str));
+    fn_name = "aqp_hbuild_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
+    if (cached)
+      return cached;
+  }
+
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_hbuild_mod", *ctx);
 
@@ -4893,11 +4948,14 @@ IrToLlvmCompiler::CompileHashBuild(const AQPStmt &hash_node,
 
   OptimiseModule(*mod, opt_level_);
 
+  impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+    impl_->pending_cache_key.clear();
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
+  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
@@ -4962,6 +5020,22 @@ IrToLlvmCompiler::CompileHashProbe(const AQPStmt &join_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_hprobe_" + std::to_string(fn_id);
 
+  // Cache lookup
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string join_text =
+        const_cast<AQPStmt &>(join_node).Print(false, 0);
+    std::string opt_tag = std::to_string((int)opt_level_) + "." +
+                          std::to_string((int)simd_isa_) + "." +
+                          (batch_probe_ ? "batch" : (prefetch_ ? "pf" : "scalar"));
+    cache_key = Impl::ComputeCacheKey(
+        BuildCacheContent("hprobe:" + opt_tag, probe_schema, join_text));
+    fn_name = "aqp_hprobe_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
+    if (cached)
+      return cached;
+  }
+
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_hprobe_mod", *ctx);
 
@@ -4984,11 +5058,14 @@ IrToLlvmCompiler::CompileHashProbe(const AQPStmt &join_node,
 
   OptimiseModule(*mod, opt_level_);
 
+  impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+    impl_->pending_cache_key.clear();
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
+  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {

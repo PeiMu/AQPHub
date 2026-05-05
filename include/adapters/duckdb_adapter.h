@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "adapters/db_adapter.h"
@@ -269,6 +270,12 @@ private:
   // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
   void RegisterJIT(duckdb::PhysicalOperator &op,
                           const ir_sql_converter::AQPStmt &ir);
+
+  // IR filter nodes already matched to a DuckDB operator in this RegisterJIT
+  // pass.  Prevents two DuckDB FILTERs on the same table from binding to the
+  // same IR FilterNode.
+  std::unordered_set<const ir_sql_converter::AQPStmt *>
+      jit_consumed_ir_filters_;
 #endif
 
   // Column names for each chunk table: data_chunk_index → column names as

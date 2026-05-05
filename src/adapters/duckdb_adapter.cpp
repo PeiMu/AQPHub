@@ -14,6 +14,7 @@
 #include <unordered_set>
 
 #ifdef HAVE_LLVM
+#include "duckdb/execution/operator/filter/physical_filter.hpp"
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
@@ -21,6 +22,7 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "jit/aqp_jit_hashtable.h"
 #include "simplest_ir.h"
 
@@ -574,6 +576,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset aqp_jit_context "
                    "(compiler reused)\n";
 #endif
+      jit_consumed_ir_filters_.clear();
       RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
       // Level 4: SQL-level compilation — compile the entire IR tree
@@ -713,6 +716,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset "
                  "aqp_jit_context (compiler reused)\n";
 #endif
+    jit_consumed_ir_filters_.clear();
     RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
     // Level 4: SQL-level compilation — compile the sub-SQL IR tree
@@ -1189,6 +1193,83 @@ CollectTableNameToIndex(const ir_sql_converter::AQPStmt *ir,
     CollectTableNameToIndex(child.get(), out, ambiguous);
 }
 
+// Collect (table_idx, col_idx) pairs referenced by an IR filter's quals.
+static void
+CollectIRFilterCols(const ir_sql_converter::AQPStmt *filter_ir,
+                    std::set<std::pair<unsigned int, unsigned int>> &out) {
+  using ir_sql_converter::SimplestNodeType;
+  std::function<void(const ir_sql_converter::AQPExpr *)> walk =
+      [&](const ir_sql_converter::AQPExpr *expr) {
+        if (!expr)
+          return;
+        switch (expr->GetNodeType()) {
+        case SimplestNodeType::VarConstComparisonNode: {
+          auto *c = static_cast<
+              const ir_sql_converter::SimplestVarConstComparison *>(expr);
+          if (c->attr)
+            out.emplace(static_cast<unsigned int>(c->attr->GetTableIndex()),
+                        static_cast<unsigned int>(c->attr->GetColumnIndex()));
+          break;
+        }
+        case SimplestNodeType::VarComparisonNode: {
+          auto *v = static_cast<
+              const ir_sql_converter::SimplestVarComparison *>(expr);
+          if (v->left_attr)
+            out.emplace(
+                static_cast<unsigned int>(v->left_attr->GetTableIndex()),
+                static_cast<unsigned int>(v->left_attr->GetColumnIndex()));
+          if (v->right_attr)
+            out.emplace(
+                static_cast<unsigned int>(v->right_attr->GetTableIndex()),
+                static_cast<unsigned int>(v->right_attr->GetColumnIndex()));
+          break;
+        }
+        case SimplestNodeType::IsNullExprNode: {
+          auto *n =
+              static_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+          if (n->attr)
+            out.emplace(static_cast<unsigned int>(n->attr->GetTableIndex()),
+                        static_cast<unsigned int>(n->attr->GetColumnIndex()));
+          break;
+        }
+        case SimplestNodeType::InExprNode: {
+          auto *i =
+              static_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+          if (i->attr)
+            out.emplace(static_cast<unsigned int>(i->attr->GetTableIndex()),
+                        static_cast<unsigned int>(i->attr->GetColumnIndex()));
+          break;
+        }
+        case SimplestNodeType::LogicalExprNode: {
+          auto *l =
+              static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+          walk(l->left_expr.get());
+          walk(l->right_expr.get());
+          break;
+        }
+        default:
+          break;
+        }
+      };
+  for (const auto &q : filter_ir->qual_vec)
+    walk(q.get());
+}
+
+// Collect chunk column indices referenced by a DuckDB Expression tree.
+static void CollectBoundRefIndices(const duckdb::Expression &expr,
+                                   std::set<duckdb::idx_t> &out) {
+  if (expr.expression_class == duckdb::ExpressionClass::BOUND_REF) {
+    auto &ref = expr.Cast<duckdb::BoundReferenceExpression>();
+    out.insert(ref.index);
+    return;
+  }
+  duckdb::ExpressionIterator::EnumerateChildren(
+      expr,
+      [&](const duckdb::Expression &child) {
+        CollectBoundRefIndices(child, out);
+      });
+}
+
 // Returns true if the expr (recursively) references a (table_idx, col_idx) pair
 // that exists in schema.  Used to skip JIT for filters whose predicates don't
 // map to any column in the physical operator's output chunk.
@@ -1506,24 +1587,61 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 #endif
         }
 
-        // Find the FilterNode that references ir_table_idx
-        filter_ir = FindFirstFilterNode(&ir); // fallback
+        // Find the IR FilterNode that best matches this DuckDB FILTER.
+        // Strategy: collect the chunk column indices referenced by the DuckDB
+        // expression, map them to (table_idx, col_idx) pairs, then find the
+        // IR filter whose qual columns overlap with those pairs.
+        filter_ir = nullptr;
         if (ir_table_idx != UINT_MAX) {
           std::vector<const ir_sql_converter::AQPStmt *> all_filters;
           CollectAllFilterNodes(&ir, all_filters);
-          bool found = false;
+
+          // Columns referenced by DuckDB filter expression → schema col pairs
+          auto &filt_op = static_cast<duckdb::PhysicalFilter &>(op);
+          std::set<std::pair<unsigned int, unsigned int>> duckdb_cols;
+          if (filt_op.expression) {
+            std::set<duckdb::idx_t> ref_indices;
+            CollectBoundRefIndices(*filt_op.expression, ref_indices);
+            for (auto idx : ref_indices) {
+              if (idx < schema_prelim.size())
+                duckdb_cols.emplace(schema_prelim[idx].table_idx,
+                                    schema_prelim[idx].col_idx);
+            }
+          }
+
+          // Find best-matching IR filter: prefer the one whose cols overlap
+          // with the DuckDB expression's cols, falling back to table_idx match.
+          const ir_sql_converter::AQPStmt *best = nullptr;
+          size_t best_overlap = 0;
           for (auto *f : all_filters) {
+            if (jit_consumed_ir_filters_.count(f))
+              continue;
+            bool table_match = false;
             for (const auto &q : f->qual_vec) {
               unsigned int t = FirstTableIdxFromExpr(q.get());
               if (t == ir_table_idx) {
-                filter_ir = f;
-                found = true;
+                table_match = true;
                 break;
               }
             }
-            if (found)
+            if (!table_match)
+              continue;
+            if (duckdb_cols.empty()) {
+              best = f;
               break;
+            }
+            std::set<std::pair<unsigned int, unsigned int>> ir_cols;
+            CollectIRFilterCols(f, ir_cols);
+            size_t overlap = 0;
+            for (auto &p : ir_cols)
+              if (duckdb_cols.count(p))
+                overlap++;
+            if (overlap > best_overlap) {
+              best_overlap = overlap;
+              best = f;
+            }
           }
+          filter_ir = best;
         }
       }
     } else if (child.type == PhysicalOperatorType::PROJECTION &&
@@ -1639,24 +1757,55 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 #endif
         }
 
-        // Find the FilterNode that references ir_table_idx
-        filter_ir = FindFirstFilterNode(&ir); // fallback
+        // Find best-matching IR filter (same column-overlap strategy).
+        filter_ir = nullptr;
         if (ir_table_idx != UINT_MAX) {
           std::vector<const ir_sql_converter::AQPStmt *> all_filters;
           CollectAllFilterNodes(&ir, all_filters);
-          bool found = false;
+
+          auto &filt_op = static_cast<duckdb::PhysicalFilter &>(op);
+          std::set<std::pair<unsigned int, unsigned int>> duckdb_cols;
+          if (filt_op.expression) {
+            std::set<duckdb::idx_t> ref_indices;
+            CollectBoundRefIndices(*filt_op.expression, ref_indices);
+            for (auto idx : ref_indices) {
+              if (idx < schema_prelim.size())
+                duckdb_cols.emplace(schema_prelim[idx].table_idx,
+                                    schema_prelim[idx].col_idx);
+            }
+          }
+
+          const ir_sql_converter::AQPStmt *best = nullptr;
+          size_t best_overlap = 0;
           for (auto *f : all_filters) {
+            if (jit_consumed_ir_filters_.count(f))
+              continue;
+            bool table_match = false;
             for (const auto &q : f->qual_vec) {
               unsigned int t = FirstTableIdxFromExpr(q.get());
               if (t == ir_table_idx) {
-                filter_ir = f;
-                found = true;
+                table_match = true;
                 break;
               }
             }
-            if (found)
+            if (!table_match)
+              continue;
+            if (duckdb_cols.empty()) {
+              best = f;
               break;
+            }
+            std::set<std::pair<unsigned int, unsigned int>> ir_cols;
+            CollectIRFilterCols(f, ir_cols);
+            size_t overlap = 0;
+            for (auto &p : ir_cols)
+              if (duckdb_cols.count(p))
+                overlap++;
+            if (overlap > best_overlap) {
+              best_overlap = overlap;
+              best = f;
+            }
           }
+          filter_ir = best;
         }
       } // end else (not ambiguous) for proj path
     } else {
@@ -1729,6 +1878,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
           ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
         ctx->aqp_jit_context->expr_fns[eid] = fn;
         ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
+        jit_consumed_ir_filters_.insert(filter_ir);
 
         // Scan+Filter fusion (operator-level): register compiled filter on
         // the TABLE_SCAN operator so it can pre-filter chunks at scan time.
@@ -1985,6 +2135,35 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
         ctx->aqp_jit_context->op_fns[eid] =
             reinterpret_cast<duckdb::AQPOperatorFn>(raw_fn);
         ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
+
+        // Populate per-aggregate metadata for JIT state init/finalize
+        std::vector<duckdb::AQPJITContext::AQPAggMeta> meta_vec;
+        uint32_t meta_offset = 0;
+        for (const auto &fp : agg->agg_fns) {
+          duckdb::AQPJITContext::AQPAggMeta m;
+          m.agg_type = static_cast<int32_t>(fp.second);
+          m.state_offset = meta_offset;
+          if (fp.second == ir_sql_converter::SimplestAggFnType::CountStar) {
+            m.state_bytes = 8;
+            m.dtype = AQP_DTYPE_INT64;
+          } else if (fp.second == ir_sql_converter::SimplestAggFnType::Average) {
+            m.state_bytes = 16;
+            m.dtype = AQP_DTYPE_DOUBLE;
+          } else {
+            m.state_bytes = 8;
+            m.dtype = AQP_DTYPE_OTHER;
+            for (size_t si = 0; si < in_schema.size(); si++) {
+              if (in_schema[si].table_idx == fp.first->GetTableIndex() &&
+                  in_schema[si].col_idx == fp.first->GetColumnIndex()) {
+                m.dtype = in_schema[si].dtype;
+                break;
+              }
+            }
+          }
+          meta_offset += m.state_bytes;
+          meta_vec.push_back(m);
+        }
+        ctx->aqp_jit_context->agg_meta[eid] = std::move(meta_vec);
 #ifndef NDEBUG
         std::cerr << "[AQP-JIT] compiled agg eid=0x" << std::hex << eid
                   << std::dec << " state_bytes=" << state_size << " ungrouped="
