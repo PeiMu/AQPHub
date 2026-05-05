@@ -1876,22 +1876,23 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
         auto *ctx = GetClientContext();
         if (!ctx->aqp_jit_context)
           ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-        ctx->aqp_jit_context->expr_fns[eid] = fn;
-        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
         jit_consumed_ir_filters_.insert(filter_ir);
 
-        // Scan+Filter fusion (operator-level): register compiled filter on
-        // the TABLE_SCAN operator so it can pre-filter chunks at scan time.
-        // Only enabled at jit-level >= operator to avoid double-application
-        // at expr level (PhysicalFilter would also apply the same filter).
+        // Scan+Filter fusion (operator-level): apply filter at scan time
+        // and mark the PhysicalFilter as a pass-through to avoid
+        // double-application.
         if ((jit_flags_ & AQP_JIT_OPERATOR) &&
             child.type == PhysicalOperatorType::TABLE_SCAN) {
           uint64_t scan_eid = duckdb::ExpressionID(child);
           ctx->aqp_jit_context->scan_filter_fns[scan_eid] = fn;
+          ctx->aqp_jit_context->fused_scan_filter_eids.insert(eid);
 #ifndef NDEBUG
           std::cerr << "[AQP-JIT] scan+filter fusion: scan_eid=0x" << std::hex
                     << scan_eid << std::dec << "\n";
 #endif
+        } else {
+          ctx->aqp_jit_context->expr_fns[eid] = fn;
+          ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
         }
 
 #ifndef NDEBUG
