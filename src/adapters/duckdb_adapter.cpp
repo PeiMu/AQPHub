@@ -1172,28 +1172,18 @@ FirstTableIdxFromExpr(const ir_sql_converter::AQPExpr *expr) {
   }
 }
 
-// Walk the IR tree and build a map: table_name (lowercase) → table_index.
-// Also populates `ambiguous` with names that appear with multiple different
-// indices (e.g. two comp_cast_type aliases with index 1 and 2). JIT is skipped
-// for those.
+// Walk the IR tree and collect the set of table_index values from ScanNodes.
 static void
-CollectTableNameToIndex(const ir_sql_converter::AQPStmt *ir,
-                        std::unordered_map<std::string, unsigned int> &out,
-                        std::unordered_set<std::string> &ambiguous) {
+CollectIRTableIndices(const ir_sql_converter::AQPStmt *ir,
+                      std::unordered_set<unsigned int> &out) {
   if (!ir)
     return;
   if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
     auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(ir);
-    std::string name = scan->GetTableName();
-    for (auto &c : name)
-      c = (char)tolower((unsigned char)c);
-    auto it = out.find(name);
-    if (it != out.end() && it->second != scan->GetTableIndex())
-      ambiguous.insert(name); // same physical table, different IR indices
-    out[name] = scan->GetTableIndex();
+    out.insert(scan->GetTableIndex());
   }
   for (const auto &child : ir->children)
-    CollectTableNameToIndex(child.get(), out, ambiguous);
+    CollectIRTableIndices(child.get(), out);
 }
 
 // Collect (table_idx, col_idx) pairs referenced by an IR filter's quals.
@@ -1452,15 +1442,14 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     const ir_sql_converter::AQPStmt *filter_ir = nullptr;
     unsigned int ir_table_idx = UINT_MAX;
 
-    // Build table-name → IR table_index map from IR ScanNodes
-    std::unordered_map<std::string, unsigned int> ir_table_name_to_idx;
-    std::unordered_set<std::string> ir_ambiguous_names;
-    CollectTableNameToIndex(&ir, ir_table_name_to_idx, ir_ambiguous_names);
+    // Collect known IR table indices for debug validation
+    std::unordered_set<unsigned int> ir_table_indices;
+    CollectIRTableIndices(&ir, ir_table_indices);
 #ifndef NDEBUG
-    std::cerr << "[AQP-JIT-TRACE] IR table name map:\n";
-    for (auto &kv : ir_table_name_to_idx)
-      std::cerr << "[AQP-JIT-TRACE]   \"" << kv.first
-                << "\" -> idx=" << kv.second << "\n";
+    std::cerr << "[AQP-JIT-TRACE] IR table indices:";
+    for (auto idx : ir_table_indices)
+      std::cerr << " " << idx;
+    std::cerr << "\n";
 #endif
 
     std::vector<aqp_jit::ColSchema> schema_prelim;
@@ -1472,51 +1461,21 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     if (child.type == PhysicalOperatorType::TABLE_SCAN) {
       auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
 
-      // Get table name from DuckDB scan bind_data (works for regular storage
-      // scans)
-      std::string duckdb_table_name;
-      if (scan.bind_data) {
-        auto *tsbd =
-            dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
-        if (tsbd) {
-          duckdb_table_name = tsbd->table.name;
-          for (auto &c : duckdb_table_name)
-            c = (char)tolower((unsigned char)c);
-        }
-      }
-      // Fall back: use function name (for temp table scans)
-      if (duckdb_table_name.empty()) {
-        duckdb_table_name = scan.function.name;
-        for (auto &c : duckdb_table_name)
-          c = (char)tolower((unsigned char)c);
-      }
+      // Use logical_table_index propagated from the planner — unique per
+      // table reference, so self-joins are handled correctly.
+      ir_table_idx =
+          static_cast<unsigned int>(scan.logical_table_index);
 #ifndef NDEBUG
-      std::cerr << "[AQP-JIT-TRACE]   duckdb table_name=\"" << duckdb_table_name
-                << "\"\n";
+      std::cerr << "[AQP-JIT-TRACE]   scan logical_table_index="
+                << ir_table_idx << "\n";
 #endif
-
-      // Look up IR table_idx by name
-      auto it = ir_table_name_to_idx.find(duckdb_table_name);
-      if (it != ir_table_name_to_idx.end()) {
-        ir_table_idx = it->second;
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT-TRACE]   resolved ir_table_idx=" << ir_table_idx
-                  << "\n";
-#endif
-      } else {
-        std::cerr << "[AQP-JIT-TRACE]   WARNING: no IR table matches \""
-                  << duckdb_table_name << "\"\n";
+      if (!ir_table_indices.count(ir_table_idx)) {
+        std::cerr << "[AQP-JIT-TRACE]   WARNING: no IR table matches "
+                      "logical_table_index="
+                  << ir_table_idx << "\n";
       }
 
-      // Skip JIT for tables that appear under multiple different IR indices
-      // (e.g. self-join on comp_cast_type with alias indices 1 and 2).
-      // The name→index map has only one entry so one side would get the wrong
-      // filter. Leave schema_prelim empty and filter_ir as nullptr → JIT
-      // skipped below.
-      if (ir_ambiguous_names.count(duckdb_table_name)) {
-        std::cerr << "[AQP-JIT] WARNING: ambiguous table \""
-                  << duckdb_table_name << "\" → skipping JIT for this filter\n";
-      } else {
+      {
         // child.types may be shorter than scan.column_ids when DuckDB's
         // filter-prune / projection-pushdown strips columns that are only
         // needed for table filters but not returned in the output chunk.
@@ -1659,47 +1618,20 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
       auto &scan =
           static_cast<duckdb::PhysicalTableScan &>(child.children[0].get());
 
-      // Get table name → ir_table_idx (same logic as the TABLE_SCAN path)
-      std::string duckdb_table_name;
-      if (scan.bind_data) {
-        auto *tsbd =
-            dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
-        if (tsbd) {
-          duckdb_table_name = tsbd->table.name;
-          for (auto &c : duckdb_table_name)
-            c = (char)tolower((unsigned char)c);
-        }
-      }
-      if (duckdb_table_name.empty()) {
-        duckdb_table_name = scan.function.name;
-        for (auto &c : duckdb_table_name)
-          c = (char)tolower((unsigned char)c);
-      }
+      // Use logical_table_index from the inner scan (same as TABLE_SCAN path)
+      ir_table_idx =
+          static_cast<unsigned int>(scan.logical_table_index);
 #ifndef NDEBUG
-      std::cerr << "[AQP-JIT-TRACE]   proj→scan table_name=\""
-                << duckdb_table_name << "\"\n";
+      std::cerr << "[AQP-JIT-TRACE]   proj→scan logical_table_index="
+                << ir_table_idx << "\n";
 #endif
-
-      auto it = ir_table_name_to_idx.find(duckdb_table_name);
-      if (it != ir_table_name_to_idx.end()) {
-        ir_table_idx = it->second;
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT-TRACE]   resolved ir_table_idx=" << ir_table_idx
-                  << "\n";
-#endif
-      } else {
-        std::cerr
-            << "[AQP-JIT-TRACE]   WARNING: proj→scan no IR table matches \""
-            << duckdb_table_name << "\"\n";
+      if (!ir_table_indices.count(ir_table_idx)) {
+        std::cerr << "[AQP-JIT-TRACE]   WARNING: proj→scan no IR table "
+                      "matches logical_table_index="
+                  << ir_table_idx << "\n";
       }
 
-      if (ir_ambiguous_names.count(duckdb_table_name)) {
-        std::cerr << "[AQP-JIT-TRACE]   WARNING: ambiguous table \""
-                  << duckdb_table_name
-                  << "\" (proj path) → skipping JIT for this filter\n";
-        // schema_prelim stays empty, filter_ir stays nullptr → JIT skipped
-        // below
-      } else {
+      {
 
         // Build schema by tracing each projection expression back to scan col
         for (size_t i = 0; i < proj.select_list.size(); i++) {
@@ -1810,7 +1742,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
           }
           filter_ir = best;
         }
-      } // end else (not ambiguous) for proj path
+      } // end proj path schema/filter matching
     } else {
       // Unknown child type (HASH_JOIN result, etc.): skip JIT.
       // schema_prelim stays empty → HasApplicablePredicate won't match → JIT
