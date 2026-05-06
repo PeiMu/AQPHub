@@ -14,6 +14,8 @@
 #include <unordered_set>
 
 #ifdef HAVE_LLVM
+#include "duckdb/execution/operator/aggregate/physical_ungrouped_aggregate.hpp"
+#include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/execution/operator/filter/physical_filter.hpp"
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
@@ -21,6 +23,7 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "jit/aqp_jit_hashtable.h"
@@ -2066,33 +2069,93 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
       auto &child = op.children[0].get();
       std::vector<aqp_jit::ColSchema> in_schema;
 
-      // Build schema from the IR aggregate node's child target_list.
-      // The agg_fns reference IR table/column indices, so the schema must
-      // use those same indices (not sequential col_idx with UINT_MAX table).
-      const ir_sql_converter::AQPStmt *agg_child_ir = nullptr;
-      if (!agg_ir->children.empty())
-        agg_child_ir = agg_ir->children[0].get();
+      // TODO: This mapping layer is a pragmatic fix for the logical-IR to
+      // physical-plan column index gap.  The AQP-IR carries column references
+      // from the logical plan (before DuckDB optimisation), but the physical
+      // child's output columns may be reordered or pruned.  This will be
+      // natively resolved once we add an engine-specific physical-level IR
+      // that captures post-optimisation column layout directly.
 
-      if (agg_child_ir && !agg_child_ir->target_list.empty()) {
-        // Use IR child's target_list for table/column indices
-        for (size_t i = 0;
-             i < agg_child_ir->target_list.size() && i < child.types.size();
-             i++) {
-          aqp_jit::ColSchema cs;
-          cs.table_idx = agg_child_ir->target_list[i]->GetTableIndex();
-          cs.col_idx = agg_child_ir->target_list[i]->GetColumnIndex();
-          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
-          in_schema.push_back(cs);
-        }
+      auto *agg =
+          dynamic_cast<const ir_sql_converter::SimplestAggregate *>(agg_ir);
+
+      // Get physical aggregate expressions.  Each contains a
+      // BoundReferenceExpression child that directly references the child
+      // column position - no fragile tree tracing needed.
+      duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> *phys_aggs = nullptr;
+      if (op.type == PhysicalOperatorType::UNGROUPED_AGGREGATE) {
+        phys_aggs =
+            &static_cast<duckdb::PhysicalUngroupedAggregate &>(op).aggregates;
       } else {
-        // Fallback: use target_list from agg node itself
-        for (size_t i = 0;
-             i < agg_ir->target_list.size() && i < child.types.size(); i++) {
-          aqp_jit::ColSchema cs;
-          cs.table_idx = agg_ir->target_list[i]->GetTableIndex();
-          cs.col_idx = agg_ir->target_list[i]->GetColumnIndex();
-          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
-          in_schema.push_back(cs);
+        phys_aggs =
+            &static_cast<duckdb::PhysicalHashAggregate &>(op)
+                 .grouped_aggregate_data.aggregates;
+      }
+
+      if (!agg || !phys_aggs) {
+        goto next_agg_op;
+      }
+
+      // Initialize in_schema with default entries for all child columns.
+      for (size_t i = 0; i < child.types.size(); i++) {
+        aqp_jit::ColSchema cs;
+        cs.table_idx = 0;
+        cs.col_idx = static_cast<unsigned int>(i);
+        cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
+        in_schema.push_back(cs);
+      }
+
+      // Stamp aggregate input columns with IR (table_idx, col_idx) by
+      // reading the physical aggregate expression's child reference.
+      {
+        bool all_resolved = true;
+        if (phys_aggs->size() != agg->agg_fns.size()) {
+          all_resolved = false;
+        } else {
+          for (size_t j = 0; j < agg->agg_fns.size(); j++) {
+            const auto &ir_fn = agg->agg_fns[j];
+            if (ir_fn.second ==
+                ir_sql_converter::SimplestAggFnType::CountStar) {
+              continue; // COUNT(*) has no column reference
+            }
+            auto &phys_expr = (*phys_aggs)[j];
+            auto &aggr =
+                phys_expr->Cast<duckdb::BoundAggregateExpression>();
+            if (aggr.children.empty()) {
+              all_resolved = false;
+              break;
+            }
+            auto &child_expr = *aggr.children[0];
+            if (child_expr.GetExpressionClass() !=
+                duckdb::ExpressionClass::BOUND_REF) {
+              all_resolved = false;
+              break;
+            }
+            auto &ref =
+                child_expr.Cast<duckdb::BoundReferenceExpression>();
+            size_t child_col_pos = ref.index;
+            if (child_col_pos >= in_schema.size()) {
+              all_resolved = false;
+              break;
+            }
+            in_schema[child_col_pos].table_idx =
+                ir_fn.first->GetTableIndex();
+            in_schema[child_col_pos].col_idx =
+                ir_fn.first->GetColumnIndex();
+            // JIT aggregate only supports numeric types (state is 8 bytes).
+            // VARCHAR aggregates require string_t state, skip to interpreter.
+            if (in_schema[child_col_pos].dtype == AQP_DTYPE_VARCHAR) {
+              all_resolved = false;
+              break;
+            }
+          }
+        }
+        if (!all_resolved) {
+#ifndef NDEBUG
+          std::cerr << "[AQP-JIT] agg: skipping, unsupported dtype "
+                       "(VARCHAR or unresolved column)\n";
+#endif
+          goto next_agg_op;
         }
       }
 
@@ -2172,13 +2235,19 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 #endif
       }
     }
+  next_agg_op:; // label for agg skip (goto target)
   }
 
   // Level 2: Compile hash join operators when AQPJIT_OPERATOR is set.
   // Like aggregate, compiled for Level 3 pipeline fusion. DuckDB's
   // JoinHashTable handles Level 2 execution (parallel build, spilling, outer
   // join state, etc.).
-  if ((jit_flags_ & AQP_JIT_OPERATOR) &&
+  //! DuckDB's join execution is complex (parallel
+  //! build, spilling, outer join state, bloom filters). The JIT
+  //! functions are stored in op_fns/pipeline_fns but DuckDB's
+  //! PhysicalHashJoin still runs its own C++ hash join implementation.
+  //! For DuckDB, we only jit it for pipeline-level
+  if ((jit_flags_ & AQP_JIT_PIPELINE) &&
       op.type == PhysicalOperatorType::HASH_JOIN) {
     uint64_t eid = duckdb::ExpressionID(op);
 #ifndef NDEBUG
