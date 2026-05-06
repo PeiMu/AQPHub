@@ -441,6 +441,13 @@ struct IrToLlvmCompiler::Impl {
         {es.intern("aqp_hash"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_hash),
                             JITSymbolFlags::Exported)},
+        // libc symbols needed by compiled code
+        {es.intern("memcpy"),
+         JITEvaluatedSymbol(pointerToJITTargetAddress((void *)&memcpy),
+                            JITSymbolFlags::Exported)},
+        {es.intern("memset"),
+         JITEvaluatedSymbol(pointerToJITTargetAddress((void *)&memset),
+                            JITSymbolFlags::Exported)},
     }));
   }
 
