@@ -1641,10 +1641,12 @@ BuildFilterFunctionSIMD(LLVMContext &llctx, Module &mod,
         Value *typed_ptr =
             b.CreateBitCast(data_ptr, PointerType::getUnqual(i32));
         auto *vty = FixedVectorType::get(i32, VW);
-        data_vec = b.CreateLoad(vty,
-                                b.CreateBitCast(b.CreateGEP(i32, typed_ptr, vi),
-                                                PointerType::getUnqual(vty)),
-                                "data_vec");
+        auto *load = b.CreateAlignedLoad(
+            vty,
+            b.CreateBitCast(b.CreateGEP(i32, typed_ptr, vi),
+                            PointerType::getUnqual(vty)),
+            Align(4), "data_vec");
+        data_vec = load;
         int32_t cv = cmp->const_var->GetIntValue();
         const_vec = ConstantVector::getSplat(
             ElementCount::getFixed(VW),
@@ -1653,10 +1655,12 @@ BuildFilterFunctionSIMD(LLVMContext &llctx, Module &mod,
         Value *typed_ptr =
             b.CreateBitCast(data_ptr, PointerType::getUnqual(i64));
         auto *vty = FixedVectorType::get(i64, VW);
-        data_vec = b.CreateLoad(vty,
-                                b.CreateBitCast(b.CreateGEP(i64, typed_ptr, vi),
-                                                PointerType::getUnqual(vty)),
-                                "data_vec");
+        auto *load = b.CreateAlignedLoad(
+            vty,
+            b.CreateBitCast(b.CreateGEP(i64, typed_ptr, vi),
+                            PointerType::getUnqual(vty)),
+            Align(8), "data_vec");
+        data_vec = load;
         int64_t cv = (int64_t)cmp->const_var->GetIntValue();
         const_vec =
             ConstantVector::getSplat(ElementCount::getFixed(VW),
@@ -1666,10 +1670,12 @@ BuildFilterFunctionSIMD(LLVMContext &llctx, Module &mod,
         Value *typed_ptr =
             b.CreateBitCast(data_ptr, PointerType::getUnqual(f32));
         auto *vty = FixedVectorType::get(f32, VW);
-        data_vec = b.CreateLoad(vty,
-                                b.CreateBitCast(b.CreateGEP(f32, typed_ptr, vi),
-                                                PointerType::getUnqual(vty)),
-                                "data_vec");
+        auto *load = b.CreateAlignedLoad(
+            vty,
+            b.CreateBitCast(b.CreateGEP(f32, typed_ptr, vi),
+                            PointerType::getUnqual(vty)),
+            Align(4), "data_vec");
+        data_vec = load;
         float cv = cmp->const_var->GetFloatValue();
         const_vec = ConstantVector::getSplat(ElementCount::getFixed(VW),
                                              ConstantFP::get(f32, (double)cv));
@@ -1679,10 +1685,12 @@ BuildFilterFunctionSIMD(LLVMContext &llctx, Module &mod,
         Value *typed_ptr =
             b.CreateBitCast(data_ptr, PointerType::getUnqual(f64));
         auto *vty = FixedVectorType::get(f64, VW);
-        data_vec = b.CreateLoad(vty,
-                                b.CreateBitCast(b.CreateGEP(f64, typed_ptr, vi),
-                                                PointerType::getUnqual(vty)),
-                                "data_vec");
+        auto *load = b.CreateAlignedLoad(
+            vty,
+            b.CreateBitCast(b.CreateGEP(f64, typed_ptr, vi),
+                            PointerType::getUnqual(vty)),
+            Align(8), "data_vec");
+        data_vec = load;
         float cv = cmp->const_var->GetFloatValue();
         const_vec = ConstantVector::getSplat(ElementCount::getFixed(VW),
                                              ConstantFP::get(f64, (double)cv));
@@ -2105,9 +2113,11 @@ BuildFilterFunctionHybrid(LLVMContext &llctx, Module &mod,
       Value *typed_ptr =
           b.CreateBitCast(col_data[col_idx], PointerType::getUnqual(i32));
       auto *vty = FixedVectorType::get(i32, VW);
-      data_vec =
-          b.CreateLoad(vty, b.CreateBitCast(b.CreateGEP(i32, typed_ptr, vi),
-                                            PointerType::getUnqual(vty)));
+      data_vec = b.CreateAlignedLoad(
+          vty,
+          b.CreateBitCast(b.CreateGEP(i32, typed_ptr, vi),
+                          PointerType::getUnqual(vty)),
+          Align(4));
       int32_t cv = cmp->const_var->GetIntValue();
       const_vec = ConstantVector::getSplat(
           ElementCount::getFixed(VW),
@@ -2116,9 +2126,11 @@ BuildFilterFunctionHybrid(LLVMContext &llctx, Module &mod,
       Value *typed_ptr =
           b.CreateBitCast(col_data[col_idx], PointerType::getUnqual(i64));
       auto *vty = FixedVectorType::get(i64, VW);
-      data_vec =
-          b.CreateLoad(vty, b.CreateBitCast(b.CreateGEP(i64, typed_ptr, vi),
-                                            PointerType::getUnqual(vty)));
+      data_vec = b.CreateAlignedLoad(
+          vty,
+          b.CreateBitCast(b.CreateGEP(i64, typed_ptr, vi),
+                          PointerType::getUnqual(vty)),
+          Align(8));
       int64_t cv = (int64_t)cmp->const_var->GetIntValue();
       const_vec =
           ConstantVector::getSplat(ElementCount::getFixed(VW),
@@ -2128,9 +2140,11 @@ BuildFilterFunctionHybrid(LLVMContext &llctx, Module &mod,
       Value *typed_ptr =
           b.CreateBitCast(col_data[col_idx], PointerType::getUnqual(f32));
       auto *vty = FixedVectorType::get(f32, VW);
-      data_vec =
-          b.CreateLoad(vty, b.CreateBitCast(b.CreateGEP(f32, typed_ptr, vi),
-                                            PointerType::getUnqual(vty)));
+      data_vec = b.CreateAlignedLoad(
+          vty,
+          b.CreateBitCast(b.CreateGEP(f32, typed_ptr, vi),
+                          PointerType::getUnqual(vty)),
+          Align(4));
       float cv = cmp->const_var->GetFloatValue();
       const_vec = ConstantVector::getSplat(ElementCount::getFixed(VW),
                                            ConstantFP::get(f32, (double)cv));
@@ -2140,9 +2154,11 @@ BuildFilterFunctionHybrid(LLVMContext &llctx, Module &mod,
       Value *typed_ptr =
           b.CreateBitCast(col_data[col_idx], PointerType::getUnqual(f64));
       auto *vty = FixedVectorType::get(f64, VW);
-      data_vec =
-          b.CreateLoad(vty, b.CreateBitCast(b.CreateGEP(f64, typed_ptr, vi),
-                                            PointerType::getUnqual(vty)));
+      data_vec = b.CreateAlignedLoad(
+          vty,
+          b.CreateBitCast(b.CreateGEP(f64, typed_ptr, vi),
+                          PointerType::getUnqual(vty)),
+          Align(8));
       float cv = cmp->const_var->GetFloatValue();
       const_vec = ConstantVector::getSplat(ElementCount::getFixed(VW),
                                            ConstantFP::get(f64, (double)cv));
@@ -2284,32 +2300,14 @@ BuildFilterFunctionHybrid(LLVMContext &llctx, Module &mod,
 
   // ===== PHASE 2: Scalar VARCHAR predicates on survivors =====
   // Iterate sel[0..phase1_count), evaluate VARCHAR exprs, compact in-place.
+  // phase2_bb has exactly one predecessor (tail_bb).  toc already carries the
+  // correct survivor count: it is initialized from voc when entering tail_bb,
+  // then accumulated through the scalar tail loop.
   b.SetInsertPoint(phase2_bb);
-  PHINode *phase1_count = b.CreatePHI(i64, 2, "phase1_count");
-  phase1_count->addIncoming(
-      voc, vec_loop_bb); // if tail was empty (vec_limit == nrows)
-  phase1_count->addIncoming(toc, tail_bb);
+  Value *phase1_count = toc;
 
-  PHINode *p2i = b.CreatePHI(i64, 2, "p2i");
-  PHINode *p2oc = b.CreatePHI(i64, 2, "p2oc");
-  p2i->addIncoming(ConstantInt::get(i64, 0),
-                   phase2_bb->getSinglePredecessor()
-                       ? phase2_bb->getSinglePredecessor()
-                       : tail_bb);
-  p2oc->addIncoming(ConstantInt::get(i64, 0),
-                    phase2_bb->getSinglePredecessor()
-                        ? phase2_bb->getSinglePredecessor()
-                        : tail_bb);
-
-  // Actually, phase2_bb has two predecessors (vec_loop and tail_bb).
-  // Need a separate loop header.
-  // Let me restructure: phase2_bb is just an entry, then jump to p2_loop.
   BasicBlock *p2_loop_bb = BasicBlock::Create(llctx, "p2_loop", fn);
   b.CreateBr(p2_loop_bb);
-
-  // Remove the broken PHIs from phase2_bb and use p2_loop_bb instead
-  p2i->eraseFromParent();
-  p2oc->eraseFromParent();
 
   b.SetInsertPoint(p2_loop_bb);
   PHINode *p2i2 = b.CreatePHI(i64, 2, "p2i");
@@ -2643,39 +2641,42 @@ static Function *BuildPipelineFunctionSIMD(
 
     if (dtype == AQP_DTYPE_INT32 || dtype == AQP_DTYPE_DATE) {
       auto *vty = FixedVectorType::get(i32, VW);
-      data_vec = b.CreateLoad(
+      data_vec = b.CreateAlignedLoad(
           vty,
           b.CreateBitCast(
               b.CreateGEP(
                   i32, b.CreateBitCast(data_ptr, PointerType::getUnqual(i32)),
                   vi),
-              PointerType::getUnqual(vty)));
+              PointerType::getUnqual(vty)),
+          Align(4));
       const_vec = ConstantVector::getSplat(
           ElementCount::getFixed(VW),
           ConstantInt::get(
               i32, (uint64_t)(uint32_t)cmp->const_var->GetIntValue(), true));
     } else if (dtype == AQP_DTYPE_INT64) {
       auto *vty = FixedVectorType::get(i64, VW);
-      data_vec = b.CreateLoad(
+      data_vec = b.CreateAlignedLoad(
           vty,
           b.CreateBitCast(
               b.CreateGEP(
                   i64, b.CreateBitCast(data_ptr, PointerType::getUnqual(i64)),
                   vi),
-              PointerType::getUnqual(vty)));
+              PointerType::getUnqual(vty)),
+          Align(8));
       const_vec = ConstantVector::getSplat(
           ElementCount::getFixed(VW),
           ConstantInt::get(i64, (uint64_t)cmp->const_var->GetIntValue(), true));
     } else if (dtype == AQP_DTYPE_DOUBLE) {
       Type *f64 = Type::getDoubleTy(llctx);
       auto *vty = FixedVectorType::get(f64, VW);
-      data_vec = b.CreateLoad(
+      data_vec = b.CreateAlignedLoad(
           vty,
           b.CreateBitCast(
               b.CreateGEP(
                   f64, b.CreateBitCast(data_ptr, PointerType::getUnqual(f64)),
                   vi),
-              PointerType::getUnqual(vty)));
+              PointerType::getUnqual(vty)),
+          Align(8));
       const_vec = ConstantVector::getSplat(
           ElementCount::getFixed(VW),
           ConstantFP::get(f64, cmp->const_var->GetFloatValue()));
@@ -3335,7 +3336,9 @@ static Function *BuildAggUpdateFunctionSIMD(
                                        PointerType::getUnqual(va.elem_ty));
     Value *vec_ptr = b.CreateBitCast(b.CreateGEP(va.elem_ty, typed_ptr, vi),
                                      PointerType::getUnqual(va.vty));
-    Value *data_vec = b.CreateLoad(va.vty, vec_ptr, "dvec");
+    unsigned elem_bytes = va.elem_ty->getPrimitiveSizeInBits() / 8;
+    Value *data_vec =
+        b.CreateAlignedLoad(va.vty, vec_ptr, Align(elem_bytes), "dvec");
 
     switch (op.agg_type) {
     case 3: // SUM
