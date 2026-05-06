@@ -49,6 +49,25 @@ struct ColSchema {
   int32_t dtype; // AQP_DTYPE_* constant
 };
 
+// Aggregate JIT disabled: JOB has no aggregate-heavy queries (only MIN on
+// VARCHAR).  Saves compilation time.  Re-enable with -DDISABLE_AGG_JIT=0.
+#ifndef DISABLE_AGG_JIT
+#define DISABLE_AGG_JIT 1
+#endif
+
+#if !DISABLE_AGG_JIT
+/**
+ * Aggregate operation descriptor — built from the physical plan.
+ * agg_type: 1=MIN, 2=MAX, 3=SUM, 4=AVG, 5=COUNT, 6=CountStar
+ */
+struct AggOp {
+  int col_idx;           // input chunk column index (-1 for COUNT*)
+  int32_t agg_type;
+  unsigned state_offset; // byte offset in agg_state
+  int32_t dtype;         // AQP_DTYPE_* of the column
+};
+#endif // !DISABLE_AGG_JIT
+
 /**
  * IrToLlvmCompiler
  *
@@ -130,6 +149,7 @@ public:
   void *CompileHashProbe(const ir_sql_converter::AQPStmt &join_node,
                          const std::vector<ColSchema> &probe_schema);
 
+#if !DISABLE_AGG_JIT
   /**
    * Level 2: Compile an aggregate operator (ungrouped).
    * Generates a function that loops over the input chunk and updates
@@ -149,6 +169,15 @@ public:
                          const std::vector<ColSchema> &in_schema);
 
   /**
+   * Direct aggregate compilation — builds from AggOp descriptors without IR.
+   * Same signature and state layout as CompileAggUpdate, but resolves columns
+   * entirely from the physical plan.  Preferred over CompileAggUpdate.
+   */
+  void *CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops,
+                               unsigned total_state_size);
+#endif // !DISABLE_AGG_JIT
+
+  /**
    * Level 3: Compile a fused pipeline (Filter → Projection).
    * Generates a single row loop that evaluates filter predicates and,
    * for matching rows, copies projected columns to the output chunk.
@@ -165,6 +194,7 @@ public:
                                 const ir_sql_converter::AQPStmt *proj_node,
                                 const std::vector<ColSchema> &in_schema);
 
+#if !DISABLE_AGG_JIT
   /**
    * Level 3: Compile Filter + Aggregate fusion.
    * Fused loop: for each row, evaluate filter; if match, update accumulator.
@@ -176,6 +206,7 @@ public:
   void *CompileFilterAggFusion(const ir_sql_converter::AQPStmt *filter_node,
                                const ir_sql_converter::AQPStmt *agg_node,
                                const std::vector<ColSchema> &in_schema);
+#endif // !DISABLE_AGG_JIT
 
   /**
    * Level 3: Compile Filter + HashBuild fusion.

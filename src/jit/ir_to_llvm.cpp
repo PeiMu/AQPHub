@@ -1937,12 +1937,11 @@ BuildFilterFunctionSIMD(LLVMContext &llctx, Module &mod,
 
   // Exit
   b.SetInsertPoint(exit_bb);
-  PHINode *final_oc = b.CreatePHI(i64, 2, "final_oc");
-  final_oc->addIncoming(voc, vec_loop_bb); // if vec_limit == 0
-  final_oc->addIncoming(toc, tail_bb);     // normal path
+  // exit_bb has one predecessor (tail_bb), so no PHI needed.
+  // toc already carries the final row count (initialized from voc, accumulated in tail).
   Value *sel_cnt_ptr = b.CreateStructGEP(SelViewTy, sel_arg, 1);
-  b.CreateStore(b.CreateTrunc(final_oc, i32), sel_cnt_ptr);
-  b.CreateRet(final_oc);
+  b.CreateStore(b.CreateTrunc(toc, i32), sel_cnt_ptr);
+  b.CreateRet(toc);
 
   return fn;
 }
@@ -3133,13 +3132,15 @@ static Function *BuildPipelineFunction(
   return fn;
 }
 
-// AggOp descriptor (used by scalar and SIMD aggregate builders)
-struct AggOp {
-  int col_idx;           // input chunk column index (-1 for COUNT*)
-  int32_t agg_type;      // SimplestAggFnType cast to int32_t
-  unsigned state_offset; // byte offset in agg_state
-  int32_t dtype;         // AQP_DTYPE_* of the column
-};
+// Aggregate JIT disabled: JOB has no aggregate-heavy queries (only MIN on
+// VARCHAR columns).  Saves ~400 lines of LLVM codegen from compilation.
+// Re-enable with -DDISABLE_AGG_JIT=0 for TPC-H or other agg-heavy benchmarks.
+#ifndef DISABLE_AGG_JIT
+#define DISABLE_AGG_JIT 1
+#endif
+#if !DISABLE_AGG_JIT
+// AggOp is now in the public header (aqp_jit::AggOp)
+using aqp_jit::AggOp;
 
 // ---------------------------------------------------------------------------
 static bool AllAggOpsSIMDFriendly(const std::vector<AggOp> &ops) {
@@ -3552,6 +3553,7 @@ static Function *BuildAggUpdateFunctionSIMD(
 
   return fn;
 }
+#endif // !DISABLE_AGG_JIT (AllAggOpsSIMDFriendly + BuildAggUpdateFunctionSIMD)
 
 // Emit FNV-1a hash computation as inline LLVM IR.
 // key_width must be known at compile time so the loop is fully unrolled.
@@ -4096,6 +4098,7 @@ static Function *BuildBatchHashProbeFunction(
   return fn;
 }
 
+#if !DISABLE_AGG_JIT
 // ---------------------------------------------------------------------------
 // Build an ungrouped aggregate update function:
 //   void aqp_agg_<id>(AQPChunkView* in, i8* agg_state)
@@ -4372,6 +4375,7 @@ static Function *BuildAggUpdateFunction(LLVMContext &llctx, Module &mod,
 
   return fn;
 }
+#endif // !DISABLE_AGG_JIT (BuildAggUpdateFunction)
 
 // ---------------------------------------------------------------------------
 // Optimise the module with the specified optimization level
@@ -4716,6 +4720,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   return jitTargetAddressToFunction<AQPOperatorFn>(sym->getAddress());
 }
 
+#if !DISABLE_AGG_JIT
 void *
 IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
                                    const std::vector<ColSchema> &in_schema) {
@@ -4846,6 +4851,90 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
 
   return reinterpret_cast<void *>(sym->getAddress());
 }
+
+void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops,
+                                                unsigned total_state_size) {
+  if (agg_ops.empty())
+    return nullptr;
+
+  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+  std::string fn_name = "aqp_agg_d" + std::to_string(fn_id);
+
+  // Build a minimal schema for BuildAggUpdateFunction (it only uses
+  // col_idx via AggOp, the schema entries are unused in the loop body).
+  std::vector<ColSchema> dummy_schema;
+  for (const auto &op : agg_ops) {
+    if (op.col_idx >= 0 && (size_t)op.col_idx >= dummy_schema.size())
+      dummy_schema.resize(op.col_idx + 1);
+  }
+
+  auto ctx = std::make_unique<LLVMContext>();
+  auto mod = std::make_unique<Module>("aqp_agg_d_mod", *ctx);
+
+  Function *fn = nullptr;
+  bool used_simd = false;
+  if (use_simd_ && impl_->vec_width > 1 && AllAggOpsSIMDFriendly(agg_ops)) {
+    fn = BuildAggUpdateFunctionSIMD(*ctx, *mod, fn_name, agg_ops, total_state_size,
+                                    dummy_schema, impl_->vec_width);
+    if (fn) {
+      used_simd = true;
+      std::cerr << "[AQP-JIT] using SIMD aggregate (VW=" << impl_->vec_width
+                << ")\n";
+    }
+  }
+  if (!fn) {
+    fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, total_state_size,
+                                dummy_schema);
+  }
+  if (!fn)
+    return nullptr;
+  SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
+
+  std::string err;
+  raw_string_ostream es(err);
+  if (verifyFunction(*fn, &es)) {
+    std::cerr << "[AQP-JIT] verifyFunction failed (agg direct): " << es.str()
+              << "\n";
+    if (used_simd) {
+      fn->eraseFromParent();
+      fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, total_state_size,
+                                  dummy_schema);
+      if (!fn)
+        return nullptr;
+      SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
+      err.clear();
+      if (verifyFunction(*fn, &es)) {
+        std::cerr << "[AQP-JIT] scalar agg fallback also failed: " << es.str()
+                  << "\n";
+        return nullptr;
+      }
+    } else {
+      return nullptr;
+    }
+  }
+
+  OptimiseModule(*mod, opt_level_);
+
+  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+    logAllUnhandledErrors(std::move(e), errs());
+    return nullptr;
+  }
+
+  auto sym = impl_->jit->lookup(fn_name);
+  if (!sym) {
+    logAllUnhandledErrors(sym.takeError(), errs());
+    return nullptr;
+  }
+
+  std::cerr << "[AQP-JIT] compiled agg fn=" << fn_name
+            << "  ops=" << agg_ops.size() << "  state_bytes=" << total_state_size
+            << "\n";
+
+  return reinterpret_cast<void *>(sym->getAddress());
+}
+
+#endif // !DISABLE_AGG_JIT
 
 void *
 IrToLlvmCompiler::CompileHashBuild(const AQPStmt &hash_node,
@@ -5215,6 +5304,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
 //   void fn(AQPChunkView *in, void *agg_state)
 // For each row: evaluate filter; if match, update accumulators.
 // ---------------------------------------------------------------------------
+#if !DISABLE_AGG_JIT
 void *IrToLlvmCompiler::CompileFilterAggFusion(
     const AQPStmt *filter_node, const AQPStmt *agg_node,
     const std::vector<ColSchema> &in_schema) {
@@ -5448,6 +5538,7 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
 
   return reinterpret_cast<void *>(sym->getAddress());
 }
+#endif // !DISABLE_AGG_JIT
 
 // ---------------------------------------------------------------------------
 // Filter + HashBuild fusion: one loop, no intermediate DataChunk.
@@ -6365,11 +6456,15 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
     }
 
     // Also compile aggregate if present
+#if !DISABLE_AGG_JIT
     if (seg.agg_node) {
       void *agg_fn = CompileAggUpdate(*seg.agg_node, in_schema);
       if (agg_fn)
         std::cerr << "[AQP-JIT] sub-plan segment[" << si
                   << "]: compiled aggregate\n";
+#else
+    if (false) {
+#endif
     }
   }
 

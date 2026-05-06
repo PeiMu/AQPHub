@@ -1997,180 +1997,138 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     }
   }
 
-  // Level 2: Compile aggregate operators when AQPJIT_OPERATOR is set.
-  // Ungrouped aggregates: dispatched at Level 2 (compiled loop is faster than
-  // DuckDB's generic ExpressionExecutor). Grouped: compiled for Level 3 only.
+  // Level 2: Aggregate JIT — disabled for JOB benchmark.
+  // JOB uses only MIN on VARCHAR columns (name, title, info); no query has
+  // all-numeric aggregates.  Enabling this wastes compile time for zero
+  // benefit.  Re-enable with -DDISABLE_AGG_JIT=0 for benchmarks like TPC-H
+  // that have SUM/COUNT/AVG on numeric columns.
+#ifndef DISABLE_AGG_JIT
+#define DISABLE_AGG_JIT 1
+#endif
+#if !DISABLE_AGG_JIT
+  // Build AggOp directly from the physical plan — no IR matching needed.
   if ((jit_flags_ & AQP_JIT_OPERATOR) &&
-      (op.type == PhysicalOperatorType::HASH_GROUP_BY ||
-       op.type == PhysicalOperatorType::UNGROUPED_AGGREGATE)) {
+      op.type == PhysicalOperatorType::UNGROUPED_AGGREGATE &&
+      !op.children.empty()) {
     uint64_t eid = duckdb::ExpressionID(op);
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT-TRACE] AGGREGATE eid=0x" << std::hex << eid
               << std::dec << " type=" << (int)op.type << "\n";
 #endif
 
-    const ir_sql_converter::AQPStmt *agg_ir = FindFirstAggregateNode(&ir);
-    if (agg_ir && !op.children.empty()) {
-      auto &child = op.children[0].get();
-      std::vector<aqp_jit::ColSchema> in_schema;
+    auto &child = op.children[0].get();
+    auto &phys_aggs =
+        static_cast<duckdb::PhysicalUngroupedAggregate &>(op).aggregates;
 
-      // TODO: This mapping layer is a pragmatic fix for the logical-IR to
-      // physical-plan column index gap.  The AQP-IR carries column references
-      // from the logical plan (before DuckDB optimisation), but the physical
-      // child's output columns may be reordered or pruned.  This will be
-      // natively resolved once we add an engine-specific physical-level IR
-      // that captures post-optimisation column layout directly.
+    // Build AggOp descriptors from physical aggregate expressions
+    std::vector<aqp_jit::AggOp> agg_ops;
+    unsigned state_offset = 0;
+    bool all_ok = true;
 
-      auto *agg =
-          dynamic_cast<const ir_sql_converter::SimplestAggregate *>(agg_ir);
+    for (auto &phys_expr : phys_aggs) {
+      auto &aggr = phys_expr->Cast<duckdb::BoundAggregateExpression>();
+      aqp_jit::AggOp op;
+      op.state_offset = state_offset;
 
-      // Get physical aggregate expressions.  Each contains a
-      // BoundReferenceExpression child that directly references the child
-      // column position - no fragile tree tracing needed.
-      duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> *phys_aggs =
-          nullptr;
-      if (op.type == PhysicalOperatorType::UNGROUPED_AGGREGATE) {
-        phys_aggs =
-            &static_cast<duckdb::PhysicalUngroupedAggregate &>(op).aggregates;
+      const auto &fn_name = aggr.function.name;
+      if (fn_name == "sum") {
+        op.agg_type = 3;
+      } else if (fn_name == "min") {
+        op.agg_type = 1;
+      } else if (fn_name == "max") {
+        op.agg_type = 2;
+      } else if (fn_name == "count_star") {
+        op.agg_type = 6;
+      } else if (fn_name == "count") {
+        op.agg_type = 5;
+      } else if (fn_name == "avg") {
+        op.agg_type = 4;
       } else {
-        phys_aggs = &static_cast<duckdb::PhysicalHashAggregate &>(op)
-                         .grouped_aggregate_data.aggregates;
+        all_ok = false;
+        break;
       }
 
-      if (agg && phys_aggs) {
-        // Initialize in_schema with default entries for all child columns.
-        for (size_t i = 0; i < child.types.size(); i++) {
-          aqp_jit::ColSchema cs;
-          cs.table_idx = 0;
-          cs.col_idx = static_cast<unsigned int>(i);
-          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
-          in_schema.push_back(cs);
-        }
-
-        // Stamp aggregate input columns with IR (table_idx, col_idx) by
-        // reading the physical aggregate expression's child reference.
-        bool all_resolved = true;
-        if (phys_aggs->size() != agg->agg_fns.size()) {
-          all_resolved = false;
-        } else {
-          for (size_t j = 0; j < agg->agg_fns.size(); j++) {
-            const auto &ir_fn = agg->agg_fns[j];
-            if (ir_fn.second ==
-                ir_sql_converter::SimplestAggFnType::CountStar) {
-              continue; // COUNT(*) has no column reference
-            }
-            auto &phys_expr = (*phys_aggs)[j];
-            auto &aggr = phys_expr->Cast<duckdb::BoundAggregateExpression>();
-            if (aggr.children.empty()) {
-              all_resolved = false;
-              break;
-            }
-            auto &child_expr = *aggr.children[0];
-            if (child_expr.GetExpressionClass() !=
-                duckdb::ExpressionClass::BOUND_REF) {
-              all_resolved = false;
-              break;
-            }
-            auto &ref = child_expr.Cast<duckdb::BoundReferenceExpression>();
-            size_t child_col_pos = ref.index;
-            if (child_col_pos >= in_schema.size()) {
-              all_resolved = false;
-              break;
-            }
-            in_schema[child_col_pos].table_idx = ir_fn.first->GetTableIndex();
-            in_schema[child_col_pos].col_idx = ir_fn.first->GetColumnIndex();
-            // JIT aggregate only supports numeric types (state is 8 bytes).
-            // VARCHAR aggregates require string_t state, skip to interpreter.
-            if (in_schema[child_col_pos].dtype == AQP_DTYPE_VARCHAR) {
-              all_resolved = false;
-              break;
-            }
-          }
-        }
-
-        if (all_resolved) {
-#ifndef NDEBUG
-          std::cerr << "[AQP-JIT-TRACE] agg in_schema:";
-          for (size_t i = 0; i < in_schema.size(); i++)
-            std::cerr << " [" << i << "]=(t=" << in_schema[i].table_idx
-                      << ",c=" << in_schema[i].col_idx
-                      << ",d=" << in_schema[i].dtype << ")";
-          std::cerr << "\n";
-#endif
-
-          EnsureJITCompiler();
-          auto t_agg = chrono_tic();
-          void *raw_fn = jit_compiler_->CompileAggUpdate(*agg_ir, in_schema);
-          if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-            chrono_toc(&t_agg, "RegisterJIT::CompileAggUpdate\n", false);
-          }
-          if (raw_fn) {
-            // Compute state size (same logic as CompileAggUpdate)
-            uint32_t state_size = 0;
-            for (const auto &fp : agg->agg_fns) {
-              if (fp.second == ir_sql_converter::SimplestAggFnType::Average)
-                state_size += 16;
-              else
-                state_size += 8;
-            }
-
-            auto *ctx = GetClientContext();
-            if (!ctx->aqp_jit_context)
-              ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-            // Store in agg_fns (typed) + op_fns (for Level 3)
-            auto agg_fn =
-                reinterpret_cast<duckdb::AQPJITContext::AQPAggUpdateFn>(raw_fn);
-            ctx->aqp_jit_context->agg_fns[eid] = agg_fn;
-            ctx->aqp_jit_context->agg_state_sizes[eid] = state_size;
-            ctx->aqp_jit_context->op_fns[eid] =
-                reinterpret_cast<duckdb::AQPOperatorFn>(raw_fn);
-            ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
-
-            // Populate per-aggregate metadata for JIT state init/finalize
-            std::vector<duckdb::AQPJITContext::AQPAggMeta> meta_vec;
-            uint32_t meta_offset = 0;
-            for (const auto &fp : agg->agg_fns) {
-              duckdb::AQPJITContext::AQPAggMeta m;
-              m.agg_type = static_cast<int32_t>(fp.second);
-              m.state_offset = meta_offset;
-              if (fp.second == ir_sql_converter::SimplestAggFnType::CountStar) {
-                m.state_bytes = 8;
-                m.dtype = AQP_DTYPE_INT64;
-              } else if (fp.second ==
-                         ir_sql_converter::SimplestAggFnType::Average) {
-                m.state_bytes = 16;
-                m.dtype = AQP_DTYPE_DOUBLE;
-              } else {
-                m.state_bytes = 8;
-                m.dtype = AQP_DTYPE_OTHER;
-                for (size_t si = 0; si < in_schema.size(); si++) {
-                  if (in_schema[si].table_idx == fp.first->GetTableIndex() &&
-                      in_schema[si].col_idx == fp.first->GetColumnIndex()) {
-                    m.dtype = in_schema[si].dtype;
-                    break;
-                  }
-                }
-              }
-              meta_offset += m.state_bytes;
-              meta_vec.push_back(m);
-            }
-            ctx->aqp_jit_context->agg_meta[eid] = std::move(meta_vec);
-#ifndef NDEBUG
-            std::cerr << "[AQP-JIT] compiled agg eid=0x" << std::hex << eid
-                      << std::dec << " state_bytes=" << state_size
-                      << " ungrouped=" << (agg->groups.empty() ? "yes" : "no")
-                      << "\n";
-#endif
-          }
-        } else {
-#ifndef NDEBUG
-          std::cerr << "[AQP-JIT] agg: skipping, unsupported dtype "
-                       "(VARCHAR or unresolved column)\n";
-#endif
-        }
+      if (op.agg_type == 6) { // CountStar
+        op.col_idx = -1;
+        op.dtype = AQP_DTYPE_INT64;
+        op.state_offset = state_offset;
+        state_offset += 8;
+        agg_ops.push_back(op);
+        continue;
       }
+
+      if (aggr.children.empty()) {
+        all_ok = false;
+        break;
+      }
+      auto &child_expr = *aggr.children[0];
+      if (child_expr.GetExpressionClass() !=
+          duckdb::ExpressionClass::BOUND_REF) {
+        all_ok = false;
+        break;
+      }
+      auto &ref = child_expr.Cast<duckdb::BoundReferenceExpression>();
+      op.col_idx = static_cast<int>(ref.index);
+      if (op.col_idx < 0 ||
+          (size_t)op.col_idx >= child.types.size()) {
+        all_ok = false;
+        break;
+      }
+      op.dtype = duckdb::ToDtype(child.types[op.col_idx].InternalType());
+
+      // Only numeric types supported (state is 8 bytes, no string_t)
+      if (op.dtype == AQP_DTYPE_VARCHAR || op.dtype == AQP_DTYPE_OTHER) {
+        all_ok = false;
+        break;
+      }
+
+      state_offset += (op.agg_type == 4) ? 16 : 8;
+      agg_ops.push_back(op);
+    }
+
+    if (all_ok && !agg_ops.empty()) {
+      EnsureJITCompiler();
+      auto t_agg = chrono_tic();
+      void *raw_fn =
+          jit_compiler_->CompileAggUpdateDirect(agg_ops, state_offset);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_agg, "RegisterJIT::CompileAggUpdateDirect\n", false);
+      }
+      if (raw_fn) {
+        auto *ctx = GetClientContext();
+        if (!ctx->aqp_jit_context)
+          ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        auto agg_fn =
+            reinterpret_cast<duckdb::AQPJITContext::AQPAggUpdateFn>(raw_fn);
+        ctx->aqp_jit_context->agg_fns[eid] = agg_fn;
+        ctx->aqp_jit_context->agg_state_sizes[eid] = state_offset;
+        ctx->aqp_jit_context->op_fns[eid] =
+            reinterpret_cast<duckdb::AQPOperatorFn>(raw_fn);
+        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
+
+        // Build metadata directly from AggOp
+        std::vector<duckdb::AQPJITContext::AQPAggMeta> meta_vec;
+        for (const auto &aop : agg_ops) {
+          duckdb::AQPJITContext::AQPAggMeta m;
+          m.agg_type = aop.agg_type;
+          m.state_offset = aop.state_offset;
+          m.dtype = aop.dtype;
+          m.state_bytes = (aop.agg_type == 4) ? 16 : 8;
+          meta_vec.push_back(m);
+        }
+        ctx->aqp_jit_context->agg_meta[eid] = std::move(meta_vec);
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT] compiled agg eid=0x" << std::hex << eid
+                  << std::dec << " state_bytes=" << state_offset << "\n";
+#endif
+      }
+    } else if (!all_ok) {
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT] agg: skipping (VARCHAR or unsupported agg)\n";
+#endif
     }
   }
+#endif // !DISABLE_AGG_JIT
 
   // Level 2: Compile hash join operators when AQPJIT_OPERATOR is set.
   // Like aggregate, compiled for Level 3 pipeline fusion. DuckDB's
