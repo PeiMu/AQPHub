@@ -276,6 +276,8 @@ public:
 
   void SetBatchProbe(bool enable) { batch_probe_ = enable; }
 
+  void SetInlineHash(bool enable) { inline_hash_ = enable; }
+
   void SetCache(bool enable, const std::string &dir = "");
 
 private:
@@ -285,6 +287,7 @@ private:
   bool prefetch_ = false;
   int prefetch_distance_ = 8;
   bool batch_probe_ = false;
+  bool inline_hash_ = true;
   bool cache_enabled_ = false;
   std::string cache_dir_;
 

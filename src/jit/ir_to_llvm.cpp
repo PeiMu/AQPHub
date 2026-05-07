@@ -47,6 +47,8 @@ int aqp_ilike_match(const char *str, int32_t slen, const char *pat,
                     int32_t plen);
 int aqp_str_eq(const char *a, int32_t alen, const char *b, int32_t blen);
 int aqp_str_cmp(const char *a, int32_t alen, const char *b, int32_t blen);
+int aqp_str_contains(const char *str, int32_t slen, const char *pat,
+                     int32_t plen);
 int aqp_in_set_i32(int32_t val, const int32_t *values, int32_t n);
 int aqp_in_set_i64(int64_t val, const int64_t *values, int32_t n);
 int aqp_in_set_str(const char *str, int32_t slen, const char **ptrs,
@@ -392,6 +394,12 @@ struct IrToLlvmCompiler::Impl {
         {es.intern("aqp_str_cmp"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_cmp),
                             JITSymbolFlags::Exported)},
+        {es.intern("aqp_str_contains"),
+         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_contains),
+                            JITSymbolFlags::Exported)},
+        {es.intern("memcmp"),
+         JITEvaluatedSymbol(pointerToJITTargetAddress(::memcmp),
+                            JITSymbolFlags::Exported)},
         {es.intern("aqp_in_set_i32"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_i32),
                             JITSymbolFlags::Exported)},
@@ -618,6 +626,47 @@ static Value *LoadF64(CompileCtx &cc, Value *data_ptr) {
   return cc.b.CreateLoad(cc.f64(), elem, "val_f64");
 }
 
+enum LikePatternKind {
+  LIKE_COMPLEX = 0,
+  LIKE_EQUALITY,
+  LIKE_PREFIX,
+  LIKE_SUFFIX,
+  LIKE_CONTAINS
+};
+
+static LikePatternKind ClassifyLikePattern(const std::string &pattern,
+                                           std::string &literal_out) {
+  if (pattern.empty()) {
+    literal_out.clear();
+    return LIKE_EQUALITY;
+  }
+  if (pattern.find('_') != std::string::npos)
+    return LIKE_COMPLEX;
+
+  size_t leading = 0;
+  while (leading < pattern.size() && pattern[leading] == '%')
+    ++leading;
+  size_t trailing = 0;
+  while (trailing < pattern.size() &&
+         pattern[pattern.size() - 1 - trailing] == '%')
+    ++trailing;
+
+  size_t mid_start = leading, mid_end = pattern.size() - trailing;
+  for (size_t i = mid_start; i < mid_end; ++i)
+    if (pattern[i] == '%')
+      return LIKE_COMPLEX;
+
+  literal_out = pattern.substr(mid_start, mid_end - mid_start);
+
+  if (leading == 0 && trailing == 0)
+    return LIKE_EQUALITY;
+  if (leading == 0 && trailing > 0)
+    return LIKE_PREFIX;
+  if (leading > 0 && trailing == 0)
+    return LIKE_SUFFIX;
+  return LIKE_CONTAINS;
+}
+
 // Emit comparison for VarConstComparison node.
 // Returns i1 (true = row matches).
 static Value *EmitVarConst(CompileCtx &cc,
@@ -822,8 +871,7 @@ static Value *EmitVarConst(CompileCtx &cc,
         cc.i32(), {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
     Value *cmp_result;
     if (op == SimplestExprType::Equal || op == SimplestExprType::NotEqual) {
-      // Length pre-filter: if lengths differ, skip aqp_str_eq entirely.
-      // Most rows have different lengths → eliminates most memcmp calls.
+      // Length pre-filter: if lengths differ, skip byte comparison entirely.
       BasicBlock *pre_len_bb = cc.b.GetInsertBlock();
       BasicBlock *len_match_bb =
           BasicBlock::Create(cc.llctx, "len_match", pre_len_bb->getParent());
@@ -832,14 +880,19 @@ static Value *EmitVarConst(CompileCtx &cc,
       Value *len_eq = cc.b.CreateICmpEQ(slen, pat_len, "len_eq");
       cc.b.CreateCondBr(len_eq, len_match_bb, len_done_bb);
 
-      // Lengths match → call aqp_str_eq for byte comparison
+      // Lengths match → inline memcmp for byte comparison
       cc.b.SetInsertPoint(len_match_bb);
-      FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_str_eq", ft4);
-      Value *r = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
-      Value *m_match = cc.b.CreateICmpNE(r, cc.c32(0));
+      FunctionType *ft_memcmp = FunctionType::get(
+          cc.i32(), {cc.i8p(), cc.i8p(), cc.i64()}, false);
+      FunctionCallee memcmp_fn =
+          cc.mod.getOrInsertFunction("memcmp", ft_memcmp);
+      Value *pat_len_ext = cc.b.CreateSExt(pat_len, cc.i64());
+      Value *mcr =
+          cc.b.CreateCall(memcmp_fn, {char_ptr, pat_ptr, pat_len_ext});
+      Value *m_match = cc.b.CreateICmpEQ(mcr, cc.c32(0));
       cc.b.CreateBr(len_done_bb);
 
-      // Merge: lengths differ → false; lengths match → aqp_str_eq result
+      // Merge: lengths differ → false; lengths match → memcmp result
       cc.b.SetInsertPoint(len_done_bb);
       PHINode *m_phi = cc.b.CreatePHI(cc.i1(), 2, "streq_result");
       m_phi->addIncoming(ConstantInt::getFalse(cc.llctx), pre_len_bb);
@@ -848,17 +901,125 @@ static Value *EmitVarConst(CompileCtx &cc,
           (op == SimplestExprType::NotEqual) ? cc.b.CreateNot(m_phi) : m_phi;
     } else if (op == SimplestExprType::TextLike ||
                op == SimplestExprType::Text_Not_Like) {
+      std::string literal;
+      LikePatternKind kind = ClassifyLikePattern(pat, literal);
 #ifndef NDEBUG
+      static const char *kind_names[] = {"COMPLEX", "EQUALITY", "PREFIX",
+                                         "SUFFIX", "CONTAINS"};
       std::cerr << "[AQP-JIT-TRACE] EmitVarConst: compiling "
                 << (op == SimplestExprType::Text_Not_Like ? "Text_Not_Like"
                                                           : "TextLike")
-                << "\n";
+                << " pattern=\"" << pat << "\" → " << kind_names[kind] << "\n";
 #endif
-      FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_like_match", ft4);
-      Value *r = cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
-      Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
-      cmp_result =
-          (op == SimplestExprType::Text_Not_Like) ? cc.b.CreateNot(m) : m;
+
+      if (kind == LIKE_EQUALITY) {
+        // No wildcards: reuse aqp_str_eq with length pre-filter
+        BasicBlock *pre_bb = cc.b.GetInsertBlock();
+        Function *fn = pre_bb->getParent();
+        BasicBlock *match_bb =
+            BasicBlock::Create(cc.llctx, "like_eq_match", fn);
+        BasicBlock *done_bb =
+            BasicBlock::Create(cc.llctx, "like_eq_done", fn);
+        Value *len_eq = cc.b.CreateICmpEQ(slen, pat_len, "like_eq_len");
+        cc.b.CreateCondBr(len_eq, match_bb, done_bb);
+
+        cc.b.SetInsertPoint(match_bb);
+        FunctionCallee callee =
+            cc.mod.getOrInsertFunction("aqp_str_eq", ft4);
+        Value *r =
+            cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
+        Value *m_match = cc.b.CreateICmpNE(r, cc.c32(0));
+        cc.b.CreateBr(done_bb);
+
+        cc.b.SetInsertPoint(done_bb);
+        PHINode *phi = cc.b.CreatePHI(cc.i1(), 2, "like_eq_result");
+        phi->addIncoming(ConstantInt::getFalse(cc.llctx), pre_bb);
+        phi->addIncoming(m_match, match_bb);
+        cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(phi)
+                         : phi;
+
+      } else if (kind == LIKE_PREFIX || kind == LIKE_SUFFIX) {
+        // Inline memcmp IR — zero function-call overhead for simple patterns
+        Constant *lit_const = ConstantDataArray::getString(
+            cc.llctx, literal, /*AddNull=*/false);
+        GlobalVariable *lit_gv = new GlobalVariable(
+            cc.mod, lit_const->getType(), /*isConst=*/true,
+            GlobalValue::PrivateLinkage, lit_const, "like_lit");
+        Value *lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
+        Value *lit_len = cc.c32((int32_t)literal.size());
+
+        BasicBlock *pre_bb = cc.b.GetInsertBlock();
+        Function *fn = pre_bb->getParent();
+        BasicBlock *cmp_bb_like =
+            BasicBlock::Create(cc.llctx, "like_cmp", fn);
+        BasicBlock *done_bb =
+            BasicBlock::Create(cc.llctx, "like_done", fn);
+
+        Value *len_ok =
+            cc.b.CreateICmpSGE(slen, lit_len, "like_len_ok");
+        cc.b.CreateCondBr(len_ok, cmp_bb_like, done_bb);
+
+        cc.b.SetInsertPoint(cmp_bb_like);
+        Value *cmp_ptr;
+        if (kind == LIKE_PREFIX) {
+          cmp_ptr = char_ptr;
+        } else {
+          Value *offset = cc.b.CreateSub(slen, lit_len, "suffix_off");
+          Value *offset_ext =
+              cc.b.CreateSExt(offset, cc.i64(), "suffix_off_ext");
+          cmp_ptr = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), char_ptr,
+                                   offset_ext, "suffix_ptr");
+        }
+        FunctionType *ft_memcmp = FunctionType::get(
+            cc.i32(), {cc.i8p(), cc.i8p(), cc.i64()}, false);
+        FunctionCallee memcmp_fn =
+            cc.mod.getOrInsertFunction("memcmp", ft_memcmp);
+        Value *lit_len_ext =
+            cc.b.CreateSExt(lit_len, cc.i64(), "lit_len_ext");
+        Value *mcr =
+            cc.b.CreateCall(memcmp_fn, {cmp_ptr, lit_ptr, lit_len_ext});
+        Value *m_match = cc.b.CreateICmpEQ(mcr, cc.c32(0), "like_match");
+        cc.b.CreateBr(done_bb);
+
+        cc.b.SetInsertPoint(done_bb);
+        PHINode *phi = cc.b.CreatePHI(cc.i1(), 2, "like_result");
+        phi->addIncoming(ConstantInt::getFalse(cc.llctx), pre_bb);
+        phi->addIncoming(m_match, cmp_bb_like);
+        cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(phi)
+                         : phi;
+
+      } else if (kind == LIKE_CONTAINS) {
+        // External call to aqp_str_contains (wraps memmem, O(n))
+        Constant *lit_const = ConstantDataArray::getString(
+            cc.llctx, literal, /*AddNull=*/false);
+        GlobalVariable *lit_gv = new GlobalVariable(
+            cc.mod, lit_const->getType(), /*isConst=*/true,
+            GlobalValue::PrivateLinkage, lit_const, "like_lit");
+        Value *lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
+        Value *lit_len = cc.c32((int32_t)literal.size());
+
+        FunctionCallee callee =
+            cc.mod.getOrInsertFunction("aqp_str_contains", ft4);
+        Value *r =
+            cc.b.CreateCall(callee, {char_ptr, slen, lit_ptr, lit_len});
+        Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+        cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(m)
+                         : m;
+
+      } else {
+        // LIKE_COMPLEX: fallback to generic backtracking matcher
+        FunctionCallee callee =
+            cc.mod.getOrInsertFunction("aqp_like_match", ft4);
+        Value *r =
+            cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
+        Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+        cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(m)
+                         : m;
+      }
     } else if (op == SimplestExprType::GreaterEqual ||
                op == SimplestExprType::LessEqual ||
                op == SimplestExprType::GreaterThan ||
@@ -1137,9 +1298,65 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
     return expr->negated ? cc.b.CreateNot(match) : match;
   }
 
-  // VARCHAR IN: call aqp_in_set_str runtime helper
+  // VARCHAR IN: inline length-check + memcmp OR-chain for small sets,
+  // fall back to aqp_in_set_str for large sets.
   if (cs.dtype == AQP_DTYPE_VARCHAR && col_idx >= 0) {
-    // Build global arrays of string pointers and lengths
+    // Load VARCHAR value from column (DuckDB string_t extraction)
+    Value *data = cc.col_data[col_idx];
+    Value *str_t_ptr = cc.b.CreateBitCast(data, cc.i8p());
+    Value *row_offset =
+        cc.b.CreateMul(cc.row_idx, cc.c64(16)); // string_t = 16 bytes
+    Value *str_t_base =
+        cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_t_ptr, row_offset);
+    Value *len_ptr =
+        cc.b.CreateBitCast(str_t_base, PointerType::getUnqual(cc.i32()));
+    Value *slen = cc.b.CreateLoad(cc.i32(), len_ptr, "slen");
+    Value *inline_ptr =
+        cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_t_base, cc.c64(4));
+    Value *heap_ptr_ptr = cc.b.CreateBitCast(
+        cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_t_base, cc.c64(8)),
+        PointerType::getUnqual(cc.i8p()));
+    Value *heap_ptr = cc.b.CreateLoad(cc.i8p(), heap_ptr_ptr);
+    Value *is_inline = cc.b.CreateICmpULE(slen, cc.c32(12));
+    Value *char_ptr = cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr);
+
+    if (vals.size() <= 8) {
+      // Inline OR-chain: (len==L1 && memcmp==0) || (len==L2 && ...) || ...
+      // Same pattern as the integer IN-set unrolling above.
+      FunctionType *ft_memcmp = FunctionType::get(
+          cc.i32(), {cc.i8p(), cc.i8p(), cc.i64()}, false);
+      FunctionCallee memcmp_fn =
+          cc.mod.getOrInsertFunction("memcmp", ft_memcmp);
+
+      Value *any = ConstantInt::getFalse(cc.llctx);
+      for (size_t i = 0; i < vals.size(); ++i) {
+        const std::string &s = vals[i]->GetStringValue();
+        int32_t s_len = (int32_t)s.size();
+
+        Value *len_eq = cc.b.CreateICmpEQ(slen, cc.c32(s_len));
+        Value *match;
+        if (s_len == 0) {
+          match = len_eq;
+        } else {
+          Constant *str_const =
+              ConstantDataArray::getString(cc.llctx, s, false);
+          GlobalVariable *str_gv = new GlobalVariable(
+              cc.mod, str_const->getType(), true,
+              GlobalValue::PrivateLinkage, str_const,
+              "in_str_val" + std::to_string(i));
+          Value *str_ptr = cc.b.CreateBitCast(str_gv, cc.i8p());
+          Value *cmp_len = cc.b.CreateSExt(cc.c32(s_len), cc.i64());
+          Value *mcr =
+              cc.b.CreateCall(memcmp_fn, {char_ptr, str_ptr, cmp_len});
+          Value *bytes_eq = cc.b.CreateICmpEQ(mcr, cc.c32(0));
+          match = cc.b.CreateAnd(len_eq, bytes_eq);
+        }
+        any = cc.b.CreateOr(any, match);
+      }
+      return expr->negated ? cc.b.CreateNot(any) : any;
+    }
+
+    // Large VARCHAR IN-set: call aqp_in_set_str runtime helper
     std::vector<Constant *> str_ptrs, str_lens;
     for (const auto &v : vals) {
       const std::string &s = v->GetStringValue();
@@ -1150,8 +1367,6 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
       str_ptrs.push_back(ConstantExpr::getBitCast(str_gv, cc.i8p()));
       str_lens.push_back(cc.c32((int32_t)s.size()));
     }
-
-    // Build global arrays
     ArrayType *ptr_arr_ty = ArrayType::get(cc.i8p(), str_ptrs.size());
     ArrayType *len_arr_ty = ArrayType::get(cc.i32(), str_lens.size());
     GlobalVariable *ptrs_gv = new GlobalVariable(
@@ -1160,30 +1375,6 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
     GlobalVariable *lens_gv = new GlobalVariable(
         cc.mod, len_arr_ty, true, GlobalValue::PrivateLinkage,
         ConstantArray::get(len_arr_ty, str_lens), "in_str_lens");
-
-    // Load VARCHAR value from column (reuse string_t extraction logic)
-    // Extract length and char pointer from DuckDB string_t
-    Value *data = cc.col_data[col_idx];
-    Value *str_t_ptr = cc.b.CreateBitCast(data, cc.i8p());
-    Value *row_offset =
-        cc.b.CreateMul(cc.row_idx, cc.c64(16)); // string_t = 16 bytes
-    Value *str_t_base =
-        cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_t_ptr, row_offset);
-    // Length at offset 0 (4 bytes)
-    Value *len_ptr =
-        cc.b.CreateBitCast(str_t_base, PointerType::getUnqual(cc.i32()));
-    Value *slen = cc.b.CreateLoad(cc.i32(), len_ptr, "slen");
-    // Char data: inline (offset 4) if len <= 12, else pointer at offset 8
-    Value *inline_ptr =
-        cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_t_base, cc.c64(4));
-    Value *heap_ptr_ptr = cc.b.CreateBitCast(
-        cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), str_t_base, cc.c64(8)),
-        PointerType::getUnqual(cc.i8p()));
-    Value *heap_ptr = cc.b.CreateLoad(cc.i8p(), heap_ptr_ptr);
-    Value *is_inline = cc.b.CreateICmpULE(slen, cc.c32(12));
-    Value *char_ptr = cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr);
-
-    // Call aqp_in_set_str(str, slen, ptrs, lens, n)
     FunctionType *ft_str =
         FunctionType::get(cc.i32(),
                           {cc.i8p(), cc.i32(), PointerType::getUnqual(cc.i8p()),
@@ -3575,6 +3766,19 @@ static Value *EmitInlineFNV1a(IRBuilder<> &b, LLVMContext &llctx,
   return h;
 }
 
+// Emit hash: inline FNV-1a when inline_hash is true, otherwise call aqp_hash.
+static Value *EmitHash(IRBuilder<> &b, LLVMContext &llctx, Module &mod,
+                       Value *key_ptr, unsigned key_width, bool inline_hash) {
+  if (inline_hash)
+    return EmitInlineFNV1a(b, llctx, key_ptr, key_width);
+  Type *i8p = PointerType::getUnqual(Type::getInt8Ty(llctx));
+  Type *i32 = Type::getInt32Ty(llctx);
+  Type *i64 = Type::getInt64Ty(llctx);
+  FunctionType *hash_ft = FunctionType::get(i64, {i8p, i32}, false);
+  FunctionCallee hash_fn = mod.getOrInsertFunction("aqp_hash", hash_ft);
+  return b.CreateCall(hash_fn, {key_ptr, ConstantInt::get(i32, key_width)});
+}
+
 // Build a hash join build function:
 //   void aqp_hbuild_<id>(AQPChunkView* in, i8* hash_table)
 //
@@ -3591,515 +3795,6 @@ struct HashColDesc {
   int32_t dtype;
 };
 
-static Function *BuildHashBuildFunction(
-    LLVMContext &llctx, Module &mod, const std::string &fn_name,
-    const std::vector<HashColDesc> &key_cols, unsigned key_width,
-    const std::vector<HashColDesc> &payload_cols, unsigned payload_width,
-    const std::vector<ColSchema> &schema) {
-  Type *i8 = Type::getInt8Ty(llctx);
-  Type *i8p = PointerType::getUnqual(i8);
-  Type *i32 = Type::getInt32Ty(llctx);
-  Type *i64 = Type::getInt64Ty(llctx);
-  Type *i64p = PointerType::getUnqual(i64);
-  Type *voidTy = Type::getVoidTy(llctx);
-
-  StructType *ColViewTy = StructType::get(llctx, {i8p, i64p, i32, i32});
-  StructType *ChunkViewTy =
-      StructType::get(llctx, {PointerType::getUnqual(ColViewTy), i64, i64});
-
-  // void fn(AQPChunkView *in, i8 *hash_table)
-  FunctionType *fn_ty = FunctionType::get(
-      voidTy, {PointerType::getUnqual(ChunkViewTy), i8p}, false);
-  Function *fn =
-      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, &mod);
-
-  Value *in_arg = fn->getArg(0);
-  in_arg->setName("in");
-  Value *ht_arg = fn->getArg(1);
-  ht_arg->setName("ht");
-
-  BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
-  BasicBlock *loop_bb = BasicBlock::Create(llctx, "loop", fn);
-  BasicBlock *body_bb = BasicBlock::Create(llctx, "body", fn);
-  BasicBlock *next_bb = BasicBlock::Create(llctx, "next", fn);
-  BasicBlock *exit_bb = BasicBlock::Create(llctx, "exit", fn);
-
-  IRBuilder<> b(entry_bb);
-
-  // Load nrows
-  Value *nrows =
-      b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
-
-  // Load column data pointers
-  Value *cols = b.CreateLoad(PointerType::getUnqual(ColViewTy),
-                             b.CreateStructGEP(ChunkViewTy, in_arg, 0), "cols");
-
-  std::map<int, Value *> col_data;
-  auto load_col = [&](int ci) {
-    if (col_data.find(ci) == col_data.end()) {
-      Value *col_i =
-          b.CreateGEP(ColViewTy, cols, ConstantInt::get(i64, (uint64_t)ci));
-      col_data[ci] = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
-                                  "data_" + std::to_string(ci));
-    }
-  };
-  for (auto &kc : key_cols)
-    load_col(kc.col_idx);
-  for (auto &pc : payload_cols)
-    load_col(pc.col_idx);
-
-  // Alloca for key buffer (stack, fixed size)
-  Value *key_buf =
-      b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-
-  // Declare aqp_ht_insert_prehash: void*(void* ht, void* key, uint64_t hash)
-  FunctionType *insert_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee insert_fn =
-      mod.getOrInsertFunction("aqp_ht_insert_prehash", insert_ft);
-
-  b.CreateBr(loop_bb);
-
-  // Loop
-  b.SetInsertPoint(loop_bb);
-  PHINode *row_i = b.CreatePHI(i64, 2, "i");
-  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
-
-  // Body: build key, hash inline, insert with prehash, copy payload
-  b.SetInsertPoint(body_bb);
-
-  // Extract key columns into key_buf
-  unsigned key_off = 0;
-  for (auto &kc : key_cols) {
-    Value *src = col_data[kc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, kc.elem_size));
-    key_off += kc.elem_size;
-  }
-
-  // Inline FNV-1a hash, then insert with pre-computed hash
-  Value *hash_val = EmitInlineFNV1a(b, llctx, key_buf, key_width);
-  Value *payload_ptr = b.CreateCall(insert_fn, {ht_arg, key_buf, hash_val});
-
-  // Copy payload columns into payload slot
-  unsigned pay_off = 0;
-  for (auto &pc : payload_cols) {
-    Value *src = col_data[pc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, pc.elem_size)));
-    Value *dst = b.CreateGEP(i8, payload_ptr, ConstantInt::get(i64, pay_off));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, pc.elem_size));
-    pay_off += pc.elem_size;
-  }
-
-  b.CreateBr(next_bb);
-
-  // Next
-  b.SetInsertPoint(next_bb);
-  Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
-  row_i->addIncoming(i_next, next_bb);
-  b.CreateBr(loop_bb);
-
-  // Exit
-  b.SetInsertPoint(exit_bb);
-  b.CreateRetVoid();
-
-  return fn;
-}
-
-// ---------------------------------------------------------------------------
-// Build a hash join probe function:
-//   uint64_t aqp_hprobe_<id>(AQPChunkView* probe, i8* hash_table, AQPSelView*
-//   sel)
-//
-// For each probe row: extracts key, calls aqp_ht_probe; if found, writes
-// row index to selection vector.  Returns count of matching rows.
-// ---------------------------------------------------------------------------
-static Function *BuildHashProbeFunction(
-    LLVMContext &llctx, Module &mod, const std::string &fn_name,
-    const std::vector<HashColDesc> &probe_key_cols, unsigned key_width,
-    bool prefetch = false, int prefetch_distance = 8) {
-  Type *i8 = Type::getInt8Ty(llctx);
-  Type *i8p = PointerType::getUnqual(i8);
-  Type *i32 = Type::getInt32Ty(llctx);
-  Type *i64 = Type::getInt64Ty(llctx);
-  Type *i64p = PointerType::getUnqual(i64);
-
-  StructType *ColViewTy = StructType::get(llctx, {i8p, i64p, i32, i32});
-  StructType *ChunkViewTy =
-      StructType::get(llctx, {PointerType::getUnqual(ColViewTy), i64, i64});
-  StructType *SelViewTy =
-      StructType::get(llctx, {PointerType::getUnqual(i32), i32});
-
-  // uint64_t fn(AQPChunkView *probe, i8 *ht, AQPSelView *sel)
-  FunctionType *fn_ty =
-      FunctionType::get(i64,
-                        {PointerType::getUnqual(ChunkViewTy), i8p,
-                         PointerType::getUnqual(SelViewTy)},
-                        false);
-  Function *fn =
-      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, &mod);
-
-  Value *probe_arg = fn->getArg(0);
-  probe_arg->setName("probe");
-  Value *ht_arg = fn->getArg(1);
-  ht_arg->setName("ht");
-  Value *sel_arg = fn->getArg(2);
-  sel_arg->setName("sel");
-
-  BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
-  BasicBlock *loop_bb = BasicBlock::Create(llctx, "loop", fn);
-  BasicBlock *body_bb = BasicBlock::Create(llctx, "body", fn);
-  BasicBlock *found_bb = BasicBlock::Create(llctx, "found", fn);
-  BasicBlock *next_bb = BasicBlock::Create(llctx, "next", fn);
-  BasicBlock *exit_bb = BasicBlock::Create(llctx, "exit", fn);
-
-  IRBuilder<> b(entry_bb);
-
-  Value *nrows =
-      b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
-  Value *cols =
-      b.CreateLoad(PointerType::getUnqual(ColViewTy),
-                   b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
-
-  // Load probe column data
-  std::map<int, Value *> col_data;
-  for (auto &kc : probe_key_cols) {
-    if (col_data.find(kc.col_idx) == col_data.end()) {
-      Value *col_i = b.CreateGEP(ColViewTy, cols,
-                                 ConstantInt::get(i64, (uint64_t)kc.col_idx));
-      col_data[kc.col_idx] =
-          b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
-                       "data_" + std::to_string(kc.col_idx));
-    }
-  }
-
-  Value *key_buf =
-      b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-
-  // Load sel->indices
-  Value *sel_idx_ptr =
-      b.CreateLoad(PointerType::getUnqual(i32),
-                   b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
-
-  // Declare aqp_ht_probe_prehash: void*(void* ht, void* key, uint64_t hash)
-  FunctionType *probe_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee probe_fn =
-      mod.getOrInsertFunction("aqp_ht_probe_prehash", probe_ft);
-
-  // Prefetch setup: load hash table metadata once in entry block
-  Value *ht_slots_base = nullptr, *ht_mask = nullptr, *ht_slot_sz = nullptr;
-  Value *pf_key_buf = nullptr;
-  Function *pf_intrinsic = nullptr;
-  if (prefetch) {
-    FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
-    FunctionCallee fn_base =
-        mod.getOrInsertFunction("aqp_ht_slots_base", ft_base);
-    ht_slots_base = b.CreateCall(fn_base, {ht_arg}, "ht_slots");
-
-    FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
-    FunctionCallee fn_mask =
-        mod.getOrInsertFunction("aqp_ht_mask", ft_mask);
-    ht_mask = b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
-
-    FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
-    FunctionCallee fn_ss =
-        mod.getOrInsertFunction("aqp_ht_slot_size", ft_ss);
-    ht_slot_sz = b.CreateZExt(
-        b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
-
-    pf_key_buf =
-        b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "pf_key_buf");
-
-    pf_intrinsic = Intrinsic::getDeclaration(
-        &mod, Intrinsic::prefetch, {i8p});
-  }
-
-  b.CreateBr(loop_bb);
-
-  // Loop
-  b.SetInsertPoint(loop_bb);
-  PHINode *row_i = b.CreatePHI(i64, 2, "i");
-  PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
-  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
-
-  // Body: extract key, hash inline, probe with prehash
-  b.SetInsertPoint(body_bb);
-  unsigned key_off = 0;
-  for (auto &kc : probe_key_cols) {
-    Value *src = col_data[kc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, kc.elem_size));
-    key_off += kc.elem_size;
-  }
-
-  Value *hash_val = EmitInlineFNV1a(b, llctx, key_buf, key_width);
-
-  // Software prefetch: compute slot address for row+PD and issue prefetch
-  if (prefetch) {
-    Value *pf_row = b.CreateAdd(row_i,
-        ConstantInt::get(i64, (uint64_t)prefetch_distance));
-    Value *pf_in_bounds = b.CreateICmpULT(pf_row, nrows);
-
-    BasicBlock *pf_bb = BasicBlock::Create(llctx, "prefetch", fn);
-    BasicBlock *pf_done_bb = BasicBlock::Create(llctx, "pf_done", fn);
-    b.CreateCondBr(pf_in_bounds, pf_bb, pf_done_bb);
-
-    b.SetInsertPoint(pf_bb);
-    unsigned pf_key_off = 0;
-    for (auto &kc : probe_key_cols) {
-      Value *src = col_data[kc.col_idx];
-      Value *ep = b.CreateGEP(
-          i8, src, b.CreateMul(pf_row, ConstantInt::get(i64, kc.elem_size)));
-      Value *dp = b.CreateGEP(i8, pf_key_buf,
-                               ConstantInt::get(i32, pf_key_off));
-      b.CreateMemCpy(dp, MaybeAlign(1), ep, MaybeAlign(1),
-                     ConstantInt::get(i64, kc.elem_size));
-      pf_key_off += kc.elem_size;
-    }
-    Value *pf_hash = EmitInlineFNV1a(b, llctx, pf_key_buf, key_width);
-    Value *pf_idx = b.CreateAnd(pf_hash, ht_mask);
-    Value *pf_byte_off = b.CreateMul(pf_idx, ht_slot_sz);
-    Value *pf_addr = b.CreateGEP(i8, ht_slots_base, pf_byte_off);
-    b.CreateCall(pf_intrinsic,
-                 {pf_addr,
-                  ConstantInt::get(i32, 0),  // read
-                  ConstantInt::get(i32, 1),  // moderate locality
-                  ConstantInt::get(i32, 1)}); // data cache
-    b.CreateBr(pf_done_bb);
-
-    b.SetInsertPoint(pf_done_bb);
-  }
-
-  Value *result = b.CreateCall(probe_fn, {ht_arg, key_buf, hash_val});
-  Value *is_found =
-      b.CreateICmpNE(b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
-  b.CreateCondBr(is_found, found_bb, next_bb);
-
-  // Found: store row index in selection vector
-  b.SetInsertPoint(found_bb);
-  Value *dst = b.CreateGEP(i32, sel_idx_ptr, out_count);
-  b.CreateStore(b.CreateTrunc(row_i, i32), dst);
-  Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
-  b.CreateBr(next_bb);
-
-  // Next
-  b.SetInsertPoint(next_bb);
-  PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
-  oc_next->addIncoming(out_count, body_bb);
-  oc_next->addIncoming(out_count1, found_bb);
-  Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
-  row_i->addIncoming(i_next, next_bb);
-  out_count->addIncoming(oc_next, next_bb);
-  b.CreateBr(loop_bb);
-
-  // Exit
-  b.SetInsertPoint(exit_bb);
-  b.CreateStore(b.CreateTrunc(out_count, i32),
-                b.CreateStructGEP(SelViewTy, sel_arg, 1));
-  b.CreateRet(out_count);
-
-  return fn;
-}
-
-// ---------------------------------------------------------------------------
-// Build a batch hash probe function (two-phase):
-//   Phase 1: compute all hashes + prefetch slot addresses
-//   Phase 2: probe with cache-hot slots, write selection vector
-// Same signature as BuildHashProbeFunction.
-// ---------------------------------------------------------------------------
-static Function *BuildBatchHashProbeFunction(
-    LLVMContext &llctx, Module &mod, const std::string &fn_name,
-    const std::vector<HashColDesc> &probe_key_cols, unsigned key_width) {
-  Type *i8 = Type::getInt8Ty(llctx);
-  Type *i8p = PointerType::getUnqual(i8);
-  Type *i32 = Type::getInt32Ty(llctx);
-  Type *i64 = Type::getInt64Ty(llctx);
-  Type *i64p = PointerType::getUnqual(i64);
-
-  StructType *ColViewTy = StructType::get(llctx, {i8p, i64p, i32, i32});
-  StructType *ChunkViewTy =
-      StructType::get(llctx, {PointerType::getUnqual(ColViewTy), i64, i64});
-  StructType *SelViewTy =
-      StructType::get(llctx, {PointerType::getUnqual(i32), i32});
-
-  FunctionType *fn_ty =
-      FunctionType::get(i64,
-                        {PointerType::getUnqual(ChunkViewTy), i8p,
-                         PointerType::getUnqual(SelViewTy)},
-                        false);
-  Function *fn =
-      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, &mod);
-
-  Value *probe_arg = fn->getArg(0);
-  probe_arg->setName("probe");
-  Value *ht_arg = fn->getArg(1);
-  ht_arg->setName("ht");
-  Value *sel_arg = fn->getArg(2);
-  sel_arg->setName("sel");
-
-  BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
-  BasicBlock *ph1_loop = BasicBlock::Create(llctx, "ph1_loop", fn);
-  BasicBlock *ph1_body = BasicBlock::Create(llctx, "ph1_body", fn);
-  BasicBlock *ph1_done = BasicBlock::Create(llctx, "ph1_done", fn);
-  BasicBlock *ph2_loop = BasicBlock::Create(llctx, "ph2_loop", fn);
-  BasicBlock *ph2_body = BasicBlock::Create(llctx, "ph2_body", fn);
-  BasicBlock *ph2_found = BasicBlock::Create(llctx, "ph2_found", fn);
-  BasicBlock *ph2_next = BasicBlock::Create(llctx, "ph2_next", fn);
-  BasicBlock *exit_bb = BasicBlock::Create(llctx, "exit", fn);
-
-  IRBuilder<> b(entry_bb);
-
-  Value *nrows =
-      b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
-  Value *cols =
-      b.CreateLoad(PointerType::getUnqual(ColViewTy),
-                   b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
-
-  // Load probe column data
-  std::map<int, Value *> col_data;
-  for (auto &kc : probe_key_cols) {
-    if (col_data.find(kc.col_idx) == col_data.end()) {
-      Value *col_i = b.CreateGEP(ColViewTy, cols,
-                                 ConstantInt::get(i64, (uint64_t)kc.col_idx));
-      col_data[kc.col_idx] =
-          b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
-                       "data_" + std::to_string(kc.col_idx));
-    }
-  }
-
-  Value *key_buf =
-      b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-  Value *sel_idx_ptr =
-      b.CreateLoad(PointerType::getUnqual(i32),
-                   b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
-
-  // Hash array: fixed alloca for max 2048 rows (STANDARD_VECTOR_SIZE)
-  Value *hash_arr = b.CreateAlloca(i64, ConstantInt::get(i32, 2048), "hashes");
-
-  // Load hash table metadata for prefetching
-  FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
-  FunctionCallee fn_base =
-      mod.getOrInsertFunction("aqp_ht_slots_base", ft_base);
-  Value *ht_slots = b.CreateCall(fn_base, {ht_arg}, "ht_slots");
-
-  FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
-  FunctionCallee fn_mask =
-      mod.getOrInsertFunction("aqp_ht_mask", ft_mask);
-  Value *ht_mask = b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
-
-  FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
-  FunctionCallee fn_ss =
-      mod.getOrInsertFunction("aqp_ht_slot_size", ft_ss);
-  Value *ht_slot_sz = b.CreateZExt(
-      b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
-
-  Function *pf_intrinsic = Intrinsic::getDeclaration(
-      &mod, Intrinsic::prefetch, {i8p});
-
-  FunctionType *probe_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee probe_fn =
-      mod.getOrInsertFunction("aqp_ht_probe_prehash", probe_ft);
-
-  b.CreateBr(ph1_loop);
-
-  // ---- Phase 1: compute hashes + prefetch ----
-  b.SetInsertPoint(ph1_loop);
-  PHINode *ph1_i = b.CreatePHI(i64, 2, "ph1_i");
-  ph1_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  b.CreateCondBr(b.CreateICmpEQ(ph1_i, nrows), ph1_done, ph1_body);
-
-  b.SetInsertPoint(ph1_body);
-  unsigned key_off = 0;
-  for (auto &kc : probe_key_cols) {
-    Value *src = col_data[kc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(ph1_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, kc.elem_size));
-    key_off += kc.elem_size;
-  }
-
-  Value *h = EmitInlineFNV1a(b, llctx, key_buf, key_width);
-  b.CreateStore(h, b.CreateGEP(i64, hash_arr, ph1_i));
-
-  // Prefetch the slot this hash maps to
-  Value *slot_idx = b.CreateAnd(h, ht_mask);
-  Value *slot_off = b.CreateMul(slot_idx, ht_slot_sz);
-  Value *slot_addr = b.CreateGEP(i8, ht_slots, slot_off);
-  b.CreateCall(pf_intrinsic,
-               {slot_addr,
-                ConstantInt::get(i32, 0),
-                ConstantInt::get(i32, 1),
-                ConstantInt::get(i32, 1)});
-
-  Value *ph1_next = b.CreateAdd(ph1_i, ConstantInt::get(i64, 1));
-  ph1_i->addIncoming(ph1_next, ph1_body);
-  b.CreateBr(ph1_loop);
-
-  // ---- Phase 2: probe with cached slots ----
-  b.SetInsertPoint(ph1_done);
-  b.CreateBr(ph2_loop);
-
-  b.SetInsertPoint(ph2_loop);
-  PHINode *ph2_i = b.CreatePHI(i64, 2, "ph2_i");
-  PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
-  ph2_i->addIncoming(ConstantInt::get(i64, 0), ph1_done);
-  out_count->addIncoming(ConstantInt::get(i64, 0), ph1_done);
-  b.CreateCondBr(b.CreateICmpEQ(ph2_i, nrows), exit_bb, ph2_body);
-
-  b.SetInsertPoint(ph2_body);
-  // Re-extract key (data is L1-hot from phase 1)
-  unsigned key_off2 = 0;
-  for (auto &kc : probe_key_cols) {
-    Value *src = col_data[kc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(ph2_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off2));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, kc.elem_size));
-    key_off2 += kc.elem_size;
-  }
-
-  Value *cached_hash = b.CreateLoad(i64, b.CreateGEP(i64, hash_arr, ph2_i));
-  Value *result = b.CreateCall(probe_fn, {ht_arg, key_buf, cached_hash});
-  Value *is_found =
-      b.CreateICmpNE(b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
-  b.CreateCondBr(is_found, ph2_found, ph2_next);
-
-  b.SetInsertPoint(ph2_found);
-  Value *dst_sel = b.CreateGEP(i32, sel_idx_ptr, out_count);
-  b.CreateStore(b.CreateTrunc(ph2_i, i32), dst_sel);
-  Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
-  b.CreateBr(ph2_next);
-
-  b.SetInsertPoint(ph2_next);
-  PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
-  oc_next->addIncoming(out_count, ph2_body);
-  oc_next->addIncoming(out_count1, ph2_found);
-  Value *ph2_next_i = b.CreateAdd(ph2_i, ConstantInt::get(i64, 1));
-  ph2_i->addIncoming(ph2_next_i, ph2_next);
-  out_count->addIncoming(oc_next, ph2_next);
-  b.CreateBr(ph2_loop);
-
-  // ---- Exit ----
-  b.SetInsertPoint(exit_bb);
-  b.CreateStore(b.CreateTrunc(out_count, i32),
-                b.CreateStructGEP(SelViewTy, sel_arg, 1));
-  b.CreateRet(out_count);
-
-  return fn;
-}
 
 #if !DISABLE_AGG_JIT
 // ---------------------------------------------------------------------------
@@ -5030,11 +4725,106 @@ IrToLlvmCompiler::CompileHashBuild(const AQPStmt &hash_node,
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_hbuild_mod", *ctx);
 
+  // --- Emit LLVM IR for hash build ---
+  Type *i8 = Type::getInt8Ty(*ctx);
+  Type *i8p = PointerType::getUnqual(i8);
+  Type *i32 = Type::getInt32Ty(*ctx);
+  Type *i64 = Type::getInt64Ty(*ctx);
+  Type *i64p = PointerType::getUnqual(i64);
+  Type *voidTy = Type::getVoidTy(*ctx);
+
+  StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
+  StructType *ChunkViewTy =
+      StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
+
+  FunctionType *fn_ty = FunctionType::get(
+      voidTy, {PointerType::getUnqual(ChunkViewTy), i8p}, false);
   Function *fn =
-      BuildHashBuildFunction(*ctx, *mod, fn_name, key_cols, key_width,
-                             payload_cols, payload_width, in_schema);
-  if (!fn)
-    return nullptr;
+      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, mod.get());
+
+  Value *in_arg = fn->getArg(0);
+  in_arg->setName("in");
+  Value *ht_arg = fn->getArg(1);
+  ht_arg->setName("ht");
+
+  BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
+  BasicBlock *loop_bb = BasicBlock::Create(*ctx, "loop", fn);
+  BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
+  BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
+  BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
+
+  IRBuilder<> b(entry_bb);
+
+  Value *nrows =
+      b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
+  Value *cols = b.CreateLoad(PointerType::getUnqual(ColViewTy),
+                             b.CreateStructGEP(ChunkViewTy, in_arg, 0), "cols");
+
+  std::map<int, Value *> col_data;
+  auto load_col = [&](int ci) {
+    if (col_data.find(ci) == col_data.end()) {
+      Value *col_i =
+          b.CreateGEP(ColViewTy, cols, ConstantInt::get(i64, (uint64_t)ci));
+      col_data[ci] = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
+                                  "data_" + std::to_string(ci));
+    }
+  };
+  for (auto &kc : key_cols)
+    load_col(kc.col_idx);
+  for (auto &pc : payload_cols)
+    load_col(pc.col_idx);
+
+  Value *key_buf =
+      b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
+
+  FunctionType *insert_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
+  FunctionCallee insert_fn =
+      mod->getOrInsertFunction("aqp_ht_insert_prehash", insert_ft);
+
+  b.CreateBr(loop_bb);
+
+  b.SetInsertPoint(loop_bb);
+  PHINode *row_i = b.CreatePHI(i64, 2, "i");
+  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
+
+  b.SetInsertPoint(body_bb);
+  unsigned key_off = 0;
+  for (auto &kc : key_cols) {
+    Value *src = col_data[kc.col_idx];
+    Value *elem_ptr = b.CreateGEP(
+        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
+    Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
+    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                   ConstantInt::get(i64, kc.elem_size));
+    key_off += kc.elem_size;
+  }
+
+  Value *hash_val = EmitHash(b, *ctx, *mod, key_buf, key_width, inline_hash_);
+  Value *payload_ptr = b.CreateCall(insert_fn, {ht_arg, key_buf, hash_val});
+
+  unsigned pay_off = 0;
+  for (auto &pc : payload_cols) {
+    Value *src = col_data[pc.col_idx];
+    Value *elem_ptr = b.CreateGEP(
+        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, pc.elem_size)));
+    Value *dst = b.CreateGEP(i8, payload_ptr, ConstantInt::get(i64, pay_off));
+    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                   ConstantInt::get(i64, pc.elem_size));
+    pay_off += pc.elem_size;
+  }
+
+  b.CreateBr(next_bb);
+
+  b.SetInsertPoint(next_bb);
+  Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
+  row_i->addIncoming(i_next, next_bb);
+  b.CreateBr(loop_bb);
+
+  b.SetInsertPoint(exit_bb);
+  b.CreateRetVoid();
+  // --- End IR emission ---
+
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
 
   std::string err;
@@ -5138,13 +4928,330 @@ IrToLlvmCompiler::CompileHashProbe(const AQPStmt &join_node,
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_hprobe_mod", *ctx);
 
-  Function *fn = batch_probe_
-      ? BuildBatchHashProbeFunction(*ctx, *mod, fn_name, probe_key_cols,
-                                    key_width)
-      : BuildHashProbeFunction(*ctx, *mod, fn_name, probe_key_cols, key_width,
-                               prefetch_, prefetch_distance_);
-  if (!fn)
-    return nullptr;
+  // --- Emit LLVM IR for hash probe ---
+  Type *i8 = Type::getInt8Ty(*ctx);
+  Type *i8p = PointerType::getUnqual(i8);
+  Type *i32 = Type::getInt32Ty(*ctx);
+  Type *i64 = Type::getInt64Ty(*ctx);
+  Type *i64p = PointerType::getUnqual(i64);
+
+  StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
+  StructType *ChunkViewTy =
+      StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
+  StructType *SelViewTy =
+      StructType::get(*ctx, {PointerType::getUnqual(i32), i32});
+
+  FunctionType *fn_ty =
+      FunctionType::get(i64,
+                        {PointerType::getUnqual(ChunkViewTy), i8p,
+                         PointerType::getUnqual(SelViewTy)},
+                        false);
+  Function *fn =
+      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, mod.get());
+
+  Value *probe_arg = fn->getArg(0);
+  probe_arg->setName("probe");
+  Value *ht_arg = fn->getArg(1);
+  ht_arg->setName("ht");
+  Value *sel_arg = fn->getArg(2);
+  sel_arg->setName("sel");
+
+  FunctionType *probe_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
+  FunctionCallee probe_fn =
+      mod->getOrInsertFunction("aqp_ht_probe_prehash", probe_ft);
+
+  if (batch_probe_) {
+    // ---- Two-phase batch probe ----
+    BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
+    BasicBlock *ph1_loop = BasicBlock::Create(*ctx, "ph1_loop", fn);
+    BasicBlock *ph1_body = BasicBlock::Create(*ctx, "ph1_body", fn);
+    BasicBlock *ph1_done = BasicBlock::Create(*ctx, "ph1_done", fn);
+    BasicBlock *ph2_loop = BasicBlock::Create(*ctx, "ph2_loop", fn);
+    BasicBlock *ph2_body = BasicBlock::Create(*ctx, "ph2_body", fn);
+    BasicBlock *ph2_found = BasicBlock::Create(*ctx, "ph2_found", fn);
+    BasicBlock *ph2_next = BasicBlock::Create(*ctx, "ph2_next", fn);
+    BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
+
+    IRBuilder<> b(entry_bb);
+
+    Value *nrows = b.CreateLoad(
+        i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
+    Value *cols = b.CreateLoad(
+        PointerType::getUnqual(ColViewTy),
+        b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
+
+    std::map<int, Value *> col_data;
+    for (auto &kc : probe_key_cols) {
+      if (col_data.find(kc.col_idx) == col_data.end()) {
+        Value *col_i = b.CreateGEP(
+            ColViewTy, cols, ConstantInt::get(i64, (uint64_t)kc.col_idx));
+        col_data[kc.col_idx] = b.CreateLoad(
+            i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
+            "data_" + std::to_string(kc.col_idx));
+      }
+    }
+
+    Value *key_buf =
+        b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
+    Value *sel_idx_ptr = b.CreateLoad(
+        PointerType::getUnqual(i32),
+        b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
+
+    Value *hash_arr =
+        b.CreateAlloca(i64, ConstantInt::get(i32, 2048), "hashes");
+
+    FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
+    FunctionCallee fn_base =
+        mod->getOrInsertFunction("aqp_ht_slots_base", ft_base);
+    Value *ht_slots = b.CreateCall(fn_base, {ht_arg}, "ht_slots");
+
+    FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
+    FunctionCallee fn_mask =
+        mod->getOrInsertFunction("aqp_ht_mask", ft_mask);
+    Value *ht_mask = b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
+
+    FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
+    FunctionCallee fn_ss =
+        mod->getOrInsertFunction("aqp_ht_slot_size", ft_ss);
+    Value *ht_slot_sz =
+        b.CreateZExt(b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
+
+    Function *pf_intrinsic =
+        Intrinsic::getDeclaration(mod.get(), Intrinsic::prefetch, {i8p});
+
+    b.CreateBr(ph1_loop);
+
+    // Phase 1: compute hashes + prefetch
+    b.SetInsertPoint(ph1_loop);
+    PHINode *ph1_i = b.CreatePHI(i64, 2, "ph1_i");
+    ph1_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    b.CreateCondBr(b.CreateICmpEQ(ph1_i, nrows), ph1_done, ph1_body);
+
+    b.SetInsertPoint(ph1_body);
+    unsigned key_off = 0;
+    for (auto &kc : probe_key_cols) {
+      Value *src = col_data[kc.col_idx];
+      Value *elem_ptr = b.CreateGEP(
+          i8, src, b.CreateMul(ph1_i, ConstantInt::get(i64, kc.elem_size)));
+      Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
+      b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                     ConstantInt::get(i64, kc.elem_size));
+      key_off += kc.elem_size;
+    }
+
+    Value *h = EmitHash(b, *ctx, *mod, key_buf, key_width, inline_hash_);
+    b.CreateStore(h, b.CreateGEP(i64, hash_arr, ph1_i));
+
+    Value *slot_idx = b.CreateAnd(h, ht_mask);
+    Value *slot_off = b.CreateMul(slot_idx, ht_slot_sz);
+    Value *slot_addr = b.CreateGEP(i8, ht_slots, slot_off);
+    b.CreateCall(pf_intrinsic,
+                 {slot_addr, ConstantInt::get(i32, 0),
+                  ConstantInt::get(i32, 1), ConstantInt::get(i32, 1)});
+
+    Value *ph1_next = b.CreateAdd(ph1_i, ConstantInt::get(i64, 1));
+    ph1_i->addIncoming(ph1_next, ph1_body);
+    b.CreateBr(ph1_loop);
+
+    // Phase 2: probe with cached slots
+    b.SetInsertPoint(ph1_done);
+    b.CreateBr(ph2_loop);
+
+    b.SetInsertPoint(ph2_loop);
+    PHINode *ph2_i = b.CreatePHI(i64, 2, "ph2_i");
+    PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
+    ph2_i->addIncoming(ConstantInt::get(i64, 0), ph1_done);
+    out_count->addIncoming(ConstantInt::get(i64, 0), ph1_done);
+    b.CreateCondBr(b.CreateICmpEQ(ph2_i, nrows), exit_bb, ph2_body);
+
+    b.SetInsertPoint(ph2_body);
+    unsigned key_off2 = 0;
+    for (auto &kc : probe_key_cols) {
+      Value *src = col_data[kc.col_idx];
+      Value *elem_ptr = b.CreateGEP(
+          i8, src, b.CreateMul(ph2_i, ConstantInt::get(i64, kc.elem_size)));
+      Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off2));
+      b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                     ConstantInt::get(i64, kc.elem_size));
+      key_off2 += kc.elem_size;
+    }
+
+    Value *cached_hash =
+        b.CreateLoad(i64, b.CreateGEP(i64, hash_arr, ph2_i));
+    Value *result =
+        b.CreateCall(probe_fn, {ht_arg, key_buf, cached_hash});
+    Value *is_found = b.CreateICmpNE(
+        b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
+    b.CreateCondBr(is_found, ph2_found, ph2_next);
+
+    b.SetInsertPoint(ph2_found);
+    Value *dst_sel = b.CreateGEP(i32, sel_idx_ptr, out_count);
+    b.CreateStore(b.CreateTrunc(ph2_i, i32), dst_sel);
+    Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
+    b.CreateBr(ph2_next);
+
+    b.SetInsertPoint(ph2_next);
+    PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
+    oc_next->addIncoming(out_count, ph2_body);
+    oc_next->addIncoming(out_count1, ph2_found);
+    Value *ph2_next_i = b.CreateAdd(ph2_i, ConstantInt::get(i64, 1));
+    ph2_i->addIncoming(ph2_next_i, ph2_next);
+    out_count->addIncoming(oc_next, ph2_next);
+    b.CreateBr(ph2_loop);
+
+    b.SetInsertPoint(exit_bb);
+    b.CreateStore(b.CreateTrunc(out_count, i32),
+                  b.CreateStructGEP(SelViewTy, sel_arg, 1));
+    b.CreateRet(out_count);
+
+  } else {
+    // ---- Scalar probe (with optional prefetch) ----
+    BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
+    BasicBlock *loop_bb = BasicBlock::Create(*ctx, "loop", fn);
+    BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
+    BasicBlock *found_bb = BasicBlock::Create(*ctx, "found", fn);
+    BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
+    BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
+
+    IRBuilder<> b(entry_bb);
+
+    Value *nrows = b.CreateLoad(
+        i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
+    Value *cols = b.CreateLoad(
+        PointerType::getUnqual(ColViewTy),
+        b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
+
+    std::map<int, Value *> col_data;
+    for (auto &kc : probe_key_cols) {
+      if (col_data.find(kc.col_idx) == col_data.end()) {
+        Value *col_i = b.CreateGEP(
+            ColViewTy, cols, ConstantInt::get(i64, (uint64_t)kc.col_idx));
+        col_data[kc.col_idx] = b.CreateLoad(
+            i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
+            "data_" + std::to_string(kc.col_idx));
+      }
+    }
+
+    Value *key_buf =
+        b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
+    Value *sel_idx_ptr = b.CreateLoad(
+        PointerType::getUnqual(i32),
+        b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
+
+    Value *ht_slots_base = nullptr, *ht_mask = nullptr, *ht_slot_sz = nullptr;
+    Value *pf_key_buf = nullptr;
+    Function *pf_intrinsic = nullptr;
+    if (prefetch_) {
+      FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
+      FunctionCallee fn_base =
+          mod->getOrInsertFunction("aqp_ht_slots_base", ft_base);
+      ht_slots_base = b.CreateCall(fn_base, {ht_arg}, "ht_slots");
+
+      FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
+      FunctionCallee fn_mask =
+          mod->getOrInsertFunction("aqp_ht_mask", ft_mask);
+      ht_mask = b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
+
+      FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
+      FunctionCallee fn_ss =
+          mod->getOrInsertFunction("aqp_ht_slot_size", ft_ss);
+      ht_slot_sz =
+          b.CreateZExt(b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
+
+      pf_key_buf =
+          b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "pf_key_buf");
+      pf_intrinsic =
+          Intrinsic::getDeclaration(mod.get(), Intrinsic::prefetch, {i8p});
+    }
+
+    b.CreateBr(loop_bb);
+
+    b.SetInsertPoint(loop_bb);
+    PHINode *row_i = b.CreatePHI(i64, 2, "i");
+    PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
+    row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
+
+    b.SetInsertPoint(body_bb);
+    unsigned key_off = 0;
+    for (auto &kc : probe_key_cols) {
+      Value *src = col_data[kc.col_idx];
+      Value *elem_ptr = b.CreateGEP(
+          i8, src, b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
+      Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
+      b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
+                     ConstantInt::get(i64, kc.elem_size));
+      key_off += kc.elem_size;
+    }
+
+    Value *hash_val =
+        EmitHash(b, *ctx, *mod, key_buf, key_width, inline_hash_);
+
+    BasicBlock *probe_bb = body_bb;
+    if (prefetch_) {
+      Value *pf_row = b.CreateAdd(
+          row_i, ConstantInt::get(i64, (uint64_t)prefetch_distance_));
+      Value *pf_in_bounds = b.CreateICmpULT(pf_row, nrows);
+
+      BasicBlock *pf_bb = BasicBlock::Create(*ctx, "prefetch", fn);
+      BasicBlock *pf_done_bb = BasicBlock::Create(*ctx, "pf_done", fn);
+      b.CreateCondBr(pf_in_bounds, pf_bb, pf_done_bb);
+
+      b.SetInsertPoint(pf_bb);
+      unsigned pf_key_off = 0;
+      for (auto &kc : probe_key_cols) {
+        Value *src = col_data[kc.col_idx];
+        Value *ep = b.CreateGEP(
+            i8, src,
+            b.CreateMul(pf_row, ConstantInt::get(i64, kc.elem_size)));
+        Value *dp = b.CreateGEP(i8, pf_key_buf,
+                                 ConstantInt::get(i32, pf_key_off));
+        b.CreateMemCpy(dp, MaybeAlign(1), ep, MaybeAlign(1),
+                       ConstantInt::get(i64, kc.elem_size));
+        pf_key_off += kc.elem_size;
+      }
+      Value *pf_hash =
+          EmitHash(b, *ctx, *mod, pf_key_buf, key_width, inline_hash_);
+      Value *pf_idx = b.CreateAnd(pf_hash, ht_mask);
+      Value *pf_byte_off = b.CreateMul(pf_idx, ht_slot_sz);
+      Value *pf_addr = b.CreateGEP(i8, ht_slots_base, pf_byte_off);
+      b.CreateCall(pf_intrinsic,
+                   {pf_addr, ConstantInt::get(i32, 0),
+                    ConstantInt::get(i32, 1), ConstantInt::get(i32, 1)});
+      b.CreateBr(pf_done_bb);
+
+      b.SetInsertPoint(pf_done_bb);
+      probe_bb = pf_done_bb;
+    }
+
+    Value *result = b.CreateCall(probe_fn, {ht_arg, key_buf, hash_val});
+    Value *is_found = b.CreateICmpNE(
+        b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
+    b.CreateCondBr(is_found, found_bb, next_bb);
+
+    b.SetInsertPoint(found_bb);
+    Value *dst = b.CreateGEP(i32, sel_idx_ptr, out_count);
+    b.CreateStore(b.CreateTrunc(row_i, i32), dst);
+    Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
+    b.CreateBr(next_bb);
+
+    b.SetInsertPoint(next_bb);
+    PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
+    oc_next->addIncoming(out_count, probe_bb);
+    oc_next->addIncoming(out_count1, found_bb);
+    Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
+    row_i->addIncoming(i_next, next_bb);
+    out_count->addIncoming(oc_next, next_bb);
+    b.CreateBr(loop_bb);
+
+    b.SetInsertPoint(exit_bb);
+    b.CreateStore(b.CreateTrunc(out_count, i32),
+                  b.CreateStructGEP(SelViewTy, sel_arg, 1));
+    b.CreateRet(out_count);
+  }
+  // --- End IR emission ---
+
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
 
   std::string err;
@@ -5717,7 +5824,7 @@ void *IrToLlvmCompiler::CompileFilterHashBuildFusion(
     key_off += kc.elem_size;
   }
 
-  Value *hash_val = EmitInlineFNV1a(cc.b, *ctx, key_buf, key_width);
+  Value *hash_val = EmitHash(cc.b, *ctx, *mod, key_buf, key_width, inline_hash_);
   Value *payload_ptr =
       cc.b.CreateCall(insert_fn, {ht_arg, key_buf, hash_val});
 
@@ -6080,7 +6187,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     key_off += kc.elem_size;
   }
 
-  Value *hash_val = EmitInlineFNV1a(cc.b, *ctx, key_buf, key_width);
+  Value *hash_val = EmitHash(cc.b, *ctx, *mod, key_buf, key_width, inline_hash_);
 
   // Software prefetch for row+PD
   if (prefetch_) {
@@ -6104,7 +6211,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
                         ConstantInt::get(i64, kc.elem_size));
       pf_ko += kc.elem_size;
     }
-    Value *pf_hash = EmitInlineFNV1a(cc.b, *ctx, pf_key_buf, key_width);
+    Value *pf_hash = EmitHash(cc.b, *ctx, *mod, pf_key_buf, key_width, inline_hash_);
     Value *pf_idx = cc.b.CreateAnd(pf_hash, ht_mask_v);
     Value *pf_byte_off = cc.b.CreateMul(pf_idx, ht_slot_sz);
     Value *pf_addr = cc.b.CreateGEP(i8, ht_slots_base, pf_byte_off);

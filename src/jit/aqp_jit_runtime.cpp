@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#define _GNU_SOURCE
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
@@ -112,6 +113,15 @@ int aqp_str_cmp(const char *a, int32_t alen, const char *b, int32_t blen) {
     int r = memcmp(a, b, (size_t)common);
     if (r != 0) return r;
     return (int)(alen - blen);
+}
+
+// Substring containment: returns 1 iff needle appears anywhere in haystack.
+// Uses glibc memmem (Two-Way algorithm, O(n)).
+int aqp_str_contains(const char *str, int32_t slen,
+                     const char *pat, int32_t plen) {
+    if (plen == 0) return 1;
+    if (plen > slen) return 0;
+    return memmem(str, (size_t)slen, pat, (size_t)plen) != NULL ? 1 : 0;
 }
 
 } // extern "C"

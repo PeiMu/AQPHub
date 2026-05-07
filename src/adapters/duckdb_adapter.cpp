@@ -1414,6 +1414,7 @@ void DuckDBAdapter::EnsureJITCompiler() {
   }
   jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   jit_compiler_->SetBatchProbe(jit_batch_probe_);
+  jit_compiler_->SetInlineHash(jit_inline_hash_);
   if (jit_cache_)
     jit_compiler_->SetCache(true, jit_cache_dir_);
 }
