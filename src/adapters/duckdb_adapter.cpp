@@ -1186,6 +1186,30 @@ CollectIRTableIndices(const ir_sql_converter::AQPStmt *ir,
     CollectIRTableIndices(child.get(), out);
 }
 
+// Build table_name → IR table_index map.  If a name appears more than once
+// (self-join within the sub-plan), it is moved to `ambiguous` so callers
+// know not to use name-based matching for that table.
+static void
+CollectIRTableNameToIndex(const ir_sql_converter::AQPStmt *ir,
+                          std::unordered_map<std::string, unsigned int> &out,
+                          std::unordered_set<std::string> &ambiguous) {
+  if (!ir)
+    return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(ir);
+    const auto &name = scan->GetTableName();
+    auto it = out.find(name);
+    if (it != out.end()) {
+      if (it->second != scan->GetTableIndex())
+        ambiguous.insert(name);
+    } else {
+      out[name] = scan->GetTableIndex();
+    }
+  }
+  for (const auto &child : ir->children)
+    CollectIRTableNameToIndex(child.get(), out, ambiguous);
+}
+
 // Collect (table_idx, col_idx) pairs referenced by an IR filter's quals.
 static void
 CollectIRFilterCols(const ir_sql_converter::AQPStmt *filter_ir,
@@ -1445,6 +1469,11 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // Collect known IR table indices for debug validation
     std::unordered_set<unsigned int> ir_table_indices;
     CollectIRTableIndices(&ir, ir_table_indices);
+    // Name→index fallback for node-based split where sub-SQL gets fresh
+    // logical_table_index values that don't match the original IR's indices.
+    std::unordered_map<std::string, unsigned int> ir_name_to_idx;
+    std::unordered_set<std::string> ir_ambiguous_names;
+    CollectIRTableNameToIndex(&ir, ir_name_to_idx, ir_ambiguous_names);
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT-TRACE] IR table indices:";
     for (auto idx : ir_table_indices)
@@ -1469,10 +1498,31 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
       std::cerr << "[AQP-JIT-TRACE]   scan logical_table_index="
                 << ir_table_idx << "\n";
 #endif
+      // Fallback: node-based split re-parses sub-SQL which assigns fresh
+      // table indices.  Match by table name when the index isn't in the IR.
+      if (!ir_table_indices.count(ir_table_idx) && scan.bind_data) {
+        auto *tsbd =
+            dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+        if (tsbd) {
+          const auto &tname = tsbd->table.name;
+          if (!ir_ambiguous_names.count(tname)) {
+            auto it = ir_name_to_idx.find(tname);
+            if (it != ir_name_to_idx.end()) {
+              ir_table_idx = it->second;
+#ifndef NDEBUG
+              std::cerr << "[AQP-JIT-TRACE]   name fallback: \"" << tname
+                        << "\" → ir_table_idx=" << ir_table_idx << "\n";
+#endif
+            }
+          }
+        }
+      }
       if (!ir_table_indices.count(ir_table_idx)) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT-TRACE]   WARNING: no IR table matches "
                       "logical_table_index="
                   << ir_table_idx << "\n";
+#endif
       }
 
       {
@@ -1625,10 +1675,31 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
       std::cerr << "[AQP-JIT-TRACE]   proj→scan logical_table_index="
                 << ir_table_idx << "\n";
 #endif
+      // Fallback: same as TABLE_SCAN path — match by name for node-based split.
+      if (!ir_table_indices.count(ir_table_idx) && scan.bind_data) {
+        auto *tsbd =
+            dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+        if (tsbd) {
+          const auto &tname = tsbd->table.name;
+          if (!ir_ambiguous_names.count(tname)) {
+            auto it = ir_name_to_idx.find(tname);
+            if (it != ir_name_to_idx.end()) {
+              ir_table_idx = it->second;
+#ifndef NDEBUG
+              std::cerr << "[AQP-JIT-TRACE]   proj→scan name fallback: \""
+                        << tname << "\" → ir_table_idx=" << ir_table_idx
+                        << "\n";
+#endif
+            }
+          }
+        }
+      }
       if (!ir_table_indices.count(ir_table_idx)) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT-TRACE]   WARNING: proj→scan no IR table "
                       "matches logical_table_index="
                   << ir_table_idx << "\n";
+#endif
       }
 
       {
