@@ -350,16 +350,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #endif
     query_result = adapter_->ExecuteSQL(final_sql);
   }
-  if (config_.enable_timing) {
-    auto execute_final_sql_time =
-        chrono_toc(&timer, "Execute final SQL time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3)
-             << (execute_final_sql_time / 1000.0) << ", ";
-    log_file.close();
-  }
   return query_result;
 }
 
