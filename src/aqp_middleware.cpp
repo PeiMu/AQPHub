@@ -131,6 +131,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       std::cout << "\n========================================" << std::endl;
       std::cout << "Testing: " << result.query_file << std::endl;
     }
+    adapter->enable_timing_ = config.enable_timing;
 
     std::chrono::high_resolution_clock::time_point timer;
     if (config.enable_timing)
@@ -172,6 +173,20 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       if (config.enable_debug_print) {
         std::cout << "\n=== Direct Execution (No Splitting) ===" << std::endl;
       }
+
+#ifdef HAVE_LLVM
+      // Pass JIT flags to the adapter so ExecuteSQL can trigger the JIT path
+      // even without a splitter.
+      auto *duckdb_adp = dynamic_cast<DuckDBAdapter *>(adapter);
+      if (duckdb_adp) {
+        duckdb_adp->SetJITFlags(config.jit_flags);
+        duckdb_adp->SetJITOptFlags(
+            config.jit_fusion_build, config.jit_fusion_probe,
+            config.jit_inline_hash, config.jit_payload_prune,
+            config.jit_prefetch, config.jit_prefetch_distance,
+            config.jit_batch_probe, config.jit_cache, config.jit_cache_dir);
+      }
+#endif
 
       query_result = adapter->ExecuteSQL(sql);
     }

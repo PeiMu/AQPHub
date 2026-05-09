@@ -63,7 +63,7 @@ for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
     echo "Running benchmark for ${sql}..."
 
     hyperfine --warmup ${warmup} --runs ${iteration} --export-csv temp.csv \
-    "${cmd_prefix}../build/aqp_middleware --engine=${engine} \
+    "${cmd_prefix}../build_release/aqp_middleware --engine=${engine} \
     --db=\"${db_conn}\" \
     \"${helper_db_arg}\" \
     --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \

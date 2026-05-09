@@ -2,8 +2,49 @@
 
 engine=$1
 split=$2
+jit_level=$3
+jit_opt=$4
+jit_simd=$5
+fusion_build=${6:-on}     # on / off
+fusion_probe=${7:-on}     # on / off
+inline_hash=${8:-on}      # on / off
+payload_prune=${9:-on}    # on / off
+prefetch=${10:-on}        # on / off / <distance>
+batch_probe=${11:-on}     # on / off
+cache=${12:-off}          # off / on / <path>
 
-log_name=aqp_middleware_${engine}_${split}_job.csv
+# Build CLI flags from positional args
+jit_extra_flags=""
+[[ "$fusion_build"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-build"
+[[ "$fusion_probe"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-probe"
+[[ "$inline_hash"   == "off" ]] && jit_extra_flags+=" --no-jit-inline-hash"
+[[ "$payload_prune" == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
+if [[ "$prefetch" == "off" ]]; then
+    jit_extra_flags+=" --no-jit-prefetch"
+elif [[ "$prefetch" != "on" ]]; then
+    jit_extra_flags+=" --jit-prefetch=${prefetch}"
+fi
+[[ "$batch_probe" == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
+if [[ "$cache" == "off" ]]; then
+    jit_extra_flags+=" --no-jit-cache"
+elif [[ "$cache" == "on" ]]; then
+    jit_extra_flags+=" --jit-cache"
+else
+    jit_extra_flags+=" --jit-cache=${cache}"
+fi
+
+# Build a short suffix for the log filename
+flag_suffix=""
+[[ "$fusion_build"  == "off" ]] && flag_suffix+="_nofusbuild"
+[[ "$fusion_probe"  == "off" ]] && flag_suffix+="_nofusprobe"
+[[ "$inline_hash"   == "off" ]] && flag_suffix+="_noinlhash"
+[[ "$payload_prune" == "off" ]] && flag_suffix+="_nopayprune"
+[[ "$prefetch"      == "off" ]] && flag_suffix+="_noprefetch"
+[[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
+[[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
+[[ "$cache"         != "off" ]] && flag_suffix+="_cache"
+
+log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_job.csv
 if [[ "$engine" == "mariadb" ]]; then
     dir="$JOB_PATH/mariadb_queries"
 else 
@@ -66,12 +107,12 @@ for sql in "${dir}"/*.sql; do
     echo "Running benchmark for ${sql}..."
 
     hyperfine --warmup ${warmup} --runs ${iteration} --export-csv temp.csv \
-    "${cmd_prefix}../build/aqp_middleware --engine=${engine} \
+    "${cmd_prefix}../build_release/aqp_middleware --engine=${engine} \
     --db=\"${db_conn}\" \
     \"${helper_db_arg}\" \
     --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
     --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-    --split=\"${split}\" --no-analyze ${sql}"
+    --split=\"${split}\" --no-analyze --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} ${jit_extra_flags} ${sql}"
     cat temp.csv >> "${log_name}"
 done
 

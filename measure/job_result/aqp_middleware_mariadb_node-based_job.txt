@@ -1,0 +1,964 @@
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql...
+
+Test FAILED for 10c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox Home Entertainment|(1997-2002) (worldwide) (all media)|24|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+13th Street||...denn sie wissen nicht, was sie tun|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+10th Grade Reunion Films|8.1|3:20|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+$10,000|Birdemic: Shock and Terror|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql...
+
+Test FAILED for 12c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Afghanistan:24 June 2012|1.0|_grau|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+11 Films|1.8|5 Time Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+DL Sites|1.8|Champion|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql...
+
+Test FAILED for 13d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql...
+
+Test FAILED for 14a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+6.4|Of Dolls and Murder|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql...
+
+Test FAILED for 14c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql...
+
+Test FAILED for 15b.sql
+Error: Failed to create temp table: Incorrect column name 'temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:1 April 2003|24: Day Six - Debrief|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+¡He creado un monstruo... y encima estoy por él!|06/05|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Adams, Stan|Carol Burnett vs. Anthony Perkins|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16b.sql...
+
+Test FAILED for 16b.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16c.sql...
+
+Test FAILED for 16c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/16d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|(#1.5)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql...
+
+Test FAILED for 17a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql...
+
+Test FAILED for 17b.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql...
+
+Test FAILED for 17c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql...
+
+Test FAILED for 17d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17e.sql...
+
+Test FAILED for 17e.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql...
+
+Test FAILED for 17f.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql...
+
+Test FAILED for 18a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql...
+
+Test FAILED for 18c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Ambrose, Tangie|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Jolie, Angelina|Kung Fu Panda|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql...
+
+Test FAILED for 19c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql...
+
+Test FAILED for 19d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(A Warner Bros.-First National Picture) (presents)|A Clockwork Orange|1934|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+|Birdemic: Shock and Terror|2006|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(co-production)|Intouchables|2011|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+|Anne B. Real|2003|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql...
+
+Test FAILED for 20a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Iron Man|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/20c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Abell, Alistair|...And Then I...|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql...
+
+Test FAILED for 22a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql...
+
+Test FAILED for 22b.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql...
+
+Test FAILED for 22c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql...
+
+Test FAILED for 22d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Analysts|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|Dirt Merchant|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Gankyo Kurubiyutei|Judovits, Danielle|Joshiraku|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql...
+
+Test FAILED for 24b.sql
+Error: Failed to create temp table: Incorrect column name 'temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql...
+
+Test FAILED for 25a.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|138|Campbell, Jeremiah|Vampire Boys|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql...
+
+Test FAILED for 25c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql...
+
+Test FAILED for 26a.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql...
+
+Test FAILED for 26b.sql
+Error: Failed to create temp table: Incorrect column name 'temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql...
+
+Test FAILED for 26c.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_8_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql...
+
+Test FAILED for 27a.sql
+Error: Failed to create temp table: Incorrect column name 'temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_complete_cast_0_status_id'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql...
+
+Test FAILED for 27b.sql
+Error: Failed to create temp table: Incorrect column name 'temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql...
+
+Test FAILED for 27c.sql
+Error: Failed to create temp table: Incorrect column name 'temp7_32_temp6_30_temp5_28_temp4_26_temp3_24_complete_cast_0_status_id'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql...
+
+Test FAILED for 28a.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql...
+
+Test FAILED for 28b.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql...
+
+Test FAILED for 28c.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_11_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql...
+
+Test FAILED for 29a.sql
+Error: Failed to create temp table: Incorrect column name 'temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql...
+
+Test FAILED for 29b.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql...
+
+Test FAILED for 29c.sql
+Error: Failed to create temp table: Incorrect column name 'temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp3_28_title_16_title'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+¿Alguien ha visto a Lupita?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+...continuavano a chiamarlo Trinità|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql...
+
+Test FAILED for 2d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql...
+
+Test FAILED for 30a.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|194782|Shannon, Damian|Freddy vs. Jason|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql...
+
+Test FAILED for 30c.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql...
+
+Test FAILED for 31a.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_30_temp5_28_temp4_26_temp3_24_temp1_20_movie_info_idx_7_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|129755|Bousman, Darren Lynn|Saw|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql...
+
+Test FAILED for 31c.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_7_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+alternate language version of|12 oz. Mouse|¿Lo dejamos acá?|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql...
+
+Test FAILED for 33a.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_10_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql...
+
+Test FAILED for 33b.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql...
+
+Test FAILED for 33c.sql
+Error: Failed to create temp table: Incorrect column name 'temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info'
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2 Days in New York|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+300: Rise of an Empire|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+...Reel Five|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+5.1|¡Maldito bastardo!|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+9.1|Batman: Arkham City|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+2.1|¡¡Semos peligrosos!! (uséase Makinavaja 2)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 1
+11,830,420|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql...
+
+Test FAILED for 6d.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6e.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/6f.sql...
+
+Test FAILED for 6f.sql
+Error: Failed to store result: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chevalier, Maurice|Clint Eastwood: The Man from Malpaso|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+De Palma, Brian|Dressed to Kill|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql...
+
+Test FAILED for 7c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|.hack//Quantum|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Dragon Ball Z: Shin Budokai|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8c.sql...
+
+Test FAILED for 8c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql...
+
+Test FAILED for 8d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AJ|Additional Characters|28 Days Later: The Aftermath (Chapter 1)|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql...
+
+=== Query Results ===
+Rows: 1, Columns: 4
+AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql...
+
+Test FAILED for 9c.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================
+Running benchmark for /home/pei/Project/benchmarks/imdb_job-postgres/queries/9d.sql...
+
+Test FAILED for 9d.sql
+Error: Failed to create temp table: Query was interrupted: execution time limit 1000.0 sec exceeded
+
+========================================
+Execution completed
+========================================

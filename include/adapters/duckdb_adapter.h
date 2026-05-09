@@ -40,6 +40,12 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 
+#ifdef HAVE_LLVM
+#include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/execution/aqp_jit.hpp"
+#include "jit/ir_to_llvm.h"
+#endif
+
 #define IN_MEM_TMP_TABLE true
 
 namespace duckdb {
@@ -102,8 +108,7 @@ public:
   QueryResult ExecuteSQL(const std::string &sql) override;
   void ExecuteSQLandCreateTempTable(const std::string &sql,
                                     const std::string &temp_table_name,
-                                    bool update_temp_card,
-                                    bool enable_timing) override;
+                                    bool update_temp_card) override;
 
   // Temp table management
   void CreateTempTable(const std::string &table_name,
@@ -127,6 +132,34 @@ public:
 
   // Get context and binder for IR conversion
   duckdb::ClientContext *GetClientContext();
+
+#ifdef HAVE_LLVM
+  // JIT: set the sub-IR and flags for compilation before the next
+  // ExecuteSQLandCreateTempTable call. Called by IRQuerySplitter.
+  void SetJITPendingIR(const ir_sql_converter::AQPStmt *ir, uint32_t flags = 0) {
+    jit_pending_ir_ = ir;
+    jit_flags_ = flags;
+  }
+
+  // Set JIT flags independently (used in no-split path where SetJITPendingIR
+  // is not called by the splitter).
+  void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
+
+  void SetJITOptFlags(bool fusion_build, bool fusion_probe, bool inline_hash,
+                      bool payload_prune, bool prefetch, int prefetch_dist,
+                      bool batch_probe, bool cache,
+                      const std::string &cache_dir) {
+    jit_fusion_build_ = fusion_build;
+    jit_fusion_probe_ = fusion_probe;
+    jit_inline_hash_ = inline_hash;
+    jit_payload_prune_ = payload_prune;
+    jit_prefetch_ = prefetch;
+    jit_prefetch_distance_ = prefetch_dist;
+    jit_batch_probe_ = batch_probe;
+    jit_cache_ = cache;
+    jit_cache_dir_ = cache_dir;
+  }
+#endif
 
   // NodeBasedSplitter support
   // Return the chunk table index allocated by the last
@@ -183,6 +216,52 @@ private:
   // Index allocated by the most recent ExecuteSQLandCreateTempTable call;
   // used by ExecuteSplitLoopNodeBased to call sp.SetNewTableIndex correctly.
   duckdb::idx_t temp_table_index_ = 0;
+
+#ifdef HAVE_LLVM
+#define BREAK_DOWN_COMPILE_TIME false
+//  // Per-phase JIT compilation timing (microseconds), accumulated by RegisterJIT.
+//  struct JitTimingStats {
+//    long compile_filter_us = 0;
+//    long compile_projection_us = 0;
+//    long compile_aggregate_us = 0;
+//    long compile_hash_build_us = 0;
+//    long compile_hash_probe_us = 0;
+//    long compile_pipeline_us = 0; // filter+project, filter+agg, filter+hashbuild, filter+probe+proj
+//    long compile_sql_us = 0;
+//    long register_jit_us = 0;
+//    long run_us = 0;
+//    void Reset() { memset(this, 0, sizeof(JitTimingStats)); }
+//  };
+//  JitTimingStats jit_timing_;
+
+  // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
+  const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
+  uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
+
+  // Per-optimization toggles (from ParamConfig)
+  bool jit_fusion_build_ = true;
+  bool jit_fusion_probe_ = true;
+  bool jit_inline_hash_ = true;
+  bool jit_payload_prune_ = true;
+  bool jit_prefetch_ = true;
+  int  jit_prefetch_distance_ = 8;
+  bool jit_batch_probe_ = true;
+  bool jit_cache_ = false;
+  std::string jit_cache_dir_;
+  // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
+  std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
+
+  // Keeps the LLJIT instance alive until after query execution so that
+  // compiled function pointers stored in AQPJITContext remain valid.
+  std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
+
+  // Lazily create and configure the JIT compiler with all flags.
+  void EnsureJITCompiler();
+
+  // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
+  void RegisterJIT(duckdb::PhysicalOperator &op,
+                          const ir_sql_converter::AQPStmt &ir);
+#endif
 
   // Column names for each chunk table: data_chunk_index → column names as
   // stored in the temp table. Used by ConvertDuckDBPlanToIR to resolve correct

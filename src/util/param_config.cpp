@@ -3,6 +3,7 @@
  */
 
 #include "util/param_config.h"
+#include "jit/aqp_jit_abi.h"
 #include <algorithm>
 #include <cctype>
 
@@ -122,6 +123,98 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_debug_print = true;
     } else if (arg == "--combine-sub-plans") {
       config.enable_sub_plan_combiner = true;
+    } else if (arg == "--jit") {
+      // Backward-compatible: --jit alone enables expression-level JIT
+      config.jit_flags |= AQP_JIT_EXPR;
+    } else if (arg.find("--jit-level=") == 0) {
+      std::string level = to_lower(arg.substr(12));
+      if (level == "none") {
+        config.jit_flags |= AQP_JIT_NONE;
+      } else if (level == "expr") {
+        config.jit_flags |= AQP_JIT_EXPR;
+      } else if (level == "operator") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+      } else if (level == "pipeline") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE;
+      } else if (level == "sql" || level == "subplan") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SQL;
+      } else {
+        throw std::runtime_error(
+            "Unknown JIT level: " + arg.substr(12) +
+            " (valid: expr, operator, pipeline, sql, subplan)");
+      }
+    } else if (arg.find("--jit-simd=") == 0) {
+      std::string simd = to_lower(arg.substr(11));
+      config.jit_flags &= ~AQP_JIT_SIMD_MASK;
+      if (simd == "off" || simd == "none")
+        config.jit_flags |= AQP_JIT_SIMD_OFF;
+      else if (simd == "sse2")
+        config.jit_flags |= AQP_JIT_SIMD_SSE2;
+      else if (simd == "avx")
+        config.jit_flags |= AQP_JIT_SIMD_AVX;
+      else if (simd == "avx2")
+        config.jit_flags |= AQP_JIT_SIMD_AVX2;
+      else if (simd == "avx512")
+        config.jit_flags |= AQP_JIT_SIMD_AVX512;
+      else if (simd == "auto")
+        config.jit_flags |= AQP_JIT_SIMD_AUTO;
+      else
+        throw std::runtime_error(
+            "Unknown SIMD level: " + simd +
+            " (valid: off, sse2, avx, avx2, avx512, auto)");
+    } else if (arg == "--jit-simd") {
+      config.jit_flags = (config.jit_flags & ~AQP_JIT_SIMD_MASK) | AQP_JIT_SIMD_AUTO;
+    }
+    // Per-optimization toggles
+    else if (arg == "--jit-fusion-build") {
+      config.jit_fusion_build = true;
+    } else if (arg == "--no-jit-fusion-build") {
+      config.jit_fusion_build = false;
+    } else if (arg == "--jit-fusion-probe") {
+      config.jit_fusion_probe = true;
+    } else if (arg == "--no-jit-fusion-probe") {
+      config.jit_fusion_probe = false;
+    } else if (arg == "--jit-inline-hash") {
+      config.jit_inline_hash = true;
+    } else if (arg == "--no-jit-inline-hash") {
+      config.jit_inline_hash = false;
+    } else if (arg == "--jit-payload-prune") {
+      config.jit_payload_prune = true;
+    } else if (arg == "--no-jit-payload-prune") {
+      config.jit_payload_prune = false;
+    } else if (arg == "--jit-prefetch") {
+      config.jit_prefetch = true;
+    } else if (arg.find("--jit-prefetch=") == 0) {
+      config.jit_prefetch = true;
+      config.jit_prefetch_distance = std::stoi(arg.substr(15));
+    } else if (arg == "--no-jit-prefetch") {
+      config.jit_prefetch = false;
+    } else if (arg == "--jit-batch-probe") {
+      config.jit_batch_probe = true;
+    } else if (arg == "--no-jit-batch-probe") {
+      config.jit_batch_probe = false;
+    } else if (arg == "--jit-cache") {
+      config.jit_cache = true;
+    } else if (arg.find("--jit-cache=") == 0) {
+      config.jit_cache = true;
+      config.jit_cache_dir = arg.substr(12);
+    } else if (arg == "--no-jit-cache") {
+      config.jit_cache = false;
+    } else if (arg.find("--jit-opt=") == 0) {
+      std::string opt = to_lower(arg.substr(10));
+      config.jit_flags &= ~AQP_JIT_OPT_MASK;
+      if (opt == "o0" || opt == "0")
+        config.jit_flags |= AQP_JIT_OPT_O0;
+      else if (opt == "o1" || opt == "1")
+        config.jit_flags |= AQP_JIT_OPT_O1;
+      else if (opt == "o2" || opt == "2")
+        config.jit_flags |= AQP_JIT_OPT_O2;
+      else if (opt == "o3" || opt == "3")
+        config.jit_flags |= AQP_JIT_OPT_O3;
+      else
+        throw std::runtime_error(
+            "Unknown JIT opt level: " + opt +
+            " (valid: O0, O1, O2, O3)");
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -184,6 +277,44 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --combine-sub-plans              Collect all sub-SQLs and "
                "print combined CTE at end (default: disabled)"
+            << std::endl;
+  std::cout << "  --jit                            JIT-compile filter expressions "
+               "(same as --jit-level=expr)"
+            << std::endl;
+  std::cout << "  --jit-level=<level>              JIT granularity: expr, "
+               "operator, pipeline, sql (alias: subplan)"
+            << std::endl;
+  std::cout << "  --jit-simd[=<level>]             Enable SIMD: sse2, avx, "
+               "avx2, avx512, auto (default: auto)"
+            << std::endl;
+  std::cout << "  --jit-opt=<O0|O1|O2|O3>         LLVM optimization level "
+               "(default: O1)"
+            << std::endl;
+  std::cout << "  --no-jit                         Disable JIT compilation"
+            << std::endl;
+  std::cout << "\n  Pipeline-JIT optimization toggles (enabled by "
+               "default at pipeline+ level):"
+            << std::endl;
+  std::cout << "  --[no-]jit-fusion-build          Filter+HashBuild "
+               "fusion"
+            << std::endl;
+  std::cout << "  --[no-]jit-fusion-probe          Filter+Probe+"
+               "Projection fusion"
+            << std::endl;
+  std::cout << "  --[no-]jit-inline-hash           Inline FNV-1a hash "
+               "as LLVM IR"
+            << std::endl;
+  std::cout << "  --[no-]jit-payload-prune         Hash build payload "
+               "pruning"
+            << std::endl;
+  std::cout << "  --[no-]jit-prefetch[=N]          Software prefetch "
+               "for hash probe (default N=8)"
+            << std::endl;
+  std::cout << "  --[no-]jit-batch-probe           Batch/vectorized "
+               "hash probe"
+            << std::endl;
+  std::cout << "  --[no-]jit-cache[=path]          Cross-process "
+               "compiled binary cache"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

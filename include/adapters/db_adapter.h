@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -46,8 +47,7 @@ public:
   virtual QueryResult ExecuteSQL(const std::string &sql) = 0;
   virtual void ExecuteSQLandCreateTempTable(const std::string &sql,
                                             const std::string &temp_table_name,
-                                            bool update_temp_card,
-                                            bool enable_timing) = 0;
+                                            bool update_temp_card) = 0;
 
   // Temp table management
   virtual void CreateTempTable(const std::string &table_name,
@@ -87,11 +87,24 @@ public:
 
   virtual std::string GetEngineName() const = 0;
 
+  // Pipeline detection: is this IR node a pipeline breaker?
+  // Default: infer from IR node type (AggregateNode, HashNode, SortNode).
+  // Engines with physical plan access (DuckDB) override with IsSink() check.
+  virtual bool IsPipelineBreaker(
+      const ir_sql_converter::AQPStmt &node) const {
+    auto nt = node.GetNodeType();
+    return nt == ir_sql_converter::SimplestNodeType::AggregateNode ||
+           nt == ir_sql_converter::SimplestNodeType::HashNode ||
+           nt == ir_sql_converter::SimplestNodeType::SortNode;
+  }
+
   virtual void CleanUp() = 0;
 
   unsigned int subquery_index = 0;
 
   // std::string intermediate_table_name, int64_t created_table_size
   std::unordered_map<std::string, int64_t> temp_table_card_;
+
+  bool enable_timing_ = false;
 };
 } // namespace middleware

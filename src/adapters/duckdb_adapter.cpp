@@ -4,8 +4,73 @@
 
 #include "adapters/duckdb_adapter.h"
 
+#include <fstream>
+#include <functional>
+#include <iomanip>
 #include <iostream>
+#include <set>
+#include <sstream>
 #include <stdexcept>
+#include <unordered_set>
+
+#ifdef HAVE_LLVM
+#include "duckdb/execution/operator/join/physical_hash_join.hpp"
+#include "duckdb/execution/operator/projection/physical_projection.hpp"
+#include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/function/table/table_scan.hpp"
+#include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "jit/aqp_jit_hashtable.h"
+#include "simplest_ir.h"
+
+// Resolve jit_flags bitfields to typed enums for IrToLlvmCompiler
+static aqp_jit::OptLevel ResolveOptLevel(uint32_t flags) {
+  // Legacy AQP_JIT_OPT3 (0x08) maps to O3
+  if (flags & AQP_JIT_OPT3)
+    return aqp_jit::OptLevel::O3;
+  switch (flags & AQP_JIT_OPT_MASK) {
+  case AQP_JIT_OPT_O0:
+    return aqp_jit::OptLevel::O0;
+  case AQP_JIT_OPT_O1:
+    return aqp_jit::OptLevel::O1;
+  case AQP_JIT_OPT_O2:
+    return aqp_jit::OptLevel::O2;
+  case AQP_JIT_OPT_O3:
+    return aqp_jit::OptLevel::O3;
+  }
+  return aqp_jit::OptLevel::O1; // default
+}
+
+static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
+  // Legacy AQP_JIT_SIMD (0x20) maps to AUTO
+  if (flags & AQP_JIT_SIMD)
+    return aqp_jit::SimdISA::AUTO;
+  switch (flags & AQP_JIT_SIMD_MASK) {
+  case AQP_JIT_SIMD_OFF:
+    return aqp_jit::SimdISA::OFF;
+  case AQP_JIT_SIMD_SSE2:
+    return aqp_jit::SimdISA::SSE2;
+  case AQP_JIT_SIMD_AVX:
+    return aqp_jit::SimdISA::AVX;
+  case AQP_JIT_SIMD_AVX2:
+    return aqp_jit::SimdISA::AVX2;
+  case AQP_JIT_SIMD_AVX512:
+    return aqp_jit::SimdISA::AVX512;
+  case AQP_JIT_SIMD_AUTO:
+    return aqp_jit::SimdISA::AUTO;
+  }
+  return aqp_jit::SimdISA::OFF;
+}
+#endif
+
+// Write one JIT timing value (in ms) as a CSV column.
+static void WriteJitTimingColumn(long us) {
+  std::ofstream log_file;
+  log_file.open("time_log.csv", std::ios_base::app);
+  log_file << std::fixed << std::setprecision(3) << (us / 1000.0) << ", ";
+  log_file.close();
+}
 
 namespace middleware {
 
@@ -276,13 +341,79 @@ void *DuckDBAdapter::GetLogicalPlan() {
   return static_cast<void *>(plan.get());
 }
 
-std::unique_ptr<ir_sql_converter::AQPStmt>
-DuckDBAdapter::ConvertPlanToIR() {
+// Collect ALL FilterNodes in DFS order.
+static void
+CollectAllFilterNodes(const ir_sql_converter::AQPStmt *ir,
+                      std::vector<const ir_sql_converter::AQPStmt *> &out) {
+  if (!ir)
+    return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode)
+    out.push_back(ir);
+  for (const auto &child : ir->children)
+    CollectAllFilterNodes(child.get(), out);
+}
+
+// Collect ALL ScanNodes in DFS order.
+static void
+CollectAllScanNodes(const ir_sql_converter::AQPStmt *ir,
+                    std::vector<const ir_sql_converter::AQPStmt *> &out) {
+  if (!ir)
+    return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode)
+    out.push_back(ir);
+  for (const auto &child : ir->children)
+    CollectAllScanNodes(child.get(), out);
+}
+
+std::unique_ptr<ir_sql_converter::AQPStmt> DuckDBAdapter::ConvertPlanToIR() {
   auto context = GetClientContext();
   auto logical_plan = std::move(plan);
+
+#ifndef NDEBUG
+  std::cerr << "[AQP-JIT-TRACE] === Logical plan before IR conversion ===\n";
+  if (logical_plan)
+    logical_plan->Print();
+#endif
+
   auto ir = ir_sql_converter::ConvertDuckDBPlanToIR(
       *planner->binder, *context, logical_plan.get(), intermediate_table_map,
       false, &chunk_col_names_);
+
+#ifndef NDEBUG
+  if (ir) {
+    std::cerr << "[AQP-JIT-TRACE] === IR after conversion ===\n";
+    std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+    CollectAllFilterNodes(ir.get(), all_filters);
+    std::cerr << "[AQP-JIT-TRACE] IR has " << all_filters.size()
+              << " FilterNode(s)\n";
+    for (size_t fi = 0; fi < all_filters.size(); fi++) {
+      std::cerr << "[AQP-JIT-TRACE]   filter[" << fi
+                << "] qual_vec.size=" << all_filters[fi]->qual_vec.size()
+                << "\n";
+      for (size_t qi = 0; qi < all_filters[fi]->qual_vec.size(); qi++) {
+        std::string qs = all_filters[fi]->qual_vec[qi]->Print(false);
+        std::cerr << "[AQP-JIT-TRACE]     qual[" << qi << "]: " << qs << "\n";
+      }
+    }
+    // Also dump all ScanNodes and their qual_vecs
+    std::vector<const ir_sql_converter::AQPStmt *> all_scans;
+    CollectAllScanNodes(ir.get(), all_scans);
+    std::cerr << "[AQP-JIT-TRACE] IR has " << all_scans.size()
+              << " ScanNode(s)\n";
+    for (size_t si = 0; si < all_scans.size(); si++) {
+      auto *sn = all_scans[si];
+      auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(sn);
+      std::cerr << "[AQP-JIT-TRACE]   scan[" << si
+                << "] table_idx=" << scan->GetTableIndex()
+                << " target_list.size=" << sn->target_list.size()
+                << " qual_vec.size=" << sn->qual_vec.size() << "\n";
+      for (size_t qi = 0; qi < sn->qual_vec.size(); qi++) {
+        std::string qs = sn->qual_vec[qi]->Print(false);
+        std::cerr << "[AQP-JIT-TRACE]     qual[" << qi << "]: " << qs << "\n";
+      }
+    }
+  }
+#endif
 
   return std::move(ir);
 }
@@ -290,33 +421,157 @@ DuckDBAdapter::ConvertPlanToIR() {
 QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   QueryResult result;
 
-  auto duckdb_result = conn->Query(sql);
-  if (duckdb_result->HasError()) {
-    throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+#ifdef HAVE_LLVM
+#ifndef NDEBUG
+  std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: jit_pending_ir_="
+            << (void *)jit_pending_ir_ << " jit_flags_=0x" << std::hex
+            << jit_flags_ << std::dec << "\n";
+#endif
+
+  // When JIT is requested but no pending IR (e.g. --split=none
+  // --jit-level=expr), build the IR pipeline: parse -> filter optimize ->
+  // convert to IR.
+  auto timer = chrono_tic();
+  bool jit_active = false;
+  if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
+    jit_active = true;
+    ParseSQL(sql);
+    FilterOptimize();
+    auto whole_ir = ConvertPlanToIR();
+    if (whole_ir) {
+      SetJITPendingIR(whole_ir.get(), jit_flags_);
+      // Ownership: whole_ir must stay alive until RegisterJIT reads it below.
+      // Store it so it isn't destroyed when this scope ends.
+      owned_jit_ir_ = std::move(whole_ir);
+      jit_pending_ir_ = owned_jit_ir_.get();
+    } else {
+      std::cerr << "[AQP-JIT] ConvertPlanToIR failed → interpreter fallback\n";
+    }
   }
-  //  auto intermediate_results = std::move(duckdb_result->Collection());
 
-  // Get columns
-  result.num_columns = duckdb_result->ColumnCount();
-  for (size_t i = 0; i < result.num_columns; i++) {
-    result.column_names.push_back(duckdb_result->ColumnName(i));
-  }
+  // If JIT pending IR is set, use Prepare path so we can walk the physical
+  // plan and register compiled filters before execution.
+  if (jit_pending_ir_) {
+    auto prepared = conn->Prepare(sql);
+    if (!prepared->HasError() && prepared->data &&
+        prepared->data->physical_plan) {
+      // Reset JIT context (stale function pointers would crash if dispatched).
+      // Keep jit_compiler_ alive — reusing the LLJIT instance avoids
+      // re-registering 15+ runtime symbols and re-initializing the JIT on every
+      // sub-plan.
+      GetClientContext()->aqp_jit_context.reset();
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset aqp_jit_context "
+                   "(compiler reused)\n";
+#endif
+      RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
-  // Get rows
-  result.num_rows = 0;
-  while (true) {
-    auto chunk = duckdb_result->Fetch();
-    if (!chunk || 0 == chunk->size())
-      break;
-
-    for (size_t row = 0; row < chunk->size(); row++) {
-      std::vector<std::string> row_data;
-      row_data.reserve(result.num_columns);
-      for (size_t col = 0; col < result.num_columns; col++) {
-        row_data.push_back(chunk->GetValue(col, row).ToString());
+      // Level 4: SQL-level compilation — compile the entire IR tree
+      if (jit_flags_ & AQP_JIT_SQL) {
+        EnsureJITCompiler();
+        auto compile_sql_timer = chrono_tic();
+        void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
+        if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+          chrono_toc(&compile_sql_timer, "ExecuteSQL::CompileSQL\n", false);
+        }
+        if (sql_result) {
+          auto *ctx_sql = GetClientContext();
+          if (ctx_sql->aqp_jit_context) {
+            ctx_sql->aqp_jit_context->flags |= duckdb::AQPJIT_SQL;
+#ifndef NDEBUG
+            std::cerr << "[AQP-JIT] SQL-level compiled for this IR\n";
+#endif
+          }
+        }
       }
-      result.rows.push_back(std::move(row_data));
-      result.num_rows++;
+
+      if (enable_timing_) {
+        // Record total JIT compile time (includes Prepare + RegisterJIT +
+        // CompileSQL) Record total JIT compile time
+        auto jit_compile_time =
+            chrono_toc(&timer, "ExecuteSQL::jit compile time\n", false);
+        WriteJitTimingColumn(jit_compile_time);
+      }
+
+      auto *ctx = GetClientContext();
+#ifndef NDEBUG
+      if (ctx->aqp_jit_context) {
+        std::cerr << "[AQP-JIT] summary: flags=0x" << std::hex
+                  << ctx->aqp_jit_context->flags << std::dec
+                  << " expr_fns=" << ctx->aqp_jit_context->expr_fns.size()
+                  << " op_fns=" << ctx->aqp_jit_context->op_fns.size()
+                  << " proj_maps=" << ctx->aqp_jit_context->proj_col_maps.size()
+                  << " agg_fns=" << ctx->aqp_jit_context->agg_fns.size()
+                  << " pipeline_fns="
+                  << ctx->aqp_jit_context->pipeline_fns.size()
+                  << " scan_filter="
+                  << ctx->aqp_jit_context->scan_filter_fns.size() << "\n";
+      }
+#endif
+    }
+
+    jit_pending_ir_ = nullptr;
+    duckdb::vector<duckdb::Value> bound;
+    auto duckdb_result = prepared->Execute(bound, false);
+    if (enable_timing_) {
+      auto run_us =
+          chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
+      WriteJitTimingColumn(run_us);
+    }
+    if (duckdb_result->HasError())
+      throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+    result.num_columns = duckdb_result->ColumnCount();
+    for (size_t i = 0; i < result.num_columns; i++)
+      result.column_names.push_back(duckdb_result->ColumnName(i));
+    result.num_rows = 0;
+    while (true) {
+      auto chunk = duckdb_result->Fetch();
+      if (!chunk || 0 == chunk->size())
+        break;
+      for (size_t row = 0; row < chunk->size(); row++) {
+        std::vector<std::string> row_data;
+        for (size_t col = 0; col < result.num_columns; col++)
+          row_data.push_back(chunk->GetValue(col, row).ToString());
+        result.rows.push_back(row_data);
+        result.num_rows++;
+      }
+    }
+  } else
+#endif
+  {
+    auto duckdb_result = conn->Query(sql);
+    if (enable_timing_) {
+      auto run_us =
+          chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
+      WriteJitTimingColumn(run_us);
+    }
+    if (duckdb_result->HasError()) {
+      throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+    }
+    //  auto intermediate_results = std::move(duckdb_result->Collection());
+
+    // Get columns
+    result.num_columns = duckdb_result->ColumnCount();
+    for (size_t i = 0; i < result.num_columns; i++) {
+      result.column_names.push_back(duckdb_result->ColumnName(i));
+    }
+
+    // Get rows
+    result.num_rows = 0;
+    while (true) {
+      auto chunk = duckdb_result->Fetch();
+      if (!chunk || 0 == chunk->size())
+        break;
+
+      for (size_t row = 0; row < chunk->size(); row++) {
+        std::vector<std::string> row_data;
+        row_data.reserve(result.num_columns);
+        for (size_t col = 0; col < result.num_columns; col++) {
+          row_data.push_back(chunk->GetValue(col, row).ToString());
+        }
+        result.rows.push_back(std::move(row_data));
+        result.num_rows++;
+      }
     }
   }
   return result;
@@ -325,26 +580,83 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
 #if IN_MEM_TMP_TABLE
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card, bool enable_timing) {
+    bool update_temp_card) {
   std::chrono::high_resolution_clock::time_point timer;
-  if (enable_timing)
+  bool jit_active = false;
+  if (enable_timing_) {
     timer = chrono_tic();
+  }
   auto prepared = conn->Prepare(sql);
   if (prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
                              prepared->GetError());
   }
+
+#ifdef HAVE_LLVM
+  // JIT: compile filters from the pending IR and register before execution.
+  if (jit_pending_ir_ && prepared->data && prepared->data->physical_plan) {
+    jit_active = true;
+    // Reset JIT context (stale function pointers would crash if dispatched).
+    // Keep jit_compiler_ alive — reusing LLJIT avoids re-init overhead.
+    GetClientContext()->aqp_jit_context.reset();
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset "
+                 "aqp_jit_context (compiler reused)\n";
+#endif
+    RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+
+    // Level 4: SQL-level compilation — compile the sub-SQL IR tree
+    if (jit_flags_ & AQP_JIT_SQL) {
+      EnsureJITCompiler();
+      auto compile_sql_timer = chrono_tic();
+      void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&compile_sql_timer,
+                   "ExecuteSQLandCreateTempTable::CompileSQL\n", false);
+      }
+      if (sql_result) {
+        auto *ctx_sp = GetClientContext();
+        if (ctx_sp->aqp_jit_context) {
+          ctx_sp->aqp_jit_context->flags |= duckdb::AQPJIT_SQL;
+#ifndef NDEBUG
+          std::cerr << "[AQP-JIT] SQL-level compiled for this sub-IR\n";
+#endif
+        }
+      }
+    }
+
+    if (enable_timing_) {
+      // Record total JIT compile time (includes Prepare + RegisterJIT +
+      // CompileSQL) Record total JIT compile time
+      auto jit_compile_time = chrono_toc(
+          &timer, "ExecuteSQLandCreateTempTable::jit compile time\n", false);
+      WriteJitTimingColumn(jit_compile_time);
+    }
+
+    auto *ctx2 = GetClientContext();
+#ifndef NDEBUG
+    if (ctx2->aqp_jit_context) {
+      std::cerr << "[AQP-JIT] summary: flags=0x" << std::hex
+                << ctx2->aqp_jit_context->flags << std::dec
+                << " expr_fns=" << ctx2->aqp_jit_context->expr_fns.size()
+                << " op_fns=" << ctx2->aqp_jit_context->op_fns.size()
+                << " proj_maps=" << ctx2->aqp_jit_context->proj_col_maps.size()
+                << " agg_fns=" << ctx2->aqp_jit_context->agg_fns.size()
+                << " pipeline_fns="
+                << ctx2->aqp_jit_context->pipeline_fns.size() << " scan_filter="
+                << ctx2->aqp_jit_context->scan_filter_fns.size() << "\n";
+    }
+#endif
+    jit_pending_ir_ = nullptr;
+  }
+#endif
+
   duckdb::vector<duckdb::Value> bound_values;
   auto subquery_result = prepared->ExecuteRow(bound_values, false);
-  if (enable_timing) {
-    auto execute_sub_sql_time =
-        chrono_toc(&timer, "Execute sub-SQL time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3)
-             << (execute_sub_sql_time / 1000.0) << ", ";
-    log_file.close();
+  if (enable_timing_) {
+    auto run_us = chrono_toc(
+        &timer, "ExecuteSQLandCreateTempTable::Execute sub-SQL time\n", false);
+    WriteJitTimingColumn(run_us);
   }
 
   int64_t chunk_size = subquery_result->Count();
@@ -386,7 +698,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
   temp_table_card_.emplace(temp_table_name, chunk_size);
 
-  if (enable_timing) {
+  if (enable_timing_) {
     auto extra_materialize_time =
         chrono_toc(&timer, "Extra materialize time is\n", false);
     // save time to a file
@@ -643,6 +955,1280 @@ void DuckDBAdapter::CleanUp() {
 duckdb::ClientContext *DuckDBAdapter::GetClientContext() {
   return conn->context.get();
 }
+
+#ifdef HAVE_LLVM
+// Recursively find the first AQPStmt node of type FilterNode in the IR tree.
+static const ir_sql_converter::AQPStmt *
+FindFirstFilterNode(const ir_sql_converter::AQPStmt *ir) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode)
+    return ir;
+  for (const auto &child : ir->children)
+    if (auto *f = FindFirstFilterNode(child.get()))
+      return f;
+  return nullptr;
+}
+
+// Recursively find the first ProjectionNode in the IR tree.
+static const ir_sql_converter::AQPStmt *
+FindFirstProjectionNode(const ir_sql_converter::AQPStmt *ir) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ProjectionNode)
+    return ir;
+  for (const auto &child : ir->children)
+    if (auto *p = FindFirstProjectionNode(child.get()))
+      return p;
+  return nullptr;
+}
+
+// Recursively find the first HashNode in the IR tree.
+static const ir_sql_converter::AQPStmt *
+FindFirstHashNode(const ir_sql_converter::AQPStmt *ir) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::HashNode)
+    return ir;
+  for (const auto &child : ir->children)
+    if (auto *h = FindFirstHashNode(child.get()))
+      return h;
+  return nullptr;
+}
+
+// Recursively find the first JoinNode in the IR tree.
+static const ir_sql_converter::AQPStmt *
+FindFirstJoinNode(const ir_sql_converter::AQPStmt *ir) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode)
+    return ir;
+  for (const auto &child : ir->children)
+    if (auto *j = FindFirstJoinNode(child.get()))
+      return j;
+  return nullptr;
+}
+
+// Recursively find the first AggregateNode in the IR tree.
+static const ir_sql_converter::AQPStmt *
+FindFirstAggregateNode(const ir_sql_converter::AQPStmt *ir) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::AggregateNode)
+    return ir;
+  for (const auto &child : ir->children)
+    if (auto *a = FindFirstAggregateNode(child.get()))
+      return a;
+  return nullptr;
+}
+
+// Recursively find the first table index referenced by any leaf attribute
+// in an AQPExpr tree.  Returns UINT_MAX if no attribute is found.
+static unsigned int
+FirstTableIdxFromExpr(const ir_sql_converter::AQPExpr *expr) {
+  if (!expr)
+    return UINT_MAX;
+  using ir_sql_converter::SimplestNodeType;
+  switch (expr->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c =
+        static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+    return c->attr ? c->attr->GetTableIndex() : UINT_MAX;
+  }
+  case SimplestNodeType::IsNullExprNode: {
+    auto *n = static_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+    return n->attr ? n->attr->GetTableIndex() : UINT_MAX;
+  }
+  case SimplestNodeType::InExprNode: {
+    auto *i = static_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    return i->attr ? i->attr->GetTableIndex() : UINT_MAX;
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    unsigned int t = FirstTableIdxFromExpr(l->left_expr.get());
+    if (t != UINT_MAX)
+      return t;
+    return FirstTableIdxFromExpr(l->right_expr.get());
+  }
+  default:
+    return UINT_MAX;
+  }
+}
+
+// Walk the IR tree and build a map: table_name (lowercase) → table_index.
+// Also populates `ambiguous` with names that appear with multiple different
+// indices (e.g. two comp_cast_type aliases with index 1 and 2). JIT is skipped
+// for those.
+static void
+CollectTableNameToIndex(const ir_sql_converter::AQPStmt *ir,
+                        std::unordered_map<std::string, unsigned int> &out,
+                        std::unordered_set<std::string> &ambiguous) {
+  if (!ir)
+    return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(ir);
+    std::string name = scan->GetTableName();
+    for (auto &c : name)
+      c = (char)tolower((unsigned char)c);
+    auto it = out.find(name);
+    if (it != out.end() && it->second != scan->GetTableIndex())
+      ambiguous.insert(name); // same physical table, different IR indices
+    out[name] = scan->GetTableIndex();
+  }
+  for (const auto &child : ir->children)
+    CollectTableNameToIndex(child.get(), out, ambiguous);
+}
+
+// Returns true if the expr (recursively) references a (table_idx, col_idx) pair
+// that exists in schema.  Used to skip JIT for filters whose predicates don't
+// map to any column in the physical operator's output chunk.
+static bool ExprHasColInSchema(const ir_sql_converter::AQPExpr *expr,
+                               const std::vector<aqp_jit::ColSchema> &schema) {
+  if (!expr)
+    return false;
+  using ir_sql_converter::SimplestNodeType;
+  auto attrInSchema = [&](unsigned int t, unsigned int col) -> bool {
+    for (auto &cs : schema)
+      if (cs.table_idx == t && cs.col_idx == col)
+        return true;
+    return false;
+  };
+  switch (expr->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c =
+        static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+    return c->attr &&
+           attrInSchema(static_cast<unsigned int>(c->attr->GetTableIndex()),
+                        static_cast<unsigned int>(c->attr->GetColumnIndex()));
+  }
+  case SimplestNodeType::IsNullExprNode: {
+    auto *n = static_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+    return n->attr &&
+           attrInSchema(static_cast<unsigned int>(n->attr->GetTableIndex()),
+                        static_cast<unsigned int>(n->attr->GetColumnIndex()));
+  }
+  case SimplestNodeType::InExprNode: {
+    auto *i = static_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    return i->attr &&
+           attrInSchema(static_cast<unsigned int>(i->attr->GetTableIndex()),
+                        static_cast<unsigned int>(i->attr->GetColumnIndex()));
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    return ExprHasColInSchema(l->left_expr.get(), schema) ||
+           ExprHasColInSchema(l->right_expr.get(), schema);
+  }
+  default:
+    return false;
+  }
+}
+
+static bool
+HasApplicablePredicate(const ir_sql_converter::AQPStmt *filter_ir,
+                       const std::vector<aqp_jit::ColSchema> &schema) {
+  for (const auto &q : filter_ir->qual_vec)
+    if (ExprHasColInSchema(q.get(), schema))
+      return true;
+  return false;
+}
+
+// Returns true only if ALL columns referenced by the expression are present in
+// the schema.  If any column is missing, the compiled filter would silently
+// replace that sub-expression with "pass-all" (true), corrupting the filter
+// logic (e.g. "gender='m' OR (gender='f' AND name LIKE 'B%')" becomes
+// "gender='m' OR gender='f'" = all rows pass when 'name' col is absent).
+static bool
+AllColsInExprAvailable(const ir_sql_converter::AQPExpr *expr,
+                       const std::vector<aqp_jit::ColSchema> &schema) {
+  if (!expr)
+    return true;
+  using ir_sql_converter::SimplestNodeType;
+  auto inSchema = [&](unsigned int t, unsigned int col) -> bool {
+    for (auto &cs : schema)
+      if (cs.table_idx == t && cs.col_idx == col)
+        return true;
+    return false;
+  };
+  switch (expr->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c =
+        static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+    return c->attr &&
+           inSchema(static_cast<unsigned int>(c->attr->GetTableIndex()),
+                    static_cast<unsigned int>(c->attr->GetColumnIndex()));
+  }
+  case SimplestNodeType::IsNullExprNode: {
+    auto *n = static_cast<const ir_sql_converter::SimplestIsNullExpr *>(expr);
+    return n->attr &&
+           inSchema(static_cast<unsigned int>(n->attr->GetTableIndex()),
+                    static_cast<unsigned int>(n->attr->GetColumnIndex()));
+  }
+  case SimplestNodeType::InExprNode: {
+    auto *i = static_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    return i->attr &&
+           inSchema(static_cast<unsigned int>(i->attr->GetTableIndex()),
+                    static_cast<unsigned int>(i->attr->GetColumnIndex()));
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    return AllColsInExprAvailable(l->left_expr.get(), schema) &&
+           AllColsInExprAvailable(l->right_expr.get(), schema);
+  }
+  case SimplestNodeType::VarComparisonNode: {
+    auto *c =
+        static_cast<const ir_sql_converter::SimplestVarComparison *>(expr);
+    return c->left_attr &&
+           inSchema(
+               static_cast<unsigned int>(c->left_attr->GetTableIndex()),
+               static_cast<unsigned int>(c->left_attr->GetColumnIndex())) &&
+           c->right_attr &&
+           inSchema(static_cast<unsigned int>(c->right_attr->GetTableIndex()),
+                    static_cast<unsigned int>(c->right_attr->GetColumnIndex()));
+  }
+  default:
+    return true;
+  }
+}
+
+static bool
+FilterAllColsAvailable(const ir_sql_converter::AQPStmt *filter_ir,
+                       const std::vector<aqp_jit::ColSchema> &schema) {
+  for (const auto &q : filter_ir->qual_vec)
+    if (!AllColsInExprAvailable(q.get(), schema))
+      return false;
+  return true;
+}
+
+void DuckDBAdapter::EnsureJITCompiler() {
+  if (!jit_compiler_) {
+    jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
+  }
+  jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
+  jit_compiler_->SetBatchProbe(jit_batch_probe_);
+  if (jit_cache_)
+    jit_compiler_->SetCache(true, jit_cache_dir_);
+}
+
+void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
+                                const ir_sql_converter::AQPStmt &ir) {
+  using duckdb::PhysicalOperatorType;
+
+  // Diagnostic: show every node in the physical plan tree
+#ifndef NDEBUG
+  std::cerr << "[AQP-JIT-TRACE] visit op=" << (int)op.type
+            << " children=" << op.children.size() << " addr=" << (void *)&op
+            << "\n";
+#endif
+
+  if (op.type == PhysicalOperatorType::FILTER && !op.children.empty()) {
+    auto &child = op.children[0].get();
+    uint64_t eid = duckdb::ExpressionID(op);
+
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] FILTER eid=0x" << std::hex << eid << std::dec
+              << "  child_type=" << (int)child.type
+              << "  child_cols=" << child.types.size() << "\n";
+#endif
+
+    // Dump all IR FilterNodes once per FILTER op (to show the full IR
+    // structure)
+    {
+      std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+      CollectAllFilterNodes(&ir, all_filters);
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT-TRACE] IR has " << all_filters.size()
+                << " FilterNode(s):\n";
+      for (size_t fi = 0; fi < all_filters.size(); fi++) {
+        std::cerr << "[AQP-JIT-TRACE]   IR filter[" << fi
+                  << "] qual_vec.size=" << all_filters[fi]->qual_vec.size()
+                  << "\n";
+        for (size_t qi = 0; qi < all_filters[fi]->qual_vec.size(); qi++) {
+          std::string qs = all_filters[fi]->qual_vec[qi]->Print(false);
+          std::cerr << "[AQP-JIT-TRACE]     qual[" << qi << "]: " << qs << "\n";
+        }
+      }
+#endif
+    }
+
+    // Determine the IR table_idx for this physical scan by matching the DuckDB
+    // table name against IR ScanNodes.  This is reliable because each physical
+    // TABLE_SCAN in DuckDB corresponds to exactly one logical table whose name
+    // is stored in both the DuckDB bind_data and the IR SimplestScan node.
+    const ir_sql_converter::AQPStmt *filter_ir = nullptr;
+    unsigned int ir_table_idx = UINT_MAX;
+
+    // Build table-name → IR table_index map from IR ScanNodes
+    std::unordered_map<std::string, unsigned int> ir_table_name_to_idx;
+    std::unordered_set<std::string> ir_ambiguous_names;
+    CollectTableNameToIndex(&ir, ir_table_name_to_idx, ir_ambiguous_names);
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] IR table name map:\n";
+    for (auto &kv : ir_table_name_to_idx)
+      std::cerr << "[AQP-JIT-TRACE]   \"" << kv.first
+                << "\" -> idx=" << kv.second << "\n";
+#endif
+
+    std::vector<aqp_jit::ColSchema> schema_prelim;
+
+    // schema/column index mapping
+
+    // The scan's column_ids[i] directly gives the physical column index.
+    // Build ColSchema from those.
+    if (child.type == PhysicalOperatorType::TABLE_SCAN) {
+      auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
+
+      // Get table name from DuckDB scan bind_data (works for regular storage
+      // scans)
+      std::string duckdb_table_name;
+      if (scan.bind_data) {
+        auto *tsbd =
+            dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+        if (tsbd) {
+          duckdb_table_name = tsbd->table.name;
+          for (auto &c : duckdb_table_name)
+            c = (char)tolower((unsigned char)c);
+        }
+      }
+      // Fall back: use function name (for temp table scans)
+      if (duckdb_table_name.empty()) {
+        duckdb_table_name = scan.function.name;
+        for (auto &c : duckdb_table_name)
+          c = (char)tolower((unsigned char)c);
+      }
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT-TRACE]   duckdb table_name=\"" << duckdb_table_name
+                << "\"\n";
+#endif
+
+      // Look up IR table_idx by name
+      auto it = ir_table_name_to_idx.find(duckdb_table_name);
+      if (it != ir_table_name_to_idx.end()) {
+        ir_table_idx = it->second;
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT-TRACE]   resolved ir_table_idx=" << ir_table_idx
+                  << "\n";
+#endif
+      } else {
+        std::cerr << "[AQP-JIT-TRACE]   WARNING: no IR table matches \""
+                  << duckdb_table_name << "\"\n";
+      }
+
+      // Skip JIT for tables that appear under multiple different IR indices
+      // (e.g. self-join on comp_cast_type with alias indices 1 and 2).
+      // The name→index map has only one entry so one side would get the wrong
+      // filter. Leave schema_prelim empty and filter_ir as nullptr → JIT
+      // skipped below.
+      if (ir_ambiguous_names.count(duckdb_table_name)) {
+        std::cerr << "[AQP-JIT] WARNING: ambiguous table \""
+                  << duckdb_table_name << "\" → skipping JIT for this filter\n";
+      } else {
+        // child.types may be shorter than scan.column_ids when DuckDB's
+        // filter-prune / projection-pushdown strips columns that are only
+        // needed for table filters but not returned in the output chunk.
+        //
+        // IMPORTANT: child.types[i] represents the ACTUAL data type at chunk
+        // position i and must be used for dtype.  However, scan.column_ids[i]
+        // may be misaligned with child.types in some physical plans (the
+        // column_ids and types vectors can have different orderings).  When
+        // that happens, we must find the correct base column ID by matching
+        // the actual type against the catalog types of the scanned columns.
+        for (size_t i = 0; i < child.types.size(); i++) {
+          aqp_jit::ColSchema cs;
+          cs.table_idx = ir_table_idx;
+          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
+          cs.col_idx =
+              static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
+
+          if (scan.bind_data) {
+            auto *tsbd =
+                dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+            if (tsbd) {
+              // Check if column_ids[i] catalog type matches child.types[i].
+              // If not, search for the correct column_id.
+              auto n_logical = tsbd->table.GetColumns().LogicalColumnCount();
+              if (cs.col_idx < n_logical) {
+                auto catalog_dtype = duckdb::ToDtype(
+                    tsbd->table.GetColumns()
+                        .GetColumn(duckdb::LogicalIndex(cs.col_idx))
+                        .Type()
+                        .InternalType());
+                if (catalog_dtype != cs.dtype) {
+                  // Misaligned: find the column_id whose catalog type matches
+                  // child.types[i].
+                  for (size_t j = 0; j < scan.column_ids.size(); j++) {
+                    unsigned int cid = static_cast<unsigned int>(
+                        scan.column_ids[j].GetPrimaryIndex());
+                    if (cid < n_logical && cid != cs.col_idx) {
+                      auto c_dtype = duckdb::ToDtype(
+                          tsbd->table.GetColumns()
+                              .GetColumn(duckdb::LogicalIndex(cid))
+                              .Type()
+                              .InternalType());
+                      if (c_dtype == cs.dtype) {
+                        cs.col_idx = cid;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          schema_prelim.push_back(cs);
+#ifndef NDEBUG
+          // Look up column name from DuckDB catalog for diagnostics
+          std::string duckdb_col_name;
+          if (scan.bind_data) {
+            auto *tsbd =
+                dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+            if (tsbd &&
+                cs.col_idx < tsbd->table.GetColumns().LogicalColumnCount()) {
+              duckdb_col_name = tsbd->table.GetColumns()
+                                    .GetColumn(duckdb::LogicalIndex(cs.col_idx))
+                                    .Name();
+            }
+          }
+          std::cerr << "[AQP-JIT-TRACE]   scan col[" << i
+                    << "] raw_col=" << cs.col_idx << " dtype=" << cs.dtype
+                    << " table_idx=" << cs.table_idx << " duckdb_col_name=\""
+                    << duckdb_col_name << "\"\n";
+#endif
+        }
+
+        // Find the FilterNode that references ir_table_idx
+        filter_ir = FindFirstFilterNode(&ir); // fallback
+        if (ir_table_idx != UINT_MAX) {
+          std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+          CollectAllFilterNodes(&ir, all_filters);
+          bool found = false;
+          for (auto *f : all_filters) {
+            for (const auto &q : f->qual_vec) {
+              unsigned int t = FirstTableIdxFromExpr(q.get());
+              if (t == ir_table_idx) {
+                filter_ir = f;
+                found = true;
+                break;
+              }
+            }
+            if (found)
+              break;
+          }
+        }
+      }
+    } else if (child.type == PhysicalOperatorType::PROJECTION &&
+               !child.children.empty() &&
+               child.children[0].get().type ==
+                   PhysicalOperatorType::TABLE_SCAN) {
+      // PROJECTION → TABLE_SCAN: trace projection expressions back to original
+      // scan column indices.  PhysicalProjection::select_list[i] is a
+      // BoundReferenceExpression with index=j meaning "output col i = scan
+      // input col j", so the original table col idx = scan.column_ids[j].
+      auto &proj = static_cast<duckdb::PhysicalProjection &>(child);
+      auto &scan =
+          static_cast<duckdb::PhysicalTableScan &>(child.children[0].get());
+
+      // Get table name → ir_table_idx (same logic as the TABLE_SCAN path)
+      std::string duckdb_table_name;
+      if (scan.bind_data) {
+        auto *tsbd =
+            dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+        if (tsbd) {
+          duckdb_table_name = tsbd->table.name;
+          for (auto &c : duckdb_table_name)
+            c = (char)tolower((unsigned char)c);
+        }
+      }
+      if (duckdb_table_name.empty()) {
+        duckdb_table_name = scan.function.name;
+        for (auto &c : duckdb_table_name)
+          c = (char)tolower((unsigned char)c);
+      }
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT-TRACE]   proj→scan table_name=\""
+                << duckdb_table_name << "\"\n";
+#endif
+
+      auto it = ir_table_name_to_idx.find(duckdb_table_name);
+      if (it != ir_table_name_to_idx.end()) {
+        ir_table_idx = it->second;
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT-TRACE]   resolved ir_table_idx=" << ir_table_idx
+                  << "\n";
+#endif
+      } else {
+        std::cerr
+            << "[AQP-JIT-TRACE]   WARNING: proj→scan no IR table matches \""
+            << duckdb_table_name << "\"\n";
+      }
+
+      if (ir_ambiguous_names.count(duckdb_table_name)) {
+        std::cerr << "[AQP-JIT-TRACE]   WARNING: ambiguous table \""
+                  << duckdb_table_name
+                  << "\" (proj path) → skipping JIT for this filter\n";
+        // schema_prelim stays empty, filter_ir stays nullptr → JIT skipped
+        // below
+      } else {
+
+        // Build schema by tracing each projection expression back to scan col
+        for (size_t i = 0; i < proj.select_list.size(); i++) {
+          aqp_jit::ColSchema cs;
+          cs.table_idx = ir_table_idx;
+          cs.col_idx = UINT_MAX; // set below if traceable
+          // Projection output type is correct for the actual chunk layout.
+          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
+
+          auto &expr = *proj.select_list[i];
+          if (expr.GetExpressionClass() == duckdb::ExpressionClass::BOUND_REF) {
+            auto &ref = expr.Cast<duckdb::BoundReferenceExpression>();
+            if (ref.index < scan.column_ids.size()) {
+              cs.col_idx = static_cast<unsigned int>(
+                  scan.column_ids[ref.index].GetPrimaryIndex());
+              // column_ids may be misaligned with the actual chunk data.
+              // Verify the catalog type matches the projection output type;
+              // if not, find the correct column_id.
+              if (scan.bind_data) {
+                auto *tsbd = dynamic_cast<duckdb::TableScanBindData *>(
+                    scan.bind_data.get());
+                if (tsbd) {
+                  auto n_logical =
+                      tsbd->table.GetColumns().LogicalColumnCount();
+                  if (cs.col_idx < n_logical) {
+                    auto catalog_dtype = duckdb::ToDtype(
+                        tsbd->table.GetColumns()
+                            .GetColumn(duckdb::LogicalIndex(cs.col_idx))
+                            .Type()
+                            .InternalType());
+                    if (catalog_dtype != cs.dtype) {
+                      for (size_t j = 0; j < scan.column_ids.size(); j++) {
+                        unsigned int cid = static_cast<unsigned int>(
+                            scan.column_ids[j].GetPrimaryIndex());
+                        if (cid < n_logical && cid != cs.col_idx) {
+                          auto c_dtype = duckdb::ToDtype(
+                              tsbd->table.GetColumns()
+                                  .GetColumn(duckdb::LogicalIndex(cid))
+                                  .Type()
+                                  .InternalType());
+                          if (c_dtype == cs.dtype) {
+                            cs.col_idx = cid;
+                            break;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          schema_prelim.push_back(cs);
+#ifndef NDEBUG
+          std::cerr << "[AQP-JIT-TRACE]   proj col[" << i
+                    << "] raw_col=" << cs.col_idx << " dtype=" << cs.dtype
+                    << " table_idx=" << cs.table_idx << "\n";
+#endif
+        }
+
+        // Find the FilterNode that references ir_table_idx
+        filter_ir = FindFirstFilterNode(&ir); // fallback
+        if (ir_table_idx != UINT_MAX) {
+          std::vector<const ir_sql_converter::AQPStmt *> all_filters;
+          CollectAllFilterNodes(&ir, all_filters);
+          bool found = false;
+          for (auto *f : all_filters) {
+            for (const auto &q : f->qual_vec) {
+              unsigned int t = FirstTableIdxFromExpr(q.get());
+              if (t == ir_table_idx) {
+                filter_ir = f;
+                found = true;
+                break;
+              }
+            }
+            if (found)
+              break;
+          }
+        }
+      } // end else (not ambiguous) for proj path
+    } else {
+      // Unknown child type (HASH_JOIN result, etc.): skip JIT.
+      // schema_prelim stays empty → HasApplicablePredicate won't match → JIT
+      // skipped.
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT-TRACE]   child_type=" << (int)child.type
+                << " not JIT-able → interpreter\n";
+#endif
+    }
+
+    if (!filter_ir) {
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT] FILTER eid=0x" << std::hex << eid << std::dec
+                << ": no Filter IR node found in tree, using interpreter\n";
+#endif
+      for (auto &child_ref : op.children)
+        RegisterJIT(child_ref.get(), ir);
+      return;
+    }
+
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] filter_ir node_type="
+              << (int)filter_ir->GetNodeType()
+              << "  qual_vec.size=" << filter_ir->qual_vec.size()
+              << "  ir_table_idx=" << ir_table_idx << "\n";
+    for (size_t qi = 0; qi < filter_ir->qual_vec.size(); qi++) {
+      std::string qs = filter_ir->qual_vec[qi]->Print(false);
+      std::cerr << "[AQP-JIT-TRACE]   selected qual[" << qi << "]: " << qs
+                << "\n";
+    }
+#endif
+
+    // Build final ColSchema from schema_prelim.
+    // For TABLE_SCAN and PROJECTION→TABLE_SCAN: schema_prelim already has
+    // correct (table_idx, col_idx, dtype) from the DuckDB table-name → IR
+    // table_idx lookup. For unknown child types: schema_prelim is empty → JIT
+    // skipped below.
+    std::vector<aqp_jit::ColSchema> schema = schema_prelim;
+#ifndef NDEBUG
+    for (size_t i = 0; i < schema.size(); i++)
+      std::cerr << "[AQP-JIT-TRACE]   schema[" << i
+                << "] table=" << schema[i].table_idx
+                << " col=" << schema[i].col_idx << " dtype=" << schema[i].dtype
+                << "\n";
+#endif
+
+    // Note: VARCHAR predicates (LIKE, NOT LIKE, Equal, NotEqual) are now
+    // handled by the JIT via aqp_like_match / aqp_str_eq runtime helpers.
+
+    // Only register JIT if at least one predicate references a column in the
+    // schema AND every referenced column is available.  If any column is
+    // missing (e.g. DuckDB pruned it from the scan output), the compiled
+    // filter would silently replace that sub-expression with "pass-all",
+    // corrupting the filter logic.  Fall back to interpreter in that case.
+    if (!schema.empty() && HasApplicablePredicate(filter_ir, schema) &&
+        FilterAllColsAvailable(filter_ir, schema)) {
+      EnsureJITCompiler();
+      auto t_filter = chrono_tic();
+      ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_filter, "RegisterJIT::CompileFilter\n", false);
+      }
+      if (raw_fn) {
+        duckdb::AQPExprFn fn = reinterpret_cast<duckdb::AQPExprFn>(
+            reinterpret_cast<void *>(raw_fn));
+        auto *ctx = GetClientContext();
+        if (!ctx->aqp_jit_context)
+          ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        ctx->aqp_jit_context->expr_fns[eid] = fn;
+        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
+
+        // Scan+Filter fusion (operator-level): register compiled filter on
+        // the TABLE_SCAN operator so it can pre-filter chunks at scan time.
+        // Only enabled at jit-level >= operator to avoid double-application
+        // at expr level (PhysicalFilter would also apply the same filter).
+        if ((jit_flags_ & AQP_JIT_OPERATOR) &&
+            child.type == PhysicalOperatorType::TABLE_SCAN) {
+          uint64_t scan_eid = duckdb::ExpressionID(child);
+          ctx->aqp_jit_context->scan_filter_fns[scan_eid] = fn;
+#ifndef NDEBUG
+          std::cerr << "[AQP-JIT] scan+filter fusion: scan_eid=0x" << std::hex
+                    << scan_eid << std::dec << "\n";
+#endif
+        }
+
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT] compiled filter eid=0x" << std::hex << eid
+                  << std::dec << "  cols=" << schema.size()
+                  << "  table_idx=" << ir_table_idx << "\n";
+#endif
+      } else {
+        std::ostringstream msg;
+        msg << "[AQP-JIT] JIT compilation failed (eid=0x" << std::hex << eid
+            << std::dec << "  cols=" << schema.size()
+            << "  table_idx=" << ir_table_idx
+            << "). Stopping. Use --no-jit to fall back to interpreter.";
+        throw std::runtime_error(msg.str());
+      }
+    } else if (!schema.empty()) {
+#ifndef NDEBUG
+      if (!FilterAllColsAvailable(filter_ir, schema)) {
+        std::cerr << "[AQP-JIT] skipping filter eid=0x" << std::hex << eid
+                  << std::dec
+                  << ": not all columns available in chunk → interpreter\n";
+      } else {
+        std::cerr << "[AQP-JIT] skipping filter eid=0x" << std::hex << eid
+                  << std::dec
+                  << ": no predicates reference schema columns → interpreter\n";
+      }
+#endif
+    }
+
+    // Level 3: Fuse Filter → Projection into a single pipeline function.
+    // Gated by AQP_JIT_PIPELINE flag. Registered by filter operator eid.
+    if ((jit_flags_ & AQP_JIT_PIPELINE) && filter_ir && !schema.empty()) {
+      const ir_sql_converter::AQPStmt *proj_ir = FindFirstProjectionNode(&ir);
+
+      EnsureJITCompiler();
+
+      auto t_pipe = chrono_tic();
+      ::AQPPipelineFn pipe_fn =
+          jit_compiler_->CompilePipeline(filter_ir, proj_ir, schema);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_pipe, "RegisterJIT::CompilePipeline\n", false);
+      }
+      if (pipe_fn) {
+        auto fn = reinterpret_cast<duckdb::AQPPipelineFn>(
+            reinterpret_cast<void *>(pipe_fn));
+        auto *ctx = GetClientContext();
+        if (!ctx->aqp_jit_context)
+          ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        ctx->aqp_jit_context->pipeline_fns[eid] = fn;
+        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT] compiled pipeline eid=0x" << std::hex << eid
+                  << std::dec << " (filter" << (proj_ir ? "+projection" : "")
+                  << ")\n";
+#endif
+      }
+    }
+  }
+
+  // Level 2: Compile projection operators when AQPJIT_OPERATOR is set.
+  if ((jit_flags_ & AQP_JIT_OPERATOR) &&
+      op.type == PhysicalOperatorType::PROJECTION) {
+    uint64_t eid = duckdb::ExpressionID(op);
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] PROJECTION eid=0x" << std::hex << eid
+              << std::dec << "\n";
+#endif
+
+    // Find the first ProjectionNode in the IR tree (static function, no heap
+    // alloc)
+    const ir_sql_converter::AQPStmt *proj_ir = FindFirstProjectionNode(&ir);
+
+    if (proj_ir && !proj_ir->target_list.empty() && !op.children.empty()) {
+      // Build input schema from child operator's output types
+      auto &child = op.children[0].get();
+      std::vector<aqp_jit::ColSchema> in_schema;
+
+      // Use the same table-name resolution as the filter path
+      std::unordered_map<std::string, unsigned int> ir_table_name_to_idx;
+      std::unordered_set<std::string> ir_ambiguous_names;
+      CollectTableNameToIndex(&ir, ir_table_name_to_idx, ir_ambiguous_names);
+
+      unsigned int ir_table_idx = UINT_MAX;
+      if (child.type == PhysicalOperatorType::TABLE_SCAN) {
+        auto &scan = static_cast<duckdb::PhysicalTableScan &>(child);
+        std::string duckdb_table_name;
+        if (scan.bind_data) {
+          auto *tsbd =
+              dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get());
+          if (tsbd) {
+            duckdb_table_name = tsbd->table.name;
+            for (auto &c : duckdb_table_name)
+              c = (char)tolower((unsigned char)c);
+          }
+        }
+        if (duckdb_table_name.empty()) {
+          duckdb_table_name = scan.function.name;
+          for (auto &c : duckdb_table_name)
+            c = (char)tolower((unsigned char)c);
+        }
+        auto it = ir_table_name_to_idx.find(duckdb_table_name);
+        if (it != ir_table_name_to_idx.end())
+          ir_table_idx = it->second;
+
+        for (size_t i = 0; i < child.types.size(); i++) {
+          aqp_jit::ColSchema cs;
+          cs.table_idx = ir_table_idx;
+          cs.col_idx =
+              static_cast<unsigned int>(scan.column_ids[i].GetPrimaryIndex());
+          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
+          in_schema.push_back(cs);
+        }
+      }
+
+      if (!in_schema.empty()) {
+        EnsureJITCompiler();
+        // Build column mapping: out_col_i → in_col_i
+        duckdb::vector<int> col_map;
+        for (const auto &attr : proj_ir->target_list) {
+          int found = -1;
+          for (int ci = 0; ci < (int)in_schema.size(); ci++) {
+            if (in_schema[ci].table_idx == attr->GetTableIndex() &&
+                in_schema[ci].col_idx == attr->GetColumnIndex()) {
+              found = ci;
+              break;
+            }
+          }
+          col_map.push_back(found);
+        }
+
+        auto t_proj = chrono_tic();
+        ::AQPOperatorFn raw_fn =
+            jit_compiler_->CompileProjection(*proj_ir, in_schema);
+        if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+          chrono_toc(&t_proj, "RegisterJIT::CompileProjection\n", false);
+        }
+        if (raw_fn) {
+          auto fn = reinterpret_cast<duckdb::AQPOperatorFn>(
+              reinterpret_cast<void *>(raw_fn));
+          auto *ctx = GetClientContext();
+          if (!ctx->aqp_jit_context)
+            ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+          ctx->aqp_jit_context->op_fns[eid] = fn; // for Level 3 pipeline fusion
+          ctx->aqp_jit_context->proj_col_maps[eid] =
+              std::move(col_map); // for Level 2 zero-copy
+          ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
+#ifndef NDEBUG
+          std::cerr << "[AQP-JIT] compiled projection eid=0x" << std::hex << eid
+                    << std::dec << "  in_cols=" << in_schema.size()
+                    << "  out_cols=" << proj_ir->target_list.size() << "\n";
+#endif
+        }
+      }
+    }
+  }
+
+  // Level 2: Compile aggregate operators when AQPJIT_OPERATOR is set.
+  // Ungrouped aggregates: dispatched at Level 2 (compiled loop is faster than
+  // DuckDB's generic ExpressionExecutor). Grouped: compiled for Level 3 only.
+  if ((jit_flags_ & AQP_JIT_OPERATOR) &&
+      (op.type == PhysicalOperatorType::HASH_GROUP_BY ||
+       op.type == PhysicalOperatorType::UNGROUPED_AGGREGATE)) {
+    uint64_t eid = duckdb::ExpressionID(op);
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] AGGREGATE eid=0x" << std::hex << eid
+              << std::dec << " type=" << (int)op.type << "\n";
+#endif
+
+    const ir_sql_converter::AQPStmt *agg_ir = FindFirstAggregateNode(&ir);
+    if (agg_ir && !op.children.empty()) {
+      auto &child = op.children[0].get();
+      std::vector<aqp_jit::ColSchema> in_schema;
+
+      // Build schema from the IR aggregate node's child target_list.
+      // The agg_fns reference IR table/column indices, so the schema must
+      // use those same indices (not sequential col_idx with UINT_MAX table).
+      const ir_sql_converter::AQPStmt *agg_child_ir = nullptr;
+      if (!agg_ir->children.empty())
+        agg_child_ir = agg_ir->children[0].get();
+
+      if (agg_child_ir && !agg_child_ir->target_list.empty()) {
+        // Use IR child's target_list for table/column indices
+        for (size_t i = 0;
+             i < agg_child_ir->target_list.size() && i < child.types.size();
+             i++) {
+          aqp_jit::ColSchema cs;
+          cs.table_idx = agg_child_ir->target_list[i]->GetTableIndex();
+          cs.col_idx = agg_child_ir->target_list[i]->GetColumnIndex();
+          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
+          in_schema.push_back(cs);
+        }
+      } else {
+        // Fallback: use target_list from agg node itself
+        for (size_t i = 0;
+             i < agg_ir->target_list.size() && i < child.types.size(); i++) {
+          aqp_jit::ColSchema cs;
+          cs.table_idx = agg_ir->target_list[i]->GetTableIndex();
+          cs.col_idx = agg_ir->target_list[i]->GetColumnIndex();
+          cs.dtype = duckdb::ToDtype(child.types[i].InternalType());
+          in_schema.push_back(cs);
+        }
+      }
+
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT-TRACE] agg in_schema:";
+      for (size_t i = 0; i < in_schema.size(); i++)
+        std::cerr << " [" << i << "]=(t=" << in_schema[i].table_idx
+                  << ",c=" << in_schema[i].col_idx
+                  << ",d=" << in_schema[i].dtype << ")";
+      std::cerr << "\n";
+#endif
+
+      EnsureJITCompiler();
+      auto t_agg = chrono_tic();
+      void *raw_fn = jit_compiler_->CompileAggUpdate(*agg_ir, in_schema);
+      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+        chrono_toc(&t_agg, "RegisterJIT::CompileAggUpdate\n", false);
+      }
+      if (raw_fn) {
+        // Compute state size (same logic as CompileAggUpdate)
+        auto *agg =
+            dynamic_cast<const ir_sql_converter::SimplestAggregate *>(agg_ir);
+        uint32_t state_size = 0;
+        if (agg) {
+          for (const auto &fp : agg->agg_fns) {
+            if (fp.second == ir_sql_converter::SimplestAggFnType::Average)
+              state_size += 16;
+            else
+              state_size += 8;
+          }
+        }
+
+        auto *ctx = GetClientContext();
+        if (!ctx->aqp_jit_context)
+          ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        // Store in agg_fns (typed) + op_fns (for Level 3)
+        auto agg_fn =
+            reinterpret_cast<duckdb::AQPJITContext::AQPAggUpdateFn>(raw_fn);
+        ctx->aqp_jit_context->agg_fns[eid] = agg_fn;
+        ctx->aqp_jit_context->agg_state_sizes[eid] = state_size;
+        ctx->aqp_jit_context->op_fns[eid] =
+            reinterpret_cast<duckdb::AQPOperatorFn>(raw_fn);
+        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT] compiled agg eid=0x" << std::hex << eid
+                  << std::dec << " state_bytes=" << state_size << " ungrouped="
+                  << (agg && agg->groups.empty() ? "yes" : "no") << "\n";
+#endif
+      }
+    }
+  }
+
+  // Level 2: Compile hash join operators when AQPJIT_OPERATOR is set.
+  // Like aggregate, compiled for Level 3 pipeline fusion. DuckDB's
+  // JoinHashTable handles Level 2 execution (parallel build, spilling, outer
+  // join state, etc.).
+  if ((jit_flags_ & AQP_JIT_OPERATOR) &&
+      op.type == PhysicalOperatorType::HASH_JOIN) {
+    uint64_t eid = duckdb::ExpressionID(op);
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] HASH_JOIN eid=0x" << std::hex << eid
+              << std::dec << "\n";
+#endif
+
+    // Find JoinNode in IR. DuckDB path doesn't generate HashNode, so we
+    // derive hash keys from the JoinNode's join_conditions instead.
+    const ir_sql_converter::AQPStmt *join_ir = FindFirstJoinNode(&ir);
+    const ir_sql_converter::AQPStmt *hash_ir = FindFirstHashNode(&ir);
+
+    if (join_ir) {
+      auto *join =
+          dynamic_cast<const ir_sql_converter::SimplestJoin *>(join_ir);
+      if (join && !join->join_conditions.empty()) {
+        // Build side is typically children[1] in the IR JoinNode.
+        // Its target_list defines the build schema.
+        const ir_sql_converter::AQPStmt *build_child =
+            (join_ir->children.size() > 1) ? join_ir->children[1].get()
+                                           : nullptr;
+
+        // If HashNode exists (PostgreSQL path), use its child instead
+        if (hash_ir)
+          build_child = hash_ir->children.empty() ? build_child
+                                                  : hash_ir->children[0].get();
+
+        if (build_child && !build_child->target_list.empty()) {
+          // Build schema from build child's target_list
+          std::vector<aqp_jit::ColSchema> build_schema;
+          for (const auto &attr : build_child->target_list) {
+            aqp_jit::ColSchema cs;
+            cs.table_idx = attr->GetTableIndex();
+            cs.col_idx = attr->GetColumnIndex();
+            switch (attr->GetType()) {
+            case ir_sql_converter::IntVar:
+              cs.dtype = AQP_DTYPE_INT32;
+              break;
+            case ir_sql_converter::FloatVar:
+              cs.dtype = AQP_DTYPE_DOUBLE;
+              break;
+            case ir_sql_converter::StringVar:
+              cs.dtype = AQP_DTYPE_VARCHAR;
+              break;
+            case ir_sql_converter::BoolVar:
+              cs.dtype = AQP_DTYPE_BOOL;
+              break;
+            case ir_sql_converter::Date:
+              cs.dtype = AQP_DTYPE_DATE;
+              break;
+            default:
+              cs.dtype = AQP_DTYPE_OTHER;
+              break;
+            }
+            build_schema.push_back(cs);
+          }
+
+          // If no HashNode, create a synthetic one from join conditions.
+          // The build-side key columns are the join condition attrs that match
+          // the build_child's target_list.
+          std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+              synth_keys;
+          for (const auto &cond : join->join_conditions) {
+            // Check which side of the condition is in the build schema
+            bool left_in_build = false, right_in_build = false;
+            for (const auto &cs : build_schema) {
+              if (cs.table_idx == cond->left_attr->GetTableIndex() &&
+                  cs.col_idx == cond->left_attr->GetColumnIndex())
+                left_in_build = true;
+              if (cs.table_idx == cond->right_attr->GetTableIndex() &&
+                  cs.col_idx == cond->right_attr->GetColumnIndex())
+                right_in_build = true;
+            }
+            if (left_in_build) {
+              synth_keys.push_back(
+                  std::make_unique<ir_sql_converter::SimplestAttr>(
+                      *cond->left_attr));
+            } else if (right_in_build) {
+              synth_keys.push_back(
+                  std::make_unique<ir_sql_converter::SimplestAttr>(
+                      *cond->right_attr));
+            }
+          }
+
+          if (!synth_keys.empty()) {
+            // Create a temporary SimplestHash with synthetic keys for
+            // compilation
+            auto synth_base = std::make_unique<ir_sql_converter::AQPStmt>(
+                std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>>{},
+                ir_sql_converter::SimplestNodeType::HashNode);
+            ir_sql_converter::SimplestHash synth_hash(std::move(synth_base),
+                                                      std::move(synth_keys));
+
+            EnsureJITCompiler();
+
+            // Payload pruning: use DuckDB's payload_columns to determine
+            // which build-side columns are actually needed downstream.
+            std::vector<int> needed_payload;
+            if (jit_payload_prune_) {
+              auto &hj = op.Cast<duckdb::PhysicalHashJoin>();
+              if (!hj.payload_columns.col_idxs.empty()) {
+                for (auto idx : hj.payload_columns.col_idxs) {
+                  if ((int)idx < (int)build_schema.size())
+                    needed_payload.push_back((int)idx);
+                }
+#ifndef NDEBUG
+                std::cerr << "[AQP-JIT] payload pruning: "
+                          << build_schema.size() << " → "
+                          << needed_payload.size() << " columns\n";
+#endif
+              }
+            }
+
+            // Level 3: attempt Filter+HashBuild fusion
+            bool fused = false;
+            if ((jit_flags_ & AQP_JIT_PIPELINE) && jit_fusion_build_) {
+              // Check join type — only fuse for INNER/LEFT/SEMI
+              auto jt = join->GetSimplestJoinType();
+              if (jt == ir_sql_converter::Right ||
+                  jt == ir_sql_converter::Full ||
+                  jt == ir_sql_converter::Anti) {
+                // TODO: Implement fused probe for these join types
+                // (requires build-side unmatched row emission).
+                std::cerr << "[AQP-JIT] WARNING: join type "
+                          << (jt == ir_sql_converter::Right  ? "RIGHT"
+                              : jt == ir_sql_converter::Full ? "FULL"
+                                                             : "ANTI")
+                          << " not supported for pipeline fusion, "
+                             "falling back to separate operators\n";
+              } else {
+                const ir_sql_converter::AQPStmt *filter_ir =
+                    FindFirstFilterNode(&ir);
+                if (filter_ir) {
+                  auto t_fhb = chrono_tic();
+                  void *fused_fn = jit_compiler_->CompileFilterHashBuildFusion(
+                      filter_ir, synth_hash, build_schema, needed_payload);
+                  if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+                    chrono_toc(&t_fhb,
+                               "RegisterJIT::CompileFilterHashBuildFusion\n",
+                               false);
+                  }
+                  if (fused_fn) {
+                    auto *ctx = GetClientContext();
+                    if (!ctx->aqp_jit_context)
+                      ctx->aqp_jit_context =
+                          duckdb::make_uniq<duckdb::AQPJITContext>();
+                    ctx->aqp_jit_context->pipeline_fns[eid] =
+                        reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
+                    ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
+                    fused = true;
+#ifndef NDEBUG
+                    std::cerr << "[AQP-JIT] compiled filter+hash_build fusion "
+                                 "eid=0x"
+                              << std::hex << eid << std::dec
+                              << " keys=" << join->join_conditions.size()
+                              << "\n";
+#endif
+                  }
+                }
+              } // else (supported join type)
+            }
+
+            // Fallback: standalone hash build (Level 2)
+            if (!fused) {
+              auto t_hb = chrono_tic();
+              void *build_fn = jit_compiler_->CompileHashBuild(
+                  synth_hash, build_schema, needed_payload);
+              if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+                chrono_toc(&t_hb, "RegisterJIT::CompileHashBuild", false);
+              }
+              if (build_fn) {
+                auto *ctx = GetClientContext();
+                if (!ctx->aqp_jit_context)
+                  ctx->aqp_jit_context =
+                      duckdb::make_uniq<duckdb::AQPJITContext>();
+                ctx->aqp_jit_context->op_fns[eid] =
+                    reinterpret_cast<duckdb::AQPOperatorFn>(build_fn);
+                ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
+#ifndef NDEBUG
+                std::cerr << "[AQP-JIT] compiled hash build eid=0x" << std::hex
+                          << eid << std::dec
+                          << " keys=" << join->join_conditions.size() << "\n";
+#endif
+              }
+            }
+
+            // Level 3: attempt Filter+Probe+Projection fusion (probe pipeline)
+            if ((jit_flags_ & AQP_JIT_PIPELINE) && jit_fusion_probe_) {
+              auto jt = join->GetSimplestJoinType();
+              if (jt != ir_sql_converter::Right &&
+                  jt != ir_sql_converter::Full &&
+                  jt != ir_sql_converter::Anti) {
+                // Build probe schema from IR probe child (children[0] of
+                // JoinNode)
+                const ir_sql_converter::AQPStmt *probe_child =
+                    (join_ir->children.size() > 0) ? join_ir->children[0].get()
+                                                   : nullptr;
+                if (probe_child && !probe_child->target_list.empty()) {
+                  std::vector<aqp_jit::ColSchema> probe_schema;
+                  for (const auto &attr : probe_child->target_list) {
+                    aqp_jit::ColSchema cs;
+                    cs.table_idx = attr->GetTableIndex();
+                    cs.col_idx = attr->GetColumnIndex();
+                    switch (attr->GetType()) {
+                    case ir_sql_converter::IntVar:
+                      cs.dtype = AQP_DTYPE_INT32;
+                      break;
+                    case ir_sql_converter::FloatVar:
+                      cs.dtype = AQP_DTYPE_DOUBLE;
+                      break;
+                    case ir_sql_converter::StringVar:
+                      cs.dtype = AQP_DTYPE_VARCHAR;
+                      break;
+                    case ir_sql_converter::BoolVar:
+                      cs.dtype = AQP_DTYPE_BOOL;
+                      break;
+                    case ir_sql_converter::Date:
+                      cs.dtype = AQP_DTYPE_DATE;
+                      break;
+                    default:
+                      cs.dtype = AQP_DTYPE_OTHER;
+                      break;
+                    }
+                    probe_schema.push_back(cs);
+                  }
+
+                  // Build payload schema: the build-side columns actually
+                  // stored in the hash table (respecting payload pruning).
+                  std::vector<aqp_jit::ColSchema> payload_schema;
+                  if (!needed_payload.empty()) {
+                    for (int ci : needed_payload) {
+                      if (ci >= 0 && ci < (int)build_schema.size())
+                        payload_schema.push_back(build_schema[ci]);
+                    }
+                  } else {
+                    payload_schema = build_schema;
+                  }
+
+                  // Find probe-side filter and projection from IR
+                  const ir_sql_converter::AQPStmt *probe_filter_ir =
+                      FindFirstFilterNode(probe_child);
+                  const ir_sql_converter::AQPStmt *probe_proj_ir =
+                      FindFirstProjectionNode(&ir);
+
+                  // Compute key and payload widths for AQP hash table
+                  auto DtypeWidth = [](int32_t dtype) -> unsigned {
+                    switch (dtype) {
+                    case AQP_DTYPE_BOOL:
+                    case AQP_DTYPE_INT8:
+                      return 1;
+                    case AQP_DTYPE_INT16:
+                      return 2;
+                    case AQP_DTYPE_INT32:
+                    case AQP_DTYPE_DATE:
+                    case AQP_DTYPE_FLOAT:
+                      return 4;
+                    case AQP_DTYPE_INT64:
+                    case AQP_DTYPE_DOUBLE:
+                      return 8;
+                    case AQP_DTYPE_VARCHAR:
+                      return 16;
+                    default:
+                      return 8;
+                    }
+                  };
+
+                  unsigned build_key_width = 0;
+                  for (const auto &cond : join->join_conditions) {
+                    for (const auto &cs : build_schema) {
+                      if ((cs.table_idx == cond->left_attr->GetTableIndex() &&
+                           cs.col_idx == cond->left_attr->GetColumnIndex()) ||
+                          (cs.table_idx == cond->right_attr->GetTableIndex() &&
+                           cs.col_idx == cond->right_attr->GetColumnIndex())) {
+                        build_key_width += DtypeWidth(cs.dtype);
+                        break;
+                      }
+                    }
+                  }
+
+                  unsigned build_payload_width = 0;
+                  for (const auto &cs : payload_schema)
+                    build_payload_width += DtypeWidth(cs.dtype);
+
+                  if (build_key_width > 0 && build_payload_width > 0) {
+                    AQPHashTable *ht = aqp_ht_create(build_key_width,
+                                                     build_payload_width, 4096);
+                    if (ht) {
+                      auto *ctx = GetClientContext();
+                      if (!ctx->aqp_jit_context)
+                        ctx->aqp_jit_context =
+                            duckdb::make_uniq<duckdb::AQPJITContext>();
+
+                      // Store hash table as pipeline state for both build and
+                      // probe. The HASH_JOIN eid is the probe pipeline
+                      // operator; its also used by build via pipeline_states.
+                      ctx->aqp_jit_context->pipeline_states[eid] =
+                          static_cast<void *>(ht);
+
+                      auto t_fpp = chrono_tic();
+                      void *probe_fused_fn =
+                          jit_compiler_->CompileFilterProbeProjectFusion(
+                              probe_filter_ir, *join_ir, probe_proj_ir,
+                              probe_schema, payload_schema);
+                      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
+                        chrono_toc(
+                            &t_fpp,
+                            "RegisterJIT::CompileFilterProbeProjectFusion\n",
+                            false);
+                      }
+                      if (probe_fused_fn) {
+                        ctx->aqp_jit_context->pipeline_fns[eid] =
+                            reinterpret_cast<duckdb::AQPPipelineFn>(
+                                probe_fused_fn);
+                        ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
+#ifndef NDEBUG
+                        std::cerr
+                            << "[AQP-JIT] compiled filter+probe+proj fusion "
+                               "eid=0x"
+                            << std::hex << eid << std::dec
+                            << " probe_cols=" << probe_schema.size()
+                            << " payload_cols=" << payload_schema.size()
+                            << "\n";
+#endif
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Recurse into children
+  for (auto &child_ref : op.children)
+    RegisterJIT(child_ref.get(), ir);
+}
+#endif
 
 duckdb::Binder &DuckDBAdapter::GetBinder() { return *planner->binder; }
 
