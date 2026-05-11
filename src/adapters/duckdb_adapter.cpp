@@ -1340,6 +1340,34 @@ HasApplicablePredicate(const ir_sql_converter::AQPStmt *filter_ir,
   return false;
 }
 
+static bool ExprHasLike(const ir_sql_converter::AQPExpr *expr) {
+  if (!expr) return false;
+  using ir_sql_converter::SimplestNodeType;
+  switch (expr->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c =
+        static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+    auto et = c->GetSimplestExprType();
+    return et == ir_sql_converter::SimplestExprType::TextLike ||
+           et == ir_sql_converter::SimplestExprType::Text_Not_Like;
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    return ExprHasLike(l->left_expr.get()) ||
+           ExprHasLike(l->right_expr.get());
+  }
+  default:
+    return false;
+  }
+}
+
+static bool FilterHasLike(const ir_sql_converter::AQPStmt *filter_ir) {
+  for (const auto &q : filter_ir->qual_vec)
+    if (ExprHasLike(q.get()))
+      return true;
+  return false;
+}
+
 // Returns true only if ALL columns referenced by the expression are present in
 // the schema.  If any column is missing, the compiled filter would silently
 // replace that sub-expression with "pass-all" (true), corrupting the filter
@@ -1870,7 +1898,8 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // filter would silently replace that sub-expression with "pass-all",
     // corrupting the filter logic.  Fall back to interpreter in that case.
     if (!schema.empty() && HasApplicablePredicate(filter_ir, schema) &&
-        FilterAllColsAvailable(filter_ir, schema)) {
+        FilterAllColsAvailable(filter_ir, schema) &&
+        !FilterHasLike(filter_ir)) {
       EnsureJITCompiler();
       auto t_filter = chrono_tic();
       ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);

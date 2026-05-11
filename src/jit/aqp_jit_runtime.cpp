@@ -124,4 +124,36 @@ int aqp_str_contains(const char *str, int32_t slen,
     return memmem(str, (size_t)slen, pat, (size_t)plen) != NULL ? 1 : 0;
 }
 
+// Multi-segment LIKE matcher for patterns with only '%' wildcards.
+// Splits pattern like '%Downey%Robert%' into segments ["Downey","Robert"]
+// and scans with sequential memmem — O(n*k) instead of O(n^m) backtracking.
+int aqp_like_match_segments(const char *str, int32_t slen,
+                            const char **segs, const int32_t *seg_lens,
+                            int32_t n_segs,
+                            int has_leading_pct, int has_trailing_pct) {
+    const char *pos = str;
+    int32_t remaining = slen;
+    for (int32_t i = 0; i < n_segs; i++) {
+        if (i == 0 && !has_leading_pct) {
+            if (remaining < seg_lens[i] ||
+                memcmp(pos, segs[i], (size_t)seg_lens[i]) != 0)
+                return 0;
+            pos += seg_lens[i]; remaining -= seg_lens[i];
+        } else if (i == n_segs - 1 && !has_trailing_pct) {
+            if (remaining < seg_lens[i] ||
+                memcmp(pos + remaining - seg_lens[i], segs[i],
+                       (size_t)seg_lens[i]) != 0)
+                return 0;
+            remaining -= seg_lens[i];
+        } else {
+            void *found = memmem(pos, (size_t)remaining,
+                                 segs[i], (size_t)seg_lens[i]);
+            if (!found) return 0;
+            int32_t offset = (int32_t)((const char*)found - pos) + seg_lens[i];
+            pos += offset; remaining -= offset;
+        }
+    }
+    return 1;
+}
+
 } // extern "C"

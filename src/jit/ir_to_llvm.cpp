@@ -49,6 +49,10 @@ int aqp_str_eq(const char *a, int32_t alen, const char *b, int32_t blen);
 int aqp_str_cmp(const char *a, int32_t alen, const char *b, int32_t blen);
 int aqp_str_contains(const char *str, int32_t slen, const char *pat,
                      int32_t plen);
+int aqp_like_match_segments(const char *str, int32_t slen,
+                            const char **segs, const int32_t *seg_lens,
+                            int32_t n_segs, int has_leading_pct,
+                            int has_trailing_pct);
 int aqp_in_set_i32(int32_t val, const int32_t *values, int32_t n);
 int aqp_in_set_i64(int64_t val, const int64_t *values, int32_t n);
 int aqp_in_set_str(const char *str, int32_t slen, const char **ptrs,
@@ -397,9 +401,18 @@ struct IrToLlvmCompiler::Impl {
         {es.intern("aqp_str_contains"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_contains),
                             JITSymbolFlags::Exported)},
+        {es.intern("aqp_like_match_segments"),
+         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_like_match_segments),
+                            JITSymbolFlags::Exported)},
         {es.intern("memcmp"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::memcmp),
                             JITSymbolFlags::Exported)},
+        {es.intern("memchr"),
+         JITEvaluatedSymbol(
+             static_cast<JITTargetAddress>(
+                 reinterpret_cast<uintptr_t>(
+                     static_cast<void *(*)(void *, int, size_t)>(::memchr))),
+             JITSymbolFlags::Exported)},
         {es.intern("aqp_in_set_i32"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_i32),
                             JITSymbolFlags::Exported)},
@@ -631,7 +644,8 @@ enum LikePatternKind {
   LIKE_EQUALITY,
   LIKE_PREFIX,
   LIKE_SUFFIX,
-  LIKE_CONTAINS
+  LIKE_CONTAINS,
+  LIKE_MULTI_SEGMENT
 };
 
 static LikePatternKind ClassifyLikePattern(const std::string &pattern,
@@ -665,6 +679,38 @@ static LikePatternKind ClassifyLikePattern(const std::string &pattern,
   if (leading > 0 && trailing == 0)
     return LIKE_SUFFIX;
   return LIKE_CONTAINS;
+}
+
+struct LikeSegments {
+  std::vector<std::string> segs;
+  bool has_leading_pct = false;
+  bool has_trailing_pct = false;
+};
+
+static LikePatternKind ClassifyLikePatternEx(const std::string &pattern,
+                                             std::string &literal_out,
+                                             LikeSegments &seg_out) {
+  LikePatternKind k = ClassifyLikePattern(pattern, literal_out);
+  if (k != LIKE_COMPLEX) return k;
+
+  if (pattern.find('_') != std::string::npos) return LIKE_COMPLEX;
+
+  seg_out.has_leading_pct = (!pattern.empty() && pattern[0] == '%');
+  seg_out.has_trailing_pct = (!pattern.empty() && pattern.back() == '%');
+
+  seg_out.segs.clear();
+  std::string cur;
+  for (char c : pattern) {
+    if (c == '%') {
+      if (!cur.empty()) { seg_out.segs.push_back(cur); cur.clear(); }
+    } else {
+      cur += c;
+    }
+  }
+  if (!cur.empty()) seg_out.segs.push_back(cur);
+
+  if (seg_out.segs.size() >= 2) return LIKE_MULTI_SEGMENT;
+  return LIKE_COMPLEX;
 }
 
 // Emit comparison for VarConstComparison node.
@@ -902,10 +948,11 @@ static Value *EmitVarConst(CompileCtx &cc,
     } else if (op == SimplestExprType::TextLike ||
                op == SimplestExprType::Text_Not_Like) {
       std::string literal;
-      LikePatternKind kind = ClassifyLikePattern(pat, literal);
+      LikeSegments seg_info;
+      LikePatternKind kind = ClassifyLikePatternEx(pat, literal, seg_info);
 #ifndef NDEBUG
       static const char *kind_names[] = {"COMPLEX", "EQUALITY", "PREFIX",
-                                         "SUFFIX", "CONTAINS"};
+                                         "SUFFIX", "CONTAINS", "MULTI_SEGMENT"};
       std::cerr << "[AQP-JIT-TRACE] EmitVarConst: compiling "
                 << (op == SimplestExprType::Text_Not_Like ? "Text_Not_Like"
                                                           : "TextLike")
@@ -991,19 +1038,162 @@ static Value *EmitVarConst(CompileCtx &cc,
                          : phi;
 
       } else if (kind == LIKE_CONTAINS) {
-        // External call to aqp_str_contains (wraps memmem, O(n))
+        // Inline memchr + memcmp loop — matches DuckDB's FindStrInStr.
         Constant *lit_const = ConstantDataArray::getString(
             cc.llctx, literal, /*AddNull=*/false);
         GlobalVariable *lit_gv = new GlobalVariable(
             cc.mod, lit_const->getType(), /*isConst=*/true,
             GlobalValue::PrivateLinkage, lit_const, "like_lit");
         Value *lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
-        Value *lit_len = cc.c32((int32_t)literal.size());
+        int32_t needle_len = (int32_t)literal.size();
 
-        FunctionCallee callee =
-            cc.mod.getOrInsertFunction("aqp_str_contains", ft4);
-        Value *r =
-            cc.b.CreateCall(callee, {char_ptr, slen, lit_ptr, lit_len});
+        BasicBlock *pre_bb = cc.b.GetInsertBlock();
+        Function *fn = pre_bb->getParent();
+        BasicBlock *search_bb =
+            BasicBlock::Create(cc.llctx, "ct_search", fn);
+        BasicBlock *found_bb =
+            BasicBlock::Create(cc.llctx, "ct_found", fn);
+        BasicBlock *notfound_bb =
+            BasicBlock::Create(cc.llctx, "ct_notfound", fn);
+        BasicBlock *done_bb =
+            BasicBlock::Create(cc.llctx, "ct_done", fn);
+
+        Value *len_ok =
+            cc.b.CreateICmpSGE(slen, cc.c32(needle_len), "ct_len_ok");
+        cc.b.CreateCondBr(len_ok, search_bb, notfound_bb);
+
+        cc.b.SetInsertPoint(search_bb);
+        Value *search_end =
+            cc.b.CreateSub(slen, cc.c32(needle_len - 1), "ct_end");
+        Value *init_off = cc.c32(0);
+
+        BasicBlock *loop_bb =
+            BasicBlock::Create(cc.llctx, "ct_loop", fn);
+        cc.b.CreateBr(loop_bb);
+        cc.b.SetInsertPoint(loop_bb);
+        PHINode *off_phi = cc.b.CreatePHI(cc.i32(), 2, "ct_off");
+        off_phi->addIncoming(init_off, search_bb);
+
+        Value *off_ext =
+            cc.b.CreateSExt(off_phi, cc.i64(), "off_ext");
+        Value *hay_ptr = cc.b.CreateGEP(
+            Type::getInt8Ty(cc.llctx), char_ptr, off_ext, "hay_ptr");
+        Value *remain =
+            cc.b.CreateSub(search_end, off_phi, "ct_remain");
+        Value *remain_ext =
+            cc.b.CreateZExt(remain, cc.i64(), "remain_ext");
+
+        FunctionType *ft_memchr = FunctionType::get(
+            cc.i8p(), {cc.i8p(), cc.i32(), cc.i64()}, false);
+        FunctionCallee memchr_fn =
+            cc.mod.getOrInsertFunction("memchr", ft_memchr);
+        Value *first_char =
+            cc.c32((int32_t)(unsigned char)literal[0]);
+        Value *loc = cc.b.CreateCall(
+            memchr_fn, {hay_ptr, first_char, remain_ext}, "ct_loc");
+
+        Value *loc_null = cc.b.CreateICmpEQ(
+            loc,
+            ConstantPointerNull::get(
+                cast<PointerType>(cc.i8p())),
+            "ct_null");
+        BasicBlock *check_bb =
+            BasicBlock::Create(cc.llctx, "ct_check", fn);
+        cc.b.CreateCondBr(loc_null, notfound_bb, check_bb);
+
+        cc.b.SetInsertPoint(check_bb);
+        if (needle_len == 1) {
+          cc.b.CreateBr(found_bb);
+        } else {
+          FunctionType *ft_mc = FunctionType::get(
+              cc.i32(), {cc.i8p(), cc.i8p(), cc.i64()}, false);
+          FunctionCallee mc_fn =
+              cc.mod.getOrInsertFunction("memcmp", ft_mc);
+          Value *mcr = cc.b.CreateCall(
+              mc_fn, {loc, lit_ptr, cc.b.getInt64(needle_len)});
+          Value *eq = cc.b.CreateICmpEQ(mcr, cc.c32(0), "ct_eq");
+
+          BasicBlock *next_bb =
+              BasicBlock::Create(cc.llctx, "ct_next", fn);
+          cc.b.CreateCondBr(eq, found_bb, next_bb);
+
+          cc.b.SetInsertPoint(next_bb);
+          Value *loc_int = cc.b.CreatePtrToInt(loc, cc.i64());
+          Value *base_int = cc.b.CreatePtrToInt(char_ptr, cc.i64());
+          Value *new_off_64 =
+              cc.b.CreateSub(loc_int, base_int);
+          Value *new_off =
+              cc.b.CreateTrunc(new_off_64, cc.i32());
+          Value *next_off =
+              cc.b.CreateAdd(new_off, cc.c32(1), "ct_next_off");
+          Value *in_range = cc.b.CreateICmpSLT(
+              next_off, search_end, "ct_inrange");
+          off_phi->addIncoming(next_off, next_bb);
+          cc.b.CreateCondBr(in_range, loop_bb, notfound_bb);
+        }
+
+        cc.b.SetInsertPoint(found_bb);
+        cc.b.CreateBr(done_bb);
+        cc.b.SetInsertPoint(notfound_bb);
+        cc.b.CreateBr(done_bb);
+
+        cc.b.SetInsertPoint(done_bb);
+        PHINode *phi = cc.b.CreatePHI(cc.i1(), 2, "ct_result");
+        phi->addIncoming(ConstantInt::getTrue(cc.llctx), found_bb);
+        phi->addIncoming(ConstantInt::getFalse(cc.llctx), notfound_bb);
+        cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(phi)
+                         : phi;
+
+      } else if (kind == LIKE_MULTI_SEGMENT) {
+        int32_t n_segs = (int32_t)seg_info.segs.size();
+
+        std::vector<Constant *> seg_ptrs, seg_lens_vals;
+        for (auto &seg : seg_info.segs) {
+          Constant *sc = ConstantDataArray::getString(
+              cc.llctx, seg, /*AddNull=*/false);
+          GlobalVariable *sg = new GlobalVariable(
+              cc.mod, sc->getType(), /*isConst=*/true,
+              GlobalValue::PrivateLinkage, sc, "like_seg");
+          seg_ptrs.push_back(
+              ConstantExpr::getBitCast(sg, cc.i8p()));
+          seg_lens_vals.push_back(
+              cc.b.getInt32((int32_t)seg.size()));
+        }
+
+        ArrayType *ptr_arr_ty = ArrayType::get(cc.i8p(), n_segs);
+        Constant *ptr_arr =
+            ConstantArray::get(ptr_arr_ty, seg_ptrs);
+        GlobalVariable *ptr_gv = new GlobalVariable(
+            cc.mod, ptr_arr_ty, /*isConst=*/true,
+            GlobalValue::PrivateLinkage, ptr_arr, "seg_ptrs");
+
+        ArrayType *len_arr_ty = ArrayType::get(cc.i32(), n_segs);
+        Constant *len_arr =
+            ConstantArray::get(len_arr_ty, seg_lens_vals);
+        GlobalVariable *len_gv = new GlobalVariable(
+            cc.mod, len_arr_ty, /*isConst=*/true,
+            GlobalValue::PrivateLinkage, len_arr, "seg_lens");
+
+        Value *ptrs_ptr = cc.b.CreateBitCast(
+            ptr_gv, PointerType::getUnqual(cc.i8p()));
+        Value *lens_ptr = cc.b.CreateBitCast(
+            len_gv, PointerType::getUnqual(cc.i32()));
+
+        FunctionType *ft_seg = FunctionType::get(
+            cc.i32(),
+            {cc.i8p(), cc.i32(),
+             PointerType::getUnqual(cc.i8p()),
+             PointerType::getUnqual(cc.i32()),
+             cc.i32(), cc.i32(), cc.i32()},
+            false);
+        FunctionCallee callee = cc.mod.getOrInsertFunction(
+            "aqp_like_match_segments", ft_seg);
+        Value *r = cc.b.CreateCall(
+            callee,
+            {char_ptr, slen, ptrs_ptr, lens_ptr, cc.c32(n_segs),
+             cc.c32(seg_info.has_leading_pct ? 1 : 0),
+             cc.c32(seg_info.has_trailing_pct ? 1 : 0)});
         Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
         cmp_result = (op == SimplestExprType::Text_Not_Like)
                          ? cc.b.CreateNot(m)
@@ -1635,6 +1825,196 @@ static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
   cc.b.CreateStore(cc.b.CreateTrunc(out_count, i32), sel_cnt_ptr);
   cc.b.CreateRet(out_count);
   (void)final_count;
+
+  return fn;
+}
+
+// ---------------------------------------------------------------------------
+// Check if an expression is "expensive" — involves VARCHAR LIKE, CONTAINS,
+// or other string pattern matching.  Used by the two-pass scalar filter to
+// separate cheap predicates (Phase 1) from expensive ones (Phase 2).
+// ---------------------------------------------------------------------------
+static bool IsExpensiveExpr(const AQPExpr *e) {
+  if (!e) return false;
+  switch (e->GetNodeType()) {
+  case VarConstComparisonNode: {
+    auto *cmp = static_cast<const SimplestVarConstComparison *>(e);
+    auto et = cmp->GetSimplestExprType();
+    if (et == SimplestExprType::TextLike ||
+        et == SimplestExprType::Text_Not_Like)
+      return true;
+    return false;
+  }
+  case LogicalExprNode: {
+    auto *log = static_cast<const SimplestLogicalExpr *>(e);
+    if (log->left_expr && IsExpensiveExpr(log->left_expr.get()))
+      return true;
+    if (log->right_expr && IsExpensiveExpr(log->right_expr.get()))
+      return true;
+    return false;
+  }
+  default:
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Two-pass scalar filter: cheap predicates first (sequential), then expensive
+// predicates (LIKE/CONTAINS) only on survivors.  No SIMD — pure scalar.
+//
+// Phase 1: loop all rows, evaluate cheap_exprs with && short-circuit,
+//          write survivors to sel[].
+// Phase 2: loop sel[0..phase1_count), evaluate expensive_exprs on each
+//          survivor, compact in-place.
+// ---------------------------------------------------------------------------
+static Function *BuildFilterFunctionTwoPass(
+    LLVMContext &llctx, Module &mod, const std::string &fn_name,
+    const std::vector<const AQPExpr *> &cheap_exprs,
+    const std::vector<const AQPExpr *> &expensive_exprs,
+    const std::vector<ColSchema> &schema) {
+  Type *i8p = PointerType::getUnqual(Type::getInt8Ty(llctx));
+  Type *i32 = Type::getInt32Ty(llctx);
+  Type *i64 = Type::getInt64Ty(llctx);
+  Type *i64p = PointerType::getUnqual(i64);
+
+  StructType *ColViewTy = StructType::get(llctx, {i8p, i64p, i32, i32});
+  StructType *ChunkViewTy =
+      StructType::get(llctx, {PointerType::getUnqual(ColViewTy), i64, i64});
+  StructType *SelViewTy =
+      StructType::get(llctx, {PointerType::getUnqual(i32), i32});
+
+  FunctionType *fn_ty = FunctionType::get(
+      i64,
+      {PointerType::getUnqual(ChunkViewTy), PointerType::getUnqual(SelViewTy)},
+      false);
+  Function *fn =
+      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, &mod);
+
+  Value *chunk_arg = fn->getArg(0);
+  Value *sel_arg = fn->getArg(1);
+  chunk_arg->setName("chunk");
+  sel_arg->setName("sel");
+
+  // ===== PHASE 1: cheap predicates on all rows =====
+  BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
+  BasicBlock *p1_loop_bb = BasicBlock::Create(llctx, "p1_loop", fn);
+  BasicBlock *p1_body_bb = BasicBlock::Create(llctx, "p1_body", fn);
+  BasicBlock *p1_store_bb = BasicBlock::Create(llctx, "p1_store", fn);
+  BasicBlock *p1_next_bb = BasicBlock::Create(llctx, "p1_next", fn);
+  BasicBlock *phase2_bb = BasicBlock::Create(llctx, "phase2", fn);
+
+  CompileCtx cc1(llctx, mod, schema, chunk_arg, sel_arg);
+  cc1.b.SetInsertPoint(entry_bb);
+
+  Value *nrows_ptr = cc1.b.CreateStructGEP(ChunkViewTy, chunk_arg, 1);
+  Value *nrows = cc1.b.CreateLoad(i64, nrows_ptr, "nrows");
+
+  cc1.col_data.resize(schema.size());
+  cc1.col_validity.resize(schema.size());
+  for (size_t i = 0; i < schema.size(); i++) {
+    cc1.col_data[i] = cc1.LoadColData((unsigned)i);
+    cc1.col_validity[i] = cc1.LoadColValidity((unsigned)i);
+  }
+
+  Value *sel_idx_ptr_ptr = cc1.b.CreateStructGEP(SelViewTy, sel_arg, 0);
+  Value *sel_idx_ptr = cc1.b.CreateLoad(PointerType::getUnqual(i32),
+                                        sel_idx_ptr_ptr, "sel_indices");
+  cc1.b.CreateBr(p1_loop_bb);
+
+  cc1.b.SetInsertPoint(p1_loop_bb);
+  PHINode *p1_i = cc1.b.CreatePHI(i64, 2, "p1_i");
+  PHINode *p1_oc = cc1.b.CreatePHI(i64, 2, "p1_oc");
+  p1_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  p1_oc->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  cc1.b.CreateCondBr(cc1.b.CreateICmpEQ(p1_i, nrows, "p1_done"),
+                     phase2_bb, p1_body_bb);
+
+  cc1.b.SetInsertPoint(p1_body_bb);
+  cc1.row_idx = p1_i;
+
+  Value *p1_match = ConstantInt::getTrue(llctx);
+  for (const AQPExpr *e : cheap_exprs) {
+    Value *res = EmitExpr(cc1, e);
+    p1_match = cc1.b.CreateAnd(p1_match, res);
+  }
+  BasicBlock *p1_condBr_bb = cc1.b.GetInsertBlock();
+  cc1.b.CreateCondBr(p1_match, p1_store_bb, p1_next_bb);
+
+  cc1.b.SetInsertPoint(p1_store_bb);
+  Value *p1_dst = cc1.b.CreateGEP(i32, sel_idx_ptr, p1_oc, "p1_dst");
+  Value *p1_i32 = cc1.b.CreateTrunc(p1_i, i32, "p1_i32");
+  cc1.b.CreateStore(p1_i32, p1_dst);
+  Value *p1_oc1 = cc1.b.CreateAdd(p1_oc, ConstantInt::get(i64, 1));
+  cc1.b.CreateBr(p1_next_bb);
+
+  cc1.b.SetInsertPoint(p1_next_bb);
+  PHINode *p1_oc_next = cc1.b.CreatePHI(i64, 2, "p1_oc_next");
+  p1_oc_next->addIncoming(p1_oc, p1_condBr_bb);
+  p1_oc_next->addIncoming(p1_oc1, p1_store_bb);
+  Value *p1_i_next = cc1.b.CreateAdd(p1_i, ConstantInt::get(i64, 1), "p1_i_next");
+  p1_i->addIncoming(p1_i_next, p1_next_bb);
+  p1_oc->addIncoming(p1_oc_next, p1_next_bb);
+  cc1.b.CreateBr(p1_loop_bb);
+
+  // ===== PHASE 2: expensive predicates on survivors =====
+  BasicBlock *p2_loop_bb = BasicBlock::Create(llctx, "p2_loop", fn);
+  BasicBlock *p2_body_bb = BasicBlock::Create(llctx, "p2_body", fn);
+  BasicBlock *p2_keep_bb = BasicBlock::Create(llctx, "p2_keep", fn);
+  BasicBlock *p2_next_bb = BasicBlock::Create(llctx, "p2_next", fn);
+  BasicBlock *exit_bb = BasicBlock::Create(llctx, "exit", fn);
+
+  IRBuilder<> b2(llctx);
+  b2.SetInsertPoint(phase2_bb);
+  Value *phase1_count = p1_oc;
+  b2.CreateBr(p2_loop_bb);
+
+  b2.SetInsertPoint(p2_loop_bb);
+  PHINode *p2_i = b2.CreatePHI(i64, 2, "p2_i");
+  PHINode *p2_oc = b2.CreatePHI(i64, 2, "p2_oc");
+  p2_i->addIncoming(ConstantInt::get(i64, 0), phase2_bb);
+  p2_oc->addIncoming(ConstantInt::get(i64, 0), phase2_bb);
+  b2.CreateCondBr(b2.CreateICmpEQ(p2_i, phase1_count), exit_bb, p2_body_bb);
+
+  {
+    CompileCtx cc2(llctx, mod, schema, chunk_arg, sel_arg);
+    cc2.b.SetInsertPoint(p2_body_bb);
+    cc2.col_data = cc1.col_data;
+    cc2.col_validity = cc1.col_validity;
+
+    Value *row_from_sel = cc2.b.CreateZExt(
+        cc2.b.CreateLoad(i32, cc2.b.CreateGEP(i32, sel_idx_ptr, p2_i)), i64);
+    cc2.row_idx = row_from_sel;
+
+    Value *p2_match = ConstantInt::getTrue(llctx);
+    for (const AQPExpr *e : expensive_exprs) {
+      Value *res = EmitExpr(cc2, e);
+      p2_match = cc2.b.CreateAnd(p2_match, res);
+    }
+    BasicBlock *p2_condBr_bb = cc2.b.GetInsertBlock();
+    cc2.b.CreateCondBr(p2_match, p2_keep_bb, p2_next_bb);
+
+    b2.SetInsertPoint(p2_keep_bb);
+    Value *src_val = b2.CreateLoad(i32, b2.CreateGEP(i32, sel_idx_ptr, p2_i));
+    b2.CreateStore(src_val, b2.CreateGEP(i32, sel_idx_ptr, p2_oc));
+    Value *p2_oc_inc = b2.CreateAdd(p2_oc, ConstantInt::get(i64, 1));
+    b2.CreateBr(p2_next_bb);
+
+    b2.SetInsertPoint(p2_next_bb);
+    PHINode *p2_oc_next = b2.CreatePHI(i64, 2, "p2_oc_next");
+    p2_oc_next->addIncoming(p2_oc, p2_condBr_bb);
+    p2_oc_next->addIncoming(p2_oc_inc, p2_keep_bb);
+    Value *p2_i_next = b2.CreateAdd(p2_i, ConstantInt::get(i64, 1));
+    p2_i->addIncoming(p2_i_next, p2_next_bb);
+    p2_oc->addIncoming(p2_oc_next, p2_next_bb);
+    b2.CreateBr(p2_loop_bb);
+  }
+
+  b2.SetInsertPoint(exit_bb);
+  PHINode *final_count = b2.CreatePHI(i64, 1, "final_count");
+  final_count->addIncoming(p2_oc, p2_loop_bb);
+  b2.CreateStore(b2.CreateTrunc(final_count, i32),
+                 b2.CreateStructGEP(SelViewTy, sel_arg, 1));
+  b2.CreateRet(final_count);
 
   return fn;
 }
@@ -4268,20 +4648,31 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
                   << " all_simd=" << simd_exprs.size() << ")\n";
       }
     } else if (!simd_exprs.empty()) {
-      // Hybrid: SIMD numeric predicates first, then scalar VARCHAR on survivors
-      fn = BuildFilterFunctionHybrid(*ctx, *mod, fn_name, simd_exprs,
-                                     scalar_exprs, schema, impl_->vec_width);
+      // Mixed: use two-pass scalar (cheap-then-expensive) instead of SIMD
+      // hybrid.  The SIMD hybrid adds vectorization overhead and selection
+      // vector indirection that hurts when numeric predicates aren't very
+      // selective.  Two-pass scalar avoids that while still pre-filtering.
+      // (falls through to two-pass logic below)
+    }
+  }
+  // Fall back to scalar — try two-pass (cheap-then-expensive) when mixed
+  if (!fn && exprs.size() >= 2) {
+    std::vector<const AQPExpr *> cheap, expensive;
+    for (const AQPExpr *e : exprs) {
+      if (IsExpensiveExpr(e))
+        expensive.push_back(e);
+      else
+        cheap.push_back(e);
+    }
+    if (!cheap.empty() && !expensive.empty()) {
+      fn = BuildFilterFunctionTwoPass(*ctx, *mod, fn_name, cheap, expensive,
+                                      schema);
       if (fn) {
-        used_simd = true;
-        std::cerr << "[AQP-JIT] using HYBRID filter (VW=" << impl_->vec_width
-                  << " simd=" << simd_exprs.size()
-                  << " scalar=" << scalar_exprs.size() << ")\n";
-      } else {
-        std::cerr << "[AQP-JIT] hybrid SIMD failed → scalar fallback\n";
+        std::cerr << "[AQP-JIT] using TWO-PASS filter (cheap="
+                  << cheap.size() << " expensive=" << expensive.size() << ")\n";
       }
     }
   }
-  // Fall back to scalar
   if (!fn) {
     fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
   }
