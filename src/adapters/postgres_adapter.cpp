@@ -111,11 +111,11 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
 
 void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card) {
+    bool update_temp_card, bool enable_timing) {
   CheckConnection();
 
   std::chrono::high_resolution_clock::time_point timer;
-  if (enable_timing_)
+  if (enable_timing)
     timer = chrono_tic();
 
   // Build SQL: CREATE TEMP TABLE + optional ANALYZE in one round-trip
@@ -140,7 +140,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     throw std::runtime_error("Failed to send query: " +
                              std::string(PQerrorMessage(conn)));
   }
-  if (enable_timing_) {
+  if (enable_timing) {
     auto execute_sub_sql_time =
         chrono_toc(&timer, "Execute sub-SQL time is\n", false);
     // save time to a file
@@ -175,7 +175,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     PQclear(r);
   }
 
-  if (enable_timing_) {
+  if (enable_timing) {
     auto extra_materialize_time =
         chrono_toc(&timer, "Extra materialize time is\n", false);
     // save time to a file

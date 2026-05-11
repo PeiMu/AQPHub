@@ -166,75 +166,6 @@ e.g., `--estimator=postgres --helper-db-path="host=localhost port=5432 dbname=im
 Note: it is a bit tricky that there are some bugs with the `node-based` strategy, 
 and we need to specify a duckdb's database path to avoid these bugs 
 
-### JIT
-
-Requires building with LLVM 14 (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL operators from the AQP IR into native machine code using LLVM ORC LLJIT.
-
-#### JIT Level
-
-`--jit-level=<level>` selects the compilation granularity:
-
-| Level | Flag value | Description |
-|-------|-----------|-------------|
-| None | `none` | JIT disabled |
-| Expression | `expr` | Compile individual filter expressions |
-| Operator | `operator` | Compile whole operators (filter, projection, hash build/probe, aggregate) |
-| Pipeline | `pipeline` | Fuse adjacent operators into single compiled functions (filter+projection, filter+aggregate, filter+hash build, filter+probe+projection) |
-| SQL | `sql` | Compile entire sub-plans / whole queries |
-
-#### JIT Optimization Level
-
-`--jit-opt=<opt>` selects the LLVM optimization level:
-
-| Flag value | Description |
-|-----------|-------------|
-| `o0` | No optimization |
-| `o1` | Basic optimization (default) |
-| `o2` | Standard optimization |
-| `o3` | Aggressive optimization |
-
-#### JIT SIMD
-
-`--jit-simd=<isa>` selects the SIMD instruction set:
-
-| Flag value | Description |
-|-----------|-------------|
-| `off` | SIMD disabled |
-| `sse2` | SSE2 (128-bit) |
-| `avx` | AVX (256-bit) |
-| `avx2` | AVX2 (256-bit with integer ops) |
-| `avx512` | AVX-512 (512-bit) |
-| `auto` | Auto-detect best available ISA |
-
-#### Per-Optimization Flags
-
-These flags control individual pipeline-level optimizations. All default to **enabled** when `--jit-level` is `pipeline` or `sql`.
-
-| Flag | Description |
-|------|-------------|
-| `--jit-fusion-build` / `--no-jit-fusion-build` | Filter + HashBuild fusion. Fuses filter evaluation and hash table insertion into a single loop, eliminating the intermediate DataChunk between them. |
-| `--jit-fusion-probe` / `--no-jit-fusion-probe` | Filter + HashProbe + Projection fusion. Fuses filter, hash probe, and projection into a single loop on the probe side, eliminating two intermediate DataChunks. |
-| `--jit-inline-hash` / `--no-jit-inline-hash` | Inline FNV-1a hash computation as LLVM IR instead of calling the `aqp_hash()` C function. Eliminates function call overhead and enables LLVM to keep the hash value in a register. |
-| `--jit-payload-prune` / `--no-jit-payload-prune` | Hash build payload pruning. Only copies columns referenced downstream into the hash table payload instead of all input columns. Reduces hash table memory footprint. |
-| `--jit-prefetch` / `--jit-prefetch=<distance>` / `--no-jit-prefetch` | Software prefetching for hash table access. Uses `llvm.prefetch` intrinsic to prefetch hash table slots ahead of the probe loop. Default distance is 8. |
-| `--jit-batch-probe` / `--no-jit-batch-probe` | Batch/vectorized hash probe. Two-phase probe: Phase 1 computes all hashes and prefetches slots; Phase 2 probes with cache-hot slots. |
-| `--jit-cache` / `--jit-cache=<path>` / `--no-jit-cache` | Cross-process compiled binary cache. Caches compiled ELF objects to disk so subsequent runs skip LLVM compilation. Default path: `~/.cache/aqp_jit/`. |
-
-#### Example
-
-```bash
-./build_release/aqp_middleware \
-  --engine=duckdb \
-  --db="/home/pei/Project/duckdb_132/measure/imdb.db" \
-  --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-  --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-  --split=none \
-  --jit-level=pipeline --jit-opt=o2 --jit-simd=auto \
-  --no-jit-batch-probe --jit-prefetch=16 --jit-cache \
-  --no-analyze \
-  /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
-```
-
 ### Whole benchmark
 
 It can also run the whole benchmark. For now we only support JOB+IMDB.
@@ -364,72 +295,18 @@ umbra-server --address 0.0.0.0 /var/db/dsb_10.db
 ```
 
 ## Measurement Scripts
-
-Go to directory `measure/`. The scripts accept the following positional arguments:
-
-```
-$1  engine          duckdb / postgres / umbra / mariadb / opengauss
-$2  split           none / relationship-center / entity-center / min-subquery / node-based
-$3  jit_level       none / expr / operator / pipeline / sql
-$4  jit_opt         o0 / o1 / o2 / o3
-$5  jit_simd        off / sse2 / avx / avx2 / avx512 / auto
-$6  fusion_build    on / off                    (default: on)
-$7  fusion_probe    on / off                    (default: on)
-$8  inline_hash     on / off                    (default: on)
-$9  payload_prune   on / off                    (default: on)
-$10 prefetch        on / off / <distance>       (default: on, distance=8)
-$11 batch_probe     on / off                    (default: on)
-$12 cache           off / on / <path>           (default: off)
-```
-
-Arguments 6-12 are optional and default to all optimizations enabled (cache off).
-
-### Run a single benchmark pass
+Go to directory `measure/`, there is script to run with either engine/split_strategy
 
 ```bash
-bash ./run_job.sh duckdb none sql o2 auto
+bash ./run_job.sh duckdb node-based
 ```
 
-### Measure performance with hyperfine
+Or measure the performance.
 
 ```bash
-bash ./measure_job.sh duckdb none sql o2 auto
+bash ./measure_job.sh duckdb node-based
 ```
 
-### Measure performance breakdown (per-query timing)
-
-```bash
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 auto
-```
-
-### Examples with per-optimization flags
-
-```bash
-# All optimizations enabled (default)
-bash ./measure_job.sh duckdb none sql o2 auto
-
-# Disable fusion-build to isolate its contribution
-bash ./measure_job.sh duckdb none sql o2 auto off
-
-# Disable both fusion optimizations
-bash ./measure_job.sh duckdb none sql o2 auto off off
-
-# Custom prefetch distance of 16
-bash ./measure_job.sh duckdb none sql o2 auto on on on on 16
-
-# Enable disk cache
-bash ./measure_job.sh duckdb none sql o2 auto on on on on on on on
-
-# Disable batch probe only (pass preceding defaults)
-bash ./run_job.sh duckdb none sql o2 auto on on on on on off
-
-# Breakdown timing with batch probe disabled
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 auto on on on on on off
-```
-
-Log filenames encode the active flags, e.g., `aqp_middleware_duckdb_none_sql_o2_auto_nofusbuild_job.csv`.
-
-### Native engine scripts
 
 We also provide scripts for running the native Umbra and MariaDB.
 

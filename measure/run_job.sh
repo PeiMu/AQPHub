@@ -2,49 +2,7 @@
 
 engine=$1
 split=$2
-jit_level=$3
-jit_opt=$4
-jit_simd=$5
-fusion_build=${6:-on}
-fusion_probe=${7:-on}
-inline_hash=${8:-on}
-payload_prune=${9:-on}
-prefetch=${10:-on}
-batch_probe=${11:-on}
-cache=${12:-off}
-
-# Build CLI flags from positional args
-jit_extra_flags=""
-[[ "$fusion_build"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-build"
-[[ "$fusion_probe"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-probe"
-[[ "$inline_hash"   == "off" ]] && jit_extra_flags+=" --no-jit-inline-hash"
-[[ "$payload_prune" == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
-if [[ "$prefetch" == "off" ]]; then
-    jit_extra_flags+=" --no-jit-prefetch"
-elif [[ "$prefetch" != "on" ]]; then
-    jit_extra_flags+=" --jit-prefetch=${prefetch}"
-fi
-[[ "$batch_probe" == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
-if [[ "$cache" == "off" ]]; then
-    jit_extra_flags+=" --no-jit-cache"
-elif [[ "$cache" == "on" ]]; then
-    jit_extra_flags+=" --jit-cache"
-else
-    jit_extra_flags+=" --jit-cache=${cache}"
-fi
-
-# Build a short suffix for the log filename
-flag_suffix=""
-[[ "$fusion_build"  == "off" ]] && flag_suffix+="_nofusbuild"
-[[ "$fusion_probe"  == "off" ]] && flag_suffix+="_nofusprobe"
-[[ "$inline_hash"   == "off" ]] && flag_suffix+="_noinlhash"
-[[ "$payload_prune" == "off" ]] && flag_suffix+="_nopayprune"
-[[ "$prefetch"      == "off" ]] && flag_suffix+="_noprefetch"
-[[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
-[[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
-[[ "$cache"         != "off" ]] && flag_suffix+="_cache"
-
-log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_job.txt
+log_name=aqp_middleware_${engine}_${split}_job.txt
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
@@ -112,10 +70,10 @@ stop_umbra() {
 ########################################
 Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data_18_3
+  pg_ctl start -l $Project_path/logfile -D $Project_path/data
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data_18_3 -m smart -s
+  pg_ctl stop -D $Project_path/data -m smart -s
 }
 rm_pg_log() {
   rm $Project_path/logfile
@@ -220,15 +178,14 @@ fi
 for sql in "$dir"/*.sql; do
     echo "Running benchmark for $sql..." | tee -a "$log_name"
 
-    $cmd_prefix ../build_release/aqp_middleware \
+    $cmd_prefix ../build/aqp_middleware \
         --engine="${engine}" \
         --db="${db_conn}" \
         "${helper_db_arg}" \
         --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
         --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
         --split="${split}" \
-        --no-analyze --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
-        ${jit_extra_flags} \
+        --no-analyze \
         "${sql}" \
         2>&1 | tee -a "$log_name"
 done

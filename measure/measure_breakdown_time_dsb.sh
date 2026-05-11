@@ -180,7 +180,7 @@ fi
 for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
   echo "Running benchmark for $sql..." | tee -a "$log_name"
   for i in $(eval echo {1.."${iteration}"}); do
-      $cmd_prefix ../build_release/aqp_middleware \
+      $cmd_prefix ../build/aqp_middleware \
         --engine="${engine}" \
         --db="${db_conn}" \
         "${helper_db_arg}" \
