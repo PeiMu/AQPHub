@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -53,22 +52,6 @@ struct ParamConfig {
   bool enable_timing = false;
   bool enable_debug_print = false;
   bool enable_sub_plan_combiner = false;
-
-  // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
-  // 0 = no JIT. Each level implies all lower levels for fallback.
-  // Set via: --jit (=AQPJIT_EXPR), --jit-level=operator, --jit-simd, --jit-opt=3
-  uint32_t jit_flags = 0;
-
-  // Per-optimization toggles (pipeline-level and above).
-  bool jit_fusion_build = true;
-  bool jit_fusion_probe = true;
-  bool jit_inline_hash = true;
-  bool jit_payload_prune = true;
-  bool jit_prefetch = true;
-  int jit_prefetch_distance = 8;
-  bool jit_batch_probe = true;
-  bool jit_cache = false;
-  std::string jit_cache_dir;
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);

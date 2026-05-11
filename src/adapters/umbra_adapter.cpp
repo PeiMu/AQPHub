@@ -34,7 +34,7 @@ void UmbraAdapter::SetTempTableCardinality(const std::string &temp_table_name,
 
 void UmbraAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
-    bool update_temp_card) {
+    bool update_temp_card, bool enable_timing) {
   CheckConnection();
 
   // Create temp table with query results using CREATE TEMP TABLE AS
