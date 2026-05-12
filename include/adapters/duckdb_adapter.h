@@ -276,6 +276,11 @@ private:
   // same IR FilterNode.
   std::unordered_set<const ir_sql_converter::AQPStmt *>
       jit_consumed_ir_filters_;
+
+  // IR join nodes already matched to a DuckDB HASH_JOIN operator.
+  // Prevents multiple physical HASH_JOINs from binding to the same IR JoinNode.
+  std::unordered_set<const ir_sql_converter::AQPStmt *>
+      jit_consumed_ir_joins_;
 #endif
 
   // Column names for each chunk table: data_chunk_index → column names as

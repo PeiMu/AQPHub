@@ -580,6 +580,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
                    "(compiler reused)\n";
 #endif
       jit_consumed_ir_filters_.clear();
+      jit_consumed_ir_joins_.clear();
       RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
       // Level 4: SQL-level compilation — compile the entire IR tree
@@ -720,6 +721,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
                  "aqp_jit_context (compiler reused)\n";
 #endif
     jit_consumed_ir_filters_.clear();
+    jit_consumed_ir_joins_.clear();
     RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
     // Level 4: SQL-level compilation — compile the sub-SQL IR tree
@@ -1122,6 +1124,54 @@ FindFirstJoinNode(const ir_sql_converter::AQPStmt *ir) {
     return ir;
   for (const auto &child : ir->children)
     if (auto *j = FindFirstJoinNode(child.get()))
+      return j;
+  return nullptr;
+}
+
+// Walk the physical plan downward to find a leaf PhysicalTableScan.
+static duckdb::PhysicalTableScan *
+FindBuildSideTableScan(duckdb::PhysicalOperator &op) {
+  if (op.type == duckdb::PhysicalOperatorType::TABLE_SCAN)
+    return &op.Cast<duckdb::PhysicalTableScan>();
+  for (auto &child : op.children)
+    if (auto *s = FindBuildSideTableScan(child.get()))
+      return s;
+  return nullptr;
+}
+
+// Find a ScanNode with the given table_index in an IR subtree.
+static const ir_sql_converter::AQPStmt *
+FindScanByTableIndex(const ir_sql_converter::AQPStmt *ir, unsigned int tidx) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan =
+        static_cast<const ir_sql_converter::SimplestScan *>(ir);
+    if (scan->GetTableIndex() == tidx)
+      return ir;
+  }
+  for (const auto &child : ir->children)
+    if (auto *s = FindScanByTableIndex(child.get(), tidx))
+      return s;
+  return nullptr;
+}
+
+// Find the IR JoinNode whose build side (children[1]) contains a ScanNode
+// with the given table_index. Skip already-consumed JoinNodes.
+static const ir_sql_converter::AQPStmt *
+FindJoinNodeByBuildTableIndex(
+    const ir_sql_converter::AQPStmt *ir, unsigned int build_tidx,
+    const std::unordered_set<const ir_sql_converter::AQPStmt *> &consumed) {
+  if (!ir)
+    return nullptr;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode &&
+      !consumed.count(ir) && ir->children.size() > 1) {
+    if (FindScanByTableIndex(ir->children[1].get(), build_tidx))
+      return ir;
+  }
+  for (const auto &child : ir->children)
+    if (auto *j =
+            FindJoinNodeByBuildTableIndex(child.get(), build_tidx, consumed))
       return j;
   return nullptr;
 }
@@ -2181,9 +2231,10 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
   //! DuckDB's join execution is complex (parallel
   //! build, spilling, outer join state, bloom filters). The JIT
   //! functions are stored in op_fns/pipeline_fns but DuckDB's
-  //! PhysicalHashJoin still runs its own C++ hash join implementation.
-  //! For DuckDB, we only jit it for pipeline-level
-  if ((jit_flags_ & AQP_JIT_PIPELINE) &&
+  //! Hash join JIT dispatch is disabled: the IR's column schema doesn't match
+  //! DuckDB's physical chunk layout (DuckDB prunes unused columns).
+  //! Skip compilation entirely to avoid wasting LLVM compile time.
+  if (false && (jit_flags_ & AQP_JIT_PIPELINE) &&
       op.type == PhysicalOperatorType::HASH_JOIN) {
     uint64_t eid = duckdb::ExpressionID(op);
 #ifndef NDEBUG
@@ -2191,25 +2242,49 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
               << std::dec << "\n";
 #endif
 
-    // Find JoinNode in IR. DuckDB path doesn't generate HashNode, so we
-    // derive hash keys from the JoinNode's join_conditions instead.
-    const ir_sql_converter::AQPStmt *join_ir = FindFirstJoinNode(&ir);
+    // Match this physical HASH_JOIN to the correct IR JoinNode by
+    // walking the build child to find its PhysicalTableScan, then
+    // searching the IR for a JoinNode whose build-side subtree has a
+    // ScanNode with the same logical_table_index.
+    auto *build_phys_scan = FindBuildSideTableScan(op.children[1].get());
+    unsigned int build_tidx =
+        build_phys_scan
+            ? static_cast<unsigned int>(build_phys_scan->logical_table_index)
+            : UINT_MAX;
+    const ir_sql_converter::AQPStmt *join_ir =
+        (build_tidx != UINT_MAX)
+            ? FindJoinNodeByBuildTableIndex(&ir, build_tidx,
+                                            jit_consumed_ir_joins_)
+            : FindFirstJoinNode(&ir);
     const ir_sql_converter::AQPStmt *hash_ir = FindFirstHashNode(&ir);
 
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-TRACE] HASH_JOIN: build_tidx=" << build_tidx
+              << " join_ir=" << (void *)join_ir << "\n";
+#endif
     if (join_ir) {
+      jit_consumed_ir_joins_.insert(join_ir);
       auto *join =
           dynamic_cast<const ir_sql_converter::SimplestJoin *>(join_ir);
       if (join && !join->join_conditions.empty()) {
-        // Build side is typically children[1] in the IR JoinNode.
-        // Its target_list defines the build schema.
-        const ir_sql_converter::AQPStmt *build_child =
-            (join_ir->children.size() > 1) ? join_ir->children[1].get()
-                                           : nullptr;
+        // Find the build-side ScanNode in the matched JoinNode's subtree.
+        // For left-deep plans children[1] is directly a ScanNode; for
+        // bushy/filtered plans we search the subtree by table_index.
+        const ir_sql_converter::AQPStmt *build_child = nullptr;
+        if (build_tidx != UINT_MAX && join_ir->children.size() > 1)
+          build_child =
+              FindScanByTableIndex(join_ir->children[1].get(), build_tidx);
 
         // If HashNode exists (PostgreSQL path), use its child instead
-        if (hash_ir)
-          build_child = hash_ir->children.empty() ? build_child
-                                                  : hash_ir->children[0].get();
+        if (hash_ir && !hash_ir->children.empty())
+          build_child = hash_ir->children[0].get();
+
+        // Walk through FilterNode wrappers to reach the ScanNode
+        while (build_child &&
+               build_child->GetNodeType() ==
+                   ir_sql_converter::SimplestNodeType::FilterNode &&
+               !build_child->children.empty())
+          build_child = build_child->children[0].get();
 
         if (build_child && !build_child->target_list.empty()) {
           // Build schema from build child's target_list
@@ -2315,7 +2390,9 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                              "falling back to separate operators\n";
               } else {
                 const ir_sql_converter::AQPStmt *filter_ir =
-                    FindFirstFilterNode(&ir);
+                    (join_ir->children.size() > 1)
+                        ? FindFirstFilterNode(join_ir->children[1].get())
+                        : FindFirstFilterNode(&ir);
                 if (filter_ir) {
                   auto t_fhb = chrono_tic();
                   void *fused_fn = jit_compiler_->CompileFilterHashBuildFusion(
@@ -2330,7 +2407,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                     if (!ctx->aqp_jit_context)
                       ctx->aqp_jit_context =
                           duckdb::make_uniq<duckdb::AQPJITContext>();
-                    ctx->aqp_jit_context->pipeline_fns[eid] =
+                    ctx->aqp_jit_context->build_pipeline_fns[eid] =
                         reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
                     ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
                     fused = true;
@@ -2422,11 +2499,13 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                     payload_schema = build_schema;
                   }
 
-                  // Find probe-side filter and projection from IR
+                  // Find probe-side filter from IR.
+                  // Don't use global projection — it references columns from
+                  // all tables, but each intermediate join can only output
+                  // its own probe + build columns. Pass nullptr to output all.
                   const ir_sql_converter::AQPStmt *probe_filter_ir =
                       FindFirstFilterNode(probe_child);
-                  const ir_sql_converter::AQPStmt *probe_proj_ir =
-                      FindFirstProjectionNode(&ir);
+                  const ir_sql_converter::AQPStmt *probe_proj_ir = nullptr;
 
                   // Compute key and payload widths for AQP hash table
                   auto DtypeWidth = [](int32_t dtype) -> unsigned {
