@@ -74,6 +74,10 @@ uint8_t *aqp_ht_slots_base(const AQPHashTable *ht);
 uint64_t aqp_ht_mask(const AQPHashTable *ht);
 uint32_t aqp_ht_slot_size(const AQPHashTable *ht);
 uint64_t aqp_hash(const void *key, uint32_t len);
+// Safe VARCHAR copy (defined in duckdb/src/execution/aqp_jit.cpp)
+void aqp_copy_string(void *dst_data, void *src_data,
+                     uint64_t dst_row, uint64_t src_row,
+                     void *state_ptr, uint32_t col_idx);
 }
 
 #include <atomic>
@@ -461,6 +465,9 @@ struct IrToLlvmCompiler::Impl {
                             JITSymbolFlags::Exported)},
         {es.intern("aqp_hash"),
          JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_hash),
+                            JITSymbolFlags::Exported)},
+        {es.intern("aqp_copy_string"),
+         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_copy_string),
                             JITSymbolFlags::Exported)},
         // libc symbols needed by compiled code
         {es.intern("memcpy"),
@@ -1603,6 +1610,23 @@ static Value *EmitArith(CompileCtx &cc, const SimplestArithExpr *expr) {
   // Determine if floating point based on result type
   bool is_fp = (expr->result_type == ir_sql_converter::FloatVar);
 
+  // Guard integer division/modulo against zero divisor (UB / SIGFPE on x86).
+  // Float division by zero is well-defined (produces inf/nan), so no guard needed.
+  if (!is_fp && (expr->arith_op == ir_sql_converter::ArithDiv ||
+                 expr->arith_op == ir_sql_converter::ArithMod)) {
+    Value *is_zero = cc.b.CreateICmpEQ(rhs, ConstantInt::get(rhs->getType(), 0));
+    Value *safe_rhs = cc.b.CreateSelect(is_zero,
+        ConstantInt::get(rhs->getType(), 1), rhs, "safe_rhs");
+    Value *result;
+    if (expr->arith_op == ir_sql_converter::ArithDiv)
+      result = cc.b.CreateSDiv(lhs, safe_rhs, "div");
+    else
+      result = cc.b.CreateSRem(lhs, safe_rhs, "mod");
+    // Return 0 when divisor was zero (SQL NULL semantics approximation)
+    return cc.b.CreateSelect(is_zero,
+        ConstantInt::get(result->getType(), 0), result, "divmod_safe");
+  }
+
   switch (expr->arith_op) {
   case ir_sql_converter::ArithAdd:
     return is_fp ? cc.b.CreateFAdd(lhs, rhs, "add")
@@ -1614,11 +1638,9 @@ static Value *EmitArith(CompileCtx &cc, const SimplestArithExpr *expr) {
     return is_fp ? cc.b.CreateFMul(lhs, rhs, "mul")
                  : cc.b.CreateMul(lhs, rhs, "mul");
   case ir_sql_converter::ArithDiv:
-    return is_fp ? cc.b.CreateFDiv(lhs, rhs, "div")
-                 : cc.b.CreateSDiv(lhs, rhs, "div");
+    return cc.b.CreateFDiv(lhs, rhs, "div");
   case ir_sql_converter::ArithMod:
-    return is_fp ? cc.b.CreateFRem(lhs, rhs, "mod")
-                 : cc.b.CreateSRem(lhs, rhs, "mod");
+    return cc.b.CreateFRem(lhs, rhs, "mod");
   default:
     return ConstantInt::get(cc.i32(), 0);
   }
@@ -3571,7 +3593,6 @@ static Function *BuildPipelineFunction(
   out_arg->setName("out");
   Value *state_arg = fn->getArg(2);
   state_arg->setName("state");
-  (void)state_arg; // reserved for future use (hash tables, etc.)
 
   BasicBlock *entry_bb = BasicBlock::Create(llctx, "entry", fn);
   BasicBlock *loop_bb = BasicBlock::Create(llctx, "loop", fn);
@@ -3670,8 +3691,22 @@ static Function *BuildPipelineFunction(
           cc.b.CreateLoad(elem_ty, cc.b.CreateGEP(elem_ty, src_typed, row_i));
       Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
       cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, out_count));
+    } else if (dt == AQP_DTYPE_VARCHAR) {
+      // Safe VARCHAR copy: call aqp_copy_string which deep-copies
+      // non-inline strings into the output Vector's string heap.
+      // Signature: void aqp_copy_string(void *dst_data, void *src_data,
+      //     uint64_t dst_row, uint64_t src_row, void *state, uint32_t col_idx)
+      FunctionType *copy_ft = FunctionType::get(
+          Type::getVoidTy(llctx),
+          {i8p, i8p, i64, i64, i8p, Type::getInt32Ty(llctx)}, false);
+      FunctionCallee copy_fn =
+          mod.getOrInsertFunction("aqp_copy_string", copy_ft);
+      cc.b.CreateCall(copy_fn,
+                      {out_data_ptrs[oi], cc.col_data[in_i],
+                       out_count, row_i, state_arg,
+                       ConstantInt::get(Type::getInt32Ty(llctx), (uint32_t)oi)});
     } else {
-      // VARCHAR or unknown: fall back to memcpy
+      // Unknown type: fall back to memcpy
       Value *src = cc.b.CreateGEP(
           Type::getInt8Ty(llctx), cc.col_data[in_i],
           cc.b.CreateMul(row_i, ConstantInt::get(i64, elem_size)));
@@ -6620,6 +6655,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       cc.b.CreateCall(probe_fn, {ht_arg, key_buf, hash_val});
   Value *is_found = cc.b.CreateICmpNE(
       cc.b.CreatePtrToInt(payload_ptr, i64), ConstantInt::get(i64, 0));
+  // Track the block that actually branches to next_bb on probe miss.
+  // When prefetch is on, this is pf_done_bb (not probe_bb).
+  BasicBlock *probe_result_bb = cc.b.GetInsertBlock();
   cc.b.CreateCondBr(is_found, write_bb, next_bb);
 
   // ---- Write: copy projected columns from probe input AND payload ----
@@ -6689,7 +6727,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   cc.b.SetInsertPoint(next_bb);
   PHINode *oc_next = cc.b.CreatePHI(i64, 3, "oc_next");
   oc_next->addIncoming(out_count, after_filter_bb);
-  oc_next->addIncoming(out_count, probe_bb);
+  oc_next->addIncoming(out_count, probe_result_bb);
   oc_next->addIncoming(out_count1, write_bb);
   Value *i_next = cc.b.CreateAdd(row_i, ConstantInt::get(i64, 1));
   row_i->addIncoming(i_next, next_bb);

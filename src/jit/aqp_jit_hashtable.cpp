@@ -172,10 +172,15 @@ static void ht_grow(AQPHashTable *ht) {
     uint64_t old_cap  = ht->capacity;
     uint8_t *old_slots = ht->slots;
 
-    ht->capacity *= 2;
-    ht->mask      = ht->capacity - 1;
-    ht->slots     = (uint8_t *)calloc(ht->capacity, ht->slot_size);
-    ht->count     = 0;
+    uint64_t new_cap = ht->capacity * 2;
+    uint8_t *new_slots = (uint8_t *)calloc(new_cap, ht->slot_size);
+    if (!new_slots)
+        return; // OOM: keep existing table, next insert will linear-probe
+
+    ht->capacity = new_cap;
+    ht->mask     = new_cap - 1;
+    ht->slots    = new_slots;
+    ht->count    = 0;
 
     // Re-insert all occupied entries
     for (uint64_t i = 0; i < old_cap; i++) {

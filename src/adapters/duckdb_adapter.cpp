@@ -1897,9 +1897,15 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // missing (e.g. DuckDB pruned it from the scan output), the compiled
     // filter would silently replace that sub-expression with "pass-all",
     // corrupting the filter logic.  Fall back to interpreter in that case.
+    // At pipeline level, allow LIKE predicates in the expr-level filter
+    // because the expr-level path uses selection vectors (Slice) which
+    // avoids copying string_t data.  The pipeline-level BuildPipelineFunction
+    // copies raw string_t (16 bytes) which creates dangling pointers for
+    // non-inline strings (>12 chars) when the input chunk is reused.
+    bool skip_like = !(jit_flags_ & AQP_JIT_PIPELINE) && FilterHasLike(filter_ir);
     if (!schema.empty() && HasApplicablePredicate(filter_ir, schema) &&
         FilterAllColsAvailable(filter_ir, schema) &&
-        !FilterHasLike(filter_ir)) {
+        !skip_like) {
       EnsureJITCompiler();
       auto t_filter = chrono_tic();
       ::AQPExprFn raw_fn = jit_compiler_->CompileFilter(*filter_ir, schema);
@@ -1958,10 +1964,15 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 #endif
     }
 
-    // Level 3: Fuse Filter → Projection into a single pipeline function.
-    // Gated by AQP_JIT_PIPELINE flag. Registered by filter operator eid.
-    if ((jit_flags_ & AQP_JIT_PIPELINE) && filter_ir && !schema.empty()) {
-      const ir_sql_converter::AQPStmt *proj_ir = FindFirstProjectionNode(&ir);
+    // Level 3: Compile a pipeline function for the Filter operator.
+    // VARCHAR columns are safe: aqp_copy_string deep-copies non-inline
+    // strings into the output Vector's string heap via callback.
+    // Guard: all filter-referenced columns must be in the schema, otherwise
+    // FindColIdx returns -1 and the filter silently becomes pass-all.
+    if ((jit_flags_ & AQP_JIT_PIPELINE) && filter_ir && !schema.empty() &&
+        HasApplicablePredicate(filter_ir, schema) &&
+        FilterAllColsAvailable(filter_ir, schema)) {
+      const ir_sql_converter::AQPStmt *proj_ir = nullptr;
 
       EnsureJITCompiler();
 

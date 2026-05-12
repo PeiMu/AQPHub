@@ -120,6 +120,24 @@ typedef int64_t (*AQPPipelineFn)(AQPChunkView *source_chunk,
                                  AQPChunkView *sink_chunk,
                                  void *pipeline_state);
 
+/* Callback for deep-copying a non-inline string_t into a DuckDB Vector's
+ * string heap.  Implemented on the DuckDB side (aqp_jit.cpp).
+ * src_string: pointer to 16-byte source string_t
+ * dst_string: pointer to 16-byte destination string_t (written by callee)
+ * dst_vector: opaque pointer to the output duckdb::Vector
+ */
+typedef void (*AQPCopyStringFn)(const void *src_string,
+                                void *dst_string,
+                                void *dst_vector);
+
+/* State passed to pipeline filter functions (not fusion functions).
+ * Provides access to output Vector pointers for safe VARCHAR copying. */
+typedef struct {
+  void **col_vectors;       /* col_vectors[i] = &chunk.data[i] for output col */
+  uint64_t num_cols;
+  AQPCopyStringFn copy_str; /* callback for deep string copy                  */
+} AQPPipelineFilterState;
+
 /* Sub-plan context: holds all state for a compiled sub-plan.
  * Managed by the middleware; passed to the coordinator function. */
 typedef struct {
