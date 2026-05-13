@@ -107,6 +107,69 @@ using namespace ir_sql_converter;
 namespace aqp_jit {
 
 // ---------------------------------------------------------------------------
+// Filter predicate cost model (B2 in runtime_execution_optimizations.md).
+// Returns a small integer; lower = evaluate first. Cheap conjuncts run before
+// expensive ones so the short-circuit chain skips slow predicates (string
+// compare, LIKE call, large IN list) whenever a cheap predicate already
+// rejected the row.
+// ---------------------------------------------------------------------------
+static int EstimateFilterCost(const AQPExpr *e) {
+  if (!e) return 100;
+  SimplestExprType et = e->GetSimplestExprType();
+  if (et == SimplestExprType::TextLike ||
+      et == SimplestExprType::Text_Not_Like)
+    return 30;
+
+  SimplestNodeType nt = e->GetNodeType();
+  if (nt == IsNullExprNode) return 1;
+  if (nt == ArithExprNode) return 4;
+
+  auto attr_dtype = [&]() -> SimplestVarType {
+    if (nt == VarComparisonNode) {
+      auto *vc = static_cast<const SimplestVarComparison *>(e);
+      return vc->left_attr ? vc->left_attr->GetType() : InvalidVarType;
+    }
+    if (nt == VarConstComparisonNode) {
+      auto *vc = static_cast<const SimplestVarConstComparison *>(e);
+      return vc->attr ? vc->attr->GetType() : InvalidVarType;
+    }
+    if (nt == VarParamComparisonNode) {
+      auto *vc = static_cast<const SimplestVarParamComparison *>(e);
+      return vc->attr ? vc->attr->GetType() : InvalidVarType;
+    }
+    if (nt == InExprNode) {
+      auto *in = static_cast<const SimplestInExpr *>(e);
+      return in->attr ? in->attr->GetType() : InvalidVarType;
+    }
+    return InvalidVarType;
+  };
+
+  if (nt == InExprNode) {
+    auto *in = static_cast<const SimplestInExpr *>(e);
+    int sz = (int)in->values.size();
+    SimplestVarType vt = attr_dtype();
+    int per = (vt == StringVar || vt == StringVarArr) ? 10 : 1;
+    return 5 + per * sz;
+  }
+
+  SimplestVarType vt = attr_dtype();
+  if (vt == StringVar || vt == StringVarArr) return 10;
+  if (vt == Date) return 3;
+  if (vt == FloatVar) return 2;
+  if (vt == IntVar || vt == BoolVar) return 1;
+  return 5;
+}
+
+// Stable-sort a filter-conjunct list cheap-first. Stable so equal-cost
+// predicates retain user-given order.
+static void SortFiltersByCost(std::vector<const AQPExpr *> &filter_exprs) {
+  std::stable_sort(filter_exprs.begin(), filter_exprs.end(),
+                   [](const AQPExpr *a, const AQPExpr *b) {
+                     return EstimateFilterCost(a) < EstimateFilterCost(b);
+                   });
+}
+
+// ---------------------------------------------------------------------------
 // LLVM initialisation (done once per process)
 // ---------------------------------------------------------------------------
 static bool llvm_initialized = false;
@@ -1724,6 +1787,42 @@ static Value *EmitExpr(CompileCtx &cc, const AQPExpr *expr) {
   default:
     return ConstantInt::getTrue(cc.llctx); // unknown: pass all rows
   }
+}
+
+// ---------------------------------------------------------------------------
+// Emit a short-circuit AND chain of filter conjuncts. cc.b must be positioned
+// at the start of where the first conjunct should evaluate. On exit, control
+// has already branched to bb_pass (all conjuncts true) or bb_fail (any false);
+// the caller should not emit any further code immediately after this call
+// without first SetInsertPoint'ing somewhere meaningful.
+//
+// Returns the BB that holds the *final* CondBr (so callers that need PHI
+// predecessor tracking can use it). Empty filter list -> unconditional br
+// to bb_pass.
+// ---------------------------------------------------------------------------
+static BasicBlock *EmitShortCircuitFilter(
+    CompileCtx &cc, Function *fn,
+    const std::vector<const AQPExpr *> &filter_exprs,
+    BasicBlock *bb_pass, BasicBlock *bb_fail) {
+  if (filter_exprs.empty()) {
+    BasicBlock *here = cc.b.GetInsertBlock();
+    cc.b.CreateBr(bb_pass);
+    return here;
+  }
+  auto &llctx = cc.b.getContext();
+  for (size_t k = 0; k < filter_exprs.size(); ++k) {
+    Value *res = EmitExpr(cc, filter_exprs[k]);
+    if (k + 1 == filter_exprs.size()) {
+      BasicBlock *last = cc.b.GetInsertBlock();
+      cc.b.CreateCondBr(res, bb_pass, bb_fail);
+      return last;
+    }
+    BasicBlock *next_chain =
+        BasicBlock::Create(llctx, "filt_sc_" + std::to_string(k), fn);
+    cc.b.CreateCondBr(res, next_chain, bb_fail);
+    cc.b.SetInsertPoint(next_chain);
+  }
+  return nullptr; // unreachable
 }
 
 // ---------------------------------------------------------------------------
@@ -6097,6 +6196,7 @@ void *IrToLlvmCompiler::CompileFilterHashBuildFusion(
     for (const auto &qe : filter_node->qual_vec)
       filter_exprs.push_back(qe.get());
   }
+  SortFiltersByCost(filter_exprs);
 
   // Build key column descriptors
   std::vector<HashColDesc> key_cols;
@@ -6224,17 +6324,11 @@ void *IrToLlvmCompiler::CompileFilterHashBuildFusion(
   row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
   cc.b.CreateCondBr(cc.b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
 
-  // Body: evaluate filter
+  // Body: evaluate filter (short-circuit, cost-sorted)
   cc.b.SetInsertPoint(body_bb);
   cc.row_idx = row_i;
 
-  Value *match = ConstantInt::getTrue(*ctx);
-  for (const AQPExpr *e : filter_exprs) {
-    Value *res = EmitExpr(cc, e);
-    match = cc.b.CreateAnd(match, res);
-  }
-  BasicBlock *condBr_bb = cc.b.GetInsertBlock();
-  cc.b.CreateCondBr(match, insert_bb, next_bb);
+  EmitShortCircuitFilter(cc, fn, filter_exprs, insert_bb, next_bb);
 
   // Insert: extract key, hash, insert, copy payload
   cc.b.SetInsertPoint(insert_bb);
@@ -6311,12 +6405,20 @@ void *IrToLlvmCompiler::CompileFilterHashBuildFusion(
 
 // ---------------------------------------------------------------------------
 // Level 3: Filter + HashProbe + Projection fusion (probe pipeline).
-// Fused loop: filter → key extract → inline hash → probe → copy output.
+// Direct-HT path: probes DuckDB's JoinHashTable via AQPJoinHTView.
+// Emits inline MurmurHash64 + salt-aware linear probe + chain walk.
 // ---------------------------------------------------------------------------
 void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     const AQPStmt *filter_node, const AQPStmt &join_node,
     const AQPStmt *proj_node, const std::vector<ColSchema> &probe_schema,
-    const std::vector<ColSchema> &payload_schema) {
+    const std::vector<ColSchema> &payload_schema,
+    const std::vector<int> &payload_row_indices,
+    const std::vector<int> &lhs_output_idxs,
+    const std::vector<int> &rhs_output_layout_idxs,
+    const std::vector<int32_t> &lhs_output_dtypes,
+    const std::vector<int32_t> &rhs_output_dtypes,
+    const std::vector<int> &lhs_key_chunk_idxs,
+    const std::vector<int32_t> &lhs_key_dtypes) {
 
   auto *join = dynamic_cast<const SimplestJoin *>(&join_node);
   if (!join || join->join_conditions.empty())
@@ -6328,40 +6430,67 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     for (const auto &qe : filter_node->qual_vec)
       filter_exprs.push_back(qe.get());
   }
+  SortFiltersByCost(filter_exprs);
 
-  // Extract probe key columns from join_conditions
+  // Extract probe key columns. Prefer DuckDB-authoritative chunk positions
+  // when supplied (one per join condition, same order). Otherwise fall back
+  // to AQP IR (table_idx, col_idx) lookup against probe_schema — which is
+  // unsafe when AQP IR ordering diverges from DuckDB's physical chunk.
   std::vector<HashColDesc> probe_key_cols;
   unsigned key_width = 0;
-  for (const auto &cond : join->join_conditions) {
-    HashColDesc kc;
-    kc.col_idx = -1;
-    for (int i = 0; i < (int)probe_schema.size(); i++) {
-      if (probe_schema[i].table_idx == cond->left_attr->GetTableIndex() &&
-          probe_schema[i].col_idx == cond->left_attr->GetColumnIndex()) {
-        kc.col_idx = i;
-        kc.dtype = probe_schema[i].dtype;
-        break;
+  const bool use_duckdb_keys =
+      !lhs_key_chunk_idxs.empty() &&
+      lhs_key_chunk_idxs.size() == join->join_conditions.size() &&
+      lhs_key_dtypes.size() == lhs_key_chunk_idxs.size();
+  if (use_duckdb_keys) {
+    for (size_t i = 0; i < lhs_key_chunk_idxs.size(); ++i) {
+      HashColDesc kc;
+      kc.col_idx = lhs_key_chunk_idxs[i];
+      kc.dtype = lhs_key_dtypes[i];
+      if (kc.col_idx < 0 || kc.col_idx >= (int)probe_schema.size()) {
+        std::cerr << "[AQP-JIT] fused probe: duckdb key idx " << kc.col_idx
+                  << " out of range (probe_schema size="
+                  << probe_schema.size() << ")\n";
+        return nullptr;
       }
+      kc.elem_size = DtypeElemSize(kc.dtype);
+      if (kc.elem_size == 0)
+        return nullptr;
+      key_width += kc.elem_size;
+      probe_key_cols.push_back(kc);
     }
-    if (kc.col_idx < 0) {
+  } else {
+    for (const auto &cond : join->join_conditions) {
+      HashColDesc kc;
+      kc.col_idx = -1;
       for (int i = 0; i < (int)probe_schema.size(); i++) {
-        if (probe_schema[i].table_idx == cond->right_attr->GetTableIndex() &&
-            probe_schema[i].col_idx == cond->right_attr->GetColumnIndex()) {
+        if (probe_schema[i].table_idx == cond->left_attr->GetTableIndex() &&
+            probe_schema[i].col_idx == cond->left_attr->GetColumnIndex()) {
           kc.col_idx = i;
           kc.dtype = probe_schema[i].dtype;
           break;
         }
       }
+      if (kc.col_idx < 0) {
+        for (int i = 0; i < (int)probe_schema.size(); i++) {
+          if (probe_schema[i].table_idx == cond->right_attr->GetTableIndex() &&
+              probe_schema[i].col_idx == cond->right_attr->GetColumnIndex()) {
+            kc.col_idx = i;
+            kc.dtype = probe_schema[i].dtype;
+            break;
+          }
+        }
+      }
+      if (kc.col_idx < 0) {
+        std::cerr << "[AQP-JIT] fused probe: key not in probe schema\n";
+        return nullptr;
+      }
+      kc.elem_size = DtypeElemSize(kc.dtype);
+      if (kc.elem_size == 0)
+        return nullptr;
+      key_width += kc.elem_size;
+      probe_key_cols.push_back(kc);
     }
-    if (kc.col_idx < 0) {
-      std::cerr << "[AQP-JIT] fused probe: key not in probe schema\n";
-      return nullptr;
-    }
-    kc.elem_size = DtypeElemSize(kc.dtype);
-    if (kc.elem_size == 0)
-      return nullptr;
-    key_width += kc.elem_size;
-    probe_key_cols.push_back(kc);
   }
 
   // Compute payload column byte offsets
@@ -6437,6 +6566,69 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
         return nullptr;
       out_cols.push_back(oc);
     }
+  } else if (!lhs_output_idxs.empty() || !rhs_output_layout_idxs.empty()) {
+    // Explicit subset matching the operator's chunk shape: [lhs cols, rhs cols].
+    // lhs_output_idxs index probe_schema; rhs_output_layout_idxs index the HT
+    // layout = [keys, payload]. dtype/elem_size for each output column MUST
+    // come from DuckDB's actual chunk schema (lhs/rhs_output_dtypes); the AQP
+    // IR's probe_schema/payload_schema may have a different column ordering
+    // and would produce wrong elem_sizes (e.g. VARCHAR=16 vs INT=4) — that
+    // causes the JIT to write the wrong number of bytes per output column.
+    const unsigned num_keys_ = static_cast<unsigned>(probe_key_cols.size());
+    const bool have_lhs_dtypes =
+        lhs_output_dtypes.size() == lhs_output_idxs.size();
+    const bool have_rhs_dtypes =
+        rhs_output_dtypes.size() == rhs_output_layout_idxs.size();
+    for (size_t i = 0; i < lhs_output_idxs.size(); ++i) {
+      int idx = lhs_output_idxs[i];
+      if (idx < 0 || idx >= (int)probe_schema.size()) {
+        std::cerr << "[AQP-JIT] direct-probe: lhs idx " << idx
+                  << " out of range\n";
+        return nullptr;
+      }
+      OutColDesc oc;
+      oc.source = OutColDesc::PROBE;
+      oc.probe_col_idx = idx;
+      oc.payload_col_idx = -1;
+      oc.payload_offset = 0;
+      oc.dtype =
+          have_lhs_dtypes ? lhs_output_dtypes[i] : probe_schema[idx].dtype;
+      oc.elem_size = DtypeElemSize(oc.dtype);
+      if (oc.elem_size == 0)
+        return nullptr;
+      out_cols.push_back(oc);
+    }
+    for (size_t i = 0; i < rhs_output_layout_idxs.size(); ++i) {
+      int layout_idx = rhs_output_layout_idxs[i];
+      OutColDesc oc;
+      oc.source = OutColDesc::PAYLOAD;
+      oc.probe_col_idx = -1;
+      oc.payload_offset = 0;
+      if (layout_idx < (int)num_keys_) {
+        // Key column stored at data_offsets[layout_idx].
+        // payload_col_idx encodes layout_idx - num_keys (negative -> key path)
+        oc.payload_col_idx = layout_idx - (int)num_keys_;
+        oc.dtype = have_rhs_dtypes ? rhs_output_dtypes[i]
+                                   : probe_key_cols[layout_idx].dtype;
+      } else {
+        int pi = layout_idx - (int)num_keys_;
+        oc.payload_col_idx = pi;
+        if (have_rhs_dtypes) {
+          oc.dtype = rhs_output_dtypes[i];
+        } else {
+          if (pi < 0 || pi >= (int)payload_schema.size()) {
+            std::cerr << "[AQP-JIT] direct-probe: rhs layout_idx "
+                      << layout_idx << " out of range\n";
+            return nullptr;
+          }
+          oc.dtype = payload_schema[pi].dtype;
+        }
+      }
+      oc.elem_size = DtypeElemSize(oc.dtype);
+      if (oc.elem_size == 0)
+        return nullptr;
+      out_cols.push_back(oc);
+    }
   } else {
     // No projection: output all probe cols then all payload cols
     for (int i = 0; i < (int)probe_schema.size(); i++) {
@@ -6468,26 +6660,40 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   if (out_cols.empty())
     return nullptr;
 
-  // ---- LLVM IR generation ----
+  // ---- LLVM IR generation: direct-HT probe ----
+  // Function probes DuckDB's JoinHashTable directly via AQPJoinHTView:
+  //   - inline MurmurHash64 per key, CombineHash for multi-key
+  //   - salt-aware linear probe over ht_entry_t[]
+  //   - typed key compare against row bytes (offsets from view->data_offsets)
+  //   - chain walk via *(row_ptr + view->pointer_offset)
+  // Pre-condition (validated by caller): payload_row_indices.size() == payload_schema.size();
+  // for each output PAYLOAD column oc, the row offset is
+  //   view->data_offsets[num_keys + payload_row_indices[oc.payload_col_idx]].
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
-  std::string fn_name = "aqp_filt_hprobe_proj_" + std::to_string(fn_id);
+  std::string fn_name = "aqp_filt_hprobe_proj_direct_" + std::to_string(fn_id);
 
   auto ctx = std::make_unique<LLVMContext>();
-  auto mod = std::make_unique<Module>("aqp_filt_hprobe_proj_mod", *ctx);
+  auto mod = std::make_unique<Module>("aqp_filt_hprobe_proj_direct_mod", *ctx);
 
   Type *i8 = Type::getInt8Ty(*ctx);
   Type *i8p = PointerType::getUnqual(i8);
   Type *i32 = Type::getInt32Ty(*ctx);
   Type *i64 = Type::getInt64Ty(*ctx);
   Type *i64p = PointerType::getUnqual(i64);
+  Type *i16 = Type::getInt16Ty(*ctx);
 
   StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
   StructType *ChunkViewTy =
       StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
   StructType *SelViewTy =
       StructType::get(*ctx, {PointerType::getUnqual(i32), i32});
+  // AQPJoinHTView layout (must match aqp_jit_abi.h / aqp_jit.hpp):
+  //   { void *entries; u64 bitmask; u64 use_salt; void *layout_ptr;
+  //     u32 tuple_size; u32 pointer_offset; const u64 *data_offsets; }
+  StructType *ViewTy =
+      StructType::get(*ctx, {i8p, i64, i64, i8p, i32, i32, i64p});
 
-  // int64_t fn(AQPChunkView *in, AQPChunkView *out, void *ht)
+  // int64_t fn(AQPChunkView *in, AQPChunkView *out, void *view)
   FunctionType *fn_ty = FunctionType::get(
       i64,
       {PointerType::getUnqual(ChunkViewTy),
@@ -6501,20 +6707,46 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   Value *out_arg = fn->getArg(1);
   out_arg->setName("out");
   Value *ht_arg = fn->getArg(2);
-  ht_arg->setName("ht");
+  ht_arg->setName("view");
 
   BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
-  BasicBlock *loop_bb = BasicBlock::Create(*ctx, "loop", fn);
+  BasicBlock *outer_bb = BasicBlock::Create(*ctx, "outer", fn);
   BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
+  BasicBlock *hash_bb = BasicBlock::Create(*ctx, "hash", fn);
   BasicBlock *probe_bb = BasicBlock::Create(*ctx, "probe", fn);
-  BasicBlock *write_bb = BasicBlock::Create(*ctx, "write", fn);
+  BasicBlock *salt_ok_bb = BasicBlock::Create(*ctx, "salt_ok", fn);
+  BasicBlock *key_eq_bb = BasicBlock::Create(*ctx, "key_eq", fn);
+  BasicBlock *miss_bb = BasicBlock::Create(*ctx, "miss", fn);
+  BasicBlock *chain_bb = BasicBlock::Create(*ctx, "chain", fn);
+  BasicBlock *emit_bb = BasicBlock::Create(*ctx, "emit", fn);
+  BasicBlock *advance_bb = BasicBlock::Create(*ctx, "advance", fn);
+  BasicBlock *chain_done_bb = BasicBlock::Create(*ctx, "chain_done", fn);
   BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
+  BasicBlock *bail_bb = BasicBlock::Create(*ctx, "bail", fn);
   BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
 
   Value *dummy_sel =
       ConstantPointerNull::get(PointerType::getUnqual(SelViewTy));
   CompileCtx cc(*ctx, *mod, probe_schema, in_arg, dummy_sel);
   cc.b.SetInsertPoint(entry_bb);
+
+  // ---- Entry: load view fields once ----
+  Value *view_ptr =
+      cc.b.CreateBitCast(ht_arg, PointerType::getUnqual(ViewTy), "view_ptr");
+  Value *v_entries = cc.b.CreateLoad(
+      i8p, cc.b.CreateStructGEP(ViewTy, view_ptr, 0), "v_entries");
+  Value *v_bitmask = cc.b.CreateLoad(
+      i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 1), "v_bitmask");
+  // field 2 use_salt: salt always checked, runtime value not needed
+  // field 3 layout_ptr: only for debug
+  // field 4 tuple_size: not needed (data_offsets has every column)
+  Value *v_ptr_off32 = cc.b.CreateLoad(
+      i32, cc.b.CreateStructGEP(ViewTy, view_ptr, 5), "v_ptr_off");
+  Value *v_ptr_off = cc.b.CreateZExt(v_ptr_off32, i64);
+  Value *v_offsets = cc.b.CreateLoad(
+      i64p, cc.b.CreateStructGEP(ViewTy, view_ptr, 6), "v_offsets");
+
+  Constant *POINTER_MASK = ConstantInt::get(i64, 0x0000FFFFFFFFFFFFULL);
 
   Value *nrows = cc.b.CreateLoad(
       i64, cc.b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
@@ -6540,199 +6772,337 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
                         "out_data_" + std::to_string(oi)));
   }
 
-  // Key buffer
-  Value *key_buf =
-      cc.b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
+  // ---- Hash helpers (shared between stage-1 prelude and stage-2 key cmp) ----
+  auto key_llvm_ty = [&](int32_t dt) -> Type * {
+    if (dt == AQP_DTYPE_INT32 || dt == AQP_DTYPE_DATE) return i32;
+    if (dt == AQP_DTYPE_INT64) return i64;
+    if (dt == AQP_DTYPE_INT16) return i16;
+    if (dt == AQP_DTYPE_BOOL || dt == AQP_DTYPE_INT8) return i8;
+    return nullptr;
+  };
+  for (auto &kc : probe_key_cols) {
+    if (!key_llvm_ty(kc.dtype)) {
+      std::cerr << "[AQP-JIT] direct-probe: unsupported key dtype "
+                << kc.dtype << "\n";
+      return nullptr;
+    }
+  }
+  Constant *MURMUR_MUL = ConstantInt::get(i64, 0xd6e8feb86659fd93ULL);
+  Constant *SHIFT32 = ConstantInt::get(i64, 32);
+  auto emitMurmur = [&](Value *x) -> Value * {
+    Value *t = cc.b.CreateXor(x, cc.b.CreateLShr(x, SHIFT32));
+    t = cc.b.CreateMul(t, MURMUR_MUL);
+    t = cc.b.CreateXor(t, cc.b.CreateLShr(t, SHIFT32));
+    t = cc.b.CreateMul(t, MURMUR_MUL);
+    t = cc.b.CreateXor(t, cc.b.CreateLShr(t, SHIFT32));
+    return t;
+  };
+  auto emitCombine = [&](Value *a, Value *b) -> Value * {
+    Value *t = cc.b.CreateXor(a, cc.b.CreateLShr(a, SHIFT32));
+    t = cc.b.CreateMul(t, MURMUR_MUL);
+    return cc.b.CreateXor(t, b);
+  };
+  // Per-row: load typed keys + compute MurmurHash64 (CombineHash for multi-key)
+  auto compute_keys_hash =
+      [&](Value *row_idx_val,
+          std::vector<Value *> *out_keys) -> Value * {
+    Value *h = nullptr;
+    if (out_keys) out_keys->clear();
+    for (size_t j = 0; j < probe_key_cols.size(); j++) {
+      auto &kc = probe_key_cols[j];
+      Type *kty = key_llvm_ty(kc.dtype);
+      Value *src = cc.col_data[kc.col_idx];
+      Value *elem_ptr = cc.b.CreateGEP(
+          i8, src,
+          cc.b.CreateMul(row_idx_val, ConstantInt::get(i64, kc.elem_size)));
+      Value *typed_ptr =
+          cc.b.CreateBitCast(elem_ptr, PointerType::getUnqual(kty));
+      Value *kval = cc.b.CreateLoad(kty, typed_ptr);
+      if (out_keys) out_keys->push_back(kval);
+      Value *u64_val = (kty == i64) ? kval : cc.b.CreateZExt(kval, i64);
+      Value *hj = emitMurmur(u64_val);
+      h = (j == 0) ? hj : emitCombine(h, hj);
+    }
+    return h;
+  };
 
-  // Declare aqp_ht_probe_prehash
-  FunctionType *probe_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee probe_fn =
-      mod->getOrInsertFunction("aqp_ht_probe_prehash", probe_ft);
+  // ---- Two-stage (ROF) prelude: filter + hash + prefetch ----
+  // When batch_probe_ is enabled, walk all rows once first to compute hash and
+  // ht_offset, store them in stack arrays, and software-prefetch the target
+  // entries[ht_off] cache lines. Stage 2 (outer_bb onwards) then re-uses the
+  // precomputed values, hiding L3 latency behind already-issued prefetches.
+  // STANDARD_VECTOR_SIZE == 2048; that's the chunk row cap.
+  Value *hash_arr_buf = nullptr;
+  Value *htoff_arr_buf = nullptr;
+  Value *filt_mask_buf = nullptr;
+  BasicBlock *s1_outer = nullptr;
+  BasicBlock *outer_pred_bb = entry_bb;
+  if (batch_probe_) {
+    Constant *BUF_SIZE = ConstantInt::get(i64, 2048);
+    hash_arr_buf = cc.b.CreateAlloca(i64, BUF_SIZE, "hash_arr");
+    htoff_arr_buf = cc.b.CreateAlloca(i64, BUF_SIZE, "htoff_arr");
+    filt_mask_buf = cc.b.CreateAlloca(i8, BUF_SIZE, "filt_mask");
 
-  // Prefetch setup: load hash table metadata once
-  Value *ht_slots_base = nullptr, *ht_mask_v = nullptr, *ht_slot_sz = nullptr;
-  Value *pf_key_buf = nullptr;
-  Function *pf_intrinsic = nullptr;
-  if (prefetch_) {
-    FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
-    FunctionCallee fn_base =
-        mod->getOrInsertFunction("aqp_ht_slots_base", ft_base);
-    ht_slots_base = cc.b.CreateCall(fn_base, {ht_arg}, "ht_slots");
+    s1_outer = BasicBlock::Create(*ctx, "s1_outer", fn);
+    BasicBlock *s1_body = BasicBlock::Create(*ctx, "s1_body", fn);
+    BasicBlock *s1_fail = BasicBlock::Create(*ctx, "s1_fail", fn);
+    BasicBlock *s1_pass = BasicBlock::Create(*ctx, "s1_pass", fn);
+    BasicBlock *s1_next = BasicBlock::Create(*ctx, "s1_next", fn);
 
-    FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
-    FunctionCallee fn_mask =
-        mod->getOrInsertFunction("aqp_ht_mask", ft_mask);
-    ht_mask_v = cc.b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
+    cc.b.CreateBr(s1_outer);
 
-    FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
-    FunctionCallee fn_ss =
-        mod->getOrInsertFunction("aqp_ht_slot_size", ft_ss);
-    ht_slot_sz = cc.b.CreateZExt(
-        cc.b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
+    cc.b.SetInsertPoint(s1_outer);
+    PHINode *s1_i = cc.b.CreatePHI(i64, 2, "s1_i");
+    s1_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+    cc.b.CreateCondBr(cc.b.CreateICmpEQ(s1_i, nrows), outer_bb, s1_body);
 
-    pf_key_buf =
-        cc.b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "pf_key");
+    cc.b.SetInsertPoint(s1_body);
+    cc.row_idx = s1_i;
+    EmitShortCircuitFilter(cc, fn, filter_exprs, s1_pass, s1_fail);
 
-    pf_intrinsic = Intrinsic::getDeclaration(
-        mod.get(), Intrinsic::prefetch, {i8p});
+    cc.b.SetInsertPoint(s1_fail);
+    cc.b.CreateStore(ConstantInt::get(i8, 0),
+                     cc.b.CreateGEP(i8, filt_mask_buf, s1_i));
+    cc.b.CreateBr(s1_next);
+
+    cc.b.SetInsertPoint(s1_pass);
+    Value *s1_hash = compute_keys_hash(s1_i, nullptr);
+    Value *s1_htoff = cc.b.CreateAnd(s1_hash, v_bitmask, "s1_htoff");
+    cc.b.CreateStore(s1_hash, cc.b.CreateGEP(i64, hash_arr_buf, s1_i));
+    cc.b.CreateStore(s1_htoff, cc.b.CreateGEP(i64, htoff_arr_buf, s1_i));
+    cc.b.CreateStore(ConstantInt::get(i8, 1),
+                     cc.b.CreateGEP(i8, filt_mask_buf, s1_i));
+    if (prefetch_) {
+      Value *entries_typed_s1 = cc.b.CreateBitCast(v_entries, i64p);
+      Value *entry_addr_s1 =
+          cc.b.CreateGEP(i64, entries_typed_s1, s1_htoff);
+      Function *pf_intrinsic = Intrinsic::getDeclaration(
+          mod.get(), Intrinsic::prefetch, {i8p});
+      cc.b.CreateCall(
+          pf_intrinsic,
+          {cc.b.CreateBitCast(entry_addr_s1, i8p),
+           ConstantInt::get(i32, 0), // rw: read
+           ConstantInt::get(i32, 1), // locality: low (used once)
+           ConstantInt::get(i32, 1)}); // cache: data
+    }
+    cc.b.CreateBr(s1_next);
+
+    cc.b.SetInsertPoint(s1_next);
+    Value *s1_i_next = cc.b.CreateAdd(s1_i, ConstantInt::get(i64, 1));
+    s1_i->addIncoming(s1_i_next, s1_next);
+    cc.b.CreateBr(s1_outer);
+
+    outer_pred_bb = s1_outer;
+  } else {
+    cc.b.CreateBr(outer_bb);
   }
 
-  cc.b.CreateBr(loop_bb);
-
-  // ---- Loop header ----
-  cc.b.SetInsertPoint(loop_bb);
+  // ---- Outer loop header ----
+  cc.b.SetInsertPoint(outer_bb);
   PHINode *row_i = cc.b.CreatePHI(i64, 2, "i");
   PHINode *out_count = cc.b.CreatePHI(i64, 2, "out_count");
-  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  row_i->addIncoming(ConstantInt::get(i64, 0), outer_pred_bb);
+  out_count->addIncoming(ConstantInt::get(i64, 0), outer_pred_bb);
   cc.b.CreateCondBr(cc.b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
 
-  // ---- Body: evaluate filter ----
+  // ---- Body: evaluate filter (or in batch_probe mode: read mask) ----
   cc.b.SetInsertPoint(body_bb);
   cc.row_idx = row_i;
 
-  Value *match = ConstantInt::getTrue(*ctx);
-  for (const AQPExpr *e : filter_exprs) {
-    Value *res = EmitExpr(cc, e);
-    match = cc.b.CreateAnd(match, res);
+  BasicBlock *after_filter_bb;
+  if (batch_probe_) {
+    Value *mask_byte = cc.b.CreateLoad(
+        i8, cc.b.CreateGEP(i8, filt_mask_buf, row_i), "filt_m");
+    Value *mask_set = cc.b.CreateICmpNE(mask_byte, ConstantInt::get(i8, 0));
+    after_filter_bb = cc.b.GetInsertBlock();
+    cc.b.CreateCondBr(mask_set, hash_bb, next_bb);
+  } else {
+    BasicBlock *filt_fail_stub = BasicBlock::Create(*ctx, "filt_fail", fn);
+    EmitShortCircuitFilter(cc, fn, filter_exprs, hash_bb, filt_fail_stub);
+    cc.b.SetInsertPoint(filt_fail_stub);
+    cc.b.CreateBr(next_bb);
+    after_filter_bb = filt_fail_stub;
   }
-  BasicBlock *after_filter_bb = cc.b.GetInsertBlock();
-  cc.b.CreateCondBr(match, probe_bb, next_bb);
 
-  // ---- Probe: extract key, hash inline, probe hash table ----
+  // ---- Hash: load probe keys + obtain hash (from arrays in batch mode) ----
+  cc.b.SetInsertPoint(hash_bb);
+
+  // Probe key values are always re-loaded at row_i — needed for the key
+  // compare in key_eq_bb. In batch mode the *hash* comes from the array.
+  std::vector<Value *> probe_key_vals;
+  Value *hash_val = nullptr;
+  if (batch_probe_) {
+    (void)compute_keys_hash(row_i, &probe_key_vals);
+    hash_val = cc.b.CreateLoad(
+        i64, cc.b.CreateGEP(i64, hash_arr_buf, row_i), "hash_cached");
+  } else {
+    hash_val = compute_keys_hash(row_i, &probe_key_vals);
+  }
+
+  Value *ht_off_init;
+  if (batch_probe_) {
+    ht_off_init = cc.b.CreateLoad(
+        i64, cc.b.CreateGEP(i64, htoff_arr_buf, row_i), "ht_off_cached");
+  } else {
+    ht_off_init = cc.b.CreateAnd(hash_val, v_bitmask, "ht_off_init");
+  }
+  Value *probe_salt = cc.b.CreateOr(hash_val, POINTER_MASK, "probe_salt");
+  cc.b.CreateBr(probe_bb);
+
+  // ---- Probe loop: load entry, check empty, check salt ----
   cc.b.SetInsertPoint(probe_bb);
+  PHINode *ht_off = cc.b.CreatePHI(i64, 2, "ht_off");
+  ht_off->addIncoming(ht_off_init, hash_bb);
 
-  unsigned key_off = 0;
-  for (auto &kc : probe_key_cols) {
-    Value *src = cc.col_data[kc.col_idx];
-    Value *elem_ptr = cc.b.CreateGEP(
-        i8, src, cc.b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = cc.b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-    cc.b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                      ConstantInt::get(i64, kc.elem_size));
-    key_off += kc.elem_size;
+  Value *entries_typed = cc.b.CreateBitCast(v_entries, i64p);
+  Value *entry_addr = cc.b.CreateGEP(i64, entries_typed, ht_off);
+  Value *entry = cc.b.CreateLoad(i64, entry_addr, "entry");
+  Value *is_empty = cc.b.CreateICmpEQ(entry, ConstantInt::get(i64, 0));
+  cc.b.CreateCondBr(is_empty, next_bb, salt_ok_bb);
+
+  // ---- Salt compare ----
+  cc.b.SetInsertPoint(salt_ok_bb);
+  Value *entry_salt = cc.b.CreateOr(entry, POINTER_MASK);
+  Value *salt_match = cc.b.CreateICmpEQ(entry_salt, probe_salt);
+  cc.b.CreateCondBr(salt_match, key_eq_bb, miss_bb);
+
+  // ---- Key compare ----
+  cc.b.SetInsertPoint(key_eq_bb);
+  Value *row_ptr_init = cc.b.CreateIntToPtr(
+      cc.b.CreateAnd(entry, POINTER_MASK), i8p, "row_ptr");
+  Value *all_eq = ConstantInt::getTrue(*ctx);
+  for (size_t j = 0; j < probe_key_cols.size(); j++) {
+    auto &kc = probe_key_cols[j];
+    Type *kty = key_llvm_ty(kc.dtype);
+    Value *koff = cc.b.CreateLoad(
+        i64, cc.b.CreateGEP(i64, v_offsets, ConstantInt::get(i64, (int64_t)j)));
+    Value *row_key_ptr = cc.b.CreateGEP(i8, row_ptr_init, koff);
+    Value *typed_ptr =
+        cc.b.CreateBitCast(row_key_ptr, PointerType::getUnqual(kty));
+    Value *rkval = cc.b.CreateLoad(kty, typed_ptr);
+    Value *eq = cc.b.CreateICmpEQ(rkval, probe_key_vals[j]);
+    all_eq = cc.b.CreateAnd(all_eq, eq);
   }
+  cc.b.CreateCondBr(all_eq, chain_bb, miss_bb);
 
-  Value *hash_val = EmitHash(cc.b, *ctx, *mod, key_buf, key_width, inline_hash_);
+  // ---- Miss: ht_off = (ht_off + 1) & bitmask; goto probe ----
+  cc.b.SetInsertPoint(miss_bb);
+  Value *ht_off_next = cc.b.CreateAnd(
+      cc.b.CreateAdd(ht_off, ConstantInt::get(i64, 1)), v_bitmask);
+  ht_off->addIncoming(ht_off_next, miss_bb);
+  cc.b.CreateBr(probe_bb);
 
-  // Software prefetch for row+PD
-  if (prefetch_) {
-    Value *pf_row = cc.b.CreateAdd(row_i,
-        ConstantInt::get(i64, (uint64_t)prefetch_distance_));
-    Value *pf_in_bounds = cc.b.CreateICmpULT(pf_row, nrows);
+  // ---- Chain walk header ----
+  cc.b.SetInsertPoint(chain_bb);
+  PHINode *chain_ptr = cc.b.CreatePHI(i8p, 2, "chain_ptr");
+  PHINode *chain_oc = cc.b.CreatePHI(i64, 2, "chain_oc");
+  chain_ptr->addIncoming(row_ptr_init, key_eq_bb);
+  chain_oc->addIncoming(out_count, key_eq_bb);
+  // Bail to DuckDB interpreter if the next emit would overflow the output
+  // vector (STANDARD_VECTOR_SIZE = 2048). Output columns are sized for 2048
+  // rows, so writing at index 2048 or higher corrupts the heap.
+  Value *overflow =
+      cc.b.CreateICmpUGE(chain_oc, ConstantInt::get(i64, 2048));
+  cc.b.CreateCondBr(overflow, bail_bb, emit_bb);
 
-    BasicBlock *pf_bb = BasicBlock::Create(*ctx, "pf", fn);
-    BasicBlock *pf_done_bb = BasicBlock::Create(*ctx, "pf_done", fn);
-    cc.b.CreateCondBr(pf_in_bounds, pf_bb, pf_done_bb);
-
-    cc.b.SetInsertPoint(pf_bb);
-    unsigned pf_ko = 0;
-    for (auto &kc : probe_key_cols) {
-      Value *src = cc.col_data[kc.col_idx];
-      Value *ep = cc.b.CreateGEP(
-          i8, src, cc.b.CreateMul(pf_row, ConstantInt::get(i64, kc.elem_size)));
-      Value *dp = cc.b.CreateGEP(i8, pf_key_buf,
-                                  ConstantInt::get(i32, pf_ko));
-      cc.b.CreateMemCpy(dp, MaybeAlign(1), ep, MaybeAlign(1),
-                        ConstantInt::get(i64, kc.elem_size));
-      pf_ko += kc.elem_size;
-    }
-    Value *pf_hash = EmitHash(cc.b, *ctx, *mod, pf_key_buf, key_width, inline_hash_);
-    Value *pf_idx = cc.b.CreateAnd(pf_hash, ht_mask_v);
-    Value *pf_byte_off = cc.b.CreateMul(pf_idx, ht_slot_sz);
-    Value *pf_addr = cc.b.CreateGEP(i8, ht_slots_base, pf_byte_off);
-    cc.b.CreateCall(pf_intrinsic,
-                    {pf_addr,
-                     ConstantInt::get(i32, 0),
-                     ConstantInt::get(i32, 1),
-                     ConstantInt::get(i32, 1)});
-    cc.b.CreateBr(pf_done_bb);
-
-    cc.b.SetInsertPoint(pf_done_bb);
-  }
-
-  Value *payload_ptr =
-      cc.b.CreateCall(probe_fn, {ht_arg, key_buf, hash_val});
-  Value *is_found = cc.b.CreateICmpNE(
-      cc.b.CreatePtrToInt(payload_ptr, i64), ConstantInt::get(i64, 0));
-  // Track the block that actually branches to next_bb on probe miss.
-  // When prefetch is on, this is pf_done_bb (not probe_bb).
-  BasicBlock *probe_result_bb = cc.b.GetInsertBlock();
-  cc.b.CreateCondBr(is_found, write_bb, next_bb);
-
-  // ---- Write: copy projected columns from probe input AND payload ----
-  cc.b.SetInsertPoint(write_bb);
-
+  // ---- Emit: write all output columns for this match ----
+  cc.b.SetInsertPoint(emit_bb);
+  unsigned num_keys = (unsigned)probe_key_cols.size();
   for (size_t oi = 0; oi < out_cols.size(); oi++) {
     auto &oc = out_cols[oi];
-
     Type *elem_ty = nullptr;
     if (oc.dtype == AQP_DTYPE_INT32 || oc.dtype == AQP_DTYPE_DATE)
-      elem_ty = Type::getInt32Ty(*ctx);
+      elem_ty = i32;
     else if (oc.dtype == AQP_DTYPE_INT64)
-      elem_ty = Type::getInt64Ty(*ctx);
+      elem_ty = i64;
     else if (oc.dtype == AQP_DTYPE_FLOAT)
       elem_ty = Type::getFloatTy(*ctx);
     else if (oc.dtype == AQP_DTYPE_DOUBLE)
       elem_ty = Type::getDoubleTy(*ctx);
     else if (oc.dtype == AQP_DTYPE_INT16)
-      elem_ty = Type::getInt16Ty(*ctx);
+      elem_ty = i16;
     else if (oc.dtype == AQP_DTYPE_BOOL || oc.dtype == AQP_DTYPE_INT8)
-      elem_ty = Type::getInt8Ty(*ctx);
+      elem_ty = i8;
 
     if (oc.source == OutColDesc::PROBE) {
       if (elem_ty) {
         Type *ptr_ty = PointerType::getUnqual(elem_ty);
         Value *src_typed =
             cc.b.CreateBitCast(cc.col_data[oc.probe_col_idx], ptr_ty);
-        Value *val = cc.b.CreateLoad(
-            elem_ty, cc.b.CreateGEP(elem_ty, src_typed, row_i));
+        Value *val =
+            cc.b.CreateLoad(elem_ty, cc.b.CreateGEP(elem_ty, src_typed, row_i));
         Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
-        cc.b.CreateStore(val,
-                         cc.b.CreateGEP(elem_ty, dst_typed, out_count));
+        cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, chain_oc));
       } else {
         Value *src = cc.b.CreateGEP(
             i8, cc.col_data[oc.probe_col_idx],
             cc.b.CreateMul(row_i, ConstantInt::get(i64, oc.elem_size)));
         Value *dst = cc.b.CreateGEP(
             i8, out_data_ptrs[oi],
-            cc.b.CreateMul(out_count, ConstantInt::get(i64, oc.elem_size)));
+            cc.b.CreateMul(chain_oc, ConstantInt::get(i64, oc.elem_size)));
         cc.b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
                           ConstantInt::get(i64, oc.elem_size));
       }
     } else {
-      // PAYLOAD source: load from payload_ptr + offset
-      Value *pay_src = cc.b.CreateGEP(
-          i8, payload_ptr, ConstantInt::get(i64, oc.payload_offset));
+      // PAYLOAD: row offset = data_offsets[num_keys + payload_row_indices[k]]
+      int k = oc.payload_col_idx;
+      int row_col_idx =
+          (k >= 0 && k < (int)payload_row_indices.size())
+              ? payload_row_indices[k]
+              : k;
+      Value *pay_off_idx =
+          ConstantInt::get(i64, (int64_t)(num_keys + row_col_idx));
+      Value *pay_off = cc.b.CreateLoad(
+          i64, cc.b.CreateGEP(i64, v_offsets, pay_off_idx),
+          "pay_off_" + std::to_string(oi));
+      Value *pay_src = cc.b.CreateGEP(i8, chain_ptr, pay_off);
       if (elem_ty) {
         Type *ptr_ty = PointerType::getUnqual(elem_ty);
         Value *val =
             cc.b.CreateLoad(elem_ty, cc.b.CreateBitCast(pay_src, ptr_ty));
         Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
-        cc.b.CreateStore(val,
-                         cc.b.CreateGEP(elem_ty, dst_typed, out_count));
+        cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, chain_oc));
       } else {
         Value *dst = cc.b.CreateGEP(
             i8, out_data_ptrs[oi],
-            cc.b.CreateMul(out_count, ConstantInt::get(i64, oc.elem_size)));
+            cc.b.CreateMul(chain_oc, ConstantInt::get(i64, oc.elem_size)));
         cc.b.CreateMemCpy(dst, MaybeAlign(1), pay_src, MaybeAlign(1),
                           ConstantInt::get(i64, oc.elem_size));
       }
     }
   }
-  Value *out_count1 = cc.b.CreateAdd(out_count, ConstantInt::get(i64, 1));
+  Value *chain_oc_next = cc.b.CreateAdd(chain_oc, ConstantInt::get(i64, 1));
+  cc.b.CreateBr(advance_bb);
+
+  // ---- Advance: load next_ptr; null → chain_done; else continue chain ----
+  cc.b.SetInsertPoint(advance_bb);
+  Value *next_ptr_addr = cc.b.CreateGEP(i8, chain_ptr, v_ptr_off);
+  Value *next_ptr_pp =
+      cc.b.CreateBitCast(next_ptr_addr, PointerType::getUnqual(i8p));
+  Value *next_ptr = cc.b.CreateLoad(i8p, next_ptr_pp, "next_ptr");
+  Value *next_is_null = cc.b.CreateICmpEQ(
+      cc.b.CreatePtrToInt(next_ptr, i64), ConstantInt::get(i64, 0));
+  cc.b.CreateCondBr(next_is_null, chain_done_bb, chain_bb);
+  chain_ptr->addIncoming(next_ptr, advance_bb);
+  chain_oc->addIncoming(chain_oc_next, advance_bb);
+
+  cc.b.SetInsertPoint(chain_done_bb);
   cc.b.CreateBr(next_bb);
 
-  // ---- Next ----
+  // ---- Bail: output would overflow 2048 rows; tell caller to fall back ----
+  cc.b.SetInsertPoint(bail_bb);
+  cc.b.CreateRet(ConstantInt::get(i64, -1));
+
+  // ---- Next: advance row_i, loop ----
   cc.b.SetInsertPoint(next_bb);
   PHINode *oc_next = cc.b.CreatePHI(i64, 3, "oc_next");
-  oc_next->addIncoming(out_count, after_filter_bb);
-  oc_next->addIncoming(out_count, probe_result_bb);
-  oc_next->addIncoming(out_count1, write_bb);
+  oc_next->addIncoming(out_count, after_filter_bb);  // filter failed
+  oc_next->addIncoming(out_count, probe_bb);         // empty entry
+  oc_next->addIncoming(chain_oc_next, chain_done_bb); // chain exhausted
   Value *i_next = cc.b.CreateAdd(row_i, ConstantInt::get(i64, 1));
   row_i->addIncoming(i_next, next_bb);
   out_count->addIncoming(oc_next, next_bb);
-  cc.b.CreateBr(loop_bb);
+  cc.b.CreateBr(outer_bb);
 
   // ---- Exit ----
   cc.b.SetInsertPoint(exit_bb);
@@ -6745,7 +7115,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
-    std::cerr << "[AQP-JIT] verifyFunction failed (filt_hprobe_proj): "
+    std::cerr << "[AQP-JIT] verifyFunction failed (filt_hprobe_proj_direct): "
               << es.str() << "\n";
     return nullptr;
   }
@@ -6764,9 +7134,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     return nullptr;
   }
 
-  std::cerr << "[AQP-JIT] compiled filter+probe+proj fusion fn=" << fn_name
-            << "  filter_exprs=" << filter_exprs.size()
-            << "  key_width=" << key_width << "  out_cols=" << out_cols.size()
+  std::cerr << "[AQP-JIT] compiled filter+probe+proj fusion (direct-HT) fn="
+            << fn_name << "  filter_exprs=" << filter_exprs.size()
+            << "  num_keys=" << probe_key_cols.size()
+            << "  out_cols=" << out_cols.size()
             << "  payload_width=" << payload_width << "\n";
 
   return reinterpret_cast<void *>(sym->getAddress());

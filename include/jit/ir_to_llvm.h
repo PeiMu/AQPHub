@@ -244,12 +244,39 @@ public:
    *   columns were written by CompileHashBuild / fusion). Needed to map
    *   projection attrs to payload byte offsets.
    */
+  // payload_row_indices[i] is the row-format column index of payload_schema[i]
+  // within DuckDB's build-side row layout. Required for direct-HT probe:
+  // the JIT'd code reads payload data at view->data_offsets[num_keys + payload_row_indices[i]].
+  //
+  // lhs_output_idxs: indices into probe_schema for LHS output cols, in chunk order.
+  // rhs_output_layout_idxs: indices into HT layout = [keys, payload] for RHS
+  // output cols, in chunk order. Output chunk shape is [lhs cols, rhs cols].
+  // lhs_output_dtypes / rhs_output_dtypes: AQP_DTYPE_* of each output column,
+  // derived from DuckDB's actual chunk schema (NOT from AQP IR's possibly-
+  // reordered schemas). Used for output elem_size — critical when probe/payload
+  // schemas may be out-of-sync with the physical HT layout.
+  // If lhs_output_idxs and rhs_output_layout_idxs are both empty, falls back
+  // to all probe + all payload cols (legacy).
+  // lhs_key_chunk_idxs / lhs_key_dtypes (optional): DuckDB-authoritative LHS
+  // join key positions (from PhysicalComparisonJoin::conditions[i].left as
+  // BoundReferenceExpression::index) and their dtypes. When non-empty, the
+  // JIT uses these directly for key extraction instead of looking up via
+  // AQP IR's (table_idx, col_idx) match against probe_schema — that lookup is
+  // unsafe when AQP IR's probe_schema ordering diverges from DuckDB's
+  // physical chunk ordering even when dtypes happen to coincide.
   void *CompileFilterProbeProjectFusion(
       const ir_sql_converter::AQPStmt *filter_node,
       const ir_sql_converter::AQPStmt &join_node,
       const ir_sql_converter::AQPStmt *proj_node,
       const std::vector<ColSchema> &probe_schema,
-      const std::vector<ColSchema> &payload_schema);
+      const std::vector<ColSchema> &payload_schema,
+      const std::vector<int> &payload_row_indices,
+      const std::vector<int> &lhs_output_idxs = {},
+      const std::vector<int> &rhs_output_layout_idxs = {},
+      const std::vector<int32_t> &lhs_output_dtypes = {},
+      const std::vector<int32_t> &rhs_output_dtypes = {},
+      const std::vector<int> &lhs_key_chunk_idxs = {},
+      const std::vector<int32_t> &lhs_key_dtypes = {});
 
   /**
    * Level 4: Compile an entire sub-plan into a coordinator function.

@@ -138,6 +138,24 @@ typedef struct {
   AQPCopyStringFn copy_str; /* callback for deep string copy                  */
 } AQPPipelineFilterState;
 
+/**
+ * Hash-join view: exposes DuckDB's JoinHashTable internals to JIT'd probe
+ * code without going through a C++ vtable. Filled at probe time by
+ * physical_hash_join.cpp (DuckDB side) and passed as the
+ * `pipeline_state` argument of a probe-side AQPPipelineFn.
+ *
+ * MUST stay in sync with duckdb::AQPJoinHTView in aqp_jit.hpp.
+ */
+typedef struct {
+  void           *entries;        /* ht_entry_t *               */
+  uint64_t        bitmask;        /* capacity - 1               */
+  uint64_t        use_salt;       /* 1 if capacity > USE_SALT_THRESHOLD (8192) */
+  void           *layout_ptr;     /* opaque shared_ptr<TupleDataLayout>* */
+  uint32_t        tuple_size;     /* total row width in bytes   */
+  uint32_t        pointer_offset; /* offset of next_pointer inside row */
+  const uint64_t *data_offsets;   /* layout->GetOffsets().data() — per-col offsets within row */
+} AQPJoinHTView;
+
 /* Sub-plan context: holds all state for a compiled sub-plan.
  * Managed by the middleware; passed to the coordinator function. */
 typedef struct {
