@@ -166,11 +166,7 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_flags = (config.jit_flags & ~AQP_JIT_SIMD_MASK) | AQP_JIT_SIMD_AUTO;
     }
     // Per-optimization toggles
-    else if (arg == "--jit-fusion-build") {
-      config.jit_fusion_build = true;
-    } else if (arg == "--no-jit-fusion-build") {
-      config.jit_fusion_build = false;
-    } else if (arg == "--jit-fusion-probe") {
+    else if (arg == "--jit-fusion-probe") {
       config.jit_fusion_probe = true;
     } else if (arg == "--no-jit-fusion-probe") {
       config.jit_fusion_probe = false;
@@ -189,6 +185,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_prefetch_distance = std::stoi(arg.substr(15));
     } else if (arg == "--no-jit-prefetch") {
       config.jit_prefetch = false;
+    } else if (arg.find("--jit-prefetch-entry-dist=") == 0) {
+      config.jit_prefetch_entry_distance = std::stoi(arg.substr(26));
+    } else if (arg.find("--jit-prefetch-row-dist=") == 0) {
+      config.jit_prefetch_row_distance = std::stoi(arg.substr(24));
     } else if (arg == "--jit-batch-probe") {
       config.jit_batch_probe = true;
     } else if (arg == "--no-jit-batch-probe") {
@@ -295,9 +295,6 @@ void ParamConfig::PrintUsage() {
   std::cout << "\n  Pipeline-JIT optimization toggles (enabled by "
                "default at pipeline+ level):"
             << std::endl;
-  std::cout << "  --[no-]jit-fusion-build          Filter+HashBuild "
-               "fusion"
-            << std::endl;
   std::cout << "  --[no-]jit-fusion-probe          Filter+Probe+"
                "Projection fusion"
             << std::endl;
@@ -309,6 +306,12 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --[no-]jit-prefetch[=N]          Software prefetch "
                "for hash probe (default N=8)"
+            << std::endl;
+  std::cout << "  --jit-prefetch-entry-dist=N      ROF stage-2 entry "
+               "prefetch distance (default 24)"
+            << std::endl;
+  std::cout << "  --jit-prefetch-row-dist=N        ROF stage-2 row "
+               "prefetch distance (default 12)"
             << std::endl;
   std::cout << "  --[no-]jit-batch-probe           Batch/vectorized "
                "hash probe"

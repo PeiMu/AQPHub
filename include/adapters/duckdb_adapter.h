@@ -154,11 +154,10 @@ public:
   // is not called by the splitter).
   void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
 
-  void SetJITOptFlags(bool fusion_build, bool fusion_probe, bool inline_hash,
+  void SetJITOptFlags(bool fusion_probe, bool inline_hash,
                       bool payload_prune, bool prefetch, int prefetch_dist,
                       bool batch_probe, bool cache,
                       const std::string &cache_dir) {
-    jit_fusion_build_ = fusion_build;
     jit_fusion_probe_ = fusion_probe;
     jit_inline_hash_ = inline_hash;
     jit_payload_prune_ = payload_prune;
@@ -167,6 +166,12 @@ public:
     jit_batch_probe_ = batch_probe;
     jit_cache_ = cache;
     jit_cache_dir_ = cache_dir;
+  }
+
+  // Phase 6: ROF probe-side look-ahead distances. 0 disables that level.
+  void SetJITProbePrefetchDistances(int entry_dist, int row_dist) {
+    jit_prefetch_entry_distance_ = entry_dist;
+    jit_prefetch_row_distance_ = row_dist;
   }
 #endif
 
@@ -248,12 +253,15 @@ private:
   uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
 
   // Per-optimization toggles (from ParamConfig)
-  bool jit_fusion_build_ = true;
   bool jit_fusion_probe_ = true;
   bool jit_inline_hash_ = true;
   bool jit_payload_prune_ = true;
   bool jit_prefetch_ = true;
   int  jit_prefetch_distance_ = 8;
+  // Phase 6: ROF probe look-ahead distances (consumer-side prefetch in
+  // CompileFilterProbeProjectFusion). Plan §10.4 defaults.
+  int  jit_prefetch_entry_distance_ = 24;
+  int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
   bool jit_cache_ = false;
   std::string jit_cache_dir_;

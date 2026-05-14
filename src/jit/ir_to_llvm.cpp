@@ -312,6 +312,13 @@ static uint64_t FNV1a(const std::string &s) {
 // ---------------------------------------------------------------------------
 struct IrToLlvmCompiler::Impl {
   std::unique_ptr<LLJIT> jit;
+  // Per-generation resource tracker. All compiled IR modules and cached
+  // object files are added with this tracker so that ResetModules() can
+  // free the machine code, IR allocations and symbol-table entries for a
+  // whole generation at once. The runtime helper symbols defined in the
+  // ctor are intentionally NOT tracked (they live in the default tracker)
+  // because they are constant for the compiler's lifetime.
+  orc::ResourceTrackerSP current_tracker;
 
   // SIMD configuration (detected at init time)
   std::string host_cpu;
@@ -373,7 +380,7 @@ struct IrToLlvmCompiler::Impl {
       return nullptr;
 
     auto tsm_buf = std::move(*buf_or);
-    if (auto e = jit->addObjectFile(std::move(tsm_buf))) {
+    if (auto e = jit->addObjectFile(current_tracker, std::move(tsm_buf))) {
       logAllUnhandledErrors(std::move(e), errs());
       return nullptr;
     }
@@ -384,7 +391,9 @@ struct IrToLlvmCompiler::Impl {
       return nullptr;
     }
 
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] cache HIT: " << fn_name << " (" << key << ")\n";
+#endif
     return reinterpret_cast<void *>(sym->getAddress());
   }
 
@@ -447,6 +456,7 @@ struct IrToLlvmCompiler::Impl {
       throw std::runtime_error(ss.str());
     }
     jit = std::move(*jit_or);
+    current_tracker = jit->getMainJITDylib().createResourceTracker();
 
     // Make runtime helper symbols (aqp_like_match etc.) visible to JIT.
     // LLVM 14 uses JITEvaluatedSymbol(JITTargetAddress, JITSymbolFlags).
@@ -546,6 +556,22 @@ struct IrToLlvmCompiler::Impl {
     cache_enabled = true;
     cache_dir = dir.empty() ? DefaultCacheDir() : dir;
     InstallCacheHook();
+  }
+
+  // Frees all JIT machine code, IR allocations, symbol-table entries, and
+  // ExecutionSession state added under the current tracker, then opens a
+  // fresh tracker for subsequent additions. Caller is responsible for
+  // ensuring no JIT function pointer obtained against the old tracker is
+  // still in use — pair this with clearing aqp_jit_context first.
+  //
+  // Runtime helper symbols defined in Impl() are not tracked and survive.
+  void ResetModules() {
+    if (current_tracker) {
+      if (auto e = current_tracker->remove()) {
+        logAllUnhandledErrors(std::move(e), errs());
+      }
+    }
+    current_tracker = jit->getMainJITDylib().createResourceTracker();
   }
 };
 
@@ -4640,6 +4666,11 @@ void IrToLlvmCompiler::SetCache(bool enable, const std::string &dir) {
     impl_->EnableCache(dir);
 }
 
+void IrToLlvmCompiler::ResetModules() {
+  if (impl_)
+    impl_->ResetModules();
+}
+
 static std::string BuildCacheContent(const std::string &tag,
                                      const std::vector<ColSchema> &schema,
                                      const std::string &extra = "") {
@@ -4707,7 +4738,7 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
 
   // Add module to ORC JIT
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto err2 = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto err2 = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     logAllUnhandledErrors(std::move(err2), errs());
     return nullptr;
   }
@@ -4778,8 +4809,10 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
                                    impl_->vec_width);
       if (fn) {
         used_simd = true;
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] using SIMD filter (VW=" << impl_->vec_width
                   << " all_simd=" << simd_exprs.size() << ")\n";
+#endif
       }
     } else if (!simd_exprs.empty()) {
       // Mixed: use two-pass scalar (cheap-then-expensive) instead of SIMD
@@ -4802,8 +4835,10 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
       fn = BuildFilterFunctionTwoPass(*ctx, *mod, fn_name, cheap, expensive,
                                       schema);
       if (fn) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] using TWO-PASS filter (cheap="
                   << cheap.size() << " expensive=" << expensive.size() << ")\n";
+#endif
       }
     }
   }
@@ -4817,8 +4852,10 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed"
               << (used_simd ? " (SIMD)" : "") << ": " << es.str() << "\n";
+#endif
     // If SIMD failed verification, retry with scalar
     if (used_simd) {
       fn->eraseFromParent();
@@ -4828,8 +4865,10 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
       SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
       err.clear();
       if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] scalar fallback also failed: " << es.str()
                   << "\n";
+#endif
         return nullptr;
       }
       used_simd = false;
@@ -4842,9 +4881,11 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     impl_->pending_cache_key.clear();
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] addIRModule failed\n";
+#endif
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -4852,7 +4893,9 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+#endif
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
   }
@@ -4917,7 +4960,9 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed (proj): " << es.str() << "\n";
+#endif
     return nullptr;
   }
 
@@ -4925,9 +4970,11 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     impl_->pending_cache_key.clear();
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] addIRModule failed (proj)\n";
+#endif
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -4935,7 +4982,9 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+#endif
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
   }
@@ -4956,8 +5005,10 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   // For now: only ungrouped aggregates (no GROUP BY).
   // Grouped aggregates use the hash table and will be added in Phase 2C.
   if (!agg->groups.empty()) {
+#ifndef NDEBUG
     std::cerr
         << "[AQP-JIT] grouped aggregate not yet supported → interpreter\n";
+#endif
     return nullptr;
   }
 
@@ -4986,9 +5037,11 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
         }
       }
       if (op.col_idx < 0) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] agg col not in schema: table="
                   << fn_pair.first->GetTableIndex()
                   << " col=" << fn_pair.first->GetColumnIndex() << "\n";
+#endif
         continue; // skip this agg function
       }
       if (fn_pair.second == ir_sql_converter::SimplestAggFnType::Average)
@@ -5030,8 +5083,10 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
                                     in_schema, impl_->vec_width);
     if (fn) {
       used_simd = true;
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] using SIMD aggregate (VW=" << impl_->vec_width
                 << ")\n";
+#endif
     }
   }
   if (!fn) {
@@ -5045,7 +5100,9 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed (agg): " << es.str() << "\n";
+#endif
     return nullptr;
   }
 
@@ -5053,9 +5110,11 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     impl_->pending_cache_key.clear();
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] addIRModule failed (agg)\n";
+#endif
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -5063,14 +5122,18 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+#endif
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] compiled agg fn=" << fn_name
             << "  ops=" << agg_ops.size() << "  state_bytes=" << state_offset
             << "\n";
+#endif
 
   return reinterpret_cast<void *>(sym->getAddress());
 }
@@ -5101,8 +5164,10 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
                                     dummy_schema, impl_->vec_width);
     if (fn) {
       used_simd = true;
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] using SIMD aggregate (VW=" << impl_->vec_width
                 << ")\n";
+#endif
     }
   }
   if (!fn) {
@@ -5116,8 +5181,10 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed (agg direct): " << es.str()
               << "\n";
+#endif
     if (used_simd) {
       fn->eraseFromParent();
       fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, total_state_size,
@@ -5127,8 +5194,10 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
       SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
       err.clear();
       if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] scalar agg fallback also failed: " << es.str()
                   << "\n";
+#endif
         return nullptr;
       }
     } else {
@@ -5139,7 +5208,7 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
   OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -5150,666 +5219,17 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] compiled agg fn=" << fn_name
             << "  ops=" << agg_ops.size() << "  state_bytes=" << total_state_size
             << "\n";
+#endif
 
   return reinterpret_cast<void *>(sym->getAddress());
 }
 
 #endif // !DISABLE_AGG_JIT
 
-void *
-IrToLlvmCompiler::CompileHashBuild(const AQPStmt &hash_node,
-                                   const std::vector<ColSchema> &in_schema,
-                                   const std::vector<int> &needed_payload_cols) {
-
-  auto *hash = dynamic_cast<const ir_sql_converter::SimplestHash *>(&hash_node);
-  if (!hash || hash->hash_keys.empty())
-    return nullptr;
-
-  // Build key column descriptors from hash_keys
-  std::vector<HashColDesc> key_cols;
-  unsigned key_width = 0;
-  for (const auto &hk : hash->hash_keys) {
-    HashColDesc kc;
-    kc.col_idx = -1;
-    kc.dtype = AQP_DTYPE_OTHER;
-    for (int i = 0; i < (int)in_schema.size(); i++) {
-      if (in_schema[i].table_idx == hk->GetTableIndex() &&
-          in_schema[i].col_idx == hk->GetColumnIndex()) {
-        kc.col_idx = i;
-        kc.dtype = in_schema[i].dtype;
-        break;
-      }
-    }
-    if (kc.col_idx < 0) {
-      std::cerr << "[AQP-JIT] hash key not in schema: table="
-                << hk->GetTableIndex() << " col=" << hk->GetColumnIndex()
-                << "\n";
-      return nullptr;
-    }
-    kc.elem_size = DtypeElemSize(kc.dtype);
-    if (kc.elem_size == 0)
-      return nullptr;
-    key_width += kc.elem_size;
-    key_cols.push_back(kc);
-  }
-
-  // Payload columns: use pruned list if provided, else all input columns
-  std::vector<HashColDesc> payload_cols;
-  unsigned payload_width = 0;
-  if (!needed_payload_cols.empty()) {
-    for (int ci : needed_payload_cols) {
-      if (ci < 0 || ci >= (int)in_schema.size())
-        continue;
-      HashColDesc pc;
-      pc.col_idx = ci;
-      pc.dtype = in_schema[ci].dtype;
-      pc.elem_size = DtypeElemSize(pc.dtype);
-      if (pc.elem_size == 0)
-        continue;
-      payload_width += pc.elem_size;
-      payload_cols.push_back(pc);
-    }
-  } else {
-    for (int i = 0; i < (int)in_schema.size(); i++) {
-      HashColDesc pc;
-      pc.col_idx = i;
-      pc.dtype = in_schema[i].dtype;
-      pc.elem_size = DtypeElemSize(pc.dtype);
-      if (pc.elem_size == 0)
-        continue;
-      payload_width += pc.elem_size;
-      payload_cols.push_back(pc);
-    }
-  }
-
-  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
-  std::string fn_name = "aqp_hbuild_" + std::to_string(fn_id);
-
-  // Cache lookup
-  std::string cache_key;
-  if (cache_enabled_ && impl_->cache_enabled) {
-    std::string hash_text =
-        const_cast<AQPStmt &>(hash_node).Print(false, 0);
-    std::string payload_str;
-    for (int ci : needed_payload_cols)
-      payload_str += std::to_string(ci) + ",";
-    std::string opt_tag = std::to_string((int)opt_level_) + "." +
-                          std::to_string((int)simd_isa_);
-    cache_key = Impl::ComputeCacheKey(
-        BuildCacheContent("hbuild:" + opt_tag, in_schema,
-                          hash_text + "||" + payload_str));
-    fn_name = "aqp_hbuild_c" + cache_key.substr(0, 12);
-    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
-    if (cached)
-      return cached;
-  }
-
-  auto ctx = std::make_unique<LLVMContext>();
-  auto mod = std::make_unique<Module>("aqp_hbuild_mod", *ctx);
-
-  // --- Emit LLVM IR for hash build ---
-  Type *i8 = Type::getInt8Ty(*ctx);
-  Type *i8p = PointerType::getUnqual(i8);
-  Type *i32 = Type::getInt32Ty(*ctx);
-  Type *i64 = Type::getInt64Ty(*ctx);
-  Type *i64p = PointerType::getUnqual(i64);
-  Type *voidTy = Type::getVoidTy(*ctx);
-
-  StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
-  StructType *ChunkViewTy =
-      StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
-
-  FunctionType *fn_ty = FunctionType::get(
-      voidTy, {PointerType::getUnqual(ChunkViewTy), i8p}, false);
-  Function *fn =
-      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, mod.get());
-
-  Value *in_arg = fn->getArg(0);
-  in_arg->setName("in");
-  Value *ht_arg = fn->getArg(1);
-  ht_arg->setName("ht");
-
-  BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
-  BasicBlock *loop_bb = BasicBlock::Create(*ctx, "loop", fn);
-  BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
-  BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
-  BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
-
-  IRBuilder<> b(entry_bb);
-
-  Value *nrows =
-      b.CreateLoad(i64, b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
-  Value *cols = b.CreateLoad(PointerType::getUnqual(ColViewTy),
-                             b.CreateStructGEP(ChunkViewTy, in_arg, 0), "cols");
-
-  std::map<int, Value *> col_data;
-  auto load_col = [&](int ci) {
-    if (col_data.find(ci) == col_data.end()) {
-      Value *col_i =
-          b.CreateGEP(ColViewTy, cols, ConstantInt::get(i64, (uint64_t)ci));
-      col_data[ci] = b.CreateLoad(i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
-                                  "data_" + std::to_string(ci));
-    }
-  };
-  for (auto &kc : key_cols)
-    load_col(kc.col_idx);
-  for (auto &pc : payload_cols)
-    load_col(pc.col_idx);
-
-  Value *key_buf =
-      b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-
-  FunctionType *insert_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee insert_fn =
-      mod->getOrInsertFunction("aqp_ht_insert_prehash", insert_ft);
-
-  b.CreateBr(loop_bb);
-
-  b.SetInsertPoint(loop_bb);
-  PHINode *row_i = b.CreatePHI(i64, 2, "i");
-  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
-
-  b.SetInsertPoint(body_bb);
-  unsigned key_off = 0;
-  for (auto &kc : key_cols) {
-    Value *src = col_data[kc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, kc.elem_size));
-    key_off += kc.elem_size;
-  }
-
-  Value *hash_val = EmitHash(b, *ctx, *mod, key_buf, key_width, inline_hash_);
-  Value *payload_ptr = b.CreateCall(insert_fn, {ht_arg, key_buf, hash_val});
-
-  unsigned pay_off = 0;
-  for (auto &pc : payload_cols) {
-    Value *src = col_data[pc.col_idx];
-    Value *elem_ptr = b.CreateGEP(
-        i8, src, b.CreateMul(row_i, ConstantInt::get(i64, pc.elem_size)));
-    Value *dst = b.CreateGEP(i8, payload_ptr, ConstantInt::get(i64, pay_off));
-    b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                   ConstantInt::get(i64, pc.elem_size));
-    pay_off += pc.elem_size;
-  }
-
-  b.CreateBr(next_bb);
-
-  b.SetInsertPoint(next_bb);
-  Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
-  row_i->addIncoming(i_next, next_bb);
-  b.CreateBr(loop_bb);
-
-  b.SetInsertPoint(exit_bb);
-  b.CreateRetVoid();
-  // --- End IR emission ---
-
-  SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
-
-  std::string err;
-  raw_string_ostream es(err);
-  if (verifyFunction(*fn, &es)) {
-    std::cerr << "[AQP-JIT] verifyFunction failed (hbuild): " << es.str()
-              << "\n";
-    return nullptr;
-  }
-
-  OptimiseModule(*mod, opt_level_);
-
-  impl_->pending_cache_key = cache_key;
-  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
-    impl_->pending_cache_key.clear();
-    logAllUnhandledErrors(std::move(e), errs());
-    return nullptr;
-  }
-  impl_->pending_cache_key.clear();
-
-  auto sym = impl_->jit->lookup(fn_name);
-  if (!sym) {
-    logAllUnhandledErrors(sym.takeError(), errs());
-    return nullptr;
-  }
-
-  std::cerr << "[AQP-JIT] compiled hash build fn=" << fn_name
-            << "  key_width=" << key_width
-            << "  payload_width=" << payload_width << "\n";
-
-  return reinterpret_cast<void *>(sym->getAddress());
-}
-
-void *
-IrToLlvmCompiler::CompileHashProbe(const AQPStmt &join_node,
-                                   const std::vector<ColSchema> &probe_schema) {
-
-  auto *join = dynamic_cast<const ir_sql_converter::SimplestJoin *>(&join_node);
-  if (!join || join->join_conditions.empty())
-    return nullptr;
-
-  // For inner/equi-join: extract probe-side key columns from join conditions.
-  // Each condition is attr_left OP attr_right; the probe side is the one
-  // that matches the probe_schema.
-  std::vector<HashColDesc> probe_key_cols;
-  unsigned key_width = 0;
-  for (const auto &cond : join->join_conditions) {
-    // Try left attr first
-    HashColDesc kc;
-    kc.col_idx = -1;
-    for (int i = 0; i < (int)probe_schema.size(); i++) {
-      if (probe_schema[i].table_idx == cond->left_attr->GetTableIndex() &&
-          probe_schema[i].col_idx == cond->left_attr->GetColumnIndex()) {
-        kc.col_idx = i;
-        kc.dtype = probe_schema[i].dtype;
-        break;
-      }
-    }
-    // Try right attr if left didn't match
-    if (kc.col_idx < 0) {
-      for (int i = 0; i < (int)probe_schema.size(); i++) {
-        if (probe_schema[i].table_idx == cond->right_attr->GetTableIndex() &&
-            probe_schema[i].col_idx == cond->right_attr->GetColumnIndex()) {
-          kc.col_idx = i;
-          kc.dtype = probe_schema[i].dtype;
-          break;
-        }
-      }
-    }
-    if (kc.col_idx < 0) {
-      std::cerr << "[AQP-JIT] probe key not in schema\n";
-      return nullptr;
-    }
-    kc.elem_size = DtypeElemSize(kc.dtype);
-    if (kc.elem_size == 0)
-      return nullptr;
-    key_width += kc.elem_size;
-    probe_key_cols.push_back(kc);
-  }
-
-  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
-  std::string fn_name = "aqp_hprobe_" + std::to_string(fn_id);
-
-  // Cache lookup
-  std::string cache_key;
-  if (cache_enabled_ && impl_->cache_enabled) {
-    std::string join_text =
-        const_cast<AQPStmt &>(join_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)opt_level_) + "." +
-                          std::to_string((int)simd_isa_) + "." +
-                          (batch_probe_ ? "batch" : (prefetch_ ? "pf" : "scalar"));
-    cache_key = Impl::ComputeCacheKey(
-        BuildCacheContent("hprobe:" + opt_tag, probe_schema, join_text));
-    fn_name = "aqp_hprobe_c" + cache_key.substr(0, 12);
-    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
-    if (cached)
-      return cached;
-  }
-
-  auto ctx = std::make_unique<LLVMContext>();
-  auto mod = std::make_unique<Module>("aqp_hprobe_mod", *ctx);
-
-  // --- Emit LLVM IR for hash probe ---
-  Type *i8 = Type::getInt8Ty(*ctx);
-  Type *i8p = PointerType::getUnqual(i8);
-  Type *i32 = Type::getInt32Ty(*ctx);
-  Type *i64 = Type::getInt64Ty(*ctx);
-  Type *i64p = PointerType::getUnqual(i64);
-
-  StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
-  StructType *ChunkViewTy =
-      StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
-  StructType *SelViewTy =
-      StructType::get(*ctx, {PointerType::getUnqual(i32), i32});
-
-  FunctionType *fn_ty =
-      FunctionType::get(i64,
-                        {PointerType::getUnqual(ChunkViewTy), i8p,
-                         PointerType::getUnqual(SelViewTy)},
-                        false);
-  Function *fn =
-      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, mod.get());
-
-  Value *probe_arg = fn->getArg(0);
-  probe_arg->setName("probe");
-  Value *ht_arg = fn->getArg(1);
-  ht_arg->setName("ht");
-  Value *sel_arg = fn->getArg(2);
-  sel_arg->setName("sel");
-
-  FunctionType *probe_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee probe_fn =
-      mod->getOrInsertFunction("aqp_ht_probe_prehash", probe_ft);
-
-  if (batch_probe_) {
-    // ---- Two-phase batch probe ----
-    BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
-    BasicBlock *ph1_loop = BasicBlock::Create(*ctx, "ph1_loop", fn);
-    BasicBlock *ph1_body = BasicBlock::Create(*ctx, "ph1_body", fn);
-    BasicBlock *ph1_done = BasicBlock::Create(*ctx, "ph1_done", fn);
-    BasicBlock *ph2_loop = BasicBlock::Create(*ctx, "ph2_loop", fn);
-    BasicBlock *ph2_body = BasicBlock::Create(*ctx, "ph2_body", fn);
-    BasicBlock *ph2_found = BasicBlock::Create(*ctx, "ph2_found", fn);
-    BasicBlock *ph2_next = BasicBlock::Create(*ctx, "ph2_next", fn);
-    BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
-
-    IRBuilder<> b(entry_bb);
-
-    Value *nrows = b.CreateLoad(
-        i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
-    Value *cols = b.CreateLoad(
-        PointerType::getUnqual(ColViewTy),
-        b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
-
-    std::map<int, Value *> col_data;
-    for (auto &kc : probe_key_cols) {
-      if (col_data.find(kc.col_idx) == col_data.end()) {
-        Value *col_i = b.CreateGEP(
-            ColViewTy, cols, ConstantInt::get(i64, (uint64_t)kc.col_idx));
-        col_data[kc.col_idx] = b.CreateLoad(
-            i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
-            "data_" + std::to_string(kc.col_idx));
-      }
-    }
-
-    Value *key_buf =
-        b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-    Value *sel_idx_ptr = b.CreateLoad(
-        PointerType::getUnqual(i32),
-        b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
-
-    Value *hash_arr =
-        b.CreateAlloca(i64, ConstantInt::get(i32, 2048), "hashes");
-
-    FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
-    FunctionCallee fn_base =
-        mod->getOrInsertFunction("aqp_ht_slots_base", ft_base);
-    Value *ht_slots = b.CreateCall(fn_base, {ht_arg}, "ht_slots");
-
-    FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
-    FunctionCallee fn_mask =
-        mod->getOrInsertFunction("aqp_ht_mask", ft_mask);
-    Value *ht_mask = b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
-
-    FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
-    FunctionCallee fn_ss =
-        mod->getOrInsertFunction("aqp_ht_slot_size", ft_ss);
-    Value *ht_slot_sz =
-        b.CreateZExt(b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
-
-    Function *pf_intrinsic =
-        Intrinsic::getDeclaration(mod.get(), Intrinsic::prefetch, {i8p});
-
-    b.CreateBr(ph1_loop);
-
-    // Phase 1: compute hashes + prefetch
-    b.SetInsertPoint(ph1_loop);
-    PHINode *ph1_i = b.CreatePHI(i64, 2, "ph1_i");
-    ph1_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-    b.CreateCondBr(b.CreateICmpEQ(ph1_i, nrows), ph1_done, ph1_body);
-
-    b.SetInsertPoint(ph1_body);
-    unsigned key_off = 0;
-    for (auto &kc : probe_key_cols) {
-      Value *src = col_data[kc.col_idx];
-      Value *elem_ptr = b.CreateGEP(
-          i8, src, b.CreateMul(ph1_i, ConstantInt::get(i64, kc.elem_size)));
-      Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-      b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                     ConstantInt::get(i64, kc.elem_size));
-      key_off += kc.elem_size;
-    }
-
-    Value *h = EmitHash(b, *ctx, *mod, key_buf, key_width, inline_hash_);
-    b.CreateStore(h, b.CreateGEP(i64, hash_arr, ph1_i));
-
-    Value *slot_idx = b.CreateAnd(h, ht_mask);
-    Value *slot_off = b.CreateMul(slot_idx, ht_slot_sz);
-    Value *slot_addr = b.CreateGEP(i8, ht_slots, slot_off);
-    b.CreateCall(pf_intrinsic,
-                 {slot_addr, ConstantInt::get(i32, 0),
-                  ConstantInt::get(i32, 1), ConstantInt::get(i32, 1)});
-
-    Value *ph1_next = b.CreateAdd(ph1_i, ConstantInt::get(i64, 1));
-    ph1_i->addIncoming(ph1_next, ph1_body);
-    b.CreateBr(ph1_loop);
-
-    // Phase 2: probe with cached slots
-    b.SetInsertPoint(ph1_done);
-    b.CreateBr(ph2_loop);
-
-    b.SetInsertPoint(ph2_loop);
-    PHINode *ph2_i = b.CreatePHI(i64, 2, "ph2_i");
-    PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
-    ph2_i->addIncoming(ConstantInt::get(i64, 0), ph1_done);
-    out_count->addIncoming(ConstantInt::get(i64, 0), ph1_done);
-    b.CreateCondBr(b.CreateICmpEQ(ph2_i, nrows), exit_bb, ph2_body);
-
-    b.SetInsertPoint(ph2_body);
-    unsigned key_off2 = 0;
-    for (auto &kc : probe_key_cols) {
-      Value *src = col_data[kc.col_idx];
-      Value *elem_ptr = b.CreateGEP(
-          i8, src, b.CreateMul(ph2_i, ConstantInt::get(i64, kc.elem_size)));
-      Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off2));
-      b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                     ConstantInt::get(i64, kc.elem_size));
-      key_off2 += kc.elem_size;
-    }
-
-    Value *cached_hash =
-        b.CreateLoad(i64, b.CreateGEP(i64, hash_arr, ph2_i));
-    Value *result =
-        b.CreateCall(probe_fn, {ht_arg, key_buf, cached_hash});
-    Value *is_found = b.CreateICmpNE(
-        b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
-    b.CreateCondBr(is_found, ph2_found, ph2_next);
-
-    b.SetInsertPoint(ph2_found);
-    Value *dst_sel = b.CreateGEP(i32, sel_idx_ptr, out_count);
-    b.CreateStore(b.CreateTrunc(ph2_i, i32), dst_sel);
-    Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
-    b.CreateBr(ph2_next);
-
-    b.SetInsertPoint(ph2_next);
-    PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
-    oc_next->addIncoming(out_count, ph2_body);
-    oc_next->addIncoming(out_count1, ph2_found);
-    Value *ph2_next_i = b.CreateAdd(ph2_i, ConstantInt::get(i64, 1));
-    ph2_i->addIncoming(ph2_next_i, ph2_next);
-    out_count->addIncoming(oc_next, ph2_next);
-    b.CreateBr(ph2_loop);
-
-    b.SetInsertPoint(exit_bb);
-    b.CreateStore(b.CreateTrunc(out_count, i32),
-                  b.CreateStructGEP(SelViewTy, sel_arg, 1));
-    b.CreateRet(out_count);
-
-  } else {
-    // ---- Scalar probe (with optional prefetch) ----
-    BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
-    BasicBlock *loop_bb = BasicBlock::Create(*ctx, "loop", fn);
-    BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
-    BasicBlock *found_bb = BasicBlock::Create(*ctx, "found", fn);
-    BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
-    BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
-
-    IRBuilder<> b(entry_bb);
-
-    Value *nrows = b.CreateLoad(
-        i64, b.CreateStructGEP(ChunkViewTy, probe_arg, 1), "nrows");
-    Value *cols = b.CreateLoad(
-        PointerType::getUnqual(ColViewTy),
-        b.CreateStructGEP(ChunkViewTy, probe_arg, 0), "cols");
-
-    std::map<int, Value *> col_data;
-    for (auto &kc : probe_key_cols) {
-      if (col_data.find(kc.col_idx) == col_data.end()) {
-        Value *col_i = b.CreateGEP(
-            ColViewTy, cols, ConstantInt::get(i64, (uint64_t)kc.col_idx));
-        col_data[kc.col_idx] = b.CreateLoad(
-            i8p, b.CreateStructGEP(ColViewTy, col_i, 0),
-            "data_" + std::to_string(kc.col_idx));
-      }
-    }
-
-    Value *key_buf =
-        b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-    Value *sel_idx_ptr = b.CreateLoad(
-        PointerType::getUnqual(i32),
-        b.CreateStructGEP(SelViewTy, sel_arg, 0), "sel_indices");
-
-    Value *ht_slots_base = nullptr, *ht_mask = nullptr, *ht_slot_sz = nullptr;
-    Value *pf_key_buf = nullptr;
-    Function *pf_intrinsic = nullptr;
-    if (prefetch_) {
-      FunctionType *ft_base = FunctionType::get(i8p, {i8p}, false);
-      FunctionCallee fn_base =
-          mod->getOrInsertFunction("aqp_ht_slots_base", ft_base);
-      ht_slots_base = b.CreateCall(fn_base, {ht_arg}, "ht_slots");
-
-      FunctionType *ft_mask = FunctionType::get(i64, {i8p}, false);
-      FunctionCallee fn_mask =
-          mod->getOrInsertFunction("aqp_ht_mask", ft_mask);
-      ht_mask = b.CreateCall(fn_mask, {ht_arg}, "ht_mask");
-
-      FunctionType *ft_ss = FunctionType::get(i32, {i8p}, false);
-      FunctionCallee fn_ss =
-          mod->getOrInsertFunction("aqp_ht_slot_size", ft_ss);
-      ht_slot_sz =
-          b.CreateZExt(b.CreateCall(fn_ss, {ht_arg}, "ht_ss"), i64);
-
-      pf_key_buf =
-          b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "pf_key_buf");
-      pf_intrinsic =
-          Intrinsic::getDeclaration(mod.get(), Intrinsic::prefetch, {i8p});
-    }
-
-    b.CreateBr(loop_bb);
-
-    b.SetInsertPoint(loop_bb);
-    PHINode *row_i = b.CreatePHI(i64, 2, "i");
-    PHINode *out_count = b.CreatePHI(i64, 2, "out_count");
-    row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-    out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-    b.CreateCondBr(b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
-
-    b.SetInsertPoint(body_bb);
-    unsigned key_off = 0;
-    for (auto &kc : probe_key_cols) {
-      Value *src = col_data[kc.col_idx];
-      Value *elem_ptr = b.CreateGEP(
-          i8, src, b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
-      Value *dst = b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-      b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                     ConstantInt::get(i64, kc.elem_size));
-      key_off += kc.elem_size;
-    }
-
-    Value *hash_val =
-        EmitHash(b, *ctx, *mod, key_buf, key_width, inline_hash_);
-
-    BasicBlock *probe_bb = body_bb;
-    if (prefetch_) {
-      Value *pf_row = b.CreateAdd(
-          row_i, ConstantInt::get(i64, (uint64_t)prefetch_distance_));
-      Value *pf_in_bounds = b.CreateICmpULT(pf_row, nrows);
-
-      BasicBlock *pf_bb = BasicBlock::Create(*ctx, "prefetch", fn);
-      BasicBlock *pf_done_bb = BasicBlock::Create(*ctx, "pf_done", fn);
-      b.CreateCondBr(pf_in_bounds, pf_bb, pf_done_bb);
-
-      b.SetInsertPoint(pf_bb);
-      unsigned pf_key_off = 0;
-      for (auto &kc : probe_key_cols) {
-        Value *src = col_data[kc.col_idx];
-        Value *ep = b.CreateGEP(
-            i8, src,
-            b.CreateMul(pf_row, ConstantInt::get(i64, kc.elem_size)));
-        Value *dp = b.CreateGEP(i8, pf_key_buf,
-                                 ConstantInt::get(i32, pf_key_off));
-        b.CreateMemCpy(dp, MaybeAlign(1), ep, MaybeAlign(1),
-                       ConstantInt::get(i64, kc.elem_size));
-        pf_key_off += kc.elem_size;
-      }
-      Value *pf_hash =
-          EmitHash(b, *ctx, *mod, pf_key_buf, key_width, inline_hash_);
-      Value *pf_idx = b.CreateAnd(pf_hash, ht_mask);
-      Value *pf_byte_off = b.CreateMul(pf_idx, ht_slot_sz);
-      Value *pf_addr = b.CreateGEP(i8, ht_slots_base, pf_byte_off);
-      b.CreateCall(pf_intrinsic,
-                   {pf_addr, ConstantInt::get(i32, 0),
-                    ConstantInt::get(i32, 1), ConstantInt::get(i32, 1)});
-      b.CreateBr(pf_done_bb);
-
-      b.SetInsertPoint(pf_done_bb);
-      probe_bb = pf_done_bb;
-    }
-
-    Value *result = b.CreateCall(probe_fn, {ht_arg, key_buf, hash_val});
-    Value *is_found = b.CreateICmpNE(
-        b.CreatePtrToInt(result, i64), ConstantInt::get(i64, 0));
-    b.CreateCondBr(is_found, found_bb, next_bb);
-
-    b.SetInsertPoint(found_bb);
-    Value *dst = b.CreateGEP(i32, sel_idx_ptr, out_count);
-    b.CreateStore(b.CreateTrunc(row_i, i32), dst);
-    Value *out_count1 = b.CreateAdd(out_count, ConstantInt::get(i64, 1));
-    b.CreateBr(next_bb);
-
-    b.SetInsertPoint(next_bb);
-    PHINode *oc_next = b.CreatePHI(i64, 2, "oc_next");
-    oc_next->addIncoming(out_count, probe_bb);
-    oc_next->addIncoming(out_count1, found_bb);
-    Value *i_next = b.CreateAdd(row_i, ConstantInt::get(i64, 1));
-    row_i->addIncoming(i_next, next_bb);
-    out_count->addIncoming(oc_next, next_bb);
-    b.CreateBr(loop_bb);
-
-    b.SetInsertPoint(exit_bb);
-    b.CreateStore(b.CreateTrunc(out_count, i32),
-                  b.CreateStructGEP(SelViewTy, sel_arg, 1));
-    b.CreateRet(out_count);
-  }
-  // --- End IR emission ---
-
-  SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
-
-  std::string err;
-  raw_string_ostream es(err);
-  if (verifyFunction(*fn, &es)) {
-    std::cerr << "[AQP-JIT] verifyFunction failed (hprobe): " << es.str()
-              << "\n";
-    return nullptr;
-  }
-
-  OptimiseModule(*mod, opt_level_);
-
-  impl_->pending_cache_key = cache_key;
-  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
-    impl_->pending_cache_key.clear();
-    logAllUnhandledErrors(std::move(e), errs());
-    return nullptr;
-  }
-  impl_->pending_cache_key.clear();
-
-  auto sym = impl_->jit->lookup(fn_name);
-  if (!sym) {
-    logAllUnhandledErrors(sym.takeError(), errs());
-    return nullptr;
-  }
-
-  std::cerr << "[AQP-JIT] compiled hash probe fn=" << fn_name
-            << "  key_width=" << key_width
-            << "  probe_cols=" << probe_key_cols.size() << "\n";
-
-  return reinterpret_cast<void *>(sym->getAddress());
-}
 
 AQPPipelineFn
 IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
@@ -5886,10 +5306,14 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
                                    impl_->vec_width);
     if (fn) {
       used_simd = true;
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] using SIMD pipeline (VW=" << impl_->vec_width
                 << ")\n";
+#endif
     } else {
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] SIMD pipeline failed → scalar fallback\n";
+#endif
     }
   }
   if (!fn)
@@ -5902,8 +5326,10 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed (pipeline): " << es.str()
               << "\n";
+#endif
     return nullptr;
   }
 
@@ -5911,9 +5337,11 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     impl_->pending_cache_key.clear();
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] addIRModule failed (pipeline)\n";
+#endif
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -5921,15 +5349,19 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
 
   auto sym = impl_->jit->lookup(fn_name);
   if (!sym) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
+#endif
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] compiled pipeline fn=" << fn_name
             << "  filter_exprs=" << filter_exprs.size()
             << "  out_cols=" << col_mapping.size()
             << (cache_key.empty() ? "" : " [cached]") << "\n";
+#endif
 
   return jitTargetAddressToFunction<AQPPipelineFn>(sym->getAddress());
 }
@@ -6148,15 +5580,17 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed (filt_agg): " << es.str()
               << "\n";
+#endif
     return nullptr;
   }
 
   OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -6167,241 +5601,16 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] compiled filter+agg fusion fn=" << fn_name
             << "  filter_exprs=" << filter_exprs.size()
             << "  agg_ops=" << agg_ops.size() << "\n";
+#endif
 
   return reinterpret_cast<void *>(sym->getAddress());
 }
 #endif // !DISABLE_AGG_JIT
 
-// ---------------------------------------------------------------------------
-// Filter + HashBuild fusion: one loop, no intermediate DataChunk.
-//   int64_t fn(AQPChunkView *in, AQPChunkView *, void *ht)
-// For each row: evaluate filter; if match, extract key, hash inline, insert.
-// Returns 0 (all data sunk into hash table).
-// ---------------------------------------------------------------------------
-void *IrToLlvmCompiler::CompileFilterHashBuildFusion(
-    const AQPStmt *filter_node, const AQPStmt &hash_node,
-    const std::vector<ColSchema> &in_schema,
-    const std::vector<int> &needed_payload_cols) {
-
-  auto *hash = dynamic_cast<const SimplestHash *>(&hash_node);
-  if (!hash || hash->hash_keys.empty())
-    return nullptr;
-
-  // Build filter expressions
-  std::vector<const AQPExpr *> filter_exprs;
-  if (filter_node) {
-    for (const auto &qe : filter_node->qual_vec)
-      filter_exprs.push_back(qe.get());
-  }
-  SortFiltersByCost(filter_exprs);
-
-  // Build key column descriptors
-  std::vector<HashColDesc> key_cols;
-  unsigned key_width = 0;
-  for (const auto &hk : hash->hash_keys) {
-    HashColDesc kc;
-    kc.col_idx = -1;
-    kc.dtype = AQP_DTYPE_OTHER;
-    for (int i = 0; i < (int)in_schema.size(); i++) {
-      if (in_schema[i].table_idx == hk->GetTableIndex() &&
-          in_schema[i].col_idx == hk->GetColumnIndex()) {
-        kc.col_idx = i;
-        kc.dtype = in_schema[i].dtype;
-        break;
-      }
-    }
-    if (kc.col_idx < 0)
-      return nullptr;
-    kc.elem_size = DtypeElemSize(kc.dtype);
-    if (kc.elem_size == 0)
-      return nullptr;
-    key_width += kc.elem_size;
-    key_cols.push_back(kc);
-  }
-
-  // Payload columns: use pruned list if provided, else all input columns
-  std::vector<HashColDesc> payload_cols;
-  unsigned payload_width = 0;
-  if (!needed_payload_cols.empty()) {
-    for (int ci : needed_payload_cols) {
-      if (ci < 0 || ci >= (int)in_schema.size())
-        continue;
-      HashColDesc pc;
-      pc.col_idx = ci;
-      pc.dtype = in_schema[ci].dtype;
-      pc.elem_size = DtypeElemSize(pc.dtype);
-      if (pc.elem_size == 0)
-        continue;
-      payload_width += pc.elem_size;
-      payload_cols.push_back(pc);
-    }
-  } else {
-    for (int i = 0; i < (int)in_schema.size(); i++) {
-      HashColDesc pc;
-      pc.col_idx = i;
-      pc.dtype = in_schema[i].dtype;
-      pc.elem_size = DtypeElemSize(pc.dtype);
-      if (pc.elem_size == 0)
-        continue;
-      payload_width += pc.elem_size;
-      payload_cols.push_back(pc);
-    }
-  }
-
-  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
-  std::string fn_name = "aqp_filt_hbuild_" + std::to_string(fn_id);
-
-  auto ctx = std::make_unique<LLVMContext>();
-  auto mod = std::make_unique<Module>("aqp_filt_hbuild_mod", *ctx);
-
-  Type *i8 = Type::getInt8Ty(*ctx);
-  Type *i8p = PointerType::getUnqual(i8);
-  Type *i32 = Type::getInt32Ty(*ctx);
-  Type *i64 = Type::getInt64Ty(*ctx);
-  Type *i64p = PointerType::getUnqual(i64);
-
-  StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
-  StructType *ChunkViewTy =
-      StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
-  StructType *SelViewTy =
-      StructType::get(*ctx, {PointerType::getUnqual(i32), i32});
-
-  // int64_t fn(AQPChunkView *in, AQPChunkView *out_unused, void *ht)
-  FunctionType *fn_ty = FunctionType::get(
-      i64,
-      {PointerType::getUnqual(ChunkViewTy),
-       PointerType::getUnqual(ChunkViewTy), i8p},
-      false);
-  Function *fn =
-      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, mod.get());
-
-  Value *in_arg = fn->getArg(0);
-  in_arg->setName("in");
-  // arg 1 (out) unused
-  Value *ht_arg = fn->getArg(2);
-  ht_arg->setName("ht");
-
-  BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
-  BasicBlock *loop_bb = BasicBlock::Create(*ctx, "loop", fn);
-  BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
-  BasicBlock *insert_bb = BasicBlock::Create(*ctx, "insert", fn);
-  BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
-  BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
-
-  Value *dummy_sel =
-      ConstantPointerNull::get(PointerType::getUnqual(SelViewTy));
-  CompileCtx cc(*ctx, *mod, in_schema, in_arg, dummy_sel);
-  cc.b.SetInsertPoint(entry_bb);
-
-  Value *nrows = cc.b.CreateLoad(
-      i64, cc.b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
-
-  // Load column data + validity
-  cc.col_data.resize(in_schema.size());
-  cc.col_validity.resize(in_schema.size());
-  for (size_t i = 0; i < in_schema.size(); i++) {
-    cc.col_data[i] = cc.LoadColData((unsigned)i);
-    cc.col_validity[i] = cc.LoadColValidity((unsigned)i);
-  }
-
-  // Alloca for key buffer
-  Value *key_buf =
-      cc.b.CreateAlloca(i8, ConstantInt::get(i32, key_width), "key_buf");
-
-  // Declare aqp_ht_insert_prehash
-  FunctionType *insert_ft = FunctionType::get(i8p, {i8p, i8p, i64}, false);
-  FunctionCallee insert_fn =
-      mod->getOrInsertFunction("aqp_ht_insert_prehash", insert_ft);
-
-  cc.b.CreateBr(loop_bb);
-
-  // Loop header
-  cc.b.SetInsertPoint(loop_bb);
-  PHINode *row_i = cc.b.CreatePHI(i64, 2, "i");
-  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
-  cc.b.CreateCondBr(cc.b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
-
-  // Body: evaluate filter (short-circuit, cost-sorted)
-  cc.b.SetInsertPoint(body_bb);
-  cc.row_idx = row_i;
-
-  EmitShortCircuitFilter(cc, fn, filter_exprs, insert_bb, next_bb);
-
-  // Insert: extract key, hash, insert, copy payload
-  cc.b.SetInsertPoint(insert_bb);
-
-  unsigned key_off = 0;
-  for (auto &kc : key_cols) {
-    Value *src = cc.col_data[kc.col_idx];
-    Value *elem_ptr = cc.b.CreateGEP(
-        i8, src, cc.b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
-    Value *dst = cc.b.CreateGEP(i8, key_buf, ConstantInt::get(i32, key_off));
-    cc.b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                      ConstantInt::get(i64, kc.elem_size));
-    key_off += kc.elem_size;
-  }
-
-  Value *hash_val = EmitHash(cc.b, *ctx, *mod, key_buf, key_width, inline_hash_);
-  Value *payload_ptr =
-      cc.b.CreateCall(insert_fn, {ht_arg, key_buf, hash_val});
-
-  unsigned pay_off = 0;
-  for (auto &pc : payload_cols) {
-    Value *src = cc.col_data[pc.col_idx];
-    Value *elem_ptr = cc.b.CreateGEP(
-        i8, src, cc.b.CreateMul(row_i, ConstantInt::get(i64, pc.elem_size)));
-    Value *dst =
-        cc.b.CreateGEP(i8, payload_ptr, ConstantInt::get(i64, pay_off));
-    cc.b.CreateMemCpy(dst, MaybeAlign(1), elem_ptr, MaybeAlign(1),
-                      ConstantInt::get(i64, pc.elem_size));
-    pay_off += pc.elem_size;
-  }
-  cc.b.CreateBr(next_bb);
-
-  // Next
-  cc.b.SetInsertPoint(next_bb);
-  Value *i_next = cc.b.CreateAdd(row_i, ConstantInt::get(i64, 1));
-  row_i->addIncoming(i_next, next_bb);
-  cc.b.CreateBr(loop_bb);
-
-  // Exit: return 0 (no output rows — data sunk into hash table)
-  cc.b.SetInsertPoint(exit_bb);
-  cc.b.CreateRet(ConstantInt::get(i64, 0));
-
-  SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
-
-  std::string err;
-  raw_string_ostream es(err);
-  if (verifyFunction(*fn, &es)) {
-    std::cerr << "[AQP-JIT] verifyFunction failed (filt_hbuild): " << es.str()
-              << "\n";
-    return nullptr;
-  }
-
-  OptimiseModule(*mod, opt_level_);
-
-  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
-    logAllUnhandledErrors(std::move(e), errs());
-    return nullptr;
-  }
-
-  auto sym = impl_->jit->lookup(fn_name);
-  if (!sym) {
-    logAllUnhandledErrors(sym.takeError(), errs());
-    return nullptr;
-  }
-
-  std::cerr << "[AQP-JIT] compiled filter+hash_build fusion fn=" << fn_name
-            << "  filter_exprs=" << filter_exprs.size()
-            << "  key_width=" << key_width
-            << "  payload_width=" << payload_width << "\n";
-
-  return reinterpret_cast<void *>(sym->getAddress());
-}
 
 // ---------------------------------------------------------------------------
 // Level 3: Filter + HashProbe + Projection fusion (probe pipeline).
@@ -6448,9 +5657,11 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       kc.col_idx = lhs_key_chunk_idxs[i];
       kc.dtype = lhs_key_dtypes[i];
       if (kc.col_idx < 0 || kc.col_idx >= (int)probe_schema.size()) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] fused probe: duckdb key idx " << kc.col_idx
                   << " out of range (probe_schema size="
                   << probe_schema.size() << ")\n";
+#endif
         return nullptr;
       }
       kc.elem_size = DtypeElemSize(kc.dtype);
@@ -6482,7 +5693,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
         }
       }
       if (kc.col_idx < 0) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] fused probe: key not in probe schema\n";
+#endif
         return nullptr;
       }
       kc.elem_size = DtypeElemSize(kc.dtype);
@@ -6507,7 +5720,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     pi.dtype = ps.dtype;
     pi.elem_size = DtypeElemSize(ps.dtype);
     if (pi.elem_size == 0) {
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] fused probe: unsupported payload dtype\n";
+#endif
       return nullptr;
     }
     payload_width += pi.elem_size;
@@ -6557,9 +5772,11 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
         }
       }
       if (oc.probe_col_idx < 0 && oc.payload_col_idx < 0) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] fused probe: projected col (table="
                   << attr->GetTableIndex() << " col=" << attr->GetColumnIndex()
                   << ") not in probe or payload schema\n";
+#endif
         return nullptr;
       }
       if (oc.elem_size == 0)
@@ -6582,8 +5799,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     for (size_t i = 0; i < lhs_output_idxs.size(); ++i) {
       int idx = lhs_output_idxs[i];
       if (idx < 0 || idx >= (int)probe_schema.size()) {
+#ifndef NDEBUG
         std::cerr << "[AQP-JIT] direct-probe: lhs idx " << idx
                   << " out of range\n";
+#endif
         return nullptr;
       }
       OutColDesc oc;
@@ -6617,8 +5836,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
           oc.dtype = rhs_output_dtypes[i];
         } else {
           if (pi < 0 || pi >= (int)payload_schema.size()) {
+#ifndef NDEBUG
             std::cerr << "[AQP-JIT] direct-probe: rhs layout_idx "
                       << layout_idx << " out of range\n";
+#endif
             return nullptr;
           }
           oc.dtype = payload_schema[pi].dtype;
@@ -6746,6 +5967,46 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   Value *v_offsets = cc.b.CreateLoad(
       i64p, cc.b.CreateStructGEP(ViewTy, view_ptr, 6), "v_offsets");
 
+  // Phase 7.1 — hoist data_offsets[*] used in the row loop into entry-block
+  // SSA values. Inside the body LLVM treats `load i64, GEP v_offsets, idx`
+  // as having unknown aliasing, so it cannot hoist on its own. Loading each
+  // needed offset once here lets the register allocator keep them in GPRs.
+  //
+  // Key is the layout index into v_offsets, signed `int` so the build-key
+  // projection case (oc.payload_col_idx < 0 → row_col_idx < 0) sums
+  // naturally back to a positive layout_idx in `num_keys + row_col_idx`.
+  // Earlier versions used size_t and relied on unsigned wraparound — that
+  // worked but masked drift bugs because operator[] returns a default
+  // nullptr Value* on a missing key, which would crash inside CreateGEP.
+  std::unordered_map<int, Value *> hoisted_offsets;
+  {
+    auto load_off = [&](int idx) {
+      if (hoisted_offsets.count(idx)) return;
+      Value *off = cc.b.CreateLoad(
+          i64,
+          cc.b.CreateGEP(i64, v_offsets, ConstantInt::get(i64, (int64_t)idx)),
+          "off_" + std::to_string(idx));
+      hoisted_offsets[idx] = off;
+    };
+    for (int j = 0; j < (int)probe_key_cols.size(); j++) load_off(j);
+    const int nk = (int)probe_key_cols.size();
+    for (auto &oc : out_cols) {
+      if (oc.source == OutColDesc::PROBE) continue;
+      int k = oc.payload_col_idx;
+      int row_col_idx =
+          (k >= 0 && k < (int)payload_row_indices.size())
+              ? payload_row_indices[k]
+              : k;
+      load_off(nk + row_col_idx);
+    }
+  }
+  auto get_hoisted = [&](int idx) -> Value * {
+    auto it = hoisted_offsets.find(idx);
+    assert(it != hoisted_offsets.end() &&
+           "hoisted_offsets miss — hoist/emit index math drift");
+    return it->second;
+  };
+
   Constant *POINTER_MASK = ConstantInt::get(i64, 0x0000FFFFFFFFFFFFULL);
 
   Value *nrows = cc.b.CreateLoad(
@@ -6782,8 +6043,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   };
   for (auto &kc : probe_key_cols) {
     if (!key_llvm_ty(kc.dtype)) {
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] direct-probe: unsupported key dtype "
                 << kc.dtype << "\n";
+#endif
       return nullptr;
     }
   }
@@ -6872,19 +6135,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     cc.b.CreateStore(s1_htoff, cc.b.CreateGEP(i64, htoff_arr_buf, s1_i));
     cc.b.CreateStore(ConstantInt::get(i8, 1),
                      cc.b.CreateGEP(i8, filt_mask_buf, s1_i));
-    if (prefetch_) {
-      Value *entries_typed_s1 = cc.b.CreateBitCast(v_entries, i64p);
-      Value *entry_addr_s1 =
-          cc.b.CreateGEP(i64, entries_typed_s1, s1_htoff);
-      Function *pf_intrinsic = Intrinsic::getDeclaration(
-          mod.get(), Intrinsic::prefetch, {i8p});
-      cc.b.CreateCall(
-          pf_intrinsic,
-          {cc.b.CreateBitCast(entry_addr_s1, i8p),
-           ConstantInt::get(i32, 0), // rw: read
-           ConstantInt::get(i32, 1), // locality: low (used once)
-           ConstantInt::get(i32, 1)}); // cache: data
-    }
+    // Phase 6: stage-1 bulk prefetch removed. Prefetch is issued in stage 2
+    // with look-ahead so that MSHRs (~10–12 in-flight on modern x86) are not
+    // saturated up-front and the row-store cache line is also covered.
     cc.b.CreateBr(s1_next);
 
     cc.b.SetInsertPoint(s1_next);
@@ -6908,6 +6161,84 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   // ---- Body: evaluate filter (or in batch_probe mode: read mask) ----
   cc.b.SetInsertPoint(body_bb);
   cc.row_idx = row_i;
+
+  // Phase 6: stage-2 consumer-side look-ahead prefetch. Issued from inside
+  // the body loop so MSHRs cover ~D rows of pipeline depth at any time
+  // instead of being saturated up-front (see plan §10.1). Active only when
+  // batch_probe_ exposes the stage-1 stack arrays for look-up.
+  //
+  // Safety on the mask byte load: `pf_idx = select(in_bounds, idx_raw,
+  // nrows-1)` clamps to a stage-1-written slot when in-bounds, otherwise
+  // falls back to nrows-1 (also written, since this code only runs once
+  // we've entered body_bb, which requires nrows > 0). So the i8 load is
+  // never uninitialized. When in_bounds is false the `in_bounds &&
+  // mask_set` AND short-circuits before any further dereference, so even
+  // if the chosen mask byte happens to be set we skip pf_bb.
+  if (batch_probe_ && prefetch_ &&
+      (prefetch_entry_distance_ > 0 || prefetch_row_distance_ > 0)) {
+    Function *pf_intrinsic =
+        Intrinsic::getDeclaration(mod.get(), Intrinsic::prefetch, {i8p});
+    Value *nrows_m1 = cc.b.CreateSub(nrows, ConstantInt::get(i64, 1));
+
+    auto emit_pf = [&](int distance, bool deref_row, int locality) {
+      Value *idx_raw = cc.b.CreateAdd(
+          row_i, ConstantInt::get(i64, (uint64_t)distance));
+      Value *in_bounds = cc.b.CreateICmpULT(idx_raw, nrows);
+      Value *idx = cc.b.CreateSelect(in_bounds, idx_raw, nrows_m1, "pf_idx");
+      Value *mask_byte = cc.b.CreateLoad(
+          i8, cc.b.CreateGEP(i8, filt_mask_buf, idx), "pf_mask");
+      Value *mask_set = cc.b.CreateICmpNE(mask_byte, ConstantInt::get(i8, 0));
+      Value *do_pf = cc.b.CreateAnd(in_bounds, mask_set);
+
+      BasicBlock *pf_bb = BasicBlock::Create(*ctx, "pf_do", fn);
+      BasicBlock *after_pf = BasicBlock::Create(*ctx, "pf_done", fn);
+      cc.b.CreateCondBr(do_pf, pf_bb, after_pf);
+
+      cc.b.SetInsertPoint(pf_bb);
+      Value *htoff = cc.b.CreateLoad(
+          i64, cc.b.CreateGEP(i64, htoff_arr_buf, idx), "pf_htoff");
+      Value *entries_typed_pf = cc.b.CreateBitCast(v_entries, i64p);
+      Value *entry_addr_pf = cc.b.CreateGEP(i64, entries_typed_pf, htoff);
+      if (!deref_row) {
+        cc.b.CreateCall(
+            pf_intrinsic,
+            {cc.b.CreateBitCast(entry_addr_pf, i8p),
+             ConstantInt::get(i32, 0),         // rw: read
+             ConstantInt::get(i32, locality),  // locality
+             ConstantInt::get(i32, 1)});       // cache: data
+        cc.b.CreateBr(after_pf);
+      } else {
+        // Speculatively dereference the (look-ahead) entry to obtain the
+        // build-side row pointer. Entry was prefetched at a larger
+        // distance, so it should be in cache by now.
+        Value *entry_la = cc.b.CreateLoad(i64, entry_addr_pf, "pf_entry");
+        Value *entry_nonzero =
+            cc.b.CreateICmpNE(entry_la, ConstantInt::get(i64, 0));
+        BasicBlock *pf_row_bb = BasicBlock::Create(*ctx, "pf_row", fn);
+        cc.b.CreateCondBr(entry_nonzero, pf_row_bb, after_pf);
+        cc.b.SetInsertPoint(pf_row_bb);
+        Value *row_la_i64 =
+            cc.b.CreateAnd(entry_la, POINTER_MASK, "pf_row_i64");
+        Value *row_la = cc.b.CreateIntToPtr(row_la_i64, i8p, "pf_row_ptr");
+        cc.b.CreateCall(
+            pf_intrinsic,
+            {row_la,
+             ConstantInt::get(i32, 0),         // rw: read
+             ConstantInt::get(i32, locality),  // locality
+             ConstantInt::get(i32, 1)});       // cache: data
+        cc.b.CreateBr(after_pf);
+      }
+
+      cc.b.SetInsertPoint(after_pf);
+    };
+
+    // Entry-table look-ahead — random access, NTA so we don't pollute L2.
+    if (prefetch_entry_distance_ > 0)
+      emit_pf(prefetch_entry_distance_, /*deref_row=*/false, /*loc=*/0);
+    // Row-store look-ahead — may be reused during chain walk, locality=1.
+    if (prefetch_row_distance_ > 0)
+      emit_pf(prefetch_row_distance_, /*deref_row=*/true, /*loc=*/1);
+  }
 
   BasicBlock *after_filter_bb;
   if (batch_probe_) {
@@ -6974,8 +6305,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   for (size_t j = 0; j < probe_key_cols.size(); j++) {
     auto &kc = probe_key_cols[j];
     Type *kty = key_llvm_ty(kc.dtype);
-    Value *koff = cc.b.CreateLoad(
-        i64, cc.b.CreateGEP(i64, v_offsets, ConstantInt::get(i64, (int64_t)j)));
+    Value *koff = get_hoisted((int)j);
     Value *row_key_ptr = cc.b.CreateGEP(i8, row_ptr_init, koff);
     Value *typed_ptr =
         cc.b.CreateBitCast(row_key_ptr, PointerType::getUnqual(kty));
@@ -7050,11 +6380,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
           (k >= 0 && k < (int)payload_row_indices.size())
               ? payload_row_indices[k]
               : k;
-      Value *pay_off_idx =
-          ConstantInt::get(i64, (int64_t)(num_keys + row_col_idx));
-      Value *pay_off = cc.b.CreateLoad(
-          i64, cc.b.CreateGEP(i64, v_offsets, pay_off_idx),
-          "pay_off_" + std::to_string(oi));
+      Value *pay_off = get_hoisted((int)num_keys + row_col_idx);
       Value *pay_src = cc.b.CreateGEP(i8, chain_ptr, pay_off);
       if (elem_ty) {
         Type *ptr_ty = PointerType::getUnqual(elem_ty);
@@ -7090,6 +6416,14 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   cc.b.CreateBr(next_bb);
 
   // ---- Bail: output would overflow 2048 rows; tell caller to fall back ----
+  // Return -1; the caller (PhysicalHashJoin::ExecuteInternal) treats this as
+  // "fall through to the interpreter." Partial writes to chunk.data[*] from
+  // this run remain in the output buffers, but DuckDB's ScanStructure::Next
+  // overwrites them and calls SetCardinality with the *new* row count. The
+  // interpreter never reads past cardinality, so the stale tail bytes are
+  // inert. Avoiding a chunk.Reset() here keeps the common (non-bail) path
+  // cheap; bail itself is rare (only when a single probe chunk yields >2048
+  // matches via multi-match chain walk).
   cc.b.SetInsertPoint(bail_bb);
   cc.b.CreateRet(ConstantInt::get(i64, -1));
 
@@ -7115,15 +6449,17 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] verifyFunction failed (filt_hprobe_proj_direct): "
               << es.str() << "\n";
+#endif
     return nullptr;
   }
 
   OptimiseModule(*mod, opt_level_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
-  if (auto e = impl_->jit->addIRModule(std::move(tsm))) {
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
@@ -7134,11 +6470,13 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] compiled filter+probe+proj fusion (direct-HT) fn="
             << fn_name << "  filter_exprs=" << filter_exprs.size()
             << "  num_keys=" << probe_key_cols.size()
             << "  out_cols=" << out_cols.size()
             << "  payload_width=" << payload_width << "\n";
+#endif
 
   return reinterpret_cast<void *>(sym->getAddress());
 }
@@ -7165,7 +6503,6 @@ struct PipelineSegment {
   bool is_build = false; // true if this is a hash build pipeline
   int dependency = -1;   // index of pipeline that must complete first
   AQPPipelineFn compiled_fn = nullptr;
-  void *hash_build_fn = nullptr; // compiled hash build function
 };
 
 // Collect pipeline segments from the IR tree
@@ -7237,16 +6574,21 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
     segments.push_back(initial);
 
   if (segments.empty()) {
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] sub-plan: no pipeline segments found\n";
+#endif
     return nullptr;
   }
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] sub-plan: found " << segments.size()
             << " pipeline segment(s)\n";
+#endif
 
   // Step 2: Build schema for each segment and compile pipeline functions
   for (size_t si = 0; si < segments.size(); si++) {
     auto &seg = segments[si];
+#ifndef NDEBUG
     std::cerr << "[AQP-JIT] sub-plan segment[" << si << "]:"
               << " scan=" << (seg.scan_node ? "yes" : "no")
               << " filter=" << (seg.filter_node ? "yes" : "no")
@@ -7254,6 +6596,7 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
               << " hash=" << (seg.hash_node ? "yes" : "no")
               << " agg=" << (seg.agg_node ? "yes" : "no")
               << " build=" << seg.is_build << " dep=" << seg.dependency << "\n";
+#endif
 
     // Build input schema from scan node's target_list
     std::vector<ColSchema> in_schema;
@@ -7293,8 +6636,10 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
     }
 
     if (in_schema.empty()) {
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] sub-plan segment[" << si
                 << "]: no schema → skip\n";
+#endif
       continue;
     }
 
@@ -7302,76 +6647,41 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
     seg.compiled_fn =
         CompilePipeline(seg.filter_node, seg.proj_node, in_schema);
     if (seg.compiled_fn) {
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] sub-plan segment[" << si
                 << "]: compiled pipeline\n";
+#endif
     }
 
-    // Compile hash build: either from explicit HashNode or synthesized from
-    // JoinNode
-    if (seg.hash_node) {
-      seg.hash_build_fn = CompileHashBuild(*seg.hash_node, in_schema);
-      if (seg.hash_build_fn)
-        std::cerr << "[AQP-JIT] sub-plan segment[" << si
-                  << "]: compiled hash build (from HashNode)\n";
-    } else if (seg.is_build && seg.parent_join) {
-      // Build side without HashNode (DuckDB path): derive keys from JoinNode
-      // conditions
-      auto *join = dynamic_cast<const SimplestJoin *>(seg.parent_join);
-      if (join && !join->join_conditions.empty()) {
-        // Synthesize SimplestHash with keys from join conditions (build-side
-        // attrs)
-        std::vector<std::unique_ptr<SimplestAttr>> synth_keys;
-        for (const auto &cond : join->join_conditions) {
-          // Build-side key: the attr that matches our build schema
-          bool left_in = false, right_in = false;
-          for (const auto &cs : in_schema) {
-            if (cs.table_idx == cond->left_attr->GetTableIndex() &&
-                cs.col_idx == cond->left_attr->GetColumnIndex())
-              left_in = true;
-            if (cs.table_idx == cond->right_attr->GetTableIndex() &&
-                cs.col_idx == cond->right_attr->GetColumnIndex())
-              right_in = true;
-          }
-          if (left_in)
-            synth_keys.push_back(
-                std::make_unique<SimplestAttr>(*cond->left_attr));
-          else if (right_in)
-            synth_keys.push_back(
-                std::make_unique<SimplestAttr>(*cond->right_attr));
-        }
-
-        if (!synth_keys.empty()) {
-          auto synth_base =
-              std::make_unique<AQPStmt>(std::vector<std::unique_ptr<AQPStmt>>{},
-                                        SimplestNodeType::HashNode);
-          SimplestHash synth_hash(std::move(synth_base), std::move(synth_keys));
-          seg.hash_build_fn = CompileHashBuild(synth_hash, in_schema);
-          if (seg.hash_build_fn)
-            std::cerr << "[AQP-JIT] sub-plan segment[" << si
-                      << "]: compiled hash build (from JoinNode, "
-                      << join->join_conditions.size() << " keys)\n";
-        }
-      }
-    }
+    // Note: hash build is intentionally NOT JIT-compiled (see
+    // duckdb_adapter.cpp::RegisterJIT comment near the hash-join block).
+    // DuckDB's native build is already a tight, parallelized C++ pipeline.
+    // The sub-plan coordinator runs whatever pipelines were compiled (filter
+    // / filter+projection / aggregate); hash-build segments remain as
+    // pass-through and the build itself executes via the native HT path.
 
     // Compile scan as pass-through pipeline if nothing else compiled
     // (establishes the segment as "compiled" for sub-plan orchestration)
-    if (!seg.compiled_fn && !seg.hash_build_fn && seg.scan_node) {
+    if (!seg.compiled_fn && seg.scan_node) {
       // Scan-only segment: compile as identity pipeline (pass all columns
       // through)
       seg.compiled_fn = CompilePipeline(nullptr, nullptr, in_schema);
+#ifndef NDEBUG
       if (seg.compiled_fn)
         std::cerr << "[AQP-JIT] sub-plan segment[" << si
                   << "]: compiled scan (pass-through)\n";
+#endif
     }
 
     // Also compile aggregate if present
 #if !DISABLE_AGG_JIT
     if (seg.agg_node) {
       void *agg_fn = CompileAggUpdate(*seg.agg_node, in_schema);
+#ifndef NDEBUG
       if (agg_fn)
         std::cerr << "[AQP-JIT] sub-plan segment[" << si
                   << "]: compiled aggregate\n";
+#endif
 #else
     if (false) {
 #endif
@@ -7381,11 +6691,13 @@ void *IrToLlvmCompiler::CompileSubPlan(const AQPStmt &sub_ir) {
   // Step 3: Count successfully compiled segments
   int compiled_count = 0;
   for (auto &seg : segments)
-    if (seg.compiled_fn || seg.hash_build_fn)
+    if (seg.compiled_fn)
       compiled_count++;
 
+#ifndef NDEBUG
   std::cerr << "[AQP-JIT] sub-plan: " << compiled_count << "/"
             << segments.size() << " segments compiled\n";
+#endif
 
   // The sub-plan coordinator is not an LLVM function — it's orchestrated
   // by the adapter at the IRQuerySplitter level. The compiled pipeline

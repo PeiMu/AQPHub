@@ -560,7 +560,9 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       owned_jit_ir_ = std::move(whole_ir);
       jit_pending_ir_ = owned_jit_ir_.get();
     } else {
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT] ConvertPlanToIR failed → interpreter fallback\n";
+#endif
     }
   }
 
@@ -573,8 +575,22 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       // Reset JIT context (stale function pointers would crash if dispatched).
       // Keep jit_compiler_ alive — reusing the LLJIT instance avoids
       // re-registering 15+ runtime symbols and re-initializing the JIT on every
-      // sub-plan.
+      // sub-plan. But we DO release all previously compiled modules so the
+      // machine code / IR allocations / symbol-table entries from the
+      // previous query don't accumulate in the JIT for the adapter's lifetime
+      // — important for long-running servers and multi-query benchmark runs.
+      //
+      // Ordering: clear the function-pointer map FIRST, then ResetModules.
+      // The map holds raw pointers into the JIT's code; freeing the code
+      // while the map still references it would leave dangling pointers
+      // dispatchable. Multi-thread note: this entire reset sequence assumes
+      // no concurrent dispatch is in flight on another thread. Today the
+      // executor is synchronous, but when async / parallel dispatch is
+      // added a lock around (reset + ResetModules + RegisterJIT) vs each
+      // dispatch site is required to avoid use-after-free.
       GetClientContext()->aqp_jit_context.reset();
+      if (jit_compiler_)
+        jit_compiler_->ResetModules();
 #ifndef NDEBUG
       std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: reset aqp_jit_context "
                    "(compiler reused)\n";
@@ -715,7 +731,11 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     jit_active = true;
     // Reset JIT context (stale function pointers would crash if dispatched).
     // Keep jit_compiler_ alive — reusing LLJIT avoids re-init overhead.
+    // Release previously compiled modules (see ExecuteSQL for the ordering
+    // invariant and the multi-thread caveat).
     GetClientContext()->aqp_jit_context.reset();
+    if (jit_compiler_)
+      jit_compiler_->ResetModules();
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT-TRACE] ExecuteSQLandCreateTempTable: reset "
                  "aqp_jit_context (compiler reused)\n";
@@ -1491,6 +1511,8 @@ void DuckDBAdapter::EnsureJITCompiler() {
         ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
   }
   jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
+  jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
+                                           jit_prefetch_row_distance_);
   jit_compiler_->SetBatchProbe(jit_batch_probe_);
   jit_compiler_->SetInlineHash(jit_inline_hash_);
   if (jit_cache_)
@@ -2337,111 +2359,64 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
           }
 
           if (!synth_keys.empty()) {
-            // Create a temporary SimplestHash with synthetic keys for
-            // compilation
-            auto synth_base = std::make_unique<ir_sql_converter::AQPStmt>(
-                std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>>{},
-                ir_sql_converter::SimplestNodeType::HashNode);
-            ir_sql_converter::SimplestHash synth_hash(std::move(synth_base),
-                                                      std::move(synth_keys));
-
-            EnsureJITCompiler();
-
-            // Payload pruning: use DuckDB's payload_columns to determine
-            // which build-side columns are actually needed downstream.
-            std::vector<int> needed_payload;
-            if (jit_payload_prune_) {
-              auto &hj = op.Cast<duckdb::PhysicalHashJoin>();
-              if (!hj.payload_columns.col_idxs.empty()) {
-                for (auto idx : hj.payload_columns.col_idxs) {
-                  if ((int)idx < (int)build_schema.size())
-                    needed_payload.push_back((int)idx);
-                }
-#ifndef NDEBUG
-                std::cerr << "[AQP-JIT] payload pruning: "
-                          << build_schema.size() << " → "
-                          << needed_payload.size() << " columns\n";
-#endif
-              }
-            }
-
-            // Level 3: attempt Filter+HashBuild fusion
-            bool fused = false;
-            if ((jit_flags_ & AQP_JIT_PIPELINE) && jit_fusion_build_) {
-              // Check join type — only fuse for INNER/LEFT/SEMI
-              auto jt = join->GetSimplestJoinType();
-              if (jt == ir_sql_converter::Right ||
-                  jt == ir_sql_converter::Full ||
-                  jt == ir_sql_converter::Anti) {
-                // TODO: Implement fused probe for these join types
-                // (requires build-side unmatched row emission).
-                std::cerr << "[AQP-JIT] WARNING: join type "
-                          << (jt == ir_sql_converter::Right  ? "RIGHT"
-                              : jt == ir_sql_converter::Full ? "FULL"
-                                                             : "ANTI")
-                          << " not supported for pipeline fusion, "
-                             "falling back to separate operators\n";
-              } else {
-                const ir_sql_converter::AQPStmt *filter_ir =
-                    (join_ir->children.size() > 1)
-                        ? FindFirstFilterNode(join_ir->children[1].get())
-                        : FindFirstFilterNode(&ir);
-                if (filter_ir) {
-                  auto t_fhb = chrono_tic();
-                  void *fused_fn = jit_compiler_->CompileFilterHashBuildFusion(
-                      filter_ir, synth_hash, build_schema, needed_payload);
-                  if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-                    chrono_toc(&t_fhb,
-                               "RegisterJIT::CompileFilterHashBuildFusion\n",
-                               false);
-                  }
-                  if (fused_fn) {
-                    auto *ctx = GetClientContext();
-                    if (!ctx->aqp_jit_context)
-                      ctx->aqp_jit_context =
-                          duckdb::make_uniq<duckdb::AQPJITContext>();
-                    ctx->aqp_jit_context->build_pipeline_fns[eid] =
-                        reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
-                    ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
-                    fused = true;
-#ifndef NDEBUG
-                    std::cerr << "[AQP-JIT] compiled filter+hash_build fusion "
-                                 "eid=0x"
-                              << std::hex << eid << std::dec
-                              << " keys=" << join->join_conditions.size()
-                              << "\n";
-#endif
-                  }
-                }
-              } // else (supported join type)
-            }
-
-            // Fallback: standalone hash build (Level 2)
-            if (!fused) {
-              auto t_hb = chrono_tic();
-              void *build_fn = jit_compiler_->CompileHashBuild(
-                  synth_hash, build_schema, needed_payload);
-              if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-                chrono_toc(&t_hb, "RegisterJIT::CompileHashBuild", false);
-              }
-              if (build_fn) {
-                auto *ctx = GetClientContext();
-                if (!ctx->aqp_jit_context)
-                  ctx->aqp_jit_context =
-                      duckdb::make_uniq<duckdb::AQPJITContext>();
-                ctx->aqp_jit_context->op_fns[eid] =
-                    reinterpret_cast<duckdb::AQPOperatorFn>(build_fn);
-                ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
-#ifndef NDEBUG
-                std::cerr << "[AQP-JIT] compiled hash build eid=0x" << std::hex
-                          << eid << std::dec
-                          << " keys=" << join->join_conditions.size() << "\n";
-#endif
-              }
-            }
+            // Hash-build JIT is intentionally NOT performed here. Rationale:
+            //
+            // DuckDB's native build path (PrepareKeys ->
+            // TupleDataCollection::Append -> InsertHashesLoop) is already a
+            // tight, parallelized C++ pipeline with no per-row virtual
+            // dispatch. The places a JIT could specialize (typed key
+            // extract, NULL-skip when NOT NULL, typed Murmur) sum to ~5-7%
+            // of build cost, and build is only ~20-30% of execute time on
+            // join-heavy queries -- so the achievable win is ~1-2% of total
+            // query time.
+            //
+            // To capture *more* than that the JIT would have to inline
+            // TupleDataCollection::Append (per-thread row-format encoding,
+            // string heap management, radix partitioning, parallel append
+            // protocol). That is months of engineering replicating
+            // DuckDB's internals, and bypasses the very abstractions that
+            // make DuckDB's HT fast and bloom-filter-friendly.
+            //
+            // The probe side is JIT'd for the opposite reason: probe is the
+            // hot loop (O(N x K)), and removing the AQPHashTable +
+            // ScanStructure abstraction layers yields a measured win.
+            // Build has no analogous layer to strip.
+            //
+            // Build-side *filter expressions* are still JIT'd: they run via
+            // the standalone filter pipeline path
+            // (physical_filter.cpp:pipeline_fns dispatch). Only the
+            // hash-build operator itself stays native.
+            //
+            // synth_keys above is retained as a gating condition (the join
+            // has at least one key referenced in build_schema) — it used to
+            // feed CompileFilterHashBuildFusion / CompileHashBuild, both
+            // removed.
 
             // Level 3: attempt Filter+Probe+Projection fusion (probe pipeline)
             if ((jit_flags_ & AQP_JIT_PIPELINE) && jit_fusion_probe_) {
+              EnsureJITCompiler();
+
+              // Payload pruning: use DuckDB's payload_columns to determine
+              // which build-side columns are actually needed downstream.
+              // Scoped here (not above) because needed_payload is only read
+              // by the probe-fusion path; the build-JIT site that used to
+              // consume it has been removed.
+              std::vector<int> needed_payload;
+              if (jit_payload_prune_) {
+                auto &hj = op.Cast<duckdb::PhysicalHashJoin>();
+                if (!hj.payload_columns.col_idxs.empty()) {
+                  for (auto idx : hj.payload_columns.col_idxs) {
+                    if ((int)idx < (int)build_schema.size())
+                      needed_payload.push_back((int)idx);
+                  }
+#ifndef NDEBUG
+                  std::cerr << "[AQP-JIT] payload pruning: "
+                            << build_schema.size() << " → "
+                            << needed_payload.size() << " columns\n";
+#endif
+                }
+              }
+
               auto jt = join->GetSimplestJoinType();
               if (jt != ir_sql_converter::Right &&
                   jt != ir_sql_converter::Full &&
@@ -2531,12 +2506,14 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                     }
                   }
                   if (!schema_match) {
+#ifndef NDEBUG
                     std::cerr
                         << "[AQP-JIT] probe schema mismatch (IR cols="
                         << probe_schema.size()
                         << " vs phys=" << phys_types.size()
                         << ") — skip pipeline-JIT eid=0x" << std::hex << eid
                         << std::dec << "\n";
+#endif
                   }
                   if (schema_match) {
 

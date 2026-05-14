@@ -121,33 +121,11 @@ public:
   AQPOperatorFn CompileProjection(const ir_sql_converter::AQPStmt &proj_node,
                                   const std::vector<ColSchema> &in_schema);
 
-  /**
-   * Level 2: Compile hash join build side.
-   * Generates a function that loops over the input chunk, extracts key
-   * columns (from SimplestHash::hash_keys), and inserts each row into
-   * the portable hash table via aqp_ht_insert.
-   *
-   * Signature: void fn(AQPChunkView *in, void *hash_table)
-   * The hash table must be created by aqp_ht_create before calling.
-   * Payload = full row (all input columns concatenated as raw bytes).
-   *
-   * Returns function pointer, or nullptr on failure.
-   */
-  void *CompileHashBuild(const ir_sql_converter::AQPStmt &hash_node,
-                         const std::vector<ColSchema> &in_schema,
-                         const std::vector<int> &needed_payload_cols = {});
-
-  /**
-   * Level 2: Compile hash join probe side.
-   * Generates a function that loops over the probe input chunk, extracts
-   * probe keys (from SimplestJoin::join_conditions), probes the hash table
-   * via aqp_ht_probe, and writes matching row indices to a selection vector.
-   *
-   * Signature: uint64_t fn(AQPChunkView *probe_chunk, void *hash_table,
-   * AQPSelView *sel) Returns count of matching probe rows.
-   */
-  void *CompileHashProbe(const ir_sql_converter::AQPStmt &join_node,
-                         const std::vector<ColSchema> &probe_schema);
+  // Note: CompileHashBuild and CompileHashProbe (standalone hash-join
+  // operator JIT against the obsolete AQPHashTable) were removed. The active
+  // probe path is CompileFilterProbeProjectFusion below, which targets
+  // DuckDB's JoinHashTable directly. Build is left to DuckDB native; see the
+  // rationale in duckdb_adapter.cpp near the hash-join RegisterJIT block.
 
 #if !DISABLE_AGG_JIT
   /**
@@ -208,22 +186,10 @@ public:
                                const std::vector<ColSchema> &in_schema);
 #endif // !DISABLE_AGG_JIT
 
-  /**
-   * Level 3: Compile Filter + HashBuild fusion.
-   * Fused loop: for each row, evaluate filter; if match, extract key,
-   * hash inline (FNV-1a), insert into hash table, copy payload.
-   * No intermediate DataChunk between filter and hash build.
-   *
-   * Signature: int64_t fn(AQPChunkView *in, AQPChunkView *, void *ht)
-   * Uses AQPPipelineFn signature. The hash table pointer is passed via
-   * pipeline_state (3rd arg). Returns 0 (no output rows — data is sunk
-   * into the hash table).
-   */
-  void *
-  CompileFilterHashBuildFusion(const ir_sql_converter::AQPStmt *filter_node,
-                               const ir_sql_converter::AQPStmt &hash_node,
-                               const std::vector<ColSchema> &in_schema,
-                               const std::vector<int> &needed_payload_cols = {});
+  // Note: CompileFilterHashBuildFusion was removed alongside
+  // CompileHashBuild. The build path uses DuckDB native; only the build
+  // side's *filter* is JIT'd, via CompilePipeline / dispatch in
+  // physical_filter.cpp.
 
   /**
    * Level 3: Compile Filter + HashProbe + Projection fusion (probe pipeline).
@@ -240,8 +206,8 @@ public:
    * join_node: SimplestJoin with join_conditions defining probe keys.
    * proj_node: may be null (output all probe + payload columns).
    * probe_schema: column layout of the probe input chunk.
-   * payload_schema: column layout of the build-side payload (in the order
-   *   columns were written by CompileHashBuild / fusion). Needed to map
+   * payload_schema: column layout of the build-side payload, in the order
+   *   DuckDB's JoinHashTable lays them out in its row store. Needed to map
    *   projection attrs to payload byte offsets.
    */
   // payload_row_indices[i] is the row-format column index of payload_schema[i]
@@ -301,11 +267,38 @@ public:
     prefetch_distance_ = distance;
   }
 
+  // Phase 6: separate look-ahead distances for the ROF fused-probe path
+  // (CompileFilterProbeProjectFusion). entry_dist prefetches the ht_entry_t
+  // cache line; row_dist prefetches the build-side row reached via the entry.
+  // 0 disables that level. Defaults (24 / 12) are starting values from plan
+  // §10.4. On JOB the impact is small — most probes land in L2/L3 already
+  // because the HT for JOB tables fits in cache — but the knobs are kept
+  // exposed so workloads with larger HTs (TPC-H SF100+, custom warehouse
+  // data) can tune. Use --jit-prefetch-entry-dist=N / --jit-prefetch-row-
+  // dist=N from the CLI.
+  void SetProbePrefetchDistances(int entry_dist, int row_dist) {
+    prefetch_entry_distance_ = entry_dist;
+    prefetch_row_distance_ = row_dist;
+  }
+
   void SetBatchProbe(bool enable) { batch_probe_ = enable; }
 
   void SetInlineHash(bool enable) { inline_hash_ = enable; }
 
   void SetCache(bool enable, const std::string &dir = "");
+
+  // Releases all JIT-compiled modules (machine code, IR, symbol-table
+  // entries, ExecutionSession state) added since the last reset. The
+  // runtime helper symbols (aqp_like_match, memcpy, etc.) survive across
+  // resets because they are registered without a tracker.
+  //
+  // **Caller invariant**: no JIT function pointer obtained from this
+  // compiler may be in use when ResetModules() is called. Pair it with
+  // clearing whatever map holds those pointers (e.g. clear the per-query
+  // AQPJITContext) BEFORE this call. Currently single-threaded; for
+  // future multi-thread dispatch this needs an additional lock that
+  // serialises Reset against dispatch.
+  void ResetModules();
 
 private:
   OptLevel opt_level_;
@@ -313,6 +306,14 @@ private:
   bool use_simd_; // derived: true if simd_isa_ != OFF
   bool prefetch_ = false;
   int prefetch_distance_ = 8;
+  // Phase 6: stage-2 look-ahead distances used by
+  // CompileFilterProbeProjectFusion (consumer-side prefetch). entry_distance
+  // targets the ht_entry_t cache line; row_distance targets the build-side
+  // row reached via that entry. Defaults (24 / 12) from plan §10.4; on JOB
+  // the effect is marginal because the HT typically fits in L3 — tune via
+  // SetProbePrefetchDistances or the CLI flags for larger workloads.
+  int prefetch_entry_distance_ = 24;
+  int prefetch_row_distance_ = 12;
   bool batch_probe_ = false;
   bool inline_hash_ = true;
   bool cache_enabled_ = false;

@@ -60,12 +60,16 @@ struct ParamConfig {
   uint32_t jit_flags = 0;
 
   // Per-optimization toggles (pipeline-level and above).
-  bool jit_fusion_build = true;
   bool jit_fusion_probe = true;
   bool jit_inline_hash = true;
   bool jit_payload_prune = true;
   bool jit_prefetch = true;
   int jit_prefetch_distance = 8;
+  // Phase 6: ROF probe-side look-ahead distances (CompileFilterProbeProjectFusion).
+  // entry = ht_entry_t cache-line look-ahead; row = build-row look-ahead.
+  // 0 disables that level. Plan §10.4 defaults.
+  int jit_prefetch_entry_distance = 24;
+  int jit_prefetch_row_distance = 12;
   bool jit_batch_probe = true;
   bool jit_cache = false;
   std::string jit_cache_dir;
