@@ -1683,6 +1683,11 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
 
           // Find best-matching IR filter: prefer the one whose cols overlap
           // with the DuckDB expression's cols, falling back to table_idx match.
+          // Safety: every column referenced by the IR filter must appear in the
+          // DuckDB filter's column set.  If the IR references columns that the
+          // physical filter doesn't use, the IR filter is a different predicate
+          // (e.g., the optimizer rebinds or transforms columns) and compiling it
+          // would corrupt results.
           const ir_sql_converter::AQPStmt *best = nullptr;
           size_t best_overlap = 0;
           for (auto *f : all_filters) {
@@ -1705,9 +1710,15 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
             std::set<std::pair<unsigned int, unsigned int>> ir_cols;
             CollectIRFilterCols(f, ir_cols);
             size_t overlap = 0;
-            for (auto &p : ir_cols)
+            bool all_in_duckdb = true;
+            for (auto &p : ir_cols) {
               if (duckdb_cols.count(p))
                 overlap++;
+              else
+                all_in_duckdb = false;
+            }
+            if (!all_in_duckdb)
+              continue;
             if (overlap > best_overlap) {
               best_overlap = overlap;
               best = f;
@@ -1863,9 +1874,15 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
             std::set<std::pair<unsigned int, unsigned int>> ir_cols;
             CollectIRFilterCols(f, ir_cols);
             size_t overlap = 0;
-            for (auto &p : ir_cols)
+            bool all_in_duckdb = true;
+            for (auto &p : ir_cols) {
               if (duckdb_cols.count(p))
                 overlap++;
+              else
+                all_in_duckdb = false;
+            }
+            if (!all_in_duckdb)
+              continue;
             if (overlap > best_overlap) {
               best_overlap = overlap;
               best = f;
