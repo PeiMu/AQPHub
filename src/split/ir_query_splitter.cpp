@@ -323,8 +323,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         std::cerr << "OPERATOR ";
       if (config_.jit_flags & AQP_JIT_PIPELINE)
         std::cerr << "PIPELINE ";
-      if (config_.jit_flags & AQP_JIT_SUBPLAN)
-        std::cerr << "SUBPLAN ";
       if (config_.jit_flags & AQP_JIT_SIMD)
         std::cerr << "SIMD ";
       if (config_.jit_flags & AQP_JIT_OPT3)

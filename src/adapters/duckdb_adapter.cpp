@@ -599,28 +599,8 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       jit_consumed_ir_joins_.clear();
       RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
-      // Level 4: SQL-level compilation — compile the entire IR tree
-      if (jit_flags_ & AQP_JIT_SQL) {
-        EnsureJITCompiler();
-        auto compile_sql_timer = chrono_tic();
-        void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
-        if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-          chrono_toc(&compile_sql_timer, "ExecuteSQL::CompileSQL\n", false);
-        }
-        if (sql_result) {
-          auto *ctx_sql = GetClientContext();
-          if (ctx_sql->aqp_jit_context) {
-            ctx_sql->aqp_jit_context->flags |= duckdb::AQPJIT_SQL;
-#ifndef NDEBUG
-            std::cerr << "[AQP-JIT] SQL-level compiled for this IR\n";
-#endif
-          }
-        }
-      }
-
       if (enable_timing_) {
-        // Record total JIT compile time (includes Prepare + RegisterJIT +
-        // CompileSQL) Record total JIT compile time
+        // Record total JIT compile time (includes Prepare + RegisterJIT)
         auto jit_compile_time =
             chrono_toc(&timer, "ExecuteSQL::jit compile time\n", false);
         WriteJitTimingColumn(jit_compile_time);
@@ -744,29 +724,8 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     jit_consumed_ir_joins_.clear();
     RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
-    // Level 4: SQL-level compilation — compile the sub-SQL IR tree
-    if (jit_flags_ & AQP_JIT_SQL) {
-      EnsureJITCompiler();
-      auto compile_sql_timer = chrono_tic();
-      void *sql_result = jit_compiler_->CompileSQL(*jit_pending_ir_);
-      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-        chrono_toc(&compile_sql_timer,
-                   "ExecuteSQLandCreateTempTable::CompileSQL\n", false);
-      }
-      if (sql_result) {
-        auto *ctx_sp = GetClientContext();
-        if (ctx_sp->aqp_jit_context) {
-          ctx_sp->aqp_jit_context->flags |= duckdb::AQPJIT_SQL;
-#ifndef NDEBUG
-          std::cerr << "[AQP-JIT] SQL-level compiled for this sub-IR\n";
-#endif
-        }
-      }
-    }
-
     if (enable_timing_) {
-      // Record total JIT compile time (includes Prepare + RegisterJIT +
-      // CompileSQL) Record total JIT compile time
+      // Record total JIT compile time (includes Prepare + RegisterJIT)
       auto jit_compile_time = chrono_toc(
           &timer, "ExecuteSQLandCreateTempTable::jit compile time\n", false);
       WriteJitTimingColumn(jit_compile_time);

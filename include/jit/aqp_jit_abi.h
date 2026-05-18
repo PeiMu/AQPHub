@@ -61,14 +61,11 @@ typedef struct {
   (1u << 1) /* Level 2: full operator compilation            */
 #define AQP_JIT_PIPELINE                                                       \
   (1u << 2) /* Level 3: fused pipeline compilation           */
-#define AQP_JIT_SQL                                                            \
-  (1u << 4) /* Level 4: SQL / sub-SQL compilation             */
-#define AQP_JIT_SUBPLAN AQP_JIT_SQL /* Legacy alias                           */
 
-/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE / SQL).
+/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE).
  * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
 #define AQP_JIT_LEVEL_MASK                                                       \
-  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SQL)
+  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE)
 
 /* Legacy aliases (backward compat) */
 #define AQP_JIT_OPT3                                                           \
@@ -155,22 +152,6 @@ typedef struct {
   uint32_t        pointer_offset; /* offset of next_pointer inside row */
   const uint64_t *data_offsets;   /* layout->GetOffsets().data() — per-col offsets within row */
 } AQPJoinHTView;
-
-/* Sub-plan context: holds all state for a compiled sub-plan.
- * Managed by the middleware; passed to the coordinator function. */
-typedef struct {
-  void **hash_tables; /* array of AQPHashTable pointers              */
-  uint32_t num_hash_tables;
-  AQPPipelineFn *pipeline_fns; /* array of compiled pipeline functions */
-  uint32_t num_pipelines;
-  void *scratch; /* scratch buffer for intermediate chunks       */
-  uint64_t scratch_size;
-} AQPSubPlanCtx;
-
-/* Sub-plan level: orchestrates multiple pipelines.
- * The coordinator runs build pipelines, then probe pipelines, manages hash
- * tables. Returns 0 on success, negative on error. */
-typedef int32_t (*AQPSubPlanFn)(AQPSubPlanCtx *ctx);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -244,24 +244,6 @@ public:
       const std::vector<int> &lhs_key_chunk_idxs = {},
       const std::vector<int32_t> &lhs_key_dtypes = {});
 
-  /**
-   * Level 4: Compile an entire sub-plan into a coordinator function.
-   * The coordinator orchestrates multiple pipelines:
-   *   1. Identifies pipeline segments from the IR tree
-   *   2. Runs build-side pipelines first (populating hash tables)
-   *   3. Runs probe-side pipelines using the hash tables
-   *
-   * sub_ir: the complete sub-plan IR tree (from ir_query_splitter)
-   * Returns AQPSubPlanFn, or nullptr if the sub-plan is too complex.
-   */
-  void *CompileSubPlan(const ir_sql_converter::AQPStmt &sub_ir);
-
-  /**
-   * Level 4: Compile a whole-SQL IR tree (non-split path).
-   * Semantically identical to CompileSubPlan; separated for clarity.
-   */
-  void *CompileSQL(const ir_sql_converter::AQPStmt &sql_ir);
-
   void SetPrefetch(bool enable, int distance = 8) {
     prefetch_ = enable;
     prefetch_distance_ = distance;
