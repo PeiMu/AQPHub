@@ -139,15 +139,28 @@ public:
 
   void CleanUp() override;
 
+  // Per-operator execution timing
+  struct OperatorTiming {
+    std::string operator_name;
+    std::string operator_type;
+    double time_seconds;
+    uint64_t cardinality;
+    int depth;
+  };
+  std::vector<OperatorTiming> CollectOperatorTimings();
+  void FlushOperatorTimings(const std::string &query_file);
+
   // Get context and binder for IR conversion
   duckdb::ClientContext *GetClientContext();
 
 #ifdef HAVE_LLVM
   // JIT: set the sub-IR and flags for compilation before the next
   // ExecuteSQLandCreateTempTable call. Called by IRQuerySplitter.
-  void SetJITPendingIR(const ir_sql_converter::AQPStmt *ir, uint32_t flags = 0) {
+  void SetJITPendingIR(const ir_sql_converter::AQPStmt *ir, uint32_t flags = 0,
+                       duckdb::unique_ptr<duckdb::LogicalOperator> plan = nullptr) {
     jit_pending_ir_ = ir;
     jit_flags_ = flags;
+    jit_pending_plan_ = std::move(plan);
   }
 
   // Set JIT flags independently (used in no-split path where SetJITPendingIR
@@ -267,6 +280,8 @@ private:
   std::string jit_cache_dir_;
   // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
   std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
+  // Pre-built logical plan for PrepareFromPlan (avoids redundant parse+optimize).
+  duckdb::unique_ptr<duckdb::LogicalOperator> jit_pending_plan_;
 
   // Keeps the LLJIT instance alive until after query execution so that
   // compiled function pointers stored in AQPJITContext remain valid.
@@ -295,6 +310,11 @@ private:
   // stored in the temp table. Used by ConvertDuckDBPlanToIR to resolve correct
   // column names for CHUNK_GET nodes (DuckDB plan alias ≠ temp table alias).
   std::unordered_map<unsigned int, std::vector<std::string>> chunk_col_names_;
+
+  // Per-operator timing buffer: (sub_plan_index, timings) pairs
+  std::vector<std::pair<int, std::vector<OperatorTiming>>> buffered_op_timings_;
+  int op_timing_sub_plan_ = 0;
+  bool profiling_enabled_ = false;
 
 #if IN_MEM_TMP_TABLE
 private:

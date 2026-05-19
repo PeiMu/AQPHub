@@ -45,6 +45,7 @@ flag_suffix=""
 [[ "$cache"         != "off" ]] && flag_suffix+="_cache"
 
 log_name=time_log.csv
+op_log_name=operator_exe.csv
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
@@ -174,6 +175,7 @@ wait_for_umbra() {
 ########################################
 rm -f "${log_name}"
 rm -f "job_result/${log_name}"
+rm -f "${op_log_name}"
 
 mkdir -p job_result
 shopt -s nullglob
@@ -221,6 +223,7 @@ fi
 for sql in "$dir"/*.sql; do
   echo "Running benchmark for $sql..." | tee -a "$log_name"
   for i in $(eval echo {1.."${iteration}"}); do
+      echo "# iter-${i}" >> "${op_log_name}"
       $cmd_prefix ../build_release/aqp_middleware \
         --engine="${engine}" \
         --db="${db_conn}" \
@@ -237,3 +240,6 @@ for sql in "$dir"/*.sql; do
 done
 
 mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"
+if [[ -f "${op_log_name}" ]]; then
+    mv "${op_log_name}" job_result/${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_"${op_log_name}"
+fi

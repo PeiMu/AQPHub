@@ -218,6 +218,12 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       log_file << std::fixed << std::setprecision(3)
                << (show_output_time / 1000.0) << "\n";
       log_file.close();
+
+#ifdef HAVE_DUCKDB
+      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter);
+      if (duck)
+        duck->FlushOperatorTimings(result.query_file);
+#endif
     }
 
   } catch (const std::exception &e) {

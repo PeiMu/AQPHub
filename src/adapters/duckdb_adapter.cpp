@@ -13,6 +13,9 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#include "duckdb/common/enums/physical_operator_type.hpp"
+#include "duckdb/main/query_profiler.hpp"
+
 #ifdef HAVE_LLVM
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/execution/operator/aggregate/physical_ungrouped_aggregate.hpp"
@@ -482,16 +485,15 @@ CollectAllScanNodes(const ir_sql_converter::AQPStmt *ir,
 
 std::unique_ptr<ir_sql_converter::AQPStmt> DuckDBAdapter::ConvertPlanToIR() {
   auto context = GetClientContext();
-  auto logical_plan = std::move(plan);
 
 #ifndef NDEBUG
   std::cerr << "[AQP-JIT-TRACE] === Logical plan before IR conversion ===\n";
-  if (logical_plan)
-    logical_plan->Print();
+  if (plan)
+    plan->Print();
 #endif
 
   auto ir = ir_sql_converter::ConvertDuckDBPlanToIR(
-      *planner->binder, *context, logical_plan.get(), intermediate_table_map,
+      *planner->binder, *context, plan.get(), intermediate_table_map,
       false, &chunk_col_names_);
 
 #ifndef NDEBUG
@@ -536,6 +538,13 @@ std::unique_ptr<ir_sql_converter::AQPStmt> DuckDBAdapter::ConvertPlanToIR() {
 QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   QueryResult result;
 
+  if (enable_timing_ && !profiling_enabled_) {
+    GetClientContext()->EnableProfiling();
+    auto &cfg = duckdb::ClientConfig::GetConfig(*GetClientContext());
+    cfg.emit_profiler_output = false;
+    profiling_enabled_ = true;
+  }
+
 #ifdef HAVE_LLVM
 #ifndef NDEBUG
   std::cerr << "[AQP-JIT-TRACE] ExecuteSQL: jit_pending_ir_="
@@ -552,11 +561,10 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     jit_active = true;
     ParseSQL(sql);
     Optimize();
+    // ConvertPlanToIR reads plan via raw pointer without mutating it.
     auto whole_ir = ConvertPlanToIR();
     if (whole_ir) {
-      SetJITPendingIR(whole_ir.get(), jit_flags_);
-      // Ownership: whole_ir must stay alive until RegisterJIT reads it below.
-      // Store it so it isn't destroyed when this scope ends.
+      SetJITPendingIR(whole_ir.get(), jit_flags_, TakePlan());
       owned_jit_ir_ = std::move(whole_ir);
       jit_pending_ir_ = owned_jit_ir_.get();
     } else {
@@ -569,7 +577,13 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   // If JIT pending IR is set, use Prepare path so we can walk the physical
   // plan and register compiled filters before execution.
   if (jit_pending_ir_) {
-    auto prepared = conn->Prepare(sql);
+    std::unique_ptr<duckdb::PreparedStatement> prepared;
+    if (jit_pending_plan_) {
+      prepared = conn->PrepareFromPlan(std::move(jit_pending_plan_),
+                                       planner->names, planner->types);
+    } else {
+      prepared = conn->Prepare(sql);
+    }
     if (!prepared->HasError() && prepared->data &&
         prepared->data->physical_plan) {
       // Reset JIT context (stale function pointers would crash if dispatched).
@@ -687,6 +701,10 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       }
     }
   }
+  if (enable_timing_ && profiling_enabled_) {
+    auto op_timings = CollectOperatorTimings();
+    buffered_op_timings_.push_back({op_timing_sub_plan_++, std::move(op_timings)});
+  }
   return result;
 }
 
@@ -698,8 +716,28 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   bool jit_active = false;
   if (enable_timing_) {
     timer = chrono_tic();
+    if (!profiling_enabled_) {
+      GetClientContext()->EnableProfiling();
+      auto &cfg = duckdb::ClientConfig::GetConfig(*GetClientContext());
+      cfg.emit_profiler_output = false;
+      profiling_enabled_ = true;
+    }
   }
-  auto prepared = conn->Prepare(sql);
+  std::unique_ptr<duckdb::PreparedStatement> prepared;
+#ifdef HAVE_LLVM
+  if (jit_pending_plan_) {
+    jit_pending_plan_->ResolveOperatorTypes();
+    auto plan_types = jit_pending_plan_->types;
+    duckdb::vector<duckdb::string> plan_names;
+    for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
+      plan_names.push_back("col" + std::to_string(i));
+    prepared = conn->PrepareFromPlan(std::move(jit_pending_plan_),
+                                     std::move(plan_names), std::move(plan_types));
+  } else
+#endif
+  {
+    prepared = conn->Prepare(sql);
+  }
   if (prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
                              prepared->GetError());
@@ -805,6 +843,12 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();
+
+    if (profiling_enabled_) {
+      auto op_timings = CollectOperatorTimings();
+      buffered_op_timings_.push_back(
+          {op_timing_sub_plan_++, std::move(op_timings)});
+    }
   }
 }
 #else
@@ -1035,6 +1079,79 @@ DuckDBAdapter::GetEstimatedCost(const std::string &sql) {
     return {std::numeric_limits<double>::max(),
             std::numeric_limits<double>::max()};
   }
+}
+
+std::vector<DuckDBAdapter::OperatorTiming>
+DuckDBAdapter::CollectOperatorTimings() {
+  std::vector<OperatorTiming> timings;
+  auto *ctx = GetClientContext();
+  auto &profiler = duckdb::QueryProfiler::Get(*ctx);
+  auto root = profiler.GetRoot();
+  if (!root)
+    return timings;
+
+  struct StackEntry {
+    duckdb::ProfilingNode *node;
+    int depth;
+  };
+  std::vector<StackEntry> stack;
+  stack.push_back({root.get(), 0});
+  while (!stack.empty()) {
+    auto entry = stack.back();
+    stack.pop_back();
+    auto &info = entry.node->GetProfilingInfo();
+
+    OperatorTiming t;
+    t.depth = entry.depth;
+    auto it_name = info.metrics.find(duckdb::MetricType::OPERATOR_NAME);
+    t.operator_name =
+        (it_name != info.metrics.end()) ? it_name->second.ToString() : "";
+    auto it_type = info.metrics.find(duckdb::MetricType::OPERATOR_TYPE);
+    if (it_type != info.metrics.end()) {
+      auto phys_type = duckdb::PhysicalOperatorType(
+          it_type->second.GetValue<uint8_t>());
+      t.operator_type = duckdb::PhysicalOperatorToString(phys_type);
+    }
+    auto it_time = info.metrics.find(duckdb::MetricType::OPERATOR_TIMING);
+    t.time_seconds =
+        (it_time != info.metrics.end()) ? it_time->second.GetValue<double>()
+                                        : 0.0;
+    auto it_card = info.metrics.find(duckdb::MetricType::OPERATOR_CARDINALITY);
+    t.cardinality = (it_card != info.metrics.end())
+                        ? it_card->second.GetValue<uint64_t>()
+                        : 0;
+    timings.push_back(std::move(t));
+
+    for (int i = static_cast<int>(entry.node->GetChildCount()) - 1; i >= 0;
+         i--) {
+      stack.push_back({entry.node->GetChild(i).get(), entry.depth + 1});
+    }
+  }
+  return timings;
+}
+
+void DuckDBAdapter::FlushOperatorTimings(const std::string &query_file) {
+  if (buffered_op_timings_.empty())
+    return;
+  bool need_header = true;
+  {
+    std::ifstream check("operator_exe.csv");
+    if (check.good() && check.peek() != std::ifstream::traits_type::eof())
+      need_header = false;
+  }
+  std::ofstream ofs("operator_exe.csv", std::ios::app);
+  if (need_header)
+    ofs << "query_file,sub_plan,depth,op_name,op_type,time_sec,cardinality\n";
+  for (auto &[sub_plan, timings] : buffered_op_timings_) {
+    for (auto &t : timings) {
+      ofs << query_file << "," << sub_plan << "," << t.depth << ","
+          << t.operator_name << "," << t.operator_type << "," << std::fixed
+          << std::setprecision(6) << t.time_seconds << "," << t.cardinality
+          << "\n";
+    }
+  }
+  buffered_op_timings_.clear();
+  op_timing_sub_plan_ = 0;
 }
 
 void DuckDBAdapter::CleanUp() {
