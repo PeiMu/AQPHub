@@ -31,6 +31,7 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "jit/aqp_jit_hashtable.h"
 #include "simplest_ir.h"
+#include "duckdb/common/types/hash.hpp"
 
 // Resolve jit_flags bitfields to typed enums for IrToLlvmCompiler
 static aqp_jit::OptLevel ResolveOptLevel(uint32_t flags) {
@@ -91,12 +92,14 @@ struct TempCollectionFunctionData : public duckdb::FunctionData {
   duckdb::ColumnDataCollection *collection = nullptr;
   bool has_override_cardinality = false;
   uint64_t override_cardinality = 0;
+  std::string table_name;
 
   duckdb::unique_ptr<duckdb::FunctionData> Copy() const override {
     auto result = duckdb::make_uniq<TempCollectionFunctionData>();
     result->collection = collection;
     result->has_override_cardinality = has_override_cardinality;
     result->override_cardinality = override_cardinality;
+    result->table_name = table_name;
     return std::move(result);
   }
 
@@ -180,6 +183,7 @@ duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::TempCollectionBind(
   result->collection = stored.collection.get();
   result->has_override_cardinality = stored.has_override_cardinality;
   result->override_cardinality = stored.override_cardinality;
+  result->table_name = table_name;
   return std::move(result);
 }
 
@@ -787,6 +791,19 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
 #endif
 
+  // Register pending bloom filters (independent of JIT).
+#ifdef HAVE_LLVM
+  if (!pending_bloom_filters_.empty() && prepared->data &&
+      prepared->data->physical_plan) {
+    auto *ctx3 = GetClientContext();
+    if (!ctx3->aqp_jit_context) {
+      ctx3->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+    }
+    RegisterBloomFilters(prepared->data->physical_plan->Root());
+    pending_bloom_filters_.clear();
+  }
+#endif
+
   duckdb::vector<duckdb::Value> bound_values;
   auto subquery_result = prepared->ExecuteRow(bound_values, false);
   if (enable_timing_) {
@@ -1042,6 +1059,168 @@ void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
 #endif
 }
 #endif
+
+std::string DuckDBAdapter::GetColumnName(const std::string &table_name,
+                                         unsigned col_idx) {
+  try {
+    auto result = conn->Query("SELECT column_name FROM information_schema.columns "
+                              "WHERE table_name = '" + table_name + "' "
+                              "ORDER BY ordinal_position");
+    if (!result->HasError()) {
+      unsigned row = 0;
+      while (true) {
+        auto chunk = result->Fetch();
+        if (!chunk || chunk->size() == 0) break;
+        for (duckdb::idx_t i = 0; i < chunk->size(); i++) {
+          if (row == col_idx) {
+            return chunk->GetValue(0, i).ToString();
+          }
+          row++;
+        }
+      }
+    }
+  } catch (...) {
+  }
+  return "";
+}
+
+std::unordered_map<size_t, std::pair<int64_t, int64_t>>
+DuckDBAdapter::GetTempTableMinMax(const std::string &temp_table_name) {
+  std::unordered_map<size_t, std::pair<int64_t, int64_t>> result;
+#if IN_MEM_TMP_TABLE
+  auto it = temp_collections_.find(temp_table_name);
+  if (it == temp_collections_.end() || !it->second.collection)
+    return result;
+
+  auto &collection = *it->second.collection;
+  auto &types = collection.Types();
+
+  for (size_t col_idx = 0; col_idx < types.size(); col_idx++) {
+    auto pt = types[col_idx].InternalType();
+    if (pt != duckdb::PhysicalType::INT32 && pt != duckdb::PhysicalType::INT64)
+      continue;
+
+    int64_t min_val = std::numeric_limits<int64_t>::max();
+    int64_t max_val = std::numeric_limits<int64_t>::min();
+    bool found = false;
+
+    duckdb::ColumnDataScanState scan_state;
+    collection.InitializeScan(scan_state);
+    duckdb::DataChunk chunk;
+    chunk.Initialize(*GetClientContext(), types);
+    while (collection.Scan(scan_state, chunk)) {
+      if (chunk.size() == 0)
+        break;
+      chunk.Flatten();
+      auto &vec = chunk.data[col_idx];
+      auto &validity = duckdb::FlatVector::Validity(vec);
+      if (pt == duckdb::PhysicalType::INT32) {
+        auto *data = duckdb::FlatVector::GetData<int32_t>(vec);
+        for (duckdb::idx_t i = 0; i < chunk.size(); i++) {
+          if (validity.RowIsValid(i)) {
+            int64_t v = data[i];
+            if (v < min_val) min_val = v;
+            if (v > max_val) max_val = v;
+            found = true;
+          }
+        }
+      } else {
+        auto *data = duckdb::FlatVector::GetData<int64_t>(vec);
+        for (duckdb::idx_t i = 0; i < chunk.size(); i++) {
+          if (validity.RowIsValid(i)) {
+            int64_t v = data[i];
+            if (v < min_val) min_val = v;
+            if (v > max_val) max_val = v;
+            found = true;
+          }
+        }
+      }
+      chunk.Reset();
+    }
+    if (found)
+      result[col_idx] = {min_val, max_val};
+  }
+#endif
+  return result;
+}
+
+DuckDBAdapter::BloomFilterInfo
+DuckDBAdapter::BuildBloomFilter(const std::string &temp_table_name,
+                                size_t col_idx,
+                                uint64_t temp_card) {
+  BloomFilterInfo info;
+#if IN_MEM_TMP_TABLE
+  auto it = temp_collections_.find(temp_table_name);
+  if (it == temp_collections_.end() || !it->second.collection)
+    return info;
+
+  auto &collection = *it->second.collection;
+  auto &types = collection.Types();
+  if (col_idx >= types.size())
+    return info;
+
+  auto pt = types[col_idx].InternalType();
+  if (pt != duckdb::PhysicalType::INT32 && pt != duckdb::PhysicalType::INT64)
+    return info;
+
+  // Size the Bloom filter: 12 bits per key, rounded up to power-of-2 sectors.
+  // Each sector is 64 bits. This gives ~1.5% false positive rate with 4 hash bits.
+  constexpr uint64_t kMinBits = 512;
+  constexpr uint64_t kBitsPerKey = 12;
+  constexpr uint64_t kMaxSectors = (1ULL << 26);
+  uint64_t min_bits = std::max(kMinBits, temp_card * kBitsPerKey);
+  uint64_t num_sectors = std::min(min_bits >> 6, kMaxSectors);
+  // Round up to power of 2
+  num_sectors = 1;
+  while (num_sectors < (min_bits >> 6)) num_sectors <<= 1;
+  if (num_sectors > kMaxSectors) num_sectors = kMaxSectors;
+
+  info.bf_data.resize(num_sectors, 0);
+  info.bitmask = num_sectors - 1;
+
+  constexpr uint64_t kShiftMask = 0x3F3F3F3F3F3F3F3F;
+  constexpr int kNBits = 4;
+
+  auto insert_one = [&](uint64_t hash) {
+    uint64_t offset = hash & info.bitmask;
+    uint64_t shifts = hash & kShiftMask;
+    auto shifts_8 = reinterpret_cast<const uint8_t *>(&shifts);
+    uint64_t mask = 0;
+    for (int i = 8 - kNBits; i < 8; i++) {
+      mask |= (1ULL << shifts_8[i]);
+    }
+    info.bf_data[offset] |= mask;
+  };
+
+  duckdb::ColumnDataScanState scan_state;
+  collection.InitializeScan(scan_state);
+  duckdb::DataChunk chunk;
+  chunk.Initialize(*GetClientContext(), types);
+  while (collection.Scan(scan_state, chunk)) {
+    if (chunk.size() == 0) break;
+    chunk.Flatten();
+    auto &vec = chunk.data[col_idx];
+    auto &validity = duckdb::FlatVector::Validity(vec);
+    if (pt == duckdb::PhysicalType::INT32) {
+      auto *data = duckdb::FlatVector::GetData<int32_t>(vec);
+      for (duckdb::idx_t i = 0; i < chunk.size(); i++) {
+        if (validity.RowIsValid(i)) {
+          insert_one(duckdb::Hash<int32_t>(data[i]));
+        }
+      }
+    } else {
+      auto *data = duckdb::FlatVector::GetData<int64_t>(vec);
+      for (duckdb::idx_t i = 0; i < chunk.size(); i++) {
+        if (validity.RowIsValid(i)) {
+          insert_one(duckdb::Hash<int64_t>(data[i]));
+        }
+      }
+    }
+    chunk.Reset();
+  }
+#endif
+  return info;
+}
 
 // todo: if the middleware cannot access the duckdb's source code, it should run
 //  `EXPLAIN` as the other engines
@@ -2062,12 +2241,12 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // missing (e.g. DuckDB pruned it from the scan output), the compiled
     // filter would silently replace that sub-expression with "pass-all",
     // corrupting the filter logic.  Fall back to interpreter in that case.
-    // At pipeline level, allow LIKE predicates in the expr-level filter
-    // because the expr-level path uses selection vectors (Slice) which
-    // avoids copying string_t data.  The pipeline-level BuildPipelineFunction
-    // copies raw string_t (16 bytes) which creates dangling pointers for
-    // non-inline strings (>12 chars) when the input chunk is reused.
-    bool skip_like = !(jit_flags_ & AQP_JIT_PIPELINE) && FilterHasLike(filter_ir);
+    // Keep expr-level JIT for LIKE filters: the selection-vector path benefits
+    // mixed filters (LIKE + non-LIKE predicates). Scan+filter fusion and
+    // pipeline filter fn are skipped for LIKE below (guards at operator/pipeline
+    // level) because the per-row JIT LIKE is ~2x slower than DuckDB's vectorized
+    // LIKE on large tables.
+    bool skip_like = false;
     if (!schema.empty() && HasApplicablePredicate(filter_ir, schema) &&
         FilterAllColsAvailable(filter_ir, schema) &&
         !skip_like) {
@@ -2088,8 +2267,14 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
         // Scan+Filter fusion (operator-level): apply filter at scan time
         // and mark the PhysicalFilter as a pass-through to avoid
         // double-application.
+        // Skip fusion when filter contains LIKE predicates: the JIT
+        // evaluates LIKE per-row (scalar aqp_like_match_segments), which
+        // is ~2x slower than DuckDB's native vectorized LIKE on large
+        // tables. Let DuckDB handle LIKE filters as standalone operators.
+        bool has_like = FilterHasLike(filter_ir);
         if ((jit_flags_ & AQP_JIT_OPERATOR) &&
-            child.type == PhysicalOperatorType::TABLE_SCAN) {
+            child.type == PhysicalOperatorType::TABLE_SCAN &&
+            !has_like) {
           uint64_t scan_eid = duckdb::ExpressionID(child);
           ctx->aqp_jit_context->scan_filter_fns[scan_eid] = fn;
           ctx->aqp_jit_context->fused_scan_filter_eids.insert(eid);
@@ -2134,9 +2319,12 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // strings into the output Vector's string heap via callback.
     // Guard: all filter-referenced columns must be in the schema, otherwise
     // FindColIdx returns -1 and the filter silently becomes pass-all.
+    // Skip pipeline filter compilation for LIKE predicates: DuckDB's native
+    // vectorized LIKE is faster than the JIT scalar implementation.
     if ((jit_flags_ & AQP_JIT_PIPELINE) && filter_ir && !schema.empty() &&
         HasApplicablePredicate(filter_ir, schema) &&
-        FilterAllColsAvailable(filter_ir, schema)) {
+        FilterAllColsAvailable(filter_ir, schema) &&
+        !FilterHasLike(filter_ir)) {
       const ir_sql_converter::AQPStmt *proj_ir = nullptr;
 
       EnsureJITCompiler();
@@ -2836,6 +3024,78 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
   // Recurse into children
   for (auto &child_ref : op.children)
     RegisterJIT(child_ref.get(), ir);
+}
+
+void DuckDBAdapter::RegisterBloomFilters(duckdb::PhysicalOperator &op) {
+  using duckdb::PhysicalOperatorType;
+  if (pending_bloom_filters_.empty()) return;
+
+  if (op.type == PhysicalOperatorType::TABLE_SCAN) {
+    auto &scan = static_cast<duckdb::PhysicalTableScan &>(op);
+    auto *tsbd = scan.bind_data
+        ? dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get())
+        : nullptr;
+    if (!tsbd) return;
+    const auto &tname = tsbd->table.name;
+
+    for (auto &bf_info : pending_bloom_filters_) {
+      if (bf_info.bf_data.empty() || bf_info.base_table_name != tname)
+        continue;
+
+      // Find which chunk column index corresponds to bf_info.base_col_name
+      auto &cols = tsbd->table.GetColumns();
+      uint32_t chunk_col_idx = UINT32_MAX;
+      int32_t dtype = AQP_DTYPE_INT32;
+      for (size_t i = 0; i < scan.column_ids.size() && i < scan.types.size(); i++) {
+        auto physical_col = scan.column_ids[i].GetPrimaryIndex();
+        if (physical_col < cols.LogicalColumnCount()) {
+          auto &col = cols.GetColumn(duckdb::LogicalIndex(physical_col));
+          if (col.Name() == bf_info.base_col_name) {
+            chunk_col_idx = static_cast<uint32_t>(i);
+            auto pt = col.Type().InternalType();
+            dtype = (pt == duckdb::PhysicalType::INT64)
+                        ? AQP_DTYPE_INT64
+                        : AQP_DTYPE_INT32;
+            break;
+          }
+        }
+      }
+      if (chunk_col_idx == UINT32_MAX) continue;
+
+      auto *ctx = GetClientContext();
+      if (!ctx->aqp_jit_context) {
+        ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+      }
+      uint64_t scan_eid = duckdb::ExpressionID(scan);
+      auto bloom = duckdb::make_uniq<duckdb::AQPJITContext::AQPBloomScanFilter>();
+      bloom->bf_data = std::move(bf_info.bf_data);
+      bloom->bitmask = bf_info.bitmask;
+      bloom->col_idx = chunk_col_idx;
+      bloom->dtype = dtype;
+      // Only one BF per (scan, column) pair. Multiple BFs on the same column
+      // from different temp columns are AND'd, which is too restrictive
+      // (e.g., self-join: subject_id and status_id both map to comp_cast_type.id).
+      auto &bf_vec = ctx->aqp_jit_context->bloom_scan_filters[scan_eid];
+      bool dup = false;
+      for (auto &existing : bf_vec) {
+        if (existing->col_idx == chunk_col_idx) { dup = true; break; }
+      }
+      if (!dup) {
+        bf_vec.push_back(std::move(bloom));
+      }
+#ifndef NDEBUG
+      std::cerr << "[AQP-BF] Registered bloom filter for " << tname
+                << "." << bf_info.base_col_name
+                << " col_idx=" << chunk_col_idx
+                << " scan_eid=0x" << std::hex << scan_eid << std::dec
+                << (dup ? " (SKIPPED dup)" : "") << "\n";
+#endif
+    }
+    return;
+  }
+
+  for (auto &child_ref : op.children)
+    RegisterBloomFilters(child_ref.get());
 }
 #endif
 

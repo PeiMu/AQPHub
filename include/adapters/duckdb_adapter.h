@@ -132,6 +132,48 @@ public:
   void SetTempTableCardinality(const std::string &temp_table_name,
                                uint64_t cardinality) override;
 
+  // Compute min/max for integer columns of a temp table from in-memory data.
+  // Returns map: column_index -> (min_value, max_value) for INT32/INT64 cols.
+  std::unordered_map<size_t, std::pair<int64_t, int64_t>>
+  GetTempTableMinMax(const std::string &temp_table_name);
+
+  // Look up a column name by table name and column index from DuckDB catalog.
+  std::string GetColumnName(const std::string &table_name, unsigned col_idx);
+
+  // Temp table column min/max info. Set by IRQuerySplitter after each
+  // temp table materialization; consumed by RegisterJIT to compile range
+  // filters on base table scans that join with these temp table columns.
+  struct TempColRange {
+    std::string temp_table_name;  // e.g. "temp1"
+    unsigned col_idx;             // column position in temp table
+    int64_t min_val;
+    int64_t max_val;
+  };
+  void SetTempColRanges(std::vector<TempColRange> ranges) {
+    temp_col_ranges_ = std::move(ranges);
+  }
+
+  // Bloom filter built from a temp table's join key column.
+  // Used to filter base table scans in subsequent sub-plans.
+  struct BloomFilterInfo {
+    std::string base_table_name;  // e.g. "cast_info"
+    std::string base_col_name;    // e.g. "id"
+    std::vector<uint64_t> bf_data;
+    uint64_t bitmask;
+  };
+  void SetPendingBloomFilters(std::vector<BloomFilterInfo> filters) {
+    pending_bloom_filters_ = std::move(filters);
+  }
+  const std::vector<BloomFilterInfo> &GetPendingBloomFilters() const {
+    return pending_bloom_filters_;
+  }
+
+  // Build a Bloom filter from a temp table's integer column.
+  // Returns empty bf_data if column is not INT32/INT64 or table not found.
+  BloomFilterInfo BuildBloomFilter(const std::string &temp_table_name,
+                                   size_t col_idx,
+                                   uint64_t temp_card);
+
   // Get estimated cost and rows for a query using EXPLAIN
   std::pair<double, double> GetEstimatedCost(const std::string &sql) override;
 
@@ -293,6 +335,12 @@ private:
   // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
   void RegisterJIT(duckdb::PhysicalOperator &op,
                           const ir_sql_converter::AQPStmt &ir);
+  // Walk physical plan tree; register pending bloom filters in aqp_jit_context.
+  void RegisterBloomFilters(duckdb::PhysicalOperator &op);
+
+  // Temp column ranges from temp table min/max (set before each sub-plan).
+  std::vector<TempColRange> temp_col_ranges_;
+  std::vector<BloomFilterInfo> pending_bloom_filters_;
 
   // IR filter nodes already matched to a DuckDB operator in this RegisterJIT
   // pass.  Prevents two DuckDB FILTERs on the same table from binding to the

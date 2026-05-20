@@ -4754,6 +4754,141 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
 }
 
 AQPExprFn
+IrToLlvmCompiler::CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
+                                     int64_t min_val, int64_t max_val) {
+  auto ctx = std::make_unique<LLVMContext>();
+  auto mod = std::make_unique<Module>("aqp_range_mod", *ctx);
+
+  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+  std::string fn_name = "aqp_range_" + std::to_string(fn_id);
+
+  auto &C = *ctx;
+  Type *i8p = PointerType::getUnqual(C);
+  Type *i32 = Type::getInt32Ty(C);
+  Type *i64 = Type::getInt64Ty(C);
+
+  // AQPExprFn: idx_t fn(AQPChunkView*, AQPSelView*)
+  FunctionType *ft = FunctionType::get(i64, {i8p, i8p}, false);
+  Function *fn = Function::Create(ft, Function::ExternalLinkage, fn_name, *mod);
+
+  auto *entry = BasicBlock::Create(C, "entry", fn);
+  auto *loop_bb = BasicBlock::Create(C, "loop", fn);
+  auto *match_bb = BasicBlock::Create(C, "match", fn);
+  auto *next_bb = BasicBlock::Create(C, "next", fn);
+  auto *exit_bb = BasicBlock::Create(C, "exit", fn);
+
+  IRBuilder<> B(entry);
+  Value *cv_ptr = fn->getArg(0);   // AQPChunkView*
+  Value *sv_ptr = fn->getArg(1);   // AQPSelView*
+
+  // nrows = cv->nrows (offset 16 in AQPChunkView: cols=8, nrows=8)
+  Value *nrows_ptr = B.CreateStructGEP(
+      StructType::get(C, {i8p, i64, i64}), cv_ptr, 1);
+  Value *nrows = B.CreateLoad(i64, nrows_ptr);
+
+  // cols = cv->cols (offset 0)
+  Value *cols_ptr = B.CreateStructGEP(
+      StructType::get(C, {i8p, i64, i64}), cv_ptr, 0);
+  Value *cols = B.CreateLoad(i8p, cols_ptr);
+
+  // AQPColView layout: {void* data, uint64_t* validity, int32_t vtype, int32_t dtype}
+  // Size = 24 bytes
+  Type *col_view_ty = StructType::get(C, {i8p, i8p, i32, i32});
+  unsigned col_view_size = 24;
+
+  // col_ptr = &cols[chunk_col_idx]
+  Value *col_offset = ConstantInt::get(i64, chunk_col_idx * col_view_size);
+  Value *col_ptr = B.CreateGEP(Type::getInt8Ty(C), cols, col_offset);
+
+  // data = col->data
+  Value *data_ptr_ptr = B.CreateStructGEP(col_view_ty, col_ptr, 0);
+  Value *data_ptr = B.CreateLoad(i8p, data_ptr_ptr);
+
+  // sel->indices
+  // AQPSelView: {sel_t* indices, uint32_t count}
+  Type *sel_view_ty = StructType::get(C, {i8p, i32});
+  Value *sel_indices_ptr = B.CreateStructGEP(sel_view_ty, sv_ptr, 0);
+  Value *sel_indices = B.CreateLoad(i8p, sel_indices_ptr);
+
+  // out_count alloca
+  Value *out_count = B.CreateAlloca(i64);
+  B.CreateStore(ConstantInt::get(i64, 0), out_count);
+
+  // i = 0
+  Value *i_alloca = B.CreateAlloca(i64);
+  B.CreateStore(ConstantInt::get(i64, 0), i_alloca);
+
+  B.CreateBr(loop_bb);
+
+  // Loop header: while (i < nrows)
+  B.SetInsertPoint(loop_bb);
+  Value *i_val = B.CreateLoad(i64, i_alloca);
+  Value *cond = B.CreateICmpULT(i_val, nrows);
+  B.CreateCondBr(cond, match_bb, exit_bb);
+
+  // Match: check range
+  B.SetInsertPoint(match_bb);
+  Value *val;
+  if (dtype == 3) { // INT32
+    Value *elem_ptr = B.CreateGEP(i32, data_ptr, i_val);
+    Value *elem = B.CreateLoad(i32, elem_ptr);
+    val = B.CreateSExt(elem, i64);
+  } else { // INT64
+    Value *elem_ptr = B.CreateGEP(i64, data_ptr, i_val);
+    val = B.CreateLoad(i64, elem_ptr);
+  }
+  Value *ge_min = B.CreateICmpSGE(val, ConstantInt::get(i64, min_val));
+  Value *le_max = B.CreateICmpSLE(val, ConstantInt::get(i64, max_val));
+  Value *in_range = B.CreateAnd(ge_min, le_max);
+
+  // If in range, write to sel_indices[out_count++]
+  auto *write_bb = BasicBlock::Create(C, "write", fn);
+  B.CreateCondBr(in_range, write_bb, next_bb);
+
+  B.SetInsertPoint(write_bb);
+  Value *cnt = B.CreateLoad(i64, out_count);
+  Value *idx_ptr = B.CreateGEP(i32, sel_indices, cnt);
+  B.CreateStore(B.CreateTrunc(i_val, i32), idx_ptr);
+  B.CreateStore(B.CreateAdd(cnt, ConstantInt::get(i64, 1)), out_count);
+  B.CreateBr(next_bb);
+
+  // Next: i++
+  B.SetInsertPoint(next_bb);
+  Value *i_next = B.CreateAdd(B.CreateLoad(i64, i_alloca), ConstantInt::get(i64, 1));
+  B.CreateStore(i_next, i_alloca);
+  B.CreateBr(loop_bb);
+
+  // Exit: return out_count
+  B.SetInsertPoint(exit_bb);
+  B.CreateRet(B.CreateLoad(i64, out_count));
+
+  SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
+
+  std::string err;
+  raw_string_ostream es(err);
+  if (verifyFunction(*fn, &es)) {
+    errs() << "[AQP-JIT] CompileRangeFilter verify failed: " << err << "\n";
+    return nullptr;
+  }
+
+  OptimiseModule(*mod, opt_level_);
+
+  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+  if (auto err2 = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
+    logAllUnhandledErrors(std::move(err2), errs());
+    return nullptr;
+  }
+
+  auto sym = impl_->jit->lookup(fn_name);
+  if (!sym) {
+    logAllUnhandledErrors(sym.takeError(), errs());
+    return nullptr;
+  }
+
+  return jitTargetAddressToFunction<AQPExprFn>(sym->getAddress());
+}
+
+AQPExprFn
 IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
                                 const std::vector<ColSchema> &schema) {
 
@@ -5910,9 +6045,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       StructType::get(*ctx, {PointerType::getUnqual(i32), i32});
   // AQPJoinHTView layout (must match aqp_jit_abi.h / aqp_jit.hpp):
   //   { void *entries; u64 bitmask; u64 use_salt; void *layout_ptr;
-  //     u32 tuple_size; u32 pointer_offset; const u64 *data_offsets; }
+  //     u32 tuple_size; u32 pointer_offset; const u64 *data_offsets; u64 no_chains; }
   StructType *ViewTy =
-      StructType::get(*ctx, {i8p, i64, i64, i8p, i32, i32, i64p});
+      StructType::get(*ctx, {i8p, i64, i64, i8p, i32, i32, i64p, i64});
 
   // int64_t fn(AQPChunkView *in, AQPChunkView *out, void *view)
   FunctionType *fn_ty = FunctionType::get(
@@ -5966,6 +6101,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   Value *v_ptr_off = cc.b.CreateZExt(v_ptr_off32, i64);
   Value *v_offsets = cc.b.CreateLoad(
       i64p, cc.b.CreateStructGEP(ViewTy, view_ptr, 6), "v_offsets");
+  Value *v_no_chains = cc.b.CreateLoad(
+      i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 7), "v_no_chains");
+  Value *skip_chain_walk = cc.b.CreateICmpNE(
+      v_no_chains, ConstantInt::get(i64, 0), "skip_chain");
 
   // Phase 7.1 — hoist data_offsets[*] used in the row loop into entry-block
   // SSA values. Inside the body LLVM treats `load i64, GEP v_offsets, idx`
@@ -6400,8 +6539,12 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   Value *chain_oc_next = cc.b.CreateAdd(chain_oc, ConstantInt::get(i64, 1));
   cc.b.CreateBr(advance_bb);
 
-  // ---- Advance: load next_ptr; null → chain_done; else continue chain ----
+  // ---- Advance: skip chain walk when no duplicate keys in HT ----
   cc.b.SetInsertPoint(advance_bb);
+  BasicBlock *chain_walk_bb = BasicBlock::Create(*ctx, "chain_walk", fn);
+  cc.b.CreateCondBr(skip_chain_walk, chain_done_bb, chain_walk_bb);
+
+  cc.b.SetInsertPoint(chain_walk_bb);
   Value *next_ptr_addr = cc.b.CreateGEP(i8, chain_ptr, v_ptr_off);
   Value *next_ptr_pp =
       cc.b.CreateBitCast(next_ptr_addr, PointerType::getUnqual(i8p));
@@ -6409,8 +6552,8 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   Value *next_is_null = cc.b.CreateICmpEQ(
       cc.b.CreatePtrToInt(next_ptr, i64), ConstantInt::get(i64, 0));
   cc.b.CreateCondBr(next_is_null, chain_done_bb, chain_bb);
-  chain_ptr->addIncoming(next_ptr, advance_bb);
-  chain_oc->addIncoming(chain_oc_next, advance_bb);
+  chain_ptr->addIncoming(next_ptr, chain_walk_bb);
+  chain_oc->addIncoming(chain_oc_next, chain_walk_bb);
 
   cc.b.SetInsertPoint(chain_done_bb);
   cc.b.CreateBr(next_bb);

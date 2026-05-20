@@ -111,6 +111,16 @@ public:
                         const std::vector<ColSchema> &schema);
 
   /**
+   * Compile a range filter: key >= min_val AND key <= max_val.
+   * Generates a selection-vector function (AQPExprFn) that checks one
+   * integer column against compile-time constant bounds.
+   * chunk_col_idx: position of the key column in the input chunk.
+   * dtype: AQP_DTYPE_INT32 or AQP_DTYPE_INT64.
+   */
+  AQPExprFn CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
+                               int64_t min_val, int64_t max_val);
+
+  /**
    * Level 2: Compile a projection operator.
    * in_schema: column layout of the input chunk.
    * proj_node: the SimplestProjection IR node whose target_list defines

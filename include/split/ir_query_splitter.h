@@ -44,6 +44,10 @@ struct TempTableInfo {
   // column_mappings[i] contains the original (table_idx, col_idx) for column i
   std::vector<ColumnMapping> column_mappings;
 
+  // Min/max per column index (integer columns only).
+  // Used for JIT range-predicate injection into downstream scans.
+  std::unordered_map<size_t, std::pair<int64_t, int64_t>> col_min_max;
+
   TempTableInfo(std::string name, unsigned int idx, uint64_t card)
       : table_name(std::move(name)), table_index(idx), cardinality(card) {}
 

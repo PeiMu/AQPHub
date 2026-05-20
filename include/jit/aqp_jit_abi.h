@@ -151,6 +151,7 @@ typedef struct {
   uint32_t        tuple_size;     /* total row width in bytes   */
   uint32_t        pointer_offset; /* offset of next_pointer inside row */
   const uint64_t *data_offsets;   /* layout->GetOffsets().data() — per-col offsets within row */
+  uint64_t        no_chains;      /* 1 if chains_longer_than_one is false (skip chain walk) */
 } AQPJoinHTView;
 
 #ifdef __cplusplus
