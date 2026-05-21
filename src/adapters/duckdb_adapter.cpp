@@ -701,6 +701,11 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   } else
 #endif
   {
+    // Clear stale bloom filters from previous sub-plan iterations.
+    auto *ctx_bf = GetClientContext();
+    if (ctx_bf->aqp_jit_context) {
+      ctx_bf->aqp_jit_context->bloom_scan_filters.clear();
+    }
     auto duckdb_result = conn->Query(sql);
     if (enable_timing_) {
       auto run_us =
@@ -822,8 +827,17 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
 #endif
 
-  // Register pending bloom filters (independent of JIT).
+  // Always clear stale bloom filters before executing a sub-plan.
+  // EIDs are derived from operator memory addresses which get reused across
+  // sub-plans, so leftover BFs would match wrong scans.
 #ifdef HAVE_LLVM
+  {
+    auto *ctx3 = GetClientContext();
+    if (ctx3->aqp_jit_context) {
+      ctx3->aqp_jit_context->bloom_scan_filters.clear();
+    }
+  }
+  // Register pending bloom filters (independent of JIT).
   if (!pending_bloom_filters_.empty() && prepared->data &&
       prepared->data->physical_plan) {
     auto *ctx3 = GetClientContext();
@@ -3451,23 +3465,35 @@ void DuckDBAdapter::RegisterBloomFilters(duckdb::PhysicalOperator &op) {
       if (bf_info.bf_data.empty() || bf_info.base_table_name != tname)
         continue;
 
-      // Find which chunk column index corresponds to bf_info.base_col_name
+      // Find which chunk column index corresponds to bf_info.base_col_name.
+      // With filter_prune, the chunk has projection_ids.size() columns
+      // (a subset of column_ids). We must map column_ids position → chunk
+      // position via projection_ids.
       auto &cols = tsbd->table.GetColumns();
       uint32_t chunk_col_idx = UINT32_MAX;
       int32_t dtype = AQP_DTYPE_INT32;
       for (size_t i = 0; i < scan.column_ids.size() && i < scan.types.size(); i++) {
         auto physical_col = scan.column_ids[i].GetPrimaryIndex();
-        if (physical_col < cols.LogicalColumnCount()) {
-          auto &col = cols.GetColumn(duckdb::LogicalIndex(physical_col));
-          if (col.Name() == bf_info.base_col_name) {
-            chunk_col_idx = static_cast<uint32_t>(i);
-            auto pt = col.Type().InternalType();
-            dtype = (pt == duckdb::PhysicalType::INT64)
-                        ? AQP_DTYPE_INT64
-                        : AQP_DTYPE_INT32;
-            break;
+        if (physical_col >= cols.LogicalColumnCount()) continue;
+        auto &col = cols.GetColumn(duckdb::LogicalIndex(physical_col));
+        if (col.Name() != bf_info.base_col_name) continue;
+        auto pt = col.Type().InternalType();
+        if (pt != duckdb::PhysicalType::INT32 && pt != duckdb::PhysicalType::INT64)
+          break;
+        dtype = (pt == duckdb::PhysicalType::INT64)
+                    ? AQP_DTYPE_INT64
+                    : AQP_DTYPE_INT32;
+        if (!scan.projection_ids.empty()) {
+          for (size_t j = 0; j < scan.projection_ids.size(); j++) {
+            if (scan.projection_ids[j] == i) {
+              chunk_col_idx = static_cast<uint32_t>(j);
+              break;
+            }
           }
+        } else {
+          chunk_col_idx = static_cast<uint32_t>(i);
         }
+        break;
       }
       if (chunk_col_idx == UINT32_MAX) continue;
 
