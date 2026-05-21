@@ -108,6 +108,8 @@ public:
 
   virtual void CleanUp() = 0;
 
+  virtual void ResetQueryState() {}
+
   unsigned int subquery_index = 0;
 
   // std::string intermediate_table_name, int64_t created_table_size

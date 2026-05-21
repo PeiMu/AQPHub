@@ -1594,6 +1594,92 @@ void DuckDBAdapter::CleanUp() {
   temp_table_card_.clear();
 }
 
+void DuckDBAdapter::ResetQueryState() {
+#if IN_MEM_TMP_TABLE
+  temp_collections_.clear();
+#endif
+  plan.reset();
+  planner.reset();
+  table_column_mappings.clear();
+  intermediate_table_map.clear();
+  chunk_col_names_.clear();
+  temp_table_card_.clear();
+  subquery_index = 0;
+  temp_table_index_ = 0;
+  buffered_op_timings_.clear();
+  op_timing_sub_plan_ = 0;
+#ifdef HAVE_LLVM
+  jit_pending_ir_ = nullptr;
+  owned_jit_ir_.reset();
+  jit_pending_plan_.reset();
+  jit_consumed_ir_filters_.clear();
+  jit_consumed_ir_joins_.clear();
+  temp_col_ranges_.clear();
+  pending_bloom_filters_.clear();
+  if (jit_compiler_)
+    jit_compiler_->ResetModules();
+  auto ctx = GetClientContext();
+  if (ctx)
+    ctx->aqp_jit_context.reset();
+#endif
+}
+
+void DuckDBAdapter::LoadTablesFromCSV(const std::string &schema_path,
+                                       const std::string &csv_dir) {
+  std::ifstream schema_file(schema_path);
+  if (!schema_file.is_open())
+    throw std::runtime_error("Cannot open schema file: " + schema_path);
+
+  // Read the full schema file and extract table names + CREATE TABLE statements
+  std::string schema_sql((std::istreambuf_iterator<char>(schema_file)),
+                          std::istreambuf_iterator<char>());
+
+  std::vector<std::string> table_names;
+  std::string::size_type pos = 0;
+  while ((pos = schema_sql.find("CREATE TABLE", pos)) != std::string::npos) {
+    auto start = pos + 13;
+    while (start < schema_sql.size() && schema_sql[start] == ' ')
+      start++;
+    auto end = start;
+    while (end < schema_sql.size() && schema_sql[end] != ' ' && schema_sql[end] != '(')
+      end++;
+    if (end > start)
+      table_names.push_back(schema_sql.substr(start, end - start));
+    pos = end;
+  }
+
+  std::cout << "[AQP] Loading " << table_names.size()
+            << " tables from CSV into memory..." << std::endl;
+  auto load_start = std::chrono::high_resolution_clock::now();
+
+  // Create tables with proper schema (types, constraints)
+  auto create_result = conn->Query(schema_sql);
+  if (create_result->HasError())
+    throw std::runtime_error("Schema creation failed: " +
+                             create_result->GetError());
+
+  // Load data from CSV into each table
+  for (const auto &table_name : table_names) {
+    std::string csv_path = csv_dir;
+    if (!csv_path.empty() && csv_path.back() != '/')
+      csv_path += '/';
+    csv_path += table_name + ".csv";
+
+    std::string sql = "COPY " + table_name + " FROM '" + csv_path +
+                      "' (HEADER, DELIMITER ',', QUOTE '\"', ESCAPE '\\')";
+    auto result = conn->Query(sql);
+    if (result->HasError())
+      throw std::runtime_error("CSV load failed for " + table_name + ": " +
+                               result->GetError());
+  }
+
+  auto load_end = std::chrono::high_resolution_clock::now();
+  auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     load_end - load_start).count();
+  std::cout << "[AQP] CSV loading complete in " << load_ms << " ms"
+            << std::endl;
+}
+
 duckdb::ClientContext *DuckDBAdapter::GetClientContext() {
   return conn->context.get();
 }

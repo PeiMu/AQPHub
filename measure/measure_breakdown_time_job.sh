@@ -222,21 +222,19 @@ fi
 
 for sql in "$dir"/*.sql; do
   echo "Running benchmark for $sql..." | tee -a "$log_name"
-  for i in $(eval echo {1.."${iteration}"}); do
-      echo "# iter-${i}" >> "${op_log_name}"
-      $cmd_prefix ../build_release/aqp_middleware \
-        --engine="${engine}" \
-        --db="${db_conn}" \
-        "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-        --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-        --split="${split}" \
-        --timing \
-        --no-analyze \
-        --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
-        ${jit_extra_flags} \
-        "${sql}"
-  done
+  $cmd_prefix ../build_release/aqp_middleware \
+    --engine="${engine}" \
+    --db="${db_conn}" \
+    "${helper_db_arg}" \
+    --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
+    --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+    --split="${split}" \
+    --timing \
+    --no-analyze \
+    --repeat=${iteration} \
+    --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
+    ${jit_extra_flags} \
+    "${sql}"
 done
 
 mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"

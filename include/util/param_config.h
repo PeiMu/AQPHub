@@ -54,6 +54,11 @@ struct ParamConfig {
   bool enable_debug_print = false;
   bool enable_sub_plan_combiner = false;
 
+  // Measurement infrastructure
+  int repeat_count = 1;      // --repeat=N: run query N times in-process
+  bool in_memory = false;     // --in-memory: use :memory: + CSV loading
+  std::string csv_dir;        // --csv-dir=<path>: CSV file directory
+
   // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
   // 0 = no JIT. Each level implies all lower levels for fallback.
   // Set via: --jit (=AQPJIT_EXPR), --jit-level=operator, --jit-simd, --jit-opt=3
@@ -166,6 +171,10 @@ struct ParamConfig {
     std::cout << "  Sub-Plan Combiner: "
               << (enable_sub_plan_combiner ? "enabled" : "disabled")
               << std::endl;
+    if (repeat_count > 1)
+      std::cout << "  Repeat: " << repeat_count << std::endl;
+    if (in_memory)
+      std::cout << "  In-Memory: enabled (csv_dir=" << csv_dir << ")" << std::endl;
     std::cout << "===========================" << std::endl;
   }
 };

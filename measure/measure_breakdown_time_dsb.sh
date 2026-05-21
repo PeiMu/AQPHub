@@ -179,18 +179,17 @@ fi
 
 for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
   echo "Running benchmark for $sql..." | tee -a "$log_name"
-  for i in $(eval echo {1.."${iteration}"}); do
-      $cmd_prefix ../build_release/aqp_middleware \
-        --engine="${engine}" \
-        --db="${db_conn}" \
-        "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
-        --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
-        --split="${split}" \
-        --timing \
-        --no-analyze \
-        "${sql}" 
-  done
+  $cmd_prefix ../build_release/aqp_middleware \
+    --engine="${engine}" \
+    --db="${db_conn}" \
+    "${helper_db_arg}" \
+    --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+    --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
+    --split="${split}" \
+    --timing \
+    --no-analyze \
+    --repeat=${iteration} \
+    "${sql}"
 done
 
 mv "${log_name}" job_result/${engine}_${split}_breakdown_"${log_name}"

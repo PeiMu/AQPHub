@@ -43,11 +43,16 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
   switch (config.engine) {
 #if defined(HAVE_DUCKDB)
   case BackendEngine::DUCKDB: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
     if (config.enable_debug_print) {
       std::cout << "[AQP Middleware] Creating DuckDB adapter: "
-                << config.db_path_or_connection << std::endl;
+                << db_path << std::endl;
     }
-    return std::make_unique<DuckDBAdapter>(config.db_path_or_connection);
+    auto adapter = std::make_unique<DuckDBAdapter>(db_path);
+    if (config.in_memory) {
+      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
   }
 #endif
 
@@ -355,9 +360,31 @@ int main(int argc, char **argv) {
     if (config.benchmark_mode) {
       return_code = RunBenchmark(adapter.get(), config);
     } else {
-      TestResult result;
-      ExecuteSingleQuery(adapter.get(), config.query_path, config, result);
-      return_code = result.success ? 0 : 1;
+      for (int iter = 0; iter < config.repeat_count; iter++) {
+        if (iter > 0) {
+          if (config.enable_timing)
+            timer = chrono_tic();
+          adapter->ResetQueryState();
+          if (config.enable_timing) {
+            auto reset_time = chrono_toc(&timer, "", false);
+            std::ofstream log_file;
+            log_file.open("time_log.csv", std::ios_base::app);
+            log_file << std::fixed << std::setprecision(3)
+                     << (reset_time / 1000.0) << ", ";
+            log_file.close();
+          }
+        }
+
+        if (config.repeat_count > 1) {
+          std::ofstream op_log("operator_exe.csv", std::ios::app);
+          op_log << "# iter-" << (iter + 1) << "\n";
+          op_log.close();
+        }
+
+        TestResult result;
+        ExecuteSingleQuery(adapter.get(), config.query_path, config, result);
+        return_code = result.success ? 0 : 1;
+      }
     }
 
     std::cout << "\n========================================" << std::endl;

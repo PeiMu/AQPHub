@@ -213,6 +213,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         throw std::runtime_error(
             "Unknown JIT opt level: " + opt +
             " (valid: O0, O1, O2, O3)");
+    } else if (arg.find("--repeat=") == 0) {
+      config.repeat_count = std::stoi(arg.substr(9));
+      if (config.repeat_count < 1)
+        throw std::runtime_error("--repeat must be >= 1");
+    } else if (arg == "--in-memory") {
+      config.in_memory = true;
+    } else if (arg.find("--csv-dir=") == 0) {
+      config.csv_dir = arg.substr(10);
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -224,6 +232,17 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
   }
 
   config.query_path = argv[argc - 1];
+
+  if (config.in_memory) {
+    if (config.engine != BackendEngine::DUCKDB)
+      throw std::runtime_error("--in-memory is only supported with --engine=duckdb");
+    if (config.csv_dir.empty() && !config.schema_path.empty()) {
+      auto pos = config.schema_path.find_last_of('/');
+      config.csv_dir = (pos != std::string::npos ? config.schema_path.substr(0, pos) : ".") + "/csv";
+    }
+    if (config.csv_dir.empty())
+      throw std::runtime_error("--in-memory requires --csv-dir=<path> or --schema=<path>");
+  }
 
   return config;
 }
@@ -316,6 +335,16 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --[no-]jit-cache[=path]          Cross-process "
                "compiled binary cache"
+            << std::endl;
+  std::cout << "\n  Measurement:" << std::endl;
+  std::cout << "  --repeat=N                       Run query N times in-process "
+               "(default: 1)"
+            << std::endl;
+  std::cout << "  --in-memory                      Use :memory: DB + load from "
+               "CSV (DuckDB only)"
+            << std::endl;
+  std::cout << "  --csv-dir=<path>                 CSV directory for --in-memory "
+               "(default: derived from --schema)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

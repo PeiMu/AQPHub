@@ -94,6 +94,10 @@ public:
   explicit DuckDBAdapter(const std::string &db_path = ":memory :");
   ~DuckDBAdapter() override;
 
+  void ResetQueryState() override;
+  void LoadTablesFromCSV(const std::string &schema_path,
+                         const std::string &csv_dir);
+
   // Parse SQL and return logical plan
   void ParseSQL(const std::string &sql) override;
 
