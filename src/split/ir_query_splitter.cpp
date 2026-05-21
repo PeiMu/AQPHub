@@ -472,242 +472,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
               << temp_table_name << std::endl;
   }
 
-  // Range predicate injection: for each temp table column that joins with a
-  // base table column in this sub-plan, inject BETWEEN min AND max to enable
-  // DuckDB zone-map pruning. Min/max is computed lazily (only when a join
-  // partner is found and the cardinality guard passes) to avoid scanning
-  // temp tables that won't produce useful predicates.
-#ifdef HAVE_DUCKDB
-  if (config_.engine == BackendEngine::DUCKDB) {
-    auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-    std::string extra_where;
+  ApplyCrossSubPlanOptimizations(sub_sql);
 
-    // Lambda: find equi-join partner for a temp column in the SQL.
-    // Returns "base_alias.col" or "" if not found.
-    auto find_join_partner = [](const std::string &sql,
-                                const std::string &temp_col_name) -> std::string {
-      std::string needle = "." + temp_col_name;
-      size_t pos = 0;
-      while ((pos = sql.find(needle, pos)) != std::string::npos) {
-        size_t after_needle = pos + needle.size();
-        if (after_needle < sql.size() && (std::isalnum(sql[after_needle]) ||
-            sql[after_needle] == '_')) {
-          pos = after_needle;
-          continue;
-        }
-        size_t temp_start = pos;
-        while (temp_start > 0 && (std::isalnum(sql[temp_start - 1]) ||
-               sql[temp_start - 1] == '_'))
-          temp_start--;
-        // "temp.col = base.col"
-        {
-          size_t p = after_needle;
-          while (p < sql.size() && sql[p] == ' ') p++;
-          if (p < sql.size() && sql[p] == '=') {
-            p++;
-            while (p < sql.size() && sql[p] == ' ') p++;
-            size_t start_base = p;
-            while (p < sql.size() && (std::isalnum(sql[p]) ||
-                   sql[p] == '_' || sql[p] == '.'))
-              p++;
-            std::string base_part = sql.substr(start_base, p - start_base);
-            if (base_part.find('.') != std::string::npos &&
-                base_part.find("temp") == std::string::npos)
-              return base_part;
-          }
-        }
-        // "base.col = temp.col"
-        {
-          size_t p = temp_start;
-          while (p > 0 && sql[p - 1] == ' ') p--;
-          if (p > 0 && sql[p - 1] == '=') {
-            p--;
-            while (p > 0 && sql[p - 1] == ' ') p--;
-            size_t end_base = p;
-            size_t start_base = end_base;
-            while (start_base > 0 && (std::isalnum(sql[start_base - 1]) ||
-                   sql[start_base - 1] == '_' || sql[start_base - 1] == '.'))
-              start_base--;
-            std::string base_part = sql.substr(start_base, end_base - start_base);
-            if (base_part.find('.') != std::string::npos &&
-                base_part.find("temp") == std::string::npos)
-              return base_part;
-          }
-        }
-        pos = after_needle;
-      }
-      return "";
-    };
-
-    // Extract base table name from "cast_info_2.col" → "cast_info".
-    auto extract_base_table = [](const std::string &base_col) -> std::string {
-      size_t dot = base_col.find('.');
-      if (dot == std::string::npos) return "";
-      std::string alias = base_col.substr(0, dot);
-      size_t last_us = alias.rfind('_');
-      if (last_us == std::string::npos) return alias;
-      bool suffix_is_num = true;
-      for (size_t i = last_us + 1; i < alias.size(); i++) {
-        if (!std::isdigit(alias[i])) { suffix_is_num = false; break; }
-      }
-      return suffix_is_num ? alias.substr(0, last_us) : alias;
-    };
-
-    // Cost model thresholds derived from hardware characteristics:
-    //
-    // L2 cache per core: 256KB. Each HT entry ≈ 64B.
-    // HT fits in L2 when entries < 256K/64 = 4096. When the HT is
-    // L2-resident, each probe is cheap (~5ns), so reducing the number
-    // of probes via BETWEEN is worthwhile. When HT exceeds L2, probes
-    // are cache-miss-dominated (~50ns each) and the per-row BETWEEN
-    // eval cost (~2ns) doesn't meaningfully offset the probe savings.
-    constexpr uint64_t kMaxHTCapacity = 4096;
-    //
-    // Min temp_card: with very few build-side rows, the entire HT fits
-    // in L1 (32KB / 64B ≈ 512). Probes are essentially free.
-    // BETWEEN adds scan overhead with no probe-side benefit.
-    constexpr uint64_t kMinTempCard = 50;
-    //
-    // Max selectivity: zone-map pruning only helps when the BETWEEN
-    // excludes enough column segments. At sel > 0.40, most segments
-    // overlap the range and few are pruned.
-    constexpr double kMaxSelectivity = 0.40;
-
-    for (const auto &tt : temp_tables_) {
-      uint64_t temp_card = tt.cardinality;
-      if (temp_card < kMinTempCard || temp_card > kMaxHTCapacity) continue;
-
-      // Phase 1: find which columns have join partners (cheap string match).
-      std::vector<std::pair<size_t, std::string>> join_matches;
-      for (size_t col_pos = 0; col_pos < tt.column_names.size(); col_pos++) {
-        std::string base_col = find_join_partner(sub_sql, tt.column_names[col_pos]);
-        if (!base_col.empty())
-          join_matches.emplace_back(col_pos, std::move(base_col));
-      }
-      if (join_matches.empty()) continue;
-
-      // Phase 2: compute min/max lazily (only when join partners found).
-      std::unordered_map<size_t, std::pair<int64_t, int64_t>> col_min_max;
-      if (duck && !tt.col_min_max.empty()) {
-        col_min_max = tt.col_min_max;
-      } else if (duck) {
-        col_min_max = duck->GetTempTableMinMax(tt.table_name);
-      }
-
-      // Phase 3: apply selectivity guard and build BETWEEN predicates.
-      for (auto &[col_pos, base_col] : join_matches) {
-        auto it = col_min_max.find(col_pos);
-        if (it == col_min_max.end()) continue;
-        int64_t range_min = it->second.first;
-        int64_t range_max = it->second.second;
-        double selectivity = (range_max > 0)
-            ? static_cast<double>(range_max - range_min) / range_max
-            : 1.0;
-        if (selectivity >= kMaxSelectivity) continue;
-
-        if (config_.enable_debug_print) {
-          std::cerr << "[RANGE-DIAG] base=" << extract_base_table(base_col)
-                    << " sel=" << std::fixed << std::setprecision(4) << selectivity
-                    << " card=" << temp_card << " inject=1\n";
-        }
-        extra_where += " AND " + base_col + " >= " +
-                       std::to_string(range_min) +
-                       " AND " + base_col + " <= " +
-                       std::to_string(range_max);
-      }
-    }
-
-    if (!extra_where.empty()) {
-      size_t semi = sub_sql.rfind(';');
-      if (semi != std::string::npos)
-        sub_sql.insert(semi, extra_where);
-      else
-        sub_sql += extra_where;
-      if (config_.enable_debug_print)
-        std::cerr << "[RANGE-SQL] injected: " << extra_where << "\n";
-    }
-
-    // Bloom filter push-down: for temp tables where range predicate injection
-    // doesn't apply (temp_card too large or selectivity too high), build a
-    // Bloom filter from the join key column and register it for the scan.
-    //
-    // Cost model: BF check is ~10ns/row (hash + BF lookup). This is worth it
-    // when enough rows are filtered to save hash probe cost:
-    //   savings = base_rows * (1 - match_rate) * probe_cost_per_row
-    //   cost = base_rows * bf_check_cost_per_row
-    // With 1% FPR (BF sized at 12 bits/key), match_rate ≈ temp_card/domain_max.
-    // Worth it when temp_card is small relative to the base table — which is
-    // the common case in JOB for the largest tables (cast_info, movie_info).
-    //
-    // Min temp_card to justify BF build cost: 50 (same as range predicate).
-    // Max temp_card: BF memory = temp_card * 12 bits / 8 = 1.5 * temp_card bytes.
-    // At 100K keys, BF ≈ 150KB (fits L2). Beyond that, BF itself thrashes cache.
-    constexpr uint64_t kBFMaxTempCard = 100000;
-
-    std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
-    // Track (base_table, base_col) pairs already targeted by a BF.
-    // Skip duplicates to avoid AND-filtering the same column with
-    // different value sets (e.g., self-join: subject_id and status_id
-    // both join with comp_cast_type.id).
-    std::set<std::pair<std::string, std::string>> bf_targets;
-    for (const auto &tt : temp_tables_) { (void)tt; break; // DISABLED: net +0.5% regression
-      uint64_t temp_card = tt.cardinality;
-      if (temp_card < kMinTempCard || temp_card > kBFMaxTempCard) continue;
-      // Skip if range predicate already handles this temp table
-      if (temp_card <= kMaxHTCapacity) continue;
-
-      for (size_t col_pos = 0; col_pos < tt.column_names.size(); col_pos++) {
-        std::string base_col = find_join_partner(sub_sql, tt.column_names[col_pos]);
-        if (base_col.empty()) continue;
-
-        std::string base_table = extract_base_table(base_col);
-        std::string base_col_name = base_col.substr(base_col.find('.') + 1);
-
-        // Skip if another BF already targets this (table, column).
-        auto key = std::make_pair(base_table, base_col_name);
-        if (bf_targets.count(key)) continue;
-
-        // Skip if the base table appears in a self-join (multiple aliases
-        // like comp_cast_type_1, comp_cast_type_2). A BF on one join
-        // condition would wrongly filter the shared scan.
-        {
-          std::set<std::string> aliases;
-          size_t pos = 0;
-          std::string pat = base_table + "_";
-          while ((pos = sub_sql.find(pat, pos)) != std::string::npos) {
-            size_t end = pos + pat.size();
-            if (end < sub_sql.size() && std::isdigit(sub_sql[end])) {
-              size_t alias_end = end;
-              while (alias_end < sub_sql.size() && std::isdigit(sub_sql[alias_end]))
-                alias_end++;
-              if (alias_end >= sub_sql.size() || sub_sql[alias_end] == '.' ||
-                  sub_sql[alias_end] == ' ' || sub_sql[alias_end] == ',')
-                aliases.insert(sub_sql.substr(pos, alias_end - pos));
-            }
-            pos = end;
-          }
-          if (aliases.size() > 1) continue;
-        }
-
-        auto bf_info = duck->BuildBloomFilter(tt.table_name, col_pos, temp_card);
-        if (bf_info.bf_data.empty()) continue;
-
-        bf_info.base_table_name = base_table;
-        bf_info.base_col_name = base_col_name;
-        bf_targets.insert(key);
-        bloom_filters.push_back(std::move(bf_info));
-
-        if (config_.enable_debug_print) {
-          std::cerr << "[BF-DIAG] temp=" << tt.table_name
-                    << " col=" << tt.column_names[col_pos]
-                    << " card=" << temp_card
-                    << " -> " << base_table << "." << base_col_name << "\n";
-        }
-      }
-    }
-    duck->SetPendingBloomFilters(std::move(bloom_filters));
-  }
-#endif
 
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
@@ -723,8 +489,21 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
 #endif
 
-  adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                         config_.enable_update_temp_card);
+  if (SubPlanReferencesEmptyTemp(sub_sql)) {
+    std::string short_sql = sub_sql;
+    size_t semi = short_sql.rfind(';');
+    if (semi != std::string::npos)
+      short_sql.insert(semi, " LIMIT 0");
+    else
+      short_sql += " LIMIT 0";
+    if (config_.enable_debug_print)
+      std::cerr << "[EARLY-TERM] sub-plan references empty temp, appending LIMIT 0\n";
+    adapter_->ExecuteSQLandCreateTempTable(short_sql, temp_table_name,
+                                           config_.enable_update_temp_card);
+  } else {
+    adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
+                                           config_.enable_update_temp_card);
+  }
 
   if (config_.enable_timing)
     timer = chrono_tic();
@@ -745,6 +524,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
     // Override the engine's internal stats so subsequent EXPLAIN queries
     // also use the estimated cardinality instead of the real one
     adapter_->SetTempTableCardinality(temp_table_name, cardinality);
+  }
+
+  if (cardinality == 0) {
+    empty_temp_tables_.insert(temp_table_name);
   }
 
   TempTableInfo temp_table =
@@ -883,6 +666,223 @@ IRQuerySplitter::GetTrivialTempTable(ir_sql_converter::AQPStmt *ir) const {
   }
 
   return "";
+}
+
+bool IRQuerySplitter::SubPlanReferencesEmptyTemp(const std::string &sql) const {
+  for (const auto &name : empty_temp_tables_) {
+    if (sql.find(name) != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
+// Outlined from ExecuteOneIteration to keep the hot path compact.
+// __attribute__((noinline)) prevents the compiler from inlining this
+// ~250-line block back into the caller, preserving icache locality for
+// the common no-optimization path.
+__attribute__((noinline))
+void IRQuerySplitter::ApplyCrossSubPlanOptimizations(std::string &sub_sql) {
+#ifdef HAVE_DUCKDB
+  if (config_.engine != BackendEngine::DUCKDB) return;
+
+  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+  if (!duck) return;
+
+  std::string extra_where;
+
+  auto find_join_partner = [](const std::string &sql,
+                              const std::string &temp_col_name) -> std::string {
+    std::string needle = "." + temp_col_name;
+    size_t pos = 0;
+    while ((pos = sql.find(needle, pos)) != std::string::npos) {
+      size_t after_needle = pos + needle.size();
+      if (after_needle < sql.size() && (std::isalnum(sql[after_needle]) ||
+          sql[after_needle] == '_')) {
+        pos = after_needle;
+        continue;
+      }
+      size_t temp_start = pos;
+      while (temp_start > 0 && (std::isalnum(sql[temp_start - 1]) ||
+             sql[temp_start - 1] == '_'))
+        temp_start--;
+      {
+        size_t p = after_needle;
+        while (p < sql.size() && sql[p] == ' ') p++;
+        if (p < sql.size() && sql[p] == '=') {
+          p++;
+          while (p < sql.size() && sql[p] == ' ') p++;
+          size_t start_base = p;
+          while (p < sql.size() && (std::isalnum(sql[p]) ||
+                 sql[p] == '_' || sql[p] == '.'))
+            p++;
+          std::string base_part = sql.substr(start_base, p - start_base);
+          if (base_part.find('.') != std::string::npos &&
+              base_part.find("temp") == std::string::npos)
+            return base_part;
+        }
+      }
+      {
+        size_t p = temp_start;
+        while (p > 0 && sql[p - 1] == ' ') p--;
+        if (p > 0 && sql[p - 1] == '=') {
+          p--;
+          while (p > 0 && sql[p - 1] == ' ') p--;
+          size_t end_base = p;
+          size_t start_base = end_base;
+          while (start_base > 0 && (std::isalnum(sql[start_base - 1]) ||
+                 sql[start_base - 1] == '_' || sql[start_base - 1] == '.'))
+            start_base--;
+          std::string base_part = sql.substr(start_base, end_base - start_base);
+          if (base_part.find('.') != std::string::npos &&
+              base_part.find("temp") == std::string::npos)
+            return base_part;
+        }
+      }
+      pos = after_needle;
+    }
+    return "";
+  };
+
+  auto extract_base_table = [](const std::string &base_col) -> std::string {
+    size_t dot = base_col.find('.');
+    if (dot == std::string::npos) return "";
+    std::string alias = base_col.substr(0, dot);
+    size_t last_us = alias.rfind('_');
+    if (last_us == std::string::npos) return alias;
+    bool suffix_is_num = true;
+    for (size_t i = last_us + 1; i < alias.size(); i++) {
+      if (!std::isdigit(alias[i])) { suffix_is_num = false; break; }
+    }
+    return suffix_is_num ? alias.substr(0, last_us) : alias;
+  };
+
+  constexpr uint64_t kMaxHTCapacity = 4096;
+  constexpr uint64_t kMinTempCard = 50;
+  constexpr double kMaxSelectivity = 0.40;
+
+  for (const auto &tt : temp_tables_) {
+    uint64_t temp_card = tt.cardinality;
+    if (temp_card < kMinTempCard) continue;
+    bool is_medium = temp_card > kMaxHTCapacity;
+
+    std::vector<std::pair<size_t, std::string>> join_matches;
+    for (size_t col_pos = 0; col_pos < tt.column_names.size(); col_pos++) {
+      std::string base_col = find_join_partner(sub_sql, tt.column_names[col_pos]);
+      if (!base_col.empty())
+        join_matches.emplace_back(col_pos, std::move(base_col));
+    }
+    if (join_matches.empty()) continue;
+
+    std::unordered_map<size_t, std::pair<int64_t, int64_t>> col_min_max;
+    if (!tt.col_min_max.empty()) {
+      col_min_max = tt.col_min_max;
+    } else {
+      col_min_max = duck->GetTempTableMinMax(tt.table_name);
+    }
+
+    for (auto &[col_pos, base_col] : join_matches) {
+      auto it = col_min_max.find(col_pos);
+      if (it == col_min_max.end()) continue;
+      int64_t range_min = it->second.first;
+      int64_t range_max = it->second.second;
+      double selectivity = (range_max > 0)
+          ? static_cast<double>(range_max - range_min) / range_max
+          : 1.0;
+
+      if (is_medium) {
+        if (selectivity >= 0.25) continue;
+        std::string base_table = extract_base_table(base_col);
+        uint64_t base_card = duck->GetBaseTableCardinality(base_table);
+        double match_rate = (base_card > 0)
+            ? static_cast<double>(temp_card) / base_card : 1.0;
+        if (match_rate >= 0.25) continue;
+      } else {
+        if (selectivity >= kMaxSelectivity) continue;
+      }
+
+      if (config_.enable_debug_print) {
+        std::cerr << "[RANGE-DIAG] base=" << extract_base_table(base_col)
+                  << " sel=" << std::fixed << std::setprecision(4) << selectivity
+                  << " card=" << temp_card << " medium=" << is_medium
+                  << " inject=1\n";
+      }
+      extra_where += " AND " + base_col + " >= " +
+                     std::to_string(range_min) +
+                     " AND " + base_col + " <= " +
+                     std::to_string(range_max);
+    }
+  }
+
+  if (!extra_where.empty()) {
+    size_t semi = sub_sql.rfind(';');
+    if (semi != std::string::npos)
+      sub_sql.insert(semi, extra_where);
+    else
+      sub_sql += extra_where;
+    if (config_.enable_debug_print)
+      std::cerr << "[RANGE-SQL] injected: " << extra_where << "\n";
+  }
+
+  constexpr uint64_t kBFMaxTempCard = 100000;
+
+  std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
+  std::set<std::pair<std::string, std::string>> bf_targets;
+  for (const auto &tt : temp_tables_) {
+    uint64_t temp_card = tt.cardinality;
+    if (temp_card < kMinTempCard || temp_card > kBFMaxTempCard) continue;
+
+    for (size_t col_pos = 0; col_pos < tt.column_names.size(); col_pos++) {
+      std::string base_col = find_join_partner(sub_sql, tt.column_names[col_pos]);
+      if (base_col.empty()) continue;
+
+      std::string base_table = extract_base_table(base_col);
+
+      uint64_t base_card = duck->GetBaseTableCardinality(base_table);
+      if (base_card == 0) continue;
+      double match_rate = static_cast<double>(temp_card) / base_card;
+      if (match_rate >= 0.25) continue;
+      std::string base_col_name = base_col.substr(base_col.find('.') + 1);
+
+      auto key = std::make_pair(base_table, base_col_name);
+      if (bf_targets.count(key)) continue;
+
+      {
+        std::set<std::string> aliases;
+        size_t pos = 0;
+        std::string pat = base_table + "_";
+        while ((pos = sub_sql.find(pat, pos)) != std::string::npos) {
+          size_t end = pos + pat.size();
+          if (end < sub_sql.size() && std::isdigit(sub_sql[end])) {
+            size_t alias_end = end;
+            while (alias_end < sub_sql.size() && std::isdigit(sub_sql[alias_end]))
+              alias_end++;
+            if (alias_end >= sub_sql.size() || sub_sql[alias_end] == '.' ||
+                sub_sql[alias_end] == ' ' || sub_sql[alias_end] == ',')
+              aliases.insert(sub_sql.substr(pos, alias_end - pos));
+          }
+          pos = end;
+        }
+        if (aliases.size() > 1) continue;
+      }
+
+      auto bf_info = duck->BuildBloomFilter(tt.table_name, col_pos, temp_card);
+      if (bf_info.bf_data.empty()) continue;
+
+      bf_info.base_table_name = base_table;
+      bf_info.base_col_name = base_col_name;
+      bf_targets.insert(key);
+      bloom_filters.push_back(std::move(bf_info));
+
+      if (config_.enable_debug_print) {
+        std::cerr << "[BF-DIAG] temp=" << tt.table_name
+                  << " col=" << tt.column_names[col_pos]
+                  << " card=" << temp_card
+                  << " -> " << base_table << "." << base_col_name << "\n";
+      }
+    }
+  }
+  duck->SetPendingBloomFilters(std::move(bloom_filters));
+#endif
 }
 
 // ===== Shared Index Update Functions =====

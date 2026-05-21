@@ -152,6 +152,8 @@ typedef struct {
   uint32_t        pointer_offset; /* offset of next_pointer inside row */
   const uint64_t *data_offsets;   /* layout->GetOffsets().data() — per-col offsets within row */
   uint64_t        no_chains;      /* 1 if chains_longer_than_one is false (skip chain walk) */
+  const uint64_t *bf_data;        /* bloom filter bit array (nullptr = no BF)               */
+  uint64_t        bf_bitmask;     /* num_sectors - 1 for BF lookup                          */
 } AQPJoinHTView;
 
 #ifdef __cplusplus

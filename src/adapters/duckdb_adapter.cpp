@@ -23,6 +23,8 @@
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
+#include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
@@ -93,6 +95,8 @@ struct TempCollectionFunctionData : public duckdb::FunctionData {
   bool has_override_cardinality = false;
   uint64_t override_cardinality = 0;
   std::string table_name;
+  // Non-owning pointer to column stats stored in StoredTempResult
+  std::vector<duckdb::BaseStatistics*> column_stats;
 
   duckdb::unique_ptr<duckdb::FunctionData> Copy() const override {
     auto result = duckdb::make_uniq<TempCollectionFunctionData>();
@@ -100,6 +104,7 @@ struct TempCollectionFunctionData : public duckdb::FunctionData {
     result->has_override_cardinality = has_override_cardinality;
     result->override_cardinality = override_cardinality;
     result->table_name = table_name;
+    result->column_stats = column_stats;
     return std::move(result);
   }
 
@@ -113,6 +118,7 @@ struct TempCollectionFunctionData : public duckdb::FunctionData {
 struct TempCollectionGlobalState : public duckdb::GlobalTableFunctionState {
   duckdb::ColumnDataScanState scan_state;
   bool initialized = false;
+  duckdb::vector<duckdb::column_t> column_ids;
 };
 
 } // anonymous namespace
@@ -137,6 +143,7 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
       "scan_temp_collection", {duckdb::LogicalType::VARCHAR},
       TempCollectionScanFunc, TempCollectionBind, TempCollectionInitGlobal);
   func.cardinality = TempCollectionCardinality;
+  func.projection_pushdown = true;
   func.function_info =
       duckdb::make_shared_ptr<TempCollectionScanInfo>(&temp_collections_);
 
@@ -184,13 +191,18 @@ duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::TempCollectionBind(
   result->has_override_cardinality = stored.has_override_cardinality;
   result->override_cardinality = stored.override_cardinality;
   result->table_name = table_name;
+  for (auto &stat : stored.column_stats) {
+    result->column_stats.push_back(stat.get());
+  }
   return std::move(result);
 }
 
 duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
 DuckDBAdapter::TempCollectionInitGlobal(duckdb::ClientContext &context,
                                         duckdb::TableFunctionInitInput &input) {
-  return duckdb::make_uniq<TempCollectionGlobalState>();
+  auto state = duckdb::make_uniq<TempCollectionGlobalState>();
+  state->column_ids = input.column_ids;
+  return std::move(state);
 }
 
 void DuckDBAdapter::TempCollectionScanFunc(duckdb::ClientContext &context,
@@ -200,7 +212,11 @@ void DuckDBAdapter::TempCollectionScanFunc(duckdb::ClientContext &context,
   auto &state = data.global_state->Cast<TempCollectionGlobalState>();
 
   if (!state.initialized) {
-    bind_data.collection->InitializeScan(state.scan_state);
+    if (!state.column_ids.empty()) {
+      bind_data.collection->InitializeScan(state.scan_state, state.column_ids);
+    } else {
+      bind_data.collection->InitializeScan(state.scan_state);
+    }
     state.initialized = true;
   }
 
@@ -218,6 +234,18 @@ DuckDBAdapter::TempCollectionCardinality(
     cardinality = data.collection->Count();
   }
   return duckdb::make_uniq<duckdb::NodeStatistics>(cardinality, cardinality);
+}
+
+duckdb::unique_ptr<duckdb::BaseStatistics>
+DuckDBAdapter::TempCollectionStatistics(
+    duckdb::ClientContext &context,
+    duckdb::TableFunctionGetStatisticsInput &input) {
+  auto &data = input.bind_data->Cast<TempCollectionFunctionData>();
+  auto col_idx = input.column_index.GetPrimaryIndex();
+  if (col_idx < data.column_stats.size() && data.column_stats[col_idx]) {
+    return data.column_stats[col_idx]->ToUnique();
+  }
+  return nullptr;
 }
 
 // Replacement scan callback
@@ -642,6 +670,9 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     }
 
     jit_pending_ir_ = nullptr;
+    if (prepared->data && prepared->data->physical_plan) {
+      InjectTempTableJoinStats(prepared->data->physical_plan->Root());
+    }
     duckdb::vector<duckdb::Value> bound;
     auto duckdb_result = prepared->Execute(bound, false);
     if (enable_timing_) {
@@ -804,6 +835,12 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
 #endif
 
+  // Inject temp table column stats into PhysicalHashJoin nodes to enable
+  // perfect hash join (direct array lookup instead of hash table).
+  if (prepared->data && prepared->data->physical_plan) {
+    InjectTempTableJoinStats(prepared->data->physical_plan->Root());
+  }
+
   duckdb::vector<duckdb::Value> bound_values;
   auto subquery_result = prepared->ExecuteRow(bound_values, false);
   if (enable_timing_) {
@@ -842,11 +879,79 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
                                   unique_column_name);
   }
 
+  // Compute per-column statistics before moving the collection
+  std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats;
+  {
+    auto &types = subquery_result->Types();
+    col_stats.resize(types.size());
+    for (size_t ci = 0; ci < types.size(); ci++) {
+      col_stats[ci] = duckdb::BaseStatistics::CreateEmpty(types[ci]).ToUnique();
+    }
+    duckdb::ColumnDataScanState scan_state;
+    subquery_result->InitializeScan(scan_state);
+    duckdb::DataChunk chunk;
+    chunk.Initialize(*GetClientContext(), types);
+    bool has_rows = false;
+    while (subquery_result->Scan(scan_state, chunk)) {
+      if (chunk.size() == 0) break;
+      has_rows = true;
+      chunk.Flatten();
+      for (size_t ci = 0; ci < types.size(); ci++) {
+        auto &vec = chunk.data[ci];
+        auto &validity = duckdb::FlatVector::Validity(vec);
+        bool col_has_null = false;
+        bool col_has_valid = false;
+        for (duckdb::idx_t r = 0; r < chunk.size(); r++) {
+          if (!validity.RowIsValid(r)) {
+            col_has_null = true;
+            continue;
+          }
+          col_has_valid = true;
+        }
+        if (col_has_null) col_stats[ci]->SetHasNullFast();
+        if (col_has_valid) col_stats[ci]->SetHasNoNullFast();
+
+        auto pt = types[ci].InternalType();
+        switch (pt) {
+        case duckdb::PhysicalType::INT8: {
+          auto *data = duckdb::FlatVector::GetData<int8_t>(vec);
+          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
+            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int8_t>(data[r]);
+          break;
+        }
+        case duckdb::PhysicalType::INT16: {
+          auto *data = duckdb::FlatVector::GetData<int16_t>(vec);
+          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
+            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int16_t>(data[r]);
+          break;
+        }
+        case duckdb::PhysicalType::INT32: {
+          auto *data = duckdb::FlatVector::GetData<int32_t>(vec);
+          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
+            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int32_t>(data[r]);
+          break;
+        }
+        case duckdb::PhysicalType::INT64: {
+          auto *data = duckdb::FlatVector::GetData<int64_t>(vec);
+          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
+            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int64_t>(data[r]);
+          break;
+        }
+        default:
+          break;
+        }
+      }
+      chunk.Reset();
+    }
+    (void)has_rows;
+  }
+
   // Store the ColumnDataCollection in temp_collections_ (zero-copy)
   chunk_col_names_[data_chunk_index] = column_names;
   StoredTempResult stored;
   stored.collection = std::move(subquery_result);
   stored.column_names = std::move(column_names);
+  stored.column_stats = std::move(col_stats);
   temp_collections_[temp_table_name] = std::move(stored);
 
   temp_table_card_.emplace(temp_table_name, chunk_size);
@@ -1144,6 +1249,84 @@ DuckDBAdapter::GetTempTableMinMax(const std::string &temp_table_name) {
   return result;
 }
 
+std::vector<int64_t>
+DuckDBAdapter::GetTempTableDistinctValues(const std::string &temp_table_name,
+                                          size_t col_idx, size_t max_distinct) {
+  std::vector<int64_t> result;
+#if IN_MEM_TMP_TABLE
+  auto it = temp_collections_.find(temp_table_name);
+  if (it == temp_collections_.end() || !it->second.collection)
+    return result;
+
+  auto &collection = *it->second.collection;
+  auto &types = collection.Types();
+  if (col_idx >= types.size())
+    return result;
+
+  auto pt = types[col_idx].InternalType();
+  if (pt != duckdb::PhysicalType::INT32 && pt != duckdb::PhysicalType::INT64)
+    return result;
+
+  std::unordered_set<int64_t> distinct_set;
+  duckdb::ColumnDataScanState scan_state;
+  collection.InitializeScan(scan_state);
+  duckdb::DataChunk chunk;
+  chunk.Initialize(*GetClientContext(), types);
+  bool exceeded = false;
+  while (collection.Scan(scan_state, chunk)) {
+    if (chunk.size() == 0) break;
+    chunk.Flatten();
+    auto &vec = chunk.data[col_idx];
+    auto &validity = duckdb::FlatVector::Validity(vec);
+    if (pt == duckdb::PhysicalType::INT32) {
+      auto *data = duckdb::FlatVector::GetData<int32_t>(vec);
+      for (duckdb::idx_t i = 0; i < chunk.size(); i++) {
+        if (validity.RowIsValid(i)) {
+          distinct_set.insert(static_cast<int64_t>(data[i]));
+          if (distinct_set.size() > max_distinct) { exceeded = true; break; }
+        }
+      }
+    } else {
+      auto *data = duckdb::FlatVector::GetData<int64_t>(vec);
+      for (duckdb::idx_t i = 0; i < chunk.size(); i++) {
+        if (validity.RowIsValid(i)) {
+          distinct_set.insert(data[i]);
+          if (distinct_set.size() > max_distinct) { exceeded = true; break; }
+        }
+      }
+    }
+    chunk.Reset();
+    if (exceeded) break;
+  }
+  if (!exceeded) {
+    result.assign(distinct_set.begin(), distinct_set.end());
+  }
+#endif
+  return result;
+}
+
+uint64_t
+DuckDBAdapter::GetBaseTableCardinality(const std::string &table_name) {
+  static std::unordered_map<std::string, uint64_t> cache;
+  auto it = cache.find(table_name);
+  if (it != cache.end())
+    return it->second;
+
+  try {
+    auto duck_result = conn->Query("SELECT COUNT(*) FROM \"" + table_name + "\"");
+    if (duck_result && !duck_result->HasError()) {
+      auto chunk = duck_result->Fetch();
+      if (chunk && chunk->size() > 0) {
+        uint64_t rows = chunk->GetValue(0, 0).GetValue<uint64_t>();
+        cache[table_name] = rows;
+        return rows;
+      }
+    }
+  } catch (...) {}
+  cache[table_name] = 0;
+  return 0;
+}
+
 DuckDBAdapter::BloomFilterInfo
 DuckDBAdapter::BuildBloomFilter(const std::string &temp_table_name,
                                 size_t col_idx,
@@ -1219,6 +1402,57 @@ DuckDBAdapter::BuildBloomFilter(const std::string &temp_table_name,
     chunk.Reset();
   }
 #endif
+  return info;
+}
+
+DuckDBAdapter::BloomFilterInfo
+DuckDBAdapter::BuildBloomFilterFromCollection(
+    duckdb::ColumnDataCollection &collection,
+    size_t col_idx, duckdb::ClientContext &ctx) {
+  BloomFilterInfo info;
+  auto &types = collection.Types();
+  if (col_idx >= types.size()) return info;
+
+  uint64_t temp_card = collection.Count();
+  if (temp_card == 0) return info;
+
+  constexpr uint64_t kMinBits = 512;
+  constexpr uint64_t kBitsPerKey = 12;
+  constexpr uint64_t kMaxSectors = (1ULL << 26);
+  uint64_t min_bits = std::max(kMinBits, temp_card * kBitsPerKey);
+  uint64_t num_sectors = 1;
+  while (num_sectors < (min_bits >> 6)) num_sectors <<= 1;
+  if (num_sectors > kMaxSectors) num_sectors = kMaxSectors;
+
+  info.bf_data.resize(num_sectors, 0);
+  info.bitmask = num_sectors - 1;
+
+  constexpr uint64_t kShiftMask = 0x3F3F3F3F3F3F3F3F;
+  constexpr int kNBits = 4;
+
+  auto insert_one = [&](uint64_t hash) {
+    uint64_t offset = hash & info.bitmask;
+    uint64_t shifts = hash & kShiftMask;
+    auto shifts_8 = reinterpret_cast<const uint8_t *>(&shifts);
+    uint64_t mask = 0;
+    for (int i = 8 - kNBits; i < 8; i++)
+      mask |= (1ULL << shifts_8[i]);
+    info.bf_data[offset] |= mask;
+  };
+
+  duckdb::ColumnDataScanState scan_state;
+  collection.InitializeScan(scan_state);
+  duckdb::DataChunk chunk;
+  chunk.Initialize(ctx, types);
+  duckdb::Vector hashes(duckdb::LogicalType::HASH);
+  while (collection.Scan(scan_state, chunk)) {
+    if (chunk.size() == 0) break;
+    duckdb::VectorOperations::Hash(chunk.data[col_idx], hashes, chunk.size());
+    auto hash_data = duckdb::FlatVector::GetData<duckdb::hash_t>(hashes);
+    for (duckdb::idx_t i = 0; i < chunk.size(); i++)
+      insert_one(hash_data[i]);
+    chunk.Reset();
+  }
   return info;
 }
 
@@ -1410,6 +1644,16 @@ FindBuildSideTableScan(duckdb::PhysicalOperator &op) {
     return &op.Cast<duckdb::PhysicalTableScan>();
   for (auto &child : op.children)
     if (auto *s = FindBuildSideTableScan(child.get()))
+      return s;
+  return nullptr;
+}
+
+static duckdb::PhysicalColumnDataScan *
+FindBuildSideColumnDataScan(duckdb::PhysicalOperator &op) {
+  if (op.type == duckdb::PhysicalOperatorType::COLUMN_DATA_SCAN)
+    return &op.Cast<duckdb::PhysicalColumnDataScan>();
+  for (auto &child : op.children)
+    if (auto *s = FindBuildSideColumnDataScan(child.get()))
       return s;
   return nullptr;
 }
@@ -1691,6 +1935,34 @@ static bool FilterHasLike(const ir_sql_converter::AQPStmt *filter_ir) {
     if (ExprHasLike(q.get()))
       return true;
   return false;
+}
+
+static bool ExprIsOnlyLike(const ir_sql_converter::AQPExpr *expr) {
+  if (!expr) return true;
+  using ir_sql_converter::SimplestNodeType;
+  switch (expr->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c =
+        static_cast<const ir_sql_converter::SimplestVarConstComparison *>(expr);
+    auto et = c->GetSimplestExprType();
+    return et == ir_sql_converter::SimplestExprType::TextLike ||
+           et == ir_sql_converter::SimplestExprType::Text_Not_Like;
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *l = static_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    return ExprIsOnlyLike(l->left_expr.get()) &&
+           ExprIsOnlyLike(l->right_expr.get());
+  }
+  default:
+    return false;
+  }
+}
+
+static bool FilterIsOnlyLike(const ir_sql_converter::AQPStmt *filter_ir) {
+  if (!filter_ir || filter_ir->qual_vec.empty()) return false;
+  for (const auto &q : filter_ir->qual_vec)
+    if (!ExprIsOnlyLike(q.get())) return false;
+  return true;
 }
 
 // Returns true only if ALL columns referenced by the expression are present in
@@ -2246,7 +2518,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // pipeline filter fn are skipped for LIKE below (guards at operator/pipeline
     // level) because the per-row JIT LIKE is ~2x slower than DuckDB's vectorized
     // LIKE on large tables.
-    bool skip_like = false;
+    bool skip_like = FilterIsOnlyLike(filter_ir);
     if (!schema.empty() && HasApplicablePredicate(filter_ir, schema) &&
         FilterAllColsAvailable(filter_ir, schema) &&
         !skip_like) {
@@ -2533,10 +2805,6 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
   if ((jit_flags_ & AQP_JIT_PIPELINE) &&
       op.type == PhysicalOperatorType::HASH_JOIN) {
     uint64_t eid = duckdb::ExpressionID(op);
-#ifndef NDEBUG
-    std::cerr << "[AQP-JIT-TRACE] HASH_JOIN eid=0x" << std::hex << eid
-              << std::dec << "\n";
-#endif
 
     // Match this physical HASH_JOIN to the correct IR JoinNode by
     // walking the build child to find its PhysicalTableScan, then
@@ -2570,6 +2838,13 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
         if (build_tidx != UINT_MAX && join_ir->children.size() > 1)
           build_child =
               FindScanByTableIndex(join_ir->children[1].get(), build_tidx);
+
+        // When build side is a temp table (COLUMN_DATA_SCAN, build_tidx ==
+        // UINT_MAX), use the IR join's children[1] directly — it describes
+        // the temp table's schema.
+        if (!build_child && build_tidx == UINT_MAX &&
+            join_ir->children.size() > 1)
+          build_child = join_ir->children[1].get();
 
         // If HashNode exists (PostgreSQL path), use its child instead
         if (hash_ir && !hash_ir->children.empty())
@@ -2707,34 +2982,80 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                 const ir_sql_converter::AQPStmt *probe_child =
                     (join_ir->children.size() > 0) ? join_ir->children[0].get()
                                                    : nullptr;
-                if (probe_child && !probe_child->target_list.empty()) {
-                  std::vector<aqp_jit::ColSchema> probe_schema;
-                  for (const auto &attr : probe_child->target_list) {
-                    aqp_jit::ColSchema cs;
-                    cs.table_idx = attr->GetTableIndex();
-                    cs.col_idx = attr->GetColumnIndex();
-                    switch (attr->GetType()) {
-                    case ir_sql_converter::IntVar:
-                      cs.dtype = AQP_DTYPE_INT32;
-                      break;
-                    case ir_sql_converter::FloatVar:
-                      cs.dtype = AQP_DTYPE_DOUBLE;
-                      break;
-                    case ir_sql_converter::StringVar:
-                      cs.dtype = AQP_DTYPE_VARCHAR;
-                      break;
-                    case ir_sql_converter::BoolVar:
-                      cs.dtype = AQP_DTYPE_BOOL;
-                      break;
-                    case ir_sql_converter::Date:
-                      cs.dtype = AQP_DTYPE_DATE;
-                      break;
-                    default:
-                      cs.dtype = AQP_DTYPE_OTHER;
-                      break;
-                    }
-                    probe_schema.push_back(cs);
+                // Build probe schema: prefer IR target_list, fall back to
+                // DuckDB's physical types for temp-table joins where IR
+                // probe child has no target_list.
+                auto LtToAqpDtype2 =
+                    [](const duckdb::LogicalType &lt) -> int32_t {
+                  switch (lt.id()) {
+                  case duckdb::LogicalTypeId::BOOLEAN:
+                    return AQP_DTYPE_BOOL;
+                  case duckdb::LogicalTypeId::TINYINT:
+                  case duckdb::LogicalTypeId::UTINYINT:
+                    return AQP_DTYPE_INT8;
+                  case duckdb::LogicalTypeId::SMALLINT:
+                  case duckdb::LogicalTypeId::USMALLINT:
+                    return AQP_DTYPE_INT16;
+                  case duckdb::LogicalTypeId::INTEGER:
+                  case duckdb::LogicalTypeId::UINTEGER:
+                    return AQP_DTYPE_INT32;
+                  case duckdb::LogicalTypeId::BIGINT:
+                  case duckdb::LogicalTypeId::UBIGINT:
+                  case duckdb::LogicalTypeId::HUGEINT:
+                    return AQP_DTYPE_INT64;
+                  case duckdb::LogicalTypeId::FLOAT:
+                    return AQP_DTYPE_FLOAT;
+                  case duckdb::LogicalTypeId::DOUBLE:
+                    return AQP_DTYPE_DOUBLE;
+                  case duckdb::LogicalTypeId::VARCHAR:
+                    return AQP_DTYPE_VARCHAR;
+                  case duckdb::LogicalTypeId::DATE:
+                    return AQP_DTYPE_DATE;
+                  default:
+                    return AQP_DTYPE_OTHER;
                   }
+                };
+                {
+                  std::vector<aqp_jit::ColSchema> probe_schema;
+                  bool from_ir = (probe_child && !probe_child->target_list.empty());
+                  if (from_ir) {
+                    for (const auto &attr : probe_child->target_list) {
+                      aqp_jit::ColSchema cs;
+                      cs.table_idx = attr->GetTableIndex();
+                      cs.col_idx = attr->GetColumnIndex();
+                      switch (attr->GetType()) {
+                      case ir_sql_converter::IntVar:
+                        cs.dtype = AQP_DTYPE_INT32;
+                        break;
+                      case ir_sql_converter::FloatVar:
+                        cs.dtype = AQP_DTYPE_DOUBLE;
+                        break;
+                      case ir_sql_converter::StringVar:
+                        cs.dtype = AQP_DTYPE_VARCHAR;
+                        break;
+                      case ir_sql_converter::BoolVar:
+                        cs.dtype = AQP_DTYPE_BOOL;
+                        break;
+                      case ir_sql_converter::Date:
+                        cs.dtype = AQP_DTYPE_DATE;
+                        break;
+                      default:
+                        cs.dtype = AQP_DTYPE_OTHER;
+                        break;
+                      }
+                      probe_schema.push_back(cs);
+                    }
+                  } else {
+                    const auto &pt = op.children[0].get().GetTypes();
+                    for (size_t pi = 0; pi < pt.size(); ++pi) {
+                      aqp_jit::ColSchema cs;
+                      cs.table_idx = 0;
+                      cs.col_idx = (unsigned)pi;
+                      cs.dtype = LtToAqpDtype2(pt[pi]);
+                      probe_schema.push_back(cs);
+                    }
+                  }
+                if (!probe_schema.empty()) {
 
                   // Guard: AQP IR's probe_schema MUST match DuckDB's actual
                   // physical chunk shape (size + per-column dtype). The JIT
@@ -2745,36 +3066,6 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                   // and produce garbage data pointers that crash when later
                   // dereferenced for hash/key/output. Skip pipeline-JIT for
                   // this eid and let the interpreter handle it.
-                  auto LtToAqpDtype2 =
-                      [](const duckdb::LogicalType &lt) -> int32_t {
-                    switch (lt.id()) {
-                    case duckdb::LogicalTypeId::BOOLEAN:
-                      return AQP_DTYPE_BOOL;
-                    case duckdb::LogicalTypeId::TINYINT:
-                    case duckdb::LogicalTypeId::UTINYINT:
-                      return AQP_DTYPE_INT8;
-                    case duckdb::LogicalTypeId::SMALLINT:
-                    case duckdb::LogicalTypeId::USMALLINT:
-                      return AQP_DTYPE_INT16;
-                    case duckdb::LogicalTypeId::INTEGER:
-                    case duckdb::LogicalTypeId::UINTEGER:
-                      return AQP_DTYPE_INT32;
-                    case duckdb::LogicalTypeId::BIGINT:
-                    case duckdb::LogicalTypeId::UBIGINT:
-                    case duckdb::LogicalTypeId::HUGEINT:
-                      return AQP_DTYPE_INT64;
-                    case duckdb::LogicalTypeId::FLOAT:
-                      return AQP_DTYPE_FLOAT;
-                    case duckdb::LogicalTypeId::DOUBLE:
-                      return AQP_DTYPE_DOUBLE;
-                    case duckdb::LogicalTypeId::VARCHAR:
-                      return AQP_DTYPE_VARCHAR;
-                    case duckdb::LogicalTypeId::DATE:
-                      return AQP_DTYPE_DATE;
-                    default:
-                      return AQP_DTYPE_OTHER;
-                    }
-                  };
                   const auto &phys_types = op.children[0].get().GetTypes();
                   bool schema_match = (probe_schema.size() == phys_types.size());
                   if (schema_match) {
@@ -2785,16 +3076,6 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                         break;
                       }
                     }
-                  }
-                  if (!schema_match) {
-#ifndef NDEBUG
-                    std::cerr
-                        << "[AQP-JIT] probe schema mismatch (IR cols="
-                        << probe_schema.size()
-                        << " vs phys=" << phys_types.size()
-                        << ") — skip pipeline-JIT eid=0x" << std::hex << eid
-                        << std::dec << "\n";
-#endif
                   }
                   if (schema_match) {
 
@@ -3009,10 +3290,52 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                                   : lhs_key_chunk_idxs[0])
                           << "\n";
 #endif
+                      // Build Bloom filter from build-side temp table
+                      // for probe pre-filtering. Only for temp tables
+                      // (identified by build_tidx in intermediate_table_map)
+                      // with single integer key columns.
+                      if (build_phys_scan && build_tidx != UINT_MAX &&
+                          lhs_key_chunk_idxs.size() == 1) {
+                        auto tit = intermediate_table_map.find(build_tidx);
+                        if (tit != intermediate_table_map.end()) {
+                          const auto &tt_name = tit->second;
+                          auto cit = temp_collections_.find(tt_name);
+                          if (cit != temp_collections_.end() && cit->second.collection) {
+                            auto &coll = *cit->second.collection;
+                            uint64_t temp_card = coll.Count();
+                            // Build BF using column 0 of the join key in the build side.
+                            // Find which column in the temp table corresponds to
+                            // the build-side join key.
+                            size_t bf_col_idx = 0;
+                            for (const auto &cond : join->join_conditions) {
+                              bool found = false;
+                              for (size_t ci = 0; ci < build_schema.size(); ci++) {
+                                if ((build_schema[ci].table_idx == cond->left_attr->GetTableIndex() &&
+                                     build_schema[ci].col_idx == cond->left_attr->GetColumnIndex()) ||
+                                    (build_schema[ci].table_idx == cond->right_attr->GetTableIndex() &&
+                                     build_schema[ci].col_idx == cond->right_attr->GetColumnIndex())) {
+                                  bf_col_idx = ci;
+                                  found = true;
+                                  break;
+                                }
+                              }
+                              if (found) break;
+                            }
+                            auto bf_info = BuildBloomFilter(tt_name, bf_col_idx, temp_card);
+                            if (!bf_info.bf_data.empty()) {
+                              auto jbf = duckdb::make_uniq<duckdb::AQPJITContext::AQPJoinBloomFilter>();
+                              jbf->bf_data = std::move(bf_info.bf_data);
+                              jbf->bitmask = bf_info.bitmask;
+                              ctx->aqp_jit_context->join_bloom_filters[eid] = std::move(jbf);
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                   } // schema_match
-                }
+                } // !probe_schema.empty()
+                } // probe_schema block
               }
             }
           }
@@ -3021,9 +3344,95 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     }
   }
 
+
   // Recurse into children
   for (auto &child_ref : op.children)
     RegisterJIT(child_ref.get(), ir);
+}
+
+void DuckDBAdapter::InjectTempTableJoinStats(duckdb::PhysicalOperator &op) {
+  using duckdb::PhysicalOperatorType;
+
+  if (op.type == PhysicalOperatorType::HASH_JOIN) {
+    auto &join = static_cast<duckdb::PhysicalHashJoin &>(op);
+
+    if (join.join_type == duckdb::JoinType::INNER &&
+        join.conditions.size() == 1 &&
+        join.conditions[0].comparison == duckdb::ExpressionType::COMPARE_EQUAL &&
+        join.join_stats.empty()) {
+
+      auto &build_child = join.children[1].get();
+      auto key_type = join.conditions[0].right->return_type;
+      if (!duckdb::TypeIsIntegral(key_type.InternalType()))
+        goto recurse;
+
+      // Guard: no FILTER on build path (filters change effective key range)
+      std::function<bool(duckdb::PhysicalOperator &)> has_filter =
+          [&](duckdb::PhysicalOperator &node) -> bool {
+        if (node.type == PhysicalOperatorType::FILTER) return true;
+        if (node.type == PhysicalOperatorType::TABLE_SCAN) return false;
+        for (auto &child : node.children)
+          if (has_filter(child.get())) return true;
+        return false;
+      };
+      if (has_filter(build_child))
+        goto recurse;
+
+      // Find temp table scan on build path
+      std::function<std::string(duckdb::PhysicalOperator &)> find_temp_scan =
+          [&](duckdb::PhysicalOperator &node) -> std::string {
+        if (node.type == PhysicalOperatorType::TABLE_SCAN) {
+          auto &scan = static_cast<duckdb::PhysicalTableScan &>(node);
+          auto *bd = scan.bind_data
+              ? dynamic_cast<duckdb::TableScanBindData *>(scan.bind_data.get())
+              : nullptr;
+          if (bd && bd->table.name.find("temp") == 0)
+            return bd->table.name;
+        }
+        for (auto &child : node.children) {
+          auto name = find_temp_scan(child.get());
+          if (!name.empty()) return name;
+        }
+        return "";
+      };
+
+      std::string tt_name = find_temp_scan(build_child);
+      if (tt_name.empty())
+        goto recurse;
+
+      static constexpr int64_t MAX_BUILD_SIZE = 1048576;
+      uint64_t tt_card = GetTempTableCardinality(tt_name);
+      if (tt_card > static_cast<uint64_t>(MAX_BUILD_SIZE))
+        goto recurse;
+
+      auto min_max = GetTempTableMinMax(tt_name);
+      // Find which column in the build scan corresponds to the join key.
+      // Use the right-side condition expression to find the column index.
+      // For simplicity, try all integer columns and check if any has a
+      // range < MAX_BUILD_SIZE.
+      for (auto it = min_max.begin(); it != min_max.end(); ++it) {
+        int64_t range_min = it->second.first;
+        int64_t range_max = it->second.second;
+        if (range_max < range_min) continue;
+        int64_t range = range_max - range_min;
+        if (range > MAX_BUILD_SIZE) continue;
+
+        // Create stats and inject
+        auto stats = duckdb::BaseStatistics::CreateEmpty(key_type);
+        duckdb::NumericStats::SetMin(stats, duckdb::Value::Numeric(key_type, range_min));
+        duckdb::NumericStats::SetMax(stats, duckdb::Value::Numeric(key_type, range_max));
+        stats.SetHasNoNull();
+
+        join.join_stats.resize(2);
+        join.join_stats[1] = stats.ToUnique();
+        break;
+      }
+    }
+  }
+
+recurse:
+  for (auto &child_ref : op.children)
+    InjectTempTableJoinStats(child_ref.get());
 }
 
 void DuckDBAdapter::RegisterBloomFilters(duckdb::PhysicalOperator &op) {

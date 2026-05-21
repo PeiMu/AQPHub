@@ -5765,8 +5765,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     const std::vector<int32_t> &lhs_key_dtypes) {
 
   auto *join = dynamic_cast<const SimplestJoin *>(&join_node);
-  if (!join || join->join_conditions.empty())
+  if (!join || join->join_conditions.empty()) {
     return nullptr;
+  }
 
   // Build filter expressions
   std::vector<const AQPExpr *> filter_exprs;
@@ -5800,8 +5801,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
         return nullptr;
       }
       kc.elem_size = DtypeElemSize(kc.dtype);
-      if (kc.elem_size == 0)
+      if (kc.elem_size == 0) {
         return nullptr;
+      }
       key_width += kc.elem_size;
       probe_key_cols.push_back(kc);
     }
@@ -5855,9 +5857,6 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     pi.dtype = ps.dtype;
     pi.elem_size = DtypeElemSize(ps.dtype);
     if (pi.elem_size == 0) {
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] fused probe: unsupported payload dtype\n";
-#endif
       return nullptr;
     }
     payload_width += pi.elem_size;
@@ -6045,9 +6044,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       StructType::get(*ctx, {PointerType::getUnqual(i32), i32});
   // AQPJoinHTView layout (must match aqp_jit_abi.h / aqp_jit.hpp):
   //   { void *entries; u64 bitmask; u64 use_salt; void *layout_ptr;
-  //     u32 tuple_size; u32 pointer_offset; const u64 *data_offsets; u64 no_chains; }
+  //     u32 tuple_size; u32 pointer_offset; const u64 *data_offsets;
+  //     u64 no_chains; const u64 *bf_data; u64 bf_bitmask; }
   StructType *ViewTy =
-      StructType::get(*ctx, {i8p, i64, i64, i8p, i32, i32, i64p, i64});
+      StructType::get(*ctx, {i8p, i64, i64, i8p, i32, i32, i64p, i64, i64p, i64});
 
   // int64_t fn(AQPChunkView *in, AQPChunkView *out, void *view)
   FunctionType *fn_ty = FunctionType::get(
@@ -6105,6 +6105,12 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 7), "v_no_chains");
   Value *skip_chain_walk = cc.b.CreateICmpNE(
       v_no_chains, ConstantInt::get(i64, 0), "skip_chain");
+  Value *v_bf_data = cc.b.CreateLoad(
+      i64p, cc.b.CreateStructGEP(ViewTy, view_ptr, 8), "v_bf_data");
+  Value *v_bf_bitmask = cc.b.CreateLoad(
+      i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 9), "v_bf_bitmask");
+  Value *has_bf = cc.b.CreateICmpNE(
+      cc.b.CreatePtrToInt(v_bf_data, i64), ConstantInt::get(i64, 0), "has_bf");
 
   // Phase 7.1 — hoist data_offsets[*] used in the row loop into entry-block
   // SSA values. Inside the body LLVM treats `load i64, GEP v_offsets, idx`
@@ -6182,10 +6188,6 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   };
   for (auto &kc : probe_key_cols) {
     if (!key_llvm_ty(kc.dtype)) {
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] direct-probe: unsupported key dtype "
-                << kc.dtype << "\n";
-#endif
       return nullptr;
     }
   }
@@ -6417,12 +6419,40 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     ht_off_init = cc.b.CreateAnd(hash_val, v_bitmask, "ht_off_init");
   }
   Value *probe_salt = cc.b.CreateOr(hash_val, POINTER_MASK, "probe_salt");
-  cc.b.CreateBr(probe_bb);
+
+  // ---- Bloom filter pre-check: skip HT probe for definite non-matches ----
+  BasicBlock *bf_check_bb = BasicBlock::Create(*ctx, "bf_check", fn);
+  BasicBlock *bf_miss_bb = BasicBlock::Create(*ctx, "bf_miss", fn);
+  cc.b.CreateCondBr(has_bf, bf_check_bb, probe_bb);
+
+  cc.b.SetInsertPoint(bf_check_bb);
+  {
+    Value *bf_offset = cc.b.CreateAnd(hash_val, v_bf_bitmask, "bf_off");
+    Value *bf_word = cc.b.CreateLoad(
+        i64, cc.b.CreateGEP(i64, v_bf_data, bf_offset), "bf_word");
+    Constant *bf_shift_mask = ConstantInt::get(i64, 0x3F3F3F3F3F3F3F3FULL);
+    Value *shifts = cc.b.CreateAnd(hash_val, bf_shift_mask, "bf_shifts");
+    Value *bf_mask = ConstantInt::get(i64, 0);
+    for (int bit_i = 4; bit_i < 8; bit_i++) {
+      Value *shift_byte = cc.b.CreateAnd(
+          cc.b.CreateLShr(shifts, ConstantInt::get(i64, bit_i * 8)),
+          ConstantInt::get(i64, 0x3F), "bf_sh");
+      bf_mask = cc.b.CreateOr(bf_mask,
+          cc.b.CreateShl(ConstantInt::get(i64, 1), shift_byte), "bf_m");
+    }
+    Value *bf_hit = cc.b.CreateICmpEQ(
+        cc.b.CreateAnd(bf_word, bf_mask), bf_mask, "bf_hit");
+    cc.b.CreateCondBr(bf_hit, probe_bb, bf_miss_bb);
+  }
+
+  cc.b.SetInsertPoint(bf_miss_bb);
+  cc.b.CreateBr(next_bb);
 
   // ---- Probe loop: load entry, check empty, check salt ----
   cc.b.SetInsertPoint(probe_bb);
-  PHINode *ht_off = cc.b.CreatePHI(i64, 2, "ht_off");
+  PHINode *ht_off = cc.b.CreatePHI(i64, 3, "ht_off");
   ht_off->addIncoming(ht_off_init, hash_bb);
+  ht_off->addIncoming(ht_off_init, bf_check_bb);
 
   Value *entries_typed = cc.b.CreateBitCast(v_entries, i64p);
   Value *entry_addr = cc.b.CreateGEP(i64, entries_typed, ht_off);
@@ -6572,10 +6602,11 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
 
   // ---- Next: advance row_i, loop ----
   cc.b.SetInsertPoint(next_bb);
-  PHINode *oc_next = cc.b.CreatePHI(i64, 3, "oc_next");
+  PHINode *oc_next = cc.b.CreatePHI(i64, 4, "oc_next");
   oc_next->addIncoming(out_count, after_filter_bb);  // filter failed
   oc_next->addIncoming(out_count, probe_bb);         // empty entry
   oc_next->addIncoming(chain_oc_next, chain_done_bb); // chain exhausted
+  oc_next->addIncoming(out_count, bf_miss_bb);        // bloom filter miss
   Value *i_next = cc.b.CreateAdd(row_i, ConstantInt::get(i64, 1));
   row_i->addIncoming(i_next, next_bb);
   out_count->addIncoming(oc_next, next_bb);
@@ -6592,10 +6623,6 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   std::string err;
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
-#ifndef NDEBUG
-    std::cerr << "[AQP-JIT] verifyFunction failed (filt_hprobe_proj_direct): "
-              << es.str() << "\n";
-#endif
     return nullptr;
   }
 

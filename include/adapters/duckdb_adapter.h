@@ -41,6 +41,7 @@
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
+#include "duckdb/storage/statistics/base_statistics.hpp"
 
 #ifdef HAVE_LLVM
 #include "duckdb/execution/physical_operator.hpp"
@@ -68,6 +69,7 @@ struct StoredTempResult {
   std::vector<std::string> column_names;
   bool has_override_cardinality = false;
   uint64_t override_cardinality = 0;
+  std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> column_stats;
 };
 
 // ReplacementScanData subclass: holds pointer to temp_collections_ map
@@ -137,6 +139,16 @@ public:
   std::unordered_map<size_t, std::pair<int64_t, int64_t>>
   GetTempTableMinMax(const std::string &temp_table_name);
 
+  // Get row count of a base (non-temp) table from the main catalog.
+  uint64_t GetBaseTableCardinality(const std::string &table_name);
+
+  // Collect distinct integer values from a temp table column.
+  // Returns empty vector if column is not INT32/INT64, table not found,
+  // or distinct count exceeds max_distinct.
+  std::vector<int64_t>
+  GetTempTableDistinctValues(const std::string &temp_table_name,
+                             size_t col_idx, size_t max_distinct);
+
   // Look up a column name by table name and column index from DuckDB catalog.
   std::string GetColumnName(const std::string &table_name, unsigned col_idx);
 
@@ -173,6 +185,11 @@ public:
   BloomFilterInfo BuildBloomFilter(const std::string &temp_table_name,
                                    size_t col_idx,
                                    uint64_t temp_card);
+
+  // Build a BF from a ColumnDataCollection directly (supports any hashable type).
+  static BloomFilterInfo BuildBloomFilterFromCollection(
+      duckdb::ColumnDataCollection &collection,
+      size_t col_idx, duckdb::ClientContext &ctx);
 
   // Get estimated cost and rows for a query using EXPLAIN
   std::pair<double, double> GetEstimatedCost(const std::string &sql) override;
@@ -387,6 +404,14 @@ private:
   static duckdb::unique_ptr<duckdb::NodeStatistics>
   TempCollectionCardinality(duckdb::ClientContext &context,
                             const duckdb::FunctionData *bind_data);
+
+  static duckdb::unique_ptr<duckdb::BaseStatistics>
+  TempCollectionStatistics(duckdb::ClientContext &context,
+                           duckdb::TableFunctionGetStatisticsInput &input);
+
+  // Inject join_stats into PhysicalHashJoin nodes whose build side scans a
+  // temp table, enabling DuckDB's perfect hash join optimization.
+  void InjectTempTableJoinStats(duckdb::PhysicalOperator &op);
 
   // Replacement scan callback (static)
   static duckdb::unique_ptr<duckdb::TableRef> TempCollectionReplacementScan(
