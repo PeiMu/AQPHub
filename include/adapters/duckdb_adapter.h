@@ -202,17 +202,6 @@ public:
 
   void CleanUp() override;
 
-  // Per-operator execution timing
-  struct OperatorTiming {
-    std::string operator_name;
-    std::string operator_type;
-    double time_seconds;
-    uint64_t cardinality;
-    int depth;
-  };
-  std::vector<OperatorTiming> CollectOperatorTimings();
-  void FlushOperatorTimings(const std::string &query_file);
-
   // Get context and binder for IR conversion
   duckdb::ClientContext *GetClientContext();
 
@@ -380,10 +369,6 @@ private:
   // column names for CHUNK_GET nodes (DuckDB plan alias ≠ temp table alias).
   std::unordered_map<unsigned int, std::vector<std::string>> chunk_col_names_;
 
-  // Per-operator timing buffer: (sub_plan_index, timings) pairs
-  std::vector<std::pair<int, std::vector<OperatorTiming>>> buffered_op_timings_;
-  int op_timing_sub_plan_ = 0;
-  bool profiling_enabled_ = false;
 
 #if IN_MEM_TMP_TABLE
 private:

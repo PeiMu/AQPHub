@@ -53,12 +53,6 @@ Reference parser: `analyze_middleware_breakdown()` in `/home/pei/Document/Evalua
 - **JIT Compile** = sum of all `jit_compile` + `jit_compile_final` — LLVM IR generation + compilation (includes DuckDB `Prepare()` time)
 - **Middleware Overhead** = everything else (prepare_middleware, read_sql, parse_sql, preprocess, generate_sub-SQL, extra_materialization, extract_sub-IR, update_IR, show_output)
 
-### Understanding `operator_exe.csv`
-
-Per-operator CPU-seconds from DuckDB's QueryProfiler. Format: `query_file,subplan_idx,op_idx,op_type,op_category,time_sec,cardinality`. Iterations are separated by `# iter-N` markers. Each query's iterations use `# iter-1` through `# iter-15` (resetting per query since each query runs in its own process).
-
-**op_category** (column 4) is the grouping key: TABLE_SCAN, HASH_JOIN, FILTER, PROJECTION, UNGROUPED_AGGREGATE, INVALID, COLUMN_DATA_SCAN, EMPTY_RESULT. DuckDB reports CPU-seconds summed across all 12 worker threads. For wall-clock comparison, divide by ~7-9x parallelization factor.
-
 See current numbers and per-iteration history in /home/pei/Project/AQP_middleware/jit_optimization_claude.md.
 
 ## Constraints
@@ -83,7 +77,7 @@ cd /home/pei/Project/AQP_middleware/measure
   --timing \
   /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql
 ```
-Check time_log.csv and operator_exe.csv for per-operator timing.
+Check time_log.csv for per-phase timing.
 
 ### Heavy test queries (focus on these for iteration):
 You should always check the heaviest queries from the current version of jit in jit_optimization_claude.md.
@@ -113,11 +107,11 @@ bash measure_breakdown_time_job.sh duckdb node-based pipeline o1 none
 ```
 
 ## Workflow Per Iteration
-0. Think fundamentally what is the correct optimization technique for the current bottleneck, e.g., memory-bound or I/O bound. Think in the Umbra way and in the Thomas Neumann way.
+0. **Profile the bottleneck**: Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/find_top_queries.py` to identify the top-5 heaviest queries from the latest `breakdown_time_log.csv`. Then follow `perf_analysis.md` Steps 2-5 to profile those queries with `perf stat`, `perf record`, Intel VTune, and eBPF/bpftrace. Profile both baseline (none-split/none-jit) and best JIT config on the same queries: the gap shows where split+JIT overhead is; then also profile best JIT alone to find the remaining bottleneck to optimize. Think fundamentally what is the correct optimization technique for the current bottleneck. Think in the Umbra way and in the Thomas Neumann way.
 1. Read relevant source code for the optimization you're implementing
 2. Make the code change
 3. Build (`make -j12` in the appropriate build_release dir)
-4. Quick-test on 2-3 target queries, check execution time in time_log.csv and operator_exe.csv
+4. Quick-test on 2-3 target queries, check execution time in time_log.csv
 5. If faster: run correctness check on full JOB, then measure breakdown
 6. If slower or neutral: analyze why, check the slowdown queries if it is noise, revert or adjust, try again. 
 7. If some queries speedup but some others slowdown, check what's the differences and can we fix it fundamentally or at least guard it by some condition of the slowdown query's pattern.

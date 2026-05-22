@@ -223,12 +223,6 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       log_file << std::fixed << std::setprecision(3)
                << (show_output_time / 1000.0) << "\n";
       log_file.close();
-
-#ifdef HAVE_DUCKDB
-      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter);
-      if (duck)
-        duck->FlushOperatorTimings(result.query_file);
-#endif
     }
 
   } catch (const std::exception &e) {
@@ -373,12 +367,6 @@ int main(int argc, char **argv) {
                      << (reset_time / 1000.0) << ", ";
             log_file.close();
           }
-        }
-
-        if (config.repeat_count > 1) {
-          std::ofstream op_log("operator_exe.csv", std::ios::app);
-          op_log << "# iter-" << (iter + 1) << "\n";
-          op_log.close();
         }
 
         TestResult result;

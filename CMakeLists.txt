@@ -76,7 +76,7 @@ if (EXISTS ${DUCKDB_ROOT})
 
     find_library(DUCKDB_LIB
             NAMES duckdb libduckdb
-            PATHS ${DUCKDB_ROOT}/build/release/src ${DUCKDB_ROOT}/build/debug/src
+            PATHS ${DUCKDB_ROOT}/build/release/src ${DUCKDB_ROOT}/build/reldebug/src ${DUCKDB_ROOT}/build/debug/src
             NO_DEFAULT_PATH
     )
 
