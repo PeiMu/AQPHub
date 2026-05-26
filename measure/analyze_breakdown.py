@@ -138,12 +138,20 @@ def main():
             'patterns': ['duckdb_none_pipeline_o1_none'],
             'has_jit': True, 'is_node': False,
         },
+        'none-split/pipeline-jit-auto': {
+            'patterns': ['duckdb_none_pipeline_o1_auto'],
+            'has_jit': True, 'is_node': False,
+        },
         'node-based/none-jit': {
             'patterns': ['duckdb_node-based_none'],
             'has_jit': False, 'is_node': True,
         },
         'node-based/pipeline-jit': {
             'patterns': ['duckdb_node-based_pipeline_o1_none'],
+            'has_jit': True, 'is_node': True,
+        },
+        'node-based/pipeline-jit-auto': {
+            'patterns': ['duckdb_node-based_pipeline_o1_auto'],
             'has_jit': True, 'is_node': True,
         },
     }
@@ -219,6 +227,30 @@ def main():
         print("--- JIT hurts most ---")
         for q, d, je, ne in deltas[-10:]:
             print(f"  {q:>8s} {d:+8.1f}ms {je:8.1f}ms {ne:8.1f}ms")
+
+    # JIT effect (none-split: pipeline-jit vs none-jit)
+    print("\n=== JIT EFFECT ON EXECUTION (none-split: pipeline-jit vs none-jit) ===")
+    for jit_cfg in ['none-split/pipeline-jit', 'none-split/pipeline-jit-auto']:
+        if jit_cfg in all_results and 'none-split/none-jit' in all_results:
+            r_jit = all_results[jit_cfg]
+            r_nojit = all_results['none-split/none-jit']
+            deltas = []
+            for q in r_jit:
+                if q in r_nojit:
+                    delta = r_jit[q]['exe'] - r_nojit[q]['exe']
+                    deltas.append((q, delta, r_jit[q]['exe'], r_nojit[q]['exe']))
+            deltas.sort(key=lambda x: x[1])
+            total_jit = sum(d[2] for d in deltas)
+            total_nojit = sum(d[3] for d in deltas)
+            simd_label = "(auto SIMD)" if "auto" in jit_cfg else "(no SIMD)"
+            print(f"\n--- {simd_label}: total exe {total_jit:.1f}ms vs {total_nojit:.1f}ms = {total_jit-total_nojit:+.1f}ms ({(total_jit-total_nojit)/total_nojit*100:+.1f}%) ---")
+            print(f"{'Query':>8s} {'delta':>10s} {'jit exe':>10s} {'nojit exe':>10s}")
+            print("  Top 10 improved:")
+            for q, d, je, ne in deltas[:10]:
+                print(f"  {q:>8s} {d:+8.1f}ms {je:8.1f}ms {ne:8.1f}ms")
+            print("  Top 5 regressed:")
+            for q, d, je, ne in deltas[-5:]:
+                print(f"  {q:>8s} {d:+8.1f}ms {je:8.1f}ms {ne:8.1f}ms")
 
     # Biggest improvements from split
     print("\n=== BIGGEST IMPROVEMENTS (node-based/pipeline-jit exe vs none-split/none-jit exe) ===")

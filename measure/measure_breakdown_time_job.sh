@@ -15,7 +15,6 @@ cache=${12:-off}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
-[[ "$fusion_build"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-build"
 [[ "$fusion_probe"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-probe"
 [[ "$inline_hash"   == "off" ]] && jit_extra_flags+=" --no-jit-inline-hash"
 [[ "$payload_prune" == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"

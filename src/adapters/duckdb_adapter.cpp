@@ -637,14 +637,21 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       jit_consumed_ir_joins_.clear();
       RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
+      // Ensure JIT context always exists when JIT level is active, even if
+      // no filters were compiled. This enables JIT-gated optimizations like
+      // hash join prefetching.
+      auto *ctx = GetClientContext();
+      if (!ctx->aqp_jit_context) {
+        ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+      }
+
       if (enable_timing_) {
         // Record total JIT compile time (includes Prepare + RegisterJIT)
         auto jit_compile_time =
             chrono_toc(&timer, "ExecuteSQL::jit compile time\n", false);
         WriteJitTimingColumn(jit_compile_time);
       }
-
-      auto *ctx = GetClientContext();
 #ifndef NDEBUG
       if (ctx->aqp_jit_context) {
         std::cerr << "[AQP-JIT] summary: flags=0x" << std::hex
@@ -784,14 +791,19 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     jit_consumed_ir_joins_.clear();
     RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
 
+    // Ensure JIT context always exists when JIT level is active
+    auto *ctx2 = GetClientContext();
+    if (!ctx2->aqp_jit_context) {
+      ctx2->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+      ctx2->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+    }
+
     if (enable_timing_) {
       // Record total JIT compile time (includes Prepare + RegisterJIT)
       auto jit_compile_time = chrono_toc(
           &timer, "ExecuteSQLandCreateTempTable::jit compile time\n", false);
       WriteJitTimingColumn(jit_compile_time);
     }
-
-    auto *ctx2 = GetClientContext();
 #ifndef NDEBUG
     if (ctx2->aqp_jit_context) {
       std::cerr << "[AQP-JIT] summary: flags=0x" << std::hex

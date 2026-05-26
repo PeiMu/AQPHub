@@ -1013,3 +1013,274 @@ Pipeline-JIT reduces execution time by -0.38s for none-split and -0.25s for node
 10c: TABLE_SCAN=0.69s (41%), HASH_JOIN=0.51s (31%), FILTER=0.40s (24%).
 
 **Conclusion**: The primary bottleneck is now the split strategy producing large temp tables that cascade into expensive hash joins. JIT itself is modestly helpful (-0.25s). Next: optimize split order by selectivity (Step 2).
+
+---
+
+## Iteration 22: JIT-Gated Software Prefetching for Hash Join (ENABLED — -4.7% on none-split)
+
+**Goal**: Add software prefetching to hash join probe, build, and bloom filter operations, gated behind JIT context so only JIT-active queries benefit.
+
+**Approach**: Inline prefetching — prefetch entry[i+D] while processing entry[i]. This preserves the natural pipelining of DuckDB's vectorized probe (unlike Iter 12's failed two-pass approach).
+
+**Changes**:
+1. `join_hashtable.cpp` — Added `PREFETCH` template parameter to `ProbeForPointersInternal`. When enabled, issues `__builtin_prefetch` for entries 8 positions ahead during probe. Also added prefetch in `InsertHashesLoop` for build, gated on `ht.IsPrefetchEnabled()`.
+2. `bloom_filter.cpp` — Added prefetch to `LookupHashes` (distance=16) and `InsertHashes` (distance=16), gated on `prefetch_enabled` flag.
+3. `join_hashtable.hpp` — Added `prefetch_enabled` field to `ProbeState` and `JoinHashTable`, with `SetPrefetchEnabled()`/`IsPrefetchEnabled()` accessors.
+4. `bloom_filter.hpp` — Added `prefetch_enabled` field to `BloomFilter`.
+5. `physical_hash_join.cpp` — Set prefetch flags in `HashJoinGlobalSinkState` constructor and `GetOperatorState` when JIT context is active.
+6. `duckdb_adapter.cpp` — Ensure `aqp_jit_context` is always created when JIT level is active (even if no filters compiled), so hash join prefetching is enabled.
+
+**Why this differs from Iter 12 (which regressed +3.8%)**:
+- Iter 12 used **two-pass**: precompute ALL hashes → prefetch ALL entries → probe ALL. This destroyed pipelining and the prefetch-to-use gap was wrong.
+- Iter 22 uses **inline**: prefetch entry[i+8] while processing entry[i]. The prefetch distance of 8 entries × ~30-50 cycles/entry ≈ 240-400 cycles, matching L2/LLC miss latency.
+
+**Correctness**: All 113 JOB queries produce identical results to golden.
+
+### Performance (none-split, full breakdown, 15 iterations — runs 6-15 averaged)
+
+| Config              | Execution (ms) | vs Iter 21 | vs ns/nojit |
+|---------------------|---------------:|-----------:|------------:|
+| none-split/none-jit |         9332.0 |    (same)  | baseline    |
+| none-split/pipe-jit |         8889.7 |   -113.0   | -442.3 (-4.7%) |
+
+### Per-query analysis (none-split: pipeline-jit vs none-jit, exe time)
+
+**Most improved** (JIT vs no-JIT within this run):
+
+| Query | no-JIT (ms) | JIT (ms) | Delta | Pct |
+|-------|------------|---------|-------|-----|
+| 7c  | 445.9 | 430.3 | -15.6 | -3.5% |
+| 31b | 61.1 | 45.7 | -15.4 | -25.2% |
+| 31a | 110.6 | 95.3 | -15.3 | -13.9% |
+| 31c | 119.9 | 104.9 | -15.0 | -12.5% |
+| 19a | 99.6 | 86.5 | -13.1 | -13.2% |
+| 6f  | 219.2 | 189.6 | -29.6 | -13.5% |
+| 17f | 214.8 | 199.9 | -14.9 | -6.9% |
+| 16b | 317.5 | 296.6 | -20.9 | -6.6% |
+| 8c  | 236.5 | 212.0 | -24.5 | -10.4% |
+
+**Only regression**: 11d +21.3ms (+8.7%) — known high-variance mutex-contention query.
+
+### Analysis
+
+The prefetch optimization is most effective on:
+- **Build-dominated queries** (6f: -13.5%) where `InsertHashes` is 21.7% of CPU
+- **Memory-bound probe queries** (8c: -10.4%, 16b: -6.6%) where HT exceeds L3 cache
+- **Compute-bound queries** still benefit modestly (17f: -6.9%) from BF prefetch
+
+The 7c query shows only -3.5% because its bottleneck is `memmove` (28.8% of CPU from VARCHAR copies into row-oriented HT layout), which prefetching doesn't help.
+
+### Active JIT features after Iter 22
+
+1. FILTER → compiled filter (`expr_fns`)
+2. TABLE_SCAN → scan+filter fusion (`scan_filter_fns`)
+3. FILTER → pipeline fused filter+projection (`pipeline_fns`)
+4. PROJECTION → zero-copy column mapping (`proj_col_maps`)
+5. TABLE_SCAN → Bloom filter scan push-down (`bloom_scan_filters`)
+6. HASH_JOIN → JIT-gated software prefetching for probe, build, and BF operations
+
+---
+
+## Iter 23 — Chain-walk prefetching + BF GetMask unroll
+
+### Changes
+
+1. **Chain-walk prefetching in `AdvancePointers`** (`join_hashtable.cpp`): When `ht.IsPrefetchEnabled()` and `sel_count > 8`, prefetches the next chain pointer 8 entries ahead during linked-list traversal in hash join probe. JIT-gated — non-JIT path unchanged.
+
+2. **`GetMask` loop unrolling** (`bloom_filter.cpp`): Replaced `for` loop (4 iterations) with explicit 4-element unroll. Unconditional but neutral — compiler at -O3 already optimizes.
+
+### Files modified
+
+- `/home/pei/Project/duckdb/src/execution/join_hashtable.cpp` — `AdvancePointers` with prefetch path
+- `/home/pei/Project/duckdb/src/planner/filter/bloom_filter.cpp` — `GetMask` unrolled
+
+### Performance (clean measurement, avg of 10 runs after 5 warmup)
+
+| Config | Iter 22 exe (ms) | Iter 23 exe (ms) | Delta |
+|--------|----------------:|----------------:|------:|
+| none-split / none-jit | 9,335.8 | 9,339.9 | +4.1 (noise) |
+| none-split / pipeline-jit (no SIMD) | 8,672.7 | 8,680.8 | +8.1 (noise) |
+| none-split / pipeline-jit (auto SIMD) | 8,680.3 | 8,684.8 | +4.5 (noise) |
+| node-based / none-jit | 10,054.8 | 10,025.3 | -29.5 |
+| node-based / pipeline-jit (no SIMD) | 9,594.2 | 9,375.7 | **-218.5** |
+| node-based / pipeline-jit (auto SIMD) | 9,612.1 | 9,399.1 | **-213.0** |
+
+### Key per-query improvements (node-based pipeline-jit vs node-based none-jit)
+
+| Query | nb-jit exe | nb-nojit exe | JIT effect |
+|-------|----------:|------------:|-----------:|
+| 8c | 329.3 | 378.1 | -48.7ms |
+| 16b | 436.9 | 476.8 | -39.9ms |
+| 19d | 254.2 | 287.1 | -32.9ms |
+| 10c | 217.8 | 248.0 | -30.2ms |
+| 8d | 126.8 | 153.5 | -26.6ms |
+| 9d | 230.8 | 257.1 | -26.3ms |
+
+### None-split pipeline-jit vs none-jit: -659.1ms (-7.1%)
+
+Top improved: 11d -26.5ms, 6f -24.7ms, 31c -21.1ms, 8c -20.6ms, 31a -18.1ms
+Minimal regressions: only 2d +0.7ms, 2b +0.1ms (noise)
+
+### Analysis
+
+The chain-walk prefetch had **dramatically more impact on node-based** than none-split:
+- Node-based creates larger temp tables that cascade into bigger hash tables with longer chains
+- `AdvancePointers` chain walking is a larger fraction of execution in node-based sub-queries
+- None-split uses more parallelism (6-8x CPU/Wall vs 3-4x), hiding memory latency via threads
+
+Node-based pipeline-jit gap vs baseline narrowed from **+2.8%** (Iter 22) to **+0.4%** (Iter 23) — nearly at parity with vanilla DuckDB.
+
+### Active JIT features after Iter 23
+
+1. FILTER → compiled filter (`expr_fns`)
+2. TABLE_SCAN → scan+filter fusion (`scan_filter_fns`)
+3. FILTER → pipeline fused filter+projection (`pipeline_fns`)
+4. PROJECTION → zero-copy column mapping (`proj_col_maps`)
+5. TABLE_SCAN → Bloom filter scan push-down (`bloom_scan_filters`)
+6. HASH_JOIN → JIT-gated software prefetching for probe, build, BF operations
+7. HASH_JOIN → JIT-gated chain-walk prefetching in AdvancePointers
+
+---
+
+## Iter 23 — Post-optimization profiling and Direction A assessment
+
+### Re-profiled top 10 after Iter 23 (perf stat + perf record, none-split/pipeline-jit, repeat=3)
+
+| Rank | Query | Exe (ms) | IPC | Cache miss% | LLC miss% | CPU/Wall | Top functions |
+|------|-------|---------|-----|-------------|-----------|----------|---------------|
+| 1 | 7c | 434.7 | 0.46 | 35.9% | 25.3% | 5.5x | memmove 27.6%, ValueStore\<string\> 5.7% |
+| 2 | 16b | 302.5 | 0.86 | 17.1% | 16.7% | 7.2x | BF::Lookup 8.0%, **AdvancePointers 7.8%**, InsertHashes 5.6%, FastMemcpy 5.0%, Hash 3.8%, ResolvePredicates 2.6% |
+| 3 | 11d | 256.5 | 1.03 | 14.4% | 30.2% | 1.9x | Finalize 9.9%, Gather\<int\> 8.1%, InsertHashes 6.1%, mutex 6.1% |
+| 4 | 22d | 232.6 | 0.79 | 15.4% | 26.2% | 4.4x | Finalize 7.5%, Gather\<int\> 6.9%, InsertHashes 6.0%, ValueStore\<string\> 5.7% |
+| 5 | 8c | 219.2 | 0.77 | 21.4% | 17.2% | 6.1x | InsertHashes 9.2%, **AdvancePointers 6.1%**, **ResolvePredicates 5.5%**, BF::Lookup 3.6%, GetRowPointers 3.5%, TemplatedMatch\<int\> 3.1% |
+| 6 | 17f | 204.7 | 1.03 | 7.3% | 5.6% | 7.4x | BF::Lookup 8.5%, InsertHashes 7.1%, Hash 4.9%, **AdvancePointers 4.3%**, FilterSwitch 3.7% |
+| 7 | 6f | 195.5 | 0.79 | 13.6% | 13.6% | 8.0x | InsertHashes 17.4%, BF::Lookup 6.8%, Finalize 6.4%, fsst_decompress 5.3%, BF::InsertHashes 5.0% |
+| 8 | 19d | 195.1 | 0.93 | 12.5% | 14.3% | 4.6x | **ResolvePredicates 7.3%**, InsertHashes 5.5%, BF::Lookup 4.5%, fsst_decompress 4.0%, StringScanPartial 3.3%, AdvancePointers 2.5% |
+| 9 | 25c | 186.5 | 1.08 | 8.1% | 13.9% | 5.7x | BF::Lookup 10.0%, StringScanPartial 9.7%, fsst_decompress 4.8%, Hash 3.8% |
+| 10 | 17d | 171.5 | 1.08 | 5.7% | 3.6% | 7.4x | BF::Lookup 9.8%, InsertHashes 6.9%, Hash 5.5%, FilterSwitch 4.6%, fsst_decompress 4.2%, AdvancePointers 2.8% |
+
+Top 10 sum: 2398.9ms (27.6% of total 8680.8ms).
+
+### Direction A completeness assessment
+
+**Done (6 techniques):**
+- Probe bucket prefetch, build prefetch, BF prefetch (Iter 22)
+- Chain-walk prefetch in AdvancePointers, BF GetMask unroll (Iter 23)
+- Scalar JIT probe (Iter 9, disabled), chain-walk skip (Iter 6)
+
+**Remaining (2 techniques):**
+
+1. **AMAC-style interleaved probing** — addresses AdvancePointers still at 7.8% (16b), 6.1% (8c), 4.3% (17f), 2.8% (17d), 2.5% (19d). Current prefetch brings the pointer field into cache, but the target chain node it points to is still a miss. True AMAC interleaves 8-16 independent keys at different probe stages to hide latency. Est. ~30-50ms. High complexity (state machine redesign of probe loop).
+
+2. **Type-specialized ResolvePredicates** — addresses ResolvePredicates at 7.3% (19d), 5.5% (8c), 2.6% (16b). Generic RowMatcher dispatches through TemplatedMatch. JOB keys are mostly int32; a JIT-gated specialized path for direct int comparison avoids dispatch overhead. Est. ~15-30ms. Medium complexity.
+
+**Exhausted / not feasible without whole-pipeline JIT:**
+- InsertHashes (5-17%): already prefetched, DuckDB build is tight
+- BF::LookupHashes (3-10%): already prefetched, compute-bound queries are cache-resident
+- Finalize (3-10%): calls InsertHashes, already prefetched
+- VectorOperations::Hash (2-5%): separate from probe hash, would need whole-pipeline fusion
+- Gather/FastMemcpy/memmove (2-28%): inter-operator materialization, needs whole-pipeline JIT
+- fsst_decompress/StringScanPartial (2-15%): DuckDB internal codec
+- mutex (6%): DuckDB scheduler
+
+---
+
+## Iter 24 — Probe path fast paths + row-data prefetching
+
+### Changes
+
+All in `/home/pei/Project/duckdb/src/execution/join_hashtable.cpp`:
+
+1. **ResolvePredicates memcpy**: Replaced element-by-element `set_index`/`get_index` loop with `memcpy` for sel_vector copy. JIT-gated (`IsPrefetchEnabled()`). None-jit path uses original element-by-element loop.
+
+2. **ScanInnerJoin equality-only fast path**: For equality-only joins (`IsPrefetchEnabled() && !needs_chain_matcher`), skip `ResolvePredicates` call entirely — directly `memcpy` sel_vector and return. JIT-gated.
+
+3. **ScanInnerJoin skip found_match for INNER/RIGHT joins**: `found_match` is never read after `NextInnerJoin` for pure INNER/RIGHT joins. JIT-gated (inside the equality fast path). None-jit path writes found_match unconditionally as original.
+
+4. **ScanKeyMatches equality-only fast path**: Same as #2 for semi/anti/mark joins. JIT-gated (`IsPrefetchEnabled()`).
+
+5. **AdvancePointers chain node data prefetch**: After loading the next chain pointer, prefetch chain node base address (`ptrs[idx]`) so key comparison data is warm for next `ScanInnerJoin`. JIT-gated (`IsPrefetchEnabled()`).
+
+6. **GetRowPointersInternal row data prefetch**: Prefetch all row data pointers before calling `row_matcher_build.Match`. Warms cache for key comparison in `TemplatedMatchLoop`. JIT-gated (`state.prefetch_enabled`).
+
+### Correctness
+
+All 113 JOB queries produce identical results to golden for all 4 configs: none-split/none-jit, none-split/pipeline-jit, node-based/none-jit, node-based/pipeline-jit.
+
+### Performance (all 6 configs, same session, full breakdown, 15 iterations — runs 6-15 averaged)
+
+| Config | Execution (ms) | Middleware (ms) | JIT Compile (ms) | Wall (ms) |
+|--------|---------------:|----------------:|------------------:|----------:|
+| none-split / none-jit | 9,446.4 | 2.8 | — | 9,449.2 |
+| none-split / pipeline-jit (no SIMD) | 8,831.3 | 12.7 | 8,760 | 17,603 |
+| none-split / pipeline-jit (auto SIMD) | 8,854.1 | 14.2 | 9,590 | 18,458 |
+| node-based / none-jit | 10,172.8 | 1,003 | — | 11,176 |
+| node-based / pipeline-jit (no SIMD) | 9,596.8 | 1,011 | 2,180 | 12,788 |
+| node-based / pipeline-jit (auto SIMD) | 9,595.5 | 1,014 | 2,220 | 12,830 |
+
+**JIT effect (same-session, Iter 24):**
+
+| Split | JIT delta (no SIMD) | JIT delta (auto SIMD) |
+|-------|--------------------:|----------------------:|
+| none-split | -615.2 ms (-6.5%) | -592.4 ms (-6.3%) |
+| node-based | -576.0 ms (-5.7%) | -577.3 ms (-5.7%) |
+
+**Iter 24 update**: All changes JIT-gated after review — none-jit path is now identical to original DuckDB.
+
+**Re-measured none-jit (JIT-gated, separate session):**
+| Config | Execution (ms) | Middleware (ms) | Wall (ms) |
+|--------|---------------:|----------------:|----------:|
+| none-split / none-jit | 9,523.6 | 2.7 | 9,526.3 |
+| node-based / none-jit | 10,151.0 | 993.2 | 11,144.3 |
+
+**Cross-session JIT effect (none-jit from new session, JIT from previous session):**
+| Split | none-jit exe | JIT exe | Delta |
+|-------|------------:|--------:|------:|
+| none-split | 9,523.6 | 8,831.3 | -692.3 (-7.3%) |
+| node-based | 10,151.0 | 9,596.8 | -554.2 (-5.5%) |
+
+JIT advantage widened from -6.5% (when Iter 24 changes were unconditional) to -7.3% (JIT-gated). Cross-session noise ~100ms; true same-session effect estimated -6.5% to -7.3%.
+
+### Per-query JIT improvements (none-split, pipe-jit vs no-jit, Iter 24)
+
+Top 15 improved:
+| Query | JIT (ms) | no-JIT (ms) | Delta |
+|-------|---------|------------|-------|
+| 11d | 267.1 | 308.2 | -41.1 |
+| 6f | 197.2 | 223.1 | -25.9 |
+| 22d | 229.9 | 250.4 | -20.6 |
+| 16b | 304.1 | 323.9 | -19.8 |
+| 31c | 103.2 | 122.7 | -19.6 |
+| 31a | 94.0 | 112.6 | -18.6 |
+| 8c | 218.8 | 236.5 | -17.7 |
+| 19a | 82.9 | 100.4 | -17.6 |
+| 10c | 154.0 | 171.1 | -17.0 |
+| 19d | 196.6 | 212.6 | -16.0 |
+
+Only 3 regressions, all within noise: 7c +4.2ms, 11c +1.7ms, 5a +1.0ms.
+
+### perf profile changes (8c, none-split/pipeline-jit)
+
+| Function | Iter 23 | Iter 24 | Change |
+|----------|---------|---------|--------|
+| InsertHashes | 9.2% | 9.31% | same |
+| AdvancePointers | 6.1% | 6.07% | same |
+| **ResolvePredicates** | **5.5%** | **0%** | **eliminated** |
+| **ScanInnerJoin** | — | 5.56% | NEW (absorbed ResolvePredicates work) |
+| **TemplatedMatch\<int\>** | **3.1%** | **1.94%** | **-1.16pp** (row-data prefetch) |
+| BF::LookupHashes | 3.6% | 3.54% | same |
+| LLC miss rate | 17.2% | 14.4% | **-2.8pp** |
+
+### Active JIT features after Iter 24
+
+1. FILTER → compiled filter (`expr_fns`)
+2. TABLE_SCAN → scan+filter fusion (`scan_filter_fns`)
+3. FILTER → pipeline fused filter+projection (`pipeline_fns`)
+4. PROJECTION → zero-copy column mapping (`proj_col_maps`)
+5. TABLE_SCAN → Bloom filter scan push-down (`bloom_scan_filters`)
+6. HASH_JOIN → JIT-gated software prefetching for probe, build, BF operations
+7. HASH_JOIN → JIT-gated chain-walk prefetching in AdvancePointers
+8. HASH_JOIN → JIT-gated row-data prefetching before Match (new)
+9. HASH_JOIN → ScanInnerJoin/ScanKeyMatches equality fast path (JIT-gated)
+10. HASH_JOIN → Skip found_match writes for INNER/RIGHT joins (JIT-gated)
+11. HASH_JOIN → ResolvePredicates memcpy optimization (JIT-gated)
