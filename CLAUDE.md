@@ -258,29 +258,43 @@ python3 /home/pei/Project/AQP_middleware/measure/analyze_breakdown.py [job_resul
 
 ## Next Steps
 
-### Direction A (NEW): Auxiliary Storage Plan (high impact, est. 3-10x)
+### Direction A (NEW): Auxiliary Storage Plan + Kernel Execution (high impact, est. 5-20x)
 
-Build auxiliary in-memory data structures in the AQP middleware to bypass DuckDB's hash join and decompression overhead. **DuckDB/PostgreSQL remain completely unchanged** — they serve as data source at startup and SQL parser at query time. Native DuckDB/PostgreSQL does NOT benefit from these changes; all structures live in middleware memory.
+Build auxiliary in-memory data structures in the AQP middleware and execute sub-queries directly via optimized kernel functions, bypassing DuckDB's hash join and decompression overhead. **DuckDB/PostgreSQL remain completely unchanged** — they serve as data source at startup and SQL parser at query time. Native DuckDB/PostgreSQL does NOT benefit from these changes; all structures live in middleware memory.
 
 **Full design**: `/home/pei/Project/AQP_middleware/storage_plan_design.md`
 
-**Components** (each verified independently via breakdown measurement):
+**Performance estimate**: 5-20x over current DuckDB, not the full 50-170x of BespokeOLAP. The gap: (1) temp table materialization between sub-queries (BespokeOLAP has zero — single fused loop), (2) no query-specific pre-computed bitmaps, (3) generic executor vs. per-query compiled code. To close the gap further: kernel fusion (Step 7 JIT) + Direction B (fewer/smaller temps).
+
+**Storage components** (each verified independently via breakdown measurement):
 1. **Flat Column Arrays**: Decompress all base tables into plain C arrays at startup. Eliminates fsst_decompress (3-15%) and segment management overhead. Direct `array[row_id]` access. Code: `src/storage/flat_table.h/.cpp`
 2. **CSR Indexes**: Compressed Sparse Row indexes on all FK columns (from `--fkeys`). O(1) FK→PK lookup, replaces hash table build+probe (InsertHashes 5-17%, AdvancePointers 6-8%). Code: `src/storage/csr_index.h/.cpp`
 3. **Runtime CSR on Temp Tables**: After each sub-query, build CSR on temp result's join key. Next sub-query uses CSR lookup instead of DuckDB hash join. This is **runtime information** from split execution. Eliminates node-based split's +6.6% regression.
 4. **Dimension Constants**: Cache tiny tables (<200 rows), resolve joins to constant predicates at parse time. Eliminates unnecessary joins with kind_type, info_type, etc. Code: `src/storage/dimension_cache.h/.cpp`
 5. **Sorted Indices**: Sorted permutation arrays for MIN/MAX early termination. Scan in sorted order, stop at first match → O(k) instead of O(n). Code: `src/storage/sorted_index.h/.cpp`
-6. **Kernel Primitives**: Pre-compiled C++ functions (ScanFilter, CSRSemiJoin, CSRInnerJoin, Project, SortedMin) operating on auxiliary storage. NOT JIT — plain optimized C++. Code: `src/storage/kernels.h/.cpp`
-7. **(Optional, JIT) Kernel Fusion**: JIT-compile kernel sequences into single fused loops. This IS JIT and goes in `src/jit/kernel_codegen.cpp`. Est. +10-30% on top of kernel primitives.
+
+**Execution model**: A `SubQueryPlan` struct describes each sub-query (scan table, filters, CSR join steps, projection, aggregation). A single generic `ExecuteSubQuery()` function handles all patterns in one scan loop — no separate primitive calls, no intermediate materialization within a sub-query. See `storage_plan_design.md` §Execution Model.
+
+Sub-query pattern analysis (113 JOB queries, ~640 sub-queries from node-based split):
+- 6 structural patterns cover 70% of sub-queries
+- 15 structural patterns cover 97% of sub-queries
+- Most common: `1base+1temp` (26%), `1base+1dim` (12%), `2base` (10%), `1base+1temp+FINAL` (9%)
+- Multi-base patterns (`2base`, `3base`, `4base`) = 16% — these fall back to DuckDB or require hash join
+
+Code: `src/storage/sub_query_plan.h/.cpp` (plan struct + executor)
+
+**DSL / multi-stage programming**: Not needed for v1. The generic `ExecuteSubQuery()` handles all patterns via the plan struct. If interpretation overhead in the inner loop becomes a bottleneck (checking join count, branching on agg type), consider either (a) JIT-compiling SubQueryPlan into specialized code (Step 7), or (b) a lightweight DSL that generates specialized C++ at compile time. Measure first.
+
+**Interaction with Direction B (split strategy)**: A better split strategy would shift patterns toward more `1base+N_temp` and fewer multi-base patterns (`2base`/`3base`/`4base`). This is strictly better for the executor — more CSR-joinable, fewer DuckDB fallbacks. In particular, if we improve the split strategy to always start with a single filtered dimension→base join, every sub-query becomes `1base+N_temp` or `1dim+N_temp`, which are pure CSR-joinable. Direction B is NOT a prerequisite — implement storage plan first, then Direction B further improves it. After Direction B, verify if new sub-query patterns need executor support.
 
 **Implementation order**: Step-by-step, with breakdown measurement after each component to verify its individual effect:
 - Step 1: Flat Column Arrays + basic ScanFilter → measure scan speedup
 - Step 2: CSR Indexes on base tables + CSRSemiJoin → measure single FK join speedup
-- Step 3: Runtime CSR on temp tables → measure node-based split join speedup (target: 16b, 8c)
+- Step 3: Runtime CSR on temp tables + SubQueryPlan executor → measure node-based split execution (target: 16b, 8c)
 - Step 4: Dimension Constants → measure join elimination effect
 - Step 5: Sorted Indices → measure MIN/MAX aggregation speedup
 - Step 6: Full integration + end-to-end JOB benchmark
-- Step 7 (optional): Kernel Fusion (JIT)
+- Step 7 (optional, JIT): Kernel Fusion — JIT-compile SubQueryPlan into specialized loops. Code: `src/jit/kernel_codegen.cpp`. Est. +10-30% on top of generic executor.
 
 **Code organization**:
 - Non-JIT components: `src/storage/` (new directory) — general middleware feature
