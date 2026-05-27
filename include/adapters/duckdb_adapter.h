@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "adapters/db_adapter.h"
+#include "storage/flat_table.h"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
@@ -74,10 +75,12 @@ struct StoredTempResult {
 
 // ReplacementScanData subclass: holds pointer to temp_collections_ map
 struct TempCollectionScanData : public duckdb::ReplacementScanData {
-  explicit TempCollectionScanData(
-      std::unordered_map<std::string, StoredTempResult> *collections)
-      : temp_collections(collections) {}
+  TempCollectionScanData(
+      std::unordered_map<std::string, StoredTempResult> *collections,
+      std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps = nullptr)
+      : temp_collections(collections), kernel_temps(kernel_temps) {}
   std::unordered_map<std::string, StoredTempResult> *temp_collections;
+  std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps;
 };
 
 // TableFunctionInfo subclass: holds pointer to temp_collections_ map
@@ -205,6 +208,9 @@ public:
   // Get context and binder for IR conversion
   duckdb::ClientContext *GetClientContext();
 
+  // Get the DuckDB connection (for StoragePlan loading)
+  duckdb::Connection &GetConnection() { return *conn; }
+
 #ifdef HAVE_LLVM
   // JIT: set the sub-IR and flags for compilation before the next
   // ExecuteSQLandCreateTempTable call. Called by IRQuerySplitter.
@@ -256,6 +262,21 @@ public:
   RegisterExternalTempTable(const std::string &temp_name,
                             const duckdb::vector<duckdb::LogicalType> &types,
                             const std::vector<std::string> &col_names);
+
+  // Kernel temp table management (CSR executor results)
+  void RegisterKernelTemp(const std::string &name,
+                          const storage::FlatTable *table);
+  void ClearKernelTemps();
+
+  // Create a temp table from a FlatTable (for kernel results).
+  // Sets up DuckDB internal state (data_chunk_index, chunk_col_names_,
+  // temp_collections_, temp_table_index_) identically to
+  // ExecuteSQLandCreateTempTable, but from flat arrays instead of SQL.
+  void CreateTempFromFlatTable(const storage::FlatTable &flat,
+                               const std::string &temp_table_name);
+
+  // Access a StoredTempResult (for loading into FlatTable)
+  const StoredTempResult *GetStoredTempResult(const std::string &name) const;
 
   // Get reference to binder (for NodeBasedSplitter to create Optimizer /
   // QuerySplit / SubqueryPreparer)
@@ -408,6 +429,29 @@ private:
       duckdb::optional_ptr<duckdb::ReplacementScanData> data);
   // Replacement scan: in-memory temp table storage
   std::unordered_map<std::string, StoredTempResult> temp_collections_;
+
+  // Kernel temp tables (CSR executor results, owned by IRQuerySplitter)
+  std::unordered_map<std::string, const storage::FlatTable *>
+      kernel_temp_tables_;
+
+  // Table function callbacks for kernel temp tables (static)
+  static duckdb::unique_ptr<duckdb::FunctionData>
+  KernelTempBind(duckdb::ClientContext &context,
+                 duckdb::TableFunctionBindInput &input,
+                 duckdb::vector<duckdb::LogicalType> &return_types,
+                 duckdb::vector<duckdb::string> &names);
+
+  static duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
+  KernelTempInitGlobal(duckdb::ClientContext &context,
+                       duckdb::TableFunctionInitInput &input);
+
+  static void KernelTempScanFunc(duckdb::ClientContext &context,
+                                 duckdb::TableFunctionInput &data,
+                                 duckdb::DataChunk &output);
+
+  static duckdb::unique_ptr<duckdb::NodeStatistics>
+  KernelTempCardinality(duckdb::ClientContext &context,
+                        const duckdb::FunctionData *bind_data);
 #endif
 };
 } // namespace middleware

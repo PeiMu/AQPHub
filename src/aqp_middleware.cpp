@@ -6,6 +6,7 @@
 
 #include "adapters/db_adapter.h"
 #include "split/ir_query_splitter.h"
+#include "storage/storage_plan.h"
 #include "util/param_config.h"
 #include "util/util.h"
 
@@ -126,7 +127,8 @@ std::string ReadSQLFile(const std::string &file_path) {
 
 // Execute single query with timing and result collection
 void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path,
-                        const ParamConfig &config, TestResult &result) {
+                        const ParamConfig &config, TestResult &result,
+                        middleware::storage::StoragePlan *storage_plan = nullptr) {
   result.query_file = get_filename(sql_file_path);
   result.success = false;
   result.num_rows = 0;
@@ -168,7 +170,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       }
 
       // Create IRQuerySplitter with the selected strategy
-      IRQuerySplitter splitter(adapter, config);
+      IRQuerySplitter splitter(adapter, config, storage_plan);
 
       // Execute with split
       query_result = splitter.ExecuteWithSplit(sql);
@@ -234,7 +236,8 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
 }
 
 // Run benchmark on all queries in a directory
-int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config) {
+int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
+                 middleware::storage::StoragePlan *storage_plan = nullptr) {
   std::cout << "\n========================================" << std::endl;
   std::cout << "Running Benchmark: " << config.query_path << std::endl;
   std::cout << "========================================" << std::endl;
@@ -265,7 +268,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config) {
   for (const auto &sql_file : sql_files) {
     std::cout << "Run " + sql_file << std::endl;
     TestResult result;
-    ExecuteSingleQuery(adapter, sql_file, config, result);
+    ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan);
     results.push_back(result);
 
     if (result.success) {
@@ -338,6 +341,40 @@ int main(int argc, char **argv) {
     // Create adapter
     auto adapter = CreateAdapter(config);
 
+    // Load storage plan (flat column arrays + CSR indexes) if requested
+    std::unique_ptr<middleware::storage::StoragePlan> storage_plan_ptr;
+    middleware::storage::StoragePlan *storage_plan = nullptr;
+    if (config.enable_storage_plan) {
+#ifdef HAVE_DUCKDB
+      if (config.engine != BackendEngine::DUCKDB) {
+        throw std::runtime_error(
+            "--storage-plan is only supported with --engine=duckdb");
+      }
+      storage_plan_ptr = std::make_unique<middleware::storage::StoragePlan>();
+      bool loaded_from_cache = false;
+      if (!config.storage_cache_path.empty()) {
+        loaded_from_cache = storage_plan_ptr->LoadFromFile(config.storage_cache_path);
+      }
+      if (!loaded_from_cache) {
+        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter.get());
+        storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
+        if (!config.fkeys_path.empty()) {
+          storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
+        }
+        if (!config.storage_cache_path.empty()) {
+          storage_plan_ptr->SaveToFile(config.storage_cache_path);
+        }
+      }
+      if (config.enable_debug_print) {
+        storage_plan_ptr->PrintSummary();
+      }
+      storage_plan = storage_plan_ptr.get();
+#else
+      throw std::runtime_error(
+          "--storage-plan requires DuckDB support");
+#endif
+    }
+
     if (config.enable_timing) {
       auto prepare_middleware_time =
           chrono_toc(&timer, "Prepare Middleware time is\n", false);
@@ -352,7 +389,7 @@ int main(int argc, char **argv) {
     // Execute based on mode
     int return_code = 0;
     if (config.benchmark_mode) {
-      return_code = RunBenchmark(adapter.get(), config);
+      return_code = RunBenchmark(adapter.get(), config, storage_plan);
     } else {
       for (int iter = 0; iter < config.repeat_count; iter++) {
         if (iter > 0) {
@@ -370,7 +407,8 @@ int main(int argc, char **argv) {
         }
 
         TestResult result;
-        ExecuteSingleQuery(adapter.get(), config.query_path, config, result);
+        ExecuteSingleQuery(adapter.get(), config.query_path, config, result,
+                           storage_plan);
         return_code = result.success ? 0 : 1;
       }
     }

@@ -66,6 +66,15 @@ target_include_directories(split_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# Storage plan library (flat column arrays, CSR indexes)
+# Built conditionally with DuckDB below.
+set(STORAGE_LIB_SOURCES
+    src/storage/flat_table.cpp
+    src/storage/storage_plan.cpp
+    src/storage/csr_index.cpp
+    src/storage/sub_query_plan.cpp
+)
+
 # DuckDB
 set(DUCKDB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../duckdb" CACHE PATH "DuckDB source path")
 set(HAVE_DUCKDB FALSE)
@@ -92,7 +101,17 @@ if (EXISTS ${DUCKDB_ROOT})
         target_compile_definitions(duckdb_adapter PUBLIC HAVE_DUCKDB)
         target_compile_definitions(split_lib PUBLIC HAVE_DUCKDB)
 
-        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib)
+        # Storage plan library (needs DuckDB headers)
+        add_library(storage_lib STATIC ${STORAGE_LIB_SOURCES})
+        target_include_directories(storage_lib PUBLIC
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${DUCKDB_ROOT}/src/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/IR_SQL_Converter/inc
+        )
+        target_compile_definitions(storage_lib PUBLIC HAVE_DUCKDB)
+        target_link_libraries(storage_lib PUBLIC ${DUCKDB_LIB})
+
+        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib)
         if (HAVE_LLVM)
             target_link_libraries(duckdb_adapter PUBLIC aqp_jit_lib)
             target_compile_definitions(duckdb_adapter PUBLIC HAVE_LLVM)
@@ -270,6 +289,9 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
                 split_lib
                 IR_SQL_Converter_static
         )
+        if (HAVE_DUCKDB)
+            target_link_libraries(aqp_middleware PRIVATE storage_lib)
+        endif ()
 
         if (HAVE_DUCKDB)
             target_link_libraries(aqp_middleware PRIVATE duckdb_adapter)
@@ -290,6 +312,20 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
         message(STATUS "aqp_middleware: ENABLED")
     else ()
         message(WARNING "aqp_middleware: DISABLED (no database adapter available)")
+    endif ()
+
+    # Unit tests (gtest)
+    find_package(GTest QUIET)
+    if (GTest_FOUND AND HAVE_DUCKDB)
+        enable_testing()
+        add_executable(test_storage unit_test/test_storage.cpp)
+        target_link_libraries(test_storage PRIVATE
+            storage_lib split_lib IR_SQL_Converter_static GTest::gtest_main)
+        set_property(TARGET test_storage PROPERTY CXX_STANDARD 17)
+        add_test(NAME StorageTests COMMAND test_storage)
+        message(STATUS "test_storage: ENABLED (gtest)")
+    elseif (NOT GTest_FOUND)
+        message(STATUS "gtest not found — unit tests disabled")
     endif ()
 else ()
     message(WARNING "IR_SQL_Converter source not found at ${IR_CONVERTER_ROOT}")

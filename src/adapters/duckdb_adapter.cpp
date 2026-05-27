@@ -120,6 +120,37 @@ struct TempCollectionGlobalState : public duckdb::GlobalTableFunctionState {
   duckdb::vector<duckdb::column_t> column_ids;
 };
 
+// Bind data for kernel temp table scan
+struct KernelTempFunctionData : public duckdb::FunctionData {
+  const middleware::storage::FlatTable *flat_table = nullptr;
+  std::string table_name;
+
+  duckdb::unique_ptr<duckdb::FunctionData> Copy() const override {
+    auto result = duckdb::make_uniq<KernelTempFunctionData>();
+    result->flat_table = flat_table;
+    result->table_name = table_name;
+    return std::move(result);
+  }
+
+  bool Equals(const duckdb::FunctionData &other_p) const override {
+    auto &other = other_p.Cast<KernelTempFunctionData>();
+    return flat_table == other.flat_table;
+  }
+};
+
+struct KernelTempGlobalState : public duckdb::GlobalTableFunctionState {
+  uint64_t current_row = 0;
+  duckdb::vector<duckdb::column_t> column_ids;
+};
+
+// TableFunctionInfo for kernel temp tables
+struct KernelTempScanInfo : public duckdb::TableFunctionInfo {
+  explicit KernelTempScanInfo(
+      std::unordered_map<std::string, const middleware::storage::FlatTable *> *tables)
+      : kernel_temps(tables) {}
+  std::unordered_map<std::string, const middleware::storage::FlatTable *> *kernel_temps;
+};
+
 } // anonymous namespace
 #endif
 
@@ -146,21 +177,34 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
   func.function_info =
       duckdb::make_shared_ptr<TempCollectionScanInfo>(&temp_collections_);
 
-  // Register the table function in the catalog
+  // Register the table functions in the catalog
   duckdb::CreateTableFunctionInfo info(func);
   auto &catalog = duckdb::Catalog::GetSystemCatalog(*context);
   if (context->transaction.IsAutoCommit()) {
     context->transaction.BeginTransaction();
   }
   catalog.CreateTableFunction(*context, info);
+
+  // Register the kernel temp table function
+  duckdb::TableFunction kernel_func(
+      "scan_kernel_temp", {duckdb::LogicalType::VARCHAR},
+      KernelTempScanFunc, KernelTempBind, KernelTempInitGlobal);
+  kernel_func.cardinality = KernelTempCardinality;
+  kernel_func.projection_pushdown = true;
+  kernel_func.function_info =
+      duckdb::make_shared_ptr<KernelTempScanInfo>(&kernel_temp_tables_);
+
+  duckdb::CreateTableFunctionInfo kernel_info(kernel_func);
+  catalog.CreateTableFunction(*context, kernel_info);
+
   if (context->transaction.IsAutoCommit()) {
     context->transaction.Commit();
   }
 
   // Register the replacement scan
   auto &db_config = duckdb::DBConfig::GetConfig(*context);
-  auto scan_data =
-      duckdb::make_uniq<TempCollectionScanData>(&temp_collections_);
+  auto scan_data = duckdb::make_uniq<TempCollectionScanData>(
+      &temp_collections_, &kernel_temp_tables_);
   db_config.replacement_scans.emplace_back(TempCollectionReplacementScan,
                                            std::move(scan_data));
 }
@@ -255,19 +299,209 @@ DuckDBAdapter::TempCollectionReplacementScan(
 
   auto &scan_data = data->Cast<TempCollectionScanData>();
   const auto &table_name = input.table_name;
-  if (scan_data.temp_collections->find(table_name) ==
+
+  // Check temp collections first
+  if (scan_data.temp_collections->find(table_name) !=
       scan_data.temp_collections->end()) {
-    return nullptr;
+    auto table_ref = duckdb::make_uniq<duckdb::TableFunctionRef>();
+    duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
+    children.push_back(duckdb::make_uniq<duckdb::ConstantExpression>(
+        duckdb::Value(table_name)));
+    table_ref->function = duckdb::make_uniq<duckdb::FunctionExpression>(
+        "scan_temp_collection", std::move(children));
+    table_ref->alias = table_name;
+    return std::move(table_ref);
   }
 
-  auto table_ref = duckdb::make_uniq<duckdb::TableFunctionRef>();
-  duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
-  children.push_back(
-      duckdb::make_uniq<duckdb::ConstantExpression>(duckdb::Value(table_name)));
-  table_ref->function = duckdb::make_uniq<duckdb::FunctionExpression>(
-      "scan_temp_collection", std::move(children));
-  table_ref->alias = table_name;
-  return std::move(table_ref);
+  // Check kernel temp tables
+  if (scan_data.kernel_temps &&
+      scan_data.kernel_temps->find(table_name) !=
+          scan_data.kernel_temps->end()) {
+    auto table_ref = duckdb::make_uniq<duckdb::TableFunctionRef>();
+    duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
+    children.push_back(duckdb::make_uniq<duckdb::ConstantExpression>(
+        duckdb::Value(table_name)));
+    table_ref->function = duckdb::make_uniq<duckdb::FunctionExpression>(
+        "scan_kernel_temp", std::move(children));
+    table_ref->alias = table_name;
+    return std::move(table_ref);
+  }
+
+  return nullptr;
+}
+
+// Kernel temp table callbacks
+duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::KernelTempBind(
+    duckdb::ClientContext &context, duckdb::TableFunctionBindInput &input,
+    duckdb::vector<duckdb::LogicalType> &return_types,
+    duckdb::vector<duckdb::string> &names) {
+
+  auto &info = input.info->Cast<KernelTempScanInfo>();
+  auto table_name = input.inputs[0].GetValue<duckdb::string>();
+
+  auto it = info.kernel_temps->find(table_name);
+  if (it == info.kernel_temps->end()) {
+    throw duckdb::BinderException("Kernel temp table '%s' not found",
+                                  table_name);
+  }
+
+  const auto *flat = it->second;
+  for (size_t i = 0; i < flat->columns.size(); i++) {
+    if (flat->columns[i].type == storage::FlatColumnType::INT32)
+      return_types.push_back(duckdb::LogicalType::INTEGER);
+    else
+      return_types.push_back(duckdb::LogicalType::VARCHAR);
+    names.push_back(flat->column_names[i]);
+  }
+
+  auto result = duckdb::make_uniq<KernelTempFunctionData>();
+  result->flat_table = flat;
+  result->table_name = table_name;
+  return std::move(result);
+}
+
+duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
+DuckDBAdapter::KernelTempInitGlobal(duckdb::ClientContext &context,
+                                    duckdb::TableFunctionInitInput &input) {
+  auto state = duckdb::make_uniq<KernelTempGlobalState>();
+  state->column_ids = input.column_ids;
+  return std::move(state);
+}
+
+void DuckDBAdapter::KernelTempScanFunc(duckdb::ClientContext &context,
+                                       duckdb::TableFunctionInput &data,
+                                       duckdb::DataChunk &output) {
+  auto &bind_data = data.bind_data->Cast<KernelTempFunctionData>();
+  auto &state = data.global_state->Cast<KernelTempGlobalState>();
+  const auto *flat = bind_data.flat_table;
+
+  uint64_t remaining = flat->row_count - state.current_row;
+  if (remaining == 0) {
+    output.SetCardinality(0);
+    return;
+  }
+
+  uint64_t count = std::min(remaining, (uint64_t)STANDARD_VECTOR_SIZE);
+
+  for (duckdb::idx_t out_idx = 0; out_idx < state.column_ids.size();
+       out_idx++) {
+    auto col_idx = state.column_ids[out_idx];
+    if (col_idx == duckdb::COLUMN_IDENTIFIER_ROW_ID)
+      continue;
+
+    const auto &col = flat->columns[col_idx];
+    auto &vec = output.data[out_idx];
+
+    if (col.type == storage::FlatColumnType::INT32) {
+      auto *src = reinterpret_cast<const int32_t *>(col.data.get()) +
+                  state.current_row;
+      auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
+      std::memcpy(dst, src, count * sizeof(int32_t));
+    } else {
+      auto *str_vec = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+      for (uint64_t r = 0; r < count; r++) {
+        uint32_t len;
+        const char *ptr = col.GetVarchar(state.current_row + r, len);
+        str_vec[r] = duckdb::StringVector::AddString(vec, ptr, len);
+      }
+    }
+  }
+
+  output.SetCardinality(count);
+  state.current_row += count;
+}
+
+duckdb::unique_ptr<duckdb::NodeStatistics>
+DuckDBAdapter::KernelTempCardinality(duckdb::ClientContext &context,
+                                     const duckdb::FunctionData *bind_data) {
+  auto &data = bind_data->Cast<KernelTempFunctionData>();
+  auto card = data.flat_table->row_count;
+  return duckdb::make_uniq<duckdb::NodeStatistics>(card, card);
+}
+
+void DuckDBAdapter::RegisterKernelTemp(const std::string &name,
+                                       const storage::FlatTable *table) {
+  kernel_temp_tables_[name] = table;
+}
+
+void DuckDBAdapter::ClearKernelTemps() { kernel_temp_tables_.clear(); }
+
+const StoredTempResult *
+DuckDBAdapter::GetStoredTempResult(const std::string &name) const {
+  auto it = temp_collections_.find(name);
+  if (it == temp_collections_.end())
+    return nullptr;
+  return &it->second;
+}
+
+void DuckDBAdapter::CreateTempFromFlatTable(
+    const storage::FlatTable &flat, const std::string &temp_table_name) {
+
+  auto *ctx = GetClientContext();
+
+  // Build DuckDB types
+  duckdb::vector<duckdb::LogicalType> types;
+  for (const auto &col : flat.columns) {
+    if (col.type == storage::FlatColumnType::INT32)
+      types.push_back(duckdb::LogicalType::INTEGER);
+    else
+      types.push_back(duckdb::LogicalType::VARCHAR);
+  }
+
+  // Build a ColumnDataCollection from the flat arrays
+  auto collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(*ctx, types);
+
+  duckdb::DataChunk chunk;
+  chunk.Initialize(*ctx, types);
+
+  uint64_t offset = 0;
+  while (offset < flat.row_count) {
+    uint64_t count = std::min(flat.row_count - offset,
+                              (uint64_t)STANDARD_VECTOR_SIZE);
+    chunk.Reset();
+    chunk.SetCardinality(count);
+
+    for (size_t c = 0; c < flat.columns.size(); c++) {
+      const auto &col = flat.columns[c];
+      auto &vec = chunk.data[c];
+
+      if (col.type == storage::FlatColumnType::INT32) {
+        auto *src = reinterpret_cast<const int32_t *>(col.data.get()) + offset;
+        auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
+        std::memcpy(dst, src, count * sizeof(int32_t));
+      } else {
+        auto *str_vec = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+        for (uint64_t r = 0; r < count; r++) {
+          uint32_t len;
+          const char *ptr = col.GetVarchar(offset + r, len);
+          str_vec[r] = duckdb::StringVector::AddString(vec, ptr, len);
+        }
+      }
+    }
+
+    collection->Append(chunk);
+    offset += count;
+  }
+
+  // Set up DuckDB internal state
+  auto data_chunk_index = planner->binder->GenerateTableIndex();
+  intermediate_table_map[data_chunk_index] = temp_table_name;
+  temp_table_index_ = data_chunk_index;
+  temp_table_types = types;
+
+  chunk_col_names_[data_chunk_index] = flat.column_names;
+  for (duckdb::idx_t i = 0; i < types.size(); i++) {
+    table_column_mappings.emplace(std::make_pair(data_chunk_index, i),
+                                  flat.column_names[i]);
+  }
+
+  StoredTempResult stored;
+  stored.collection = std::move(collection);
+  stored.column_names = flat.column_names;
+  temp_collections_[temp_table_name] = std::move(stored);
+
+  temp_table_card_.emplace(temp_table_name,
+                           static_cast<int64_t>(flat.row_count));
 }
 
 #endif
@@ -1514,6 +1748,7 @@ void DuckDBAdapter::ResetQueryState() {
 #if IN_MEM_TMP_TABLE
   temp_collections_.clear();
 #endif
+  kernel_temp_tables_.clear();
   plan.reset();
   planner.reset();
   table_column_mappings.clear();

@@ -12,6 +12,7 @@ payload_prune=${9:-on}
 prefetch=${10:-on}
 batch_probe=${11:-on}
 cache=${12:-off}
+csr_support=${13:-inner}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -42,6 +43,13 @@ flag_suffix=""
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
 [[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$cache"         != "off" ]] && flag_suffix+="_cache"
+[[ "$csr_support"   != "none" ]] && flag_suffix+="_csr${csr_support}"
+
+# Storage plan + CSR support flags
+storage_flags=""
+if [[ "$csr_support" != "none" && "$jit_level" != "none" ]]; then
+    storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache --csr-support=${csr_support}"
+fi
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"
@@ -231,6 +239,7 @@ for sql in "$dir"/*.sql; do
     --repeat=${iteration} \
     --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
     ${jit_extra_flags} \
+    ${storage_flags} \
     "${sql}"
 done
 

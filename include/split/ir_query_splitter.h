@@ -13,6 +13,9 @@
 #ifdef HAVE_DUCKDB
 #include "split/node_based_splitter.h"
 #endif
+#include "storage/csr_index.h"
+#include "storage/storage_plan.h"
+#include "storage/sub_query_plan.h"
 #include "util/param_config.h"
 #include <chrono>
 #include <iostream>
@@ -68,7 +71,8 @@ struct TempTableInfo {
 
 class IRQuerySplitter {
 public:
-  IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config);
+  IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config,
+                  storage::StoragePlan *storage_plan = nullptr);
   ~IRQuerySplitter() = default;
 
   // Main entry: Execute query with optional splitting
@@ -130,6 +134,7 @@ private:
   void ApplyCrossSubPlanOptimizations(std::string &sub_sql);
 
   EngineAdapter *adapter_;
+  storage::StoragePlan *storage_plan_ = nullptr;
 #ifdef HAVE_DUCKDB
   // Owned helper DuckDB adapter; non-null only when engine != DUCKDB and
   // strategy == NODE_BASED. Null when engine == DUCKDB (adapter_ is the DuckDB
@@ -145,6 +150,15 @@ private:
   // Iteration tracking
   int iteration_count_ = 0;
   std::vector<TempTableInfo> temp_tables_;
+
+  // Kernel temp tables (CSR executor results) — owned here
+  std::unordered_map<std::string, std::unique_ptr<storage::FlatTable>>
+      kernel_temps_;
+  // Non-owning view for AnalyzeSubIR
+  std::unordered_map<std::string, const storage::FlatTable *>
+      kernel_temp_ptrs_;
+  // Runtime CSR indexes built on temp table results
+  std::unordered_map<std::string, storage::CSRIndex> runtime_csrs_;
 
   // Temp tables known to have 0 rows (INNER JOIN → 0 results guaranteed)
   std::set<std::string> empty_temp_tables_;

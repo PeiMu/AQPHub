@@ -13,6 +13,8 @@ namespace middleware {
 
 enum class BackendEngine { DUCKDB, POSTGRESQL, UMBRA, MARIADB, OPENGAUSS };
 
+enum class CsrSupportLevel { NONE, SEMI, INNER, FULL };
+
 enum class SplitStrategy {
   NONE,                // No splitting - execute whole query directly
   TOP_DOWN,            // Top-down traversal split (pipeline breakers)
@@ -58,6 +60,13 @@ struct ParamConfig {
   int repeat_count = 1;      // --repeat=N: run query N times in-process
   bool in_memory = false;     // --in-memory: use :memory: + CSV loading
   std::string csv_dir;        // --csv-dir=<path>: CSV file directory
+
+  // Storage plan: load flat column arrays + CSR indexes at startup
+  bool enable_storage_plan = false;
+  std::string storage_cache_path; // --storage-cache=<path>: binary cache file
+
+  // CSR kernel execution level (requires --storage-plan)
+  CsrSupportLevel csr_support = CsrSupportLevel::NONE;
 
   // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
   // 0 = no JIT. Each level implies all lower levels for fallback.
@@ -143,6 +152,8 @@ struct ParamConfig {
   }
 
   bool NeedsSplit() const { return strategy != SplitStrategy::NONE; }
+
+  bool NeedsCsrSupport() const { return csr_support != CsrSupportLevel::NONE; }
 
   bool NeedsReorderGet() const {
     return strategy == SplitStrategy::TOP_DOWN && enable_reorder_get;

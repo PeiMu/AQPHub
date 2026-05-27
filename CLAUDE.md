@@ -255,7 +255,7 @@ python3 /home/pei/Project/AQP_middleware/measure/analyze_breakdown.py [job_resul
 
 ### Direction A (NEW): Auxiliary Storage Plan + Kernel Execution (high impact, est. 5-20x)
 
-Build auxiliary in-memory data structures in the AQP middleware and execute sub-queries directly via optimized kernel functions, bypassing DuckDB's hash join and decompression overhead. **DuckDB/PostgreSQL remain completely unchanged** — they serve as data source at startup and SQL parser at query time. Native DuckDB/PostgreSQL does NOT benefit from these changes; all structures live in middleware memory.
+Build auxiliary in-memory data structures in the AQP middleware and execute sub-queries directly via optimized kernel functions, bypassing DuckDB's hash join and decompression overhead. **DuckDB/PostgreSQL remain completely unchanged** — they serve as data source at startup and SQL parser at query time. Native DuckDB/PostgreSQL does NOT benefit from these changes; all structures live in middleware memory. The reference code is from Bespoke (the fastest) in /home/pei/Project/BespokeOLAP/output/ and GenDB (a bit slower) in /home/pei/Project/GenDB/output/imdb-job-sf1/runs/latest/queries/ dirs.
 
 **Full design**: `/home/pei/Project/AQP_middleware/storage_plan_design.md`
 
@@ -283,13 +283,18 @@ Code: `src/storage/sub_query_plan.h/.cpp` (plan struct + executor)
 **Interaction with Direction B (split strategy)**: A better split strategy would shift patterns toward more `1base+N_temp` and fewer multi-base patterns (`2base`/`3base`/`4base`). This is strictly better for the executor — more CSR-joinable, fewer DuckDB fallbacks. In particular, if we improve the split strategy to always start with a single filtered dimension→base join, every sub-query becomes `1base+N_temp` or `1dim+N_temp`, which are pure CSR-joinable. Direction B is NOT a prerequisite — implement storage plan first, then Direction B further improves it. After Direction B, verify if new sub-query patterns need executor support.
 
 **Implementation order**: Step-by-step, with breakdown measurement after each component to verify its individual effect:
-- Step 1: Flat Column Arrays + basic ScanFilter → measure scan speedup
-- Step 2: CSR Indexes on base tables + CSRSemiJoin → measure single FK join speedup
-- Step 3: Runtime CSR on temp tables + SubQueryPlan executor → measure node-based split execution (target: 16b, 8c)
-- Step 4: Dimension Constants → measure join elimination effect
-- Step 5: Sorted Indices → measure MIN/MAX aggregation speedup
+- Step 1: Flat Column Arrays + basic ScanFilter → measure scan speedup (**DONE**)
+- Step 2: CSR Indexes on base tables + CSRSemiJoin → measure single FK join speedup (**DONE**)
+- Step 3: Runtime CSR on temp tables + SubQueryPlan executor → measure node-based split execution (target: 16b, 8c) (**DONE** — exe 9.60s → 6.44s, -33%. mw 1.01s → 2.60s due to FlatTable loading + runtime CSR build.)
+- Step 3.5: Filter support in kernel — add kernel-side filter evaluation for 1base+1dim patterns (e.g., `production_year > 2000`, `kind_id = movie`, `country_code = '[us]'`). BespokeOLAP uses dimension constant resolution (info_to_id, kind_to_id, etc.) + inline filters in 75/113 queries. This converts filtered dimension joins into CSR-joinable bitmap checks.
+- Step 4: Dimension Constants → cache tiny tables (<200 rows), resolve joins to constant predicates at parse time. Eliminates unnecessary joins with kind_type, info_type, etc. Code: `src/storage/dimension_cache.h/.cpp`. BespokeOLAP uses this in 83/113 queries.
+- Step 5: Sorted Indices → sorted permutation arrays for MIN/MAX early termination. Scan in sorted order, stop at first match → O(k) instead of O(n). Code: `src/storage/sorted_index.h/.cpp`. BespokeOLAP uses this in 4 queries (16b, 16c, 8c, 8d) but the speedup is dramatic (O(n)→O(1) for MIN on large tables).
 - Step 6: Full integration + end-to-end JOB benchmark
 - Step 7 (optional, JIT): Kernel Fusion — JIT-compile SubQueryPlan into specialized loops. Code: `src/jit/kernel_codegen.cpp`. Est. +10-30% on top of generic executor.
+
+**Known issues (Step 3)**:
+- `std::vector<uint64_t> dummy` allocated per row in semi-join path (`sub_query_plan.cpp:457`). Minor inefficiency — should pass scan_row directly to EmitRow for FROM_SCAN-only output.
+- Middleware overhead increased from 1.01s to 2.60s. Main cost: loading DuckDB temp results into FlatTable + building runtime CSR. Optimization opportunity: avoid FlatTable copy for DuckDB temps that won't be CSR-looked-up (i.e., only build CSR on columns that will actually be used as join keys in subsequent iterations).
 
 **Code organization**:
 - Non-JIT components: `src/storage/` (new directory) — general middleware feature

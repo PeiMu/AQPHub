@@ -13,8 +13,9 @@
 namespace middleware {
 
 IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
-                                 const ParamConfig &config)
-    : adapter_(adapter), config_(config) {
+                                 const ParamConfig &config,
+                                 storage::StoragePlan *storage_plan)
+    : adapter_(adapter), storage_plan_(storage_plan), config_(config) {
 
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Initializing with strategy: "
@@ -82,6 +83,16 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   // incrementing across queries so temp table names stay unique)
   temp_tables_.clear();
   sub_plan_sqls_.clear();
+  kernel_temps_.clear();
+  kernel_temp_ptrs_.clear();
+  runtime_csrs_.clear();
+#ifdef HAVE_DUCKDB
+  if (config_.engine == BackendEngine::DUCKDB) {
+    auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+    if (duck)
+      duck->ClearKernelTemps();
+  }
+#endif
 
   if (!config_.NeedsSplit() || !splitter_) {
     std::cout << "[IRQuerySplitter] No splitting needed, executing directly"
@@ -442,67 +453,280 @@ bool IRQuerySplitter::ExecuteOneIteration(
     executable_ir->Print();
   }
 
-  // Generate SQL and execute
-  std::string sub_sql =
-      adapter_->GenerateSQL(*executable_ir, adapter_->subquery_index++);
-  std::string temp_table_name = GenerateTempTableName();
-
-  if (config_.enable_timing) {
-    auto generate_sub_sql_time =
-        chrono_toc(&timer, "Generate sub-SQL time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3)
-             << (generate_sub_sql_time / 1000.0) << ", ";
-    log_file.close();
-  }
-
-  if (config_.enable_sub_plan_combiner) {
-    sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
-  }
-
-  if (config_.print_sql || config_.enable_debug_print) {
-    std::cout << "\n=== Sub-Query SQL ===" << std::endl;
-    std::cout << sub_sql << std::endl;
-  }
-
-  if (config_.enable_debug_print) {
-    std::cout << "Executing sub-query and creating temp table: "
-              << temp_table_name << std::endl;
-  }
-
-  ApplyCrossSubPlanOptimizations(sub_sql);
-
+  bool kernel_executed = false;
+  uint64_t cardinality = 0;
+  std::string temp_table_name;
 
 #ifdef HAVE_DUCKDB
-#ifdef HAVE_LLVM
-  // JIT: compile filter expressions before execution so DuckDB can dispatch
-  // to compiled code instead of the interpreted expression executor.
-  if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
-    auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-    if (duck) {
-      duck->SetTempColRanges({});
-      duck->SetJITPendingIR(executable_ir, config_.jit_flags);
+  // Try kernel execution path (CSR-based)
+  if (storage_plan_ && storage_plan_->IsLoaded() && config_.NeedsCsrSupport() &&
+      config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
+    auto sub_plan = storage::AnalyzeSubIR(
+        executable_ir, config_.csr_support, storage_plan_,
+        kernel_temp_ptrs_, runtime_csrs_);
+
+    if (sub_plan.valid) {
+      // Increment subquery_index to keep temp table names in sync
+      adapter_->subquery_index++;
+      temp_table_name = GenerateTempTableName();
+
+      if (config_.enable_debug_print) {
+        std::cout << "[CSR-KERNEL] Executing sub-query via kernel: "
+                  << "scan=" << sub_plan.scan_table_name
+                  << " rows=" << sub_plan.scan_table->row_count
+                  << " joins=" << sub_plan.join_steps.size() << std::endl;
+      }
+
+      if (config_.enable_timing) {
+        // Log 0 for generate_sub_sql_time (kernel doesn't generate SQL)
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << "0.000, ";
+        log_file.close();
+      }
+
+      auto result_flat = storage::ExecuteSubQueryPlan(sub_plan, temp_table_name);
+      cardinality = result_flat->row_count;
+
+      if (config_.enable_debug_print) {
+        std::cout << "[CSR-KERNEL] Result: " << cardinality << " rows, "
+                  << result_flat->columns.size() << " columns" << std::endl;
+      }
+
+      // Rename kernel FlatTable columns to match SQL generator's alias convention
+      for (size_t c = 0; c < result_flat->columns.size(); c++) {
+        auto &attr = executable_ir->target_list[c];
+        result_flat->column_names[c] =
+            ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName());
+      }
+
+      // Build runtime CSR on integer columns (skip if domain too large)
+      static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
+      for (size_t c = 0; c < result_flat->columns.size(); c++) {
+        if (result_flat->columns[c].type != storage::FlatColumnType::INT32)
+          continue;
+        int32_t max_val = 0;
+        const auto *int_data =
+            reinterpret_cast<const int32_t *>(result_flat->columns[c].data.get());
+        for (uint64_t r = 0; r < cardinality; r++) {
+          if (int_data[r] > max_val)
+            max_val = int_data[r];
+        }
+        if (max_val > MAX_CSR_DOMAIN)
+          continue;
+        std::string csr_key = temp_table_name + "." + result_flat->column_names[c];
+        runtime_csrs_[csr_key] = storage::BuildCSR(
+            *result_flat, static_cast<int>(c), max_val,
+            temp_table_name, result_flat->column_names[c], "", "");
+        if (config_.enable_debug_print) {
+          std::cout << "[CSR-KERNEL] Built runtime CSR: " << csr_key
+                    << " (max_val=" << max_val << ")" << std::endl;
+        }
+      }
+
+      // Register kernel result with DuckDB's internal state directly
+      // (data_chunk_index, chunk_col_names_, temp_collections_) so the
+      // node-based splitter's UpdateRemainingIR works correctly.
+      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+      if (duck) {
+        duck->RegisterKernelTemp(temp_table_name, result_flat.get());
+        duck->CreateTempFromFlatTable(*result_flat, temp_table_name);
+      }
+
+      // Store ownership
+      kernel_temp_ptrs_[temp_table_name] = result_flat.get();
+      kernel_temps_[temp_table_name] = std::move(result_flat);
+
+      kernel_executed = true;
     }
   }
 #endif
+
+  if (!kernel_executed) {
+    // Standard DuckDB execution path
+    std::string sub_sql =
+        adapter_->GenerateSQL(*executable_ir, adapter_->subquery_index++);
+    temp_table_name = GenerateTempTableName();
+
+    if (config_.enable_timing) {
+      auto generate_sub_sql_time =
+          chrono_toc(&timer, "Generate sub-SQL time is\n", false);
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (generate_sub_sql_time / 1000.0) << ", ";
+      log_file.close();
+    }
+
+    if (config_.enable_sub_plan_combiner) {
+      sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
+    }
+
+    if (config_.print_sql || config_.enable_debug_print) {
+      std::cout << "\n=== Sub-Query SQL ===" << std::endl;
+      std::cout << sub_sql << std::endl;
+    }
+
+    if (config_.enable_debug_print) {
+      std::cout << "Executing sub-query and creating temp table: "
+                << temp_table_name << std::endl;
+    }
+
+    ApplyCrossSubPlanOptimizations(sub_sql);
+
+#ifdef HAVE_DUCKDB
+#ifdef HAVE_LLVM
+    if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) &&
+        config_.engine == BackendEngine::DUCKDB) {
+      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+      if (duck) {
+        duck->SetTempColRanges({});
+        duck->SetJITPendingIR(executable_ir, config_.jit_flags);
+      }
+    }
+#endif
 #endif
 
-  if (SubPlanReferencesEmptyTemp(sub_sql)) {
-    std::string short_sql = sub_sql;
-    size_t semi = short_sql.rfind(';');
-    if (semi != std::string::npos)
-      short_sql.insert(semi, " LIMIT 0");
-    else
-      short_sql += " LIMIT 0";
-    if (config_.enable_debug_print)
-      std::cerr << "[EARLY-TERM] sub-plan references empty temp, appending LIMIT 0\n";
-    adapter_->ExecuteSQLandCreateTempTable(short_sql, temp_table_name,
-                                           config_.enable_update_temp_card);
-  } else {
-    adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                           config_.enable_update_temp_card);
+    if (SubPlanReferencesEmptyTemp(sub_sql)) {
+      std::string short_sql = sub_sql;
+      size_t semi = short_sql.rfind(';');
+      if (semi != std::string::npos)
+        short_sql.insert(semi, " LIMIT 0");
+      else
+        short_sql += " LIMIT 0";
+      if (config_.enable_debug_print)
+        std::cerr << "[EARLY-TERM] sub-plan references empty temp, appending LIMIT 0\n";
+      adapter_->ExecuteSQLandCreateTempTable(short_sql, temp_table_name,
+                                             config_.enable_update_temp_card);
+    } else {
+      adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
+                                             config_.enable_update_temp_card);
+    }
+
+    // Build runtime CSR on DuckDB-executed temps for subsequent kernel iterations
+#ifdef HAVE_DUCKDB
+    if (config_.NeedsCsrSupport() && config_.jit_flags != 0 &&
+        config_.engine == BackendEngine::DUCKDB) {
+      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+      if (duck) {
+        const auto *stored = duck->GetStoredTempResult(temp_table_name);
+        if (stored && stored->collection) {
+          // Load FlatTable from ColumnDataCollection
+          auto flat = std::make_unique<storage::FlatTable>();
+          flat->table_name = temp_table_name;
+          auto &coll = *stored->collection;
+          flat->row_count = coll.Count();
+          flat->column_names = stored->column_names;
+          auto types = coll.Types();
+          flat->columns.resize(types.size());
+
+          // Scan the collection to populate flat columns
+          for (size_t c = 0; c < types.size(); c++) {
+            auto &col = flat->columns[c];
+            col.row_count = flat->row_count;
+            col.nullable = false;
+            if (types[c] == duckdb::LogicalType::INTEGER ||
+                types[c] == duckdb::LogicalType::BIGINT) {
+              col.type = storage::FlatColumnType::INT32;
+              col.data = std::unique_ptr<char[]>(
+                  new char[flat->row_count * sizeof(int32_t)]);
+            } else {
+              col.type = storage::FlatColumnType::VARCHAR;
+            }
+          }
+
+          // Scan collection and extract data
+          duckdb::ColumnDataScanState scan_state;
+          coll.InitializeScan(scan_state);
+          duckdb::DataChunk chunk;
+          coll.InitializeScanChunk(chunk);
+          uint64_t offset = 0;
+
+          // First pass: for VARCHAR columns, collect strings
+          std::vector<std::vector<std::string>> varchar_data(types.size());
+
+          while (coll.Scan(scan_state, chunk)) {
+            auto count = chunk.size();
+            chunk.Flatten();
+            for (size_t c = 0; c < types.size(); c++) {
+              auto &vec = chunk.data[c];
+              auto &validity = duckdb::FlatVector::Validity(vec);
+              if (flat->columns[c].type == storage::FlatColumnType::INT32) {
+                auto *dst = reinterpret_cast<int32_t *>(
+                                flat->columns[c].data.get()) + offset;
+                if (types[c] == duckdb::LogicalType::INTEGER) {
+                  auto *src = duckdb::FlatVector::GetData<int32_t>(vec);
+                  for (duckdb::idx_t r = 0; r < count; r++)
+                    dst[r] = validity.RowIsValid(r) ? src[r] : -1;
+                } else {
+                  auto *src = duckdb::FlatVector::GetData<int64_t>(vec);
+                  for (duckdb::idx_t r = 0; r < count; r++)
+                    dst[r] = validity.RowIsValid(r) ? static_cast<int32_t>(src[r]) : -1;
+                }
+              } else {
+                auto *src = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+                for (duckdb::idx_t r = 0; r < count; r++) {
+                  if (validity.RowIsValid(r))
+                    varchar_data[c].emplace_back(src[r].GetData(), src[r].GetSize());
+                  else
+                    varchar_data[c].emplace_back();
+                }
+              }
+            }
+            offset += count;
+          }
+
+          // Finalize VARCHAR columns
+          for (size_t c = 0; c < types.size(); c++) {
+            if (flat->columns[c].type != storage::FlatColumnType::VARCHAR)
+              continue;
+            auto &col = flat->columns[c];
+            auto &strs = varchar_data[c];
+            uint64_t total_len = 0;
+            for (const auto &s : strs)
+              total_len += s.size();
+            col.data = std::unique_ptr<char[]>(
+                new char[(flat->row_count + 1) * sizeof(uint32_t)]);
+            col.string_pool = std::unique_ptr<char[]>(new char[total_len]);
+            col.string_pool_size = total_len;
+            auto *offsets = reinterpret_cast<uint32_t *>(col.data.get());
+            uint32_t off = 0;
+            for (uint64_t r = 0; r < flat->row_count; r++) {
+              offsets[r] = off;
+              std::memcpy(col.string_pool.get() + off, strs[r].data(),
+                          strs[r].size());
+              off += static_cast<uint32_t>(strs[r].size());
+            }
+            offsets[flat->row_count] = off;
+          }
+
+          // Build runtime CSR on integer columns (skip if domain too large)
+          static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
+          for (size_t c = 0; c < flat->columns.size(); c++) {
+            if (flat->columns[c].type != storage::FlatColumnType::INT32)
+              continue;
+            int32_t max_val = 0;
+            const auto *int_data =
+                reinterpret_cast<const int32_t *>(flat->columns[c].data.get());
+            for (uint64_t r = 0; r < flat->row_count; r++) {
+              if (int_data[r] > max_val)
+                max_val = int_data[r];
+            }
+            if (max_val > MAX_CSR_DOMAIN)
+              continue;
+            std::string csr_key =
+                temp_table_name + "." + flat->column_names[c];
+            runtime_csrs_[csr_key] = storage::BuildCSR(
+                *flat, static_cast<int>(c), max_val, temp_table_name,
+                flat->column_names[c], "", "");
+          }
+
+          kernel_temp_ptrs_[temp_table_name] = flat.get();
+          kernel_temps_[temp_table_name] = std::move(flat);
+        }
+      }
+    }
+#endif
   }
 
   if (config_.enable_timing)
@@ -511,19 +735,13 @@ bool IRQuerySplitter::ExecuteOneIteration(
   // Generate temp table index
   unsigned int temp_table_index =
       splitter_->GetMaxTableIndex() + iteration_count_;
-  uint64_t cardinality;
-  if (config_.enable_update_temp_card || extraction->estimated_rows <= 0) {
-    cardinality = adapter_->GetTempTableCardinality(temp_table_name);
-  } else {
-    // Use optimizer's estimated rows (from EXPLAIN) to simulate inaccurate
-    // cardinality for A/B testing
-    // fixme: might be a bug where the node-based/top-down split didn't call
-    //  BatchGetEstimatedCosts maybe need to collect the card before
-    //  SplitIR by calling BatchGetEstimatedCosts
-    cardinality = static_cast<uint64_t>(extraction->estimated_rows);
-    // Override the engine's internal stats so subsequent EXPLAIN queries
-    // also use the estimated cardinality instead of the real one
-    adapter_->SetTempTableCardinality(temp_table_name, cardinality);
+  if (!kernel_executed) {
+    if (config_.enable_update_temp_card || extraction->estimated_rows <= 0) {
+      cardinality = adapter_->GetTempTableCardinality(temp_table_name);
+    } else {
+      cardinality = static_cast<uint64_t>(extraction->estimated_rows);
+      adapter_->SetTempTableCardinality(temp_table_name, cardinality);
+    }
   }
 
   if (cardinality == 0) {
