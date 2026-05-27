@@ -17,15 +17,6 @@ Always check ## Helper Section for optimization.
 - Dataset: /home/pei/Project/benchmarks/imdb_job-postgres/csv
 - Reference implementations: /home/pei/Project/BespokeOLAP/output/ (compiled queries), /home/pei/Project/GenDB/output/imdb-job-sf1/runs/latest/queries/ (generated queries)
 
-## Build
-```bash
-# DuckDB (only if you modify DuckDB files):
-cd /home/pei/Project/duckdb/build/release && make -j12
-
-# AQP middleware (after any middleware change):
-cd /home/pei/Project/AQP_middleware/build_release && make -j12
-```
-
 ## Current Performance (already measured, don't re-derive)
 
 Measurement data is in /home/pei/Project/AQP_middleware/measure/job_result/. We drop the first 5 runs as warm up and take average of the other 10 runs. The measurement uses `--repeat=15` (in-process iteration, single DuckDB connection).
@@ -67,9 +58,31 @@ See current numbers and per-iteration history in /home/pei/Project/AQP_middlewar
 - You may design new split strategies in AQP_middleware if they enable better execution.
 - Ignore compilation time -- only execution time matters.
 
-## Fast Iteration Workflow
+## Workflow Per Iteration
 
-### Quick test (single query, ~1 second):
+### 0. Profile the bottleneck
+Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/find_top_queries.py` to identify the top-10 heaviest queries from the latest `breakdown_time_log.csv`. Always check the heaviest queries in jit_optimization_claude.md. Profile both baseline (none-split/none-jit) and best JIT config on the same queries: the gap shows where split+JIT overhead is; then also profile best JIT alone to find the remaining bottleneck to optimize. Think fundamentally what is the correct optimization technique for the current bottleneck. Think in the Umbra way and in the Thomas Neumann way.
+
+**Profiling tool**:
+1. **`perf stat`** — First step. Classifies bottleneck type (compute vs memory bound) via IPC, L1/LLC cache miss rates, branch misprediction, CPU utilization.
+2. **`perf record` + `perf report`** — Second step. Shows function-level CPU hotspots. Directly answers "which operator is the bottleneck."
+3. **DuckDB EXPLAIN ANALYZE** — Operator-level cardinality + time. Use selectively (adds overhead).
+4. **`perf record -e cache-misses` / `perf mem`** — Only if `perf stat` shows memory-bound. Pinpoints which data structures cause cache misses.
+
+**Do NOT use:** `strace` (no I/O syscalls in-memory), Intel VTune (`perf` suffices), eBPF/bpftrace (overkill for CPU profiling).
+
+### 1. Read relevant source code for the optimization you're implementing
+
+### 2. Make the code change and write unit gtests in unit_test/ dir
+
+### 3. Build and quick-test
+Build:
+```bash
+cd /home/pei/Project/AQP_middleware/build_release && make -j12
+# If DuckDB files changed:
+cd /home/pei/Project/duckdb/build/release && make -j12
+```
+Run a single query (~1 second):
 ```bash
 cd /home/pei/Project/AQP_middleware/measure
 ../build_release/aqp_middleware \
@@ -80,61 +93,43 @@ cd /home/pei/Project/AQP_middleware/measure
   --split="node-based" --no-analyze \
   --jit-level=pipeline --jit-opt=o1 --jit-simd=none \
   --timing \
-  /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql
+  /home/pei/Project/benchmarks/imdb_job-postgres/queries/{query_id}.sql
 ```
-Check time_log.csv for per-phase timing.
+Check time_log.csv for per-phase timing. Verify by unit tests first, then measure performance on 2-3 target queries.
 
-### Heavy test queries (focus on these for iteration):
-You should always check the heaviest queries from the current version of jit in jit_optimization_claude.md.
-
-### Profiling tool selection guide:
-When analyzing bottlenecks of heavy queries, choose tools based on what you need to learn:
-
-1. **`perf stat`** — First step. Classifies bottleneck type (compute vs memory bound) via IPC, L1/LLC cache miss rates, branch misprediction, CPU utilization. Run on all heavy queries as a batch.
-2. **`perf record` + `perf report`** — Second step. Shows function-level CPU hotspots (e.g., `JoinHashTable::Probe` vs `PhysicalTableScan::GetData`). Directly answers "which operator is the bottleneck" without DuckDB's internal profiler.
-3. **DuckDB EXPLAIN ANALYZE** — Operator-level cardinality + time. Reveals per-operator row counts and plan shape. Use selectively (adds overhead).
-4. **`perf record -e cache-misses` / `perf mem`** — Only if `perf stat` shows memory-bound. Pinpoints which data structures cause cache misses.
-
-**Do NOT use:**
-- `strace`: Not useful for in-memory queries (no I/O syscalls on warm buffer pool)
-- Intel VTune: `perf` gives sufficient insight; VTune is slower to set up
-- eBPF/bpftrace: Overkill for CPU profiling; only useful for I/O or scheduler analysis
-
-### Correctness check (~2 min):
-For a quick test:
+### 4. Correctness check
+Quick (~2 min):
 ```bash
 cd /home/pei/Project/AQP_middleware/measure
 bash run_job.sh duckdb node-based pipeline o1 none
-# Compare output with golden:
 filter='grep -v "^Running\|^==\|^Execution\|^$\|^waiting\|^server\|^ANALYZ\|^duckdb runs:\|^(base)"'
 diff <(eval $filter job_result/aqp_middleware_duckdb_node-based_pipeline_o1_none_job.txt) \
      <(eval $filter duckdb_job_node-based_golden.txt)
 ```
-For whole test:
+Full:
 ```bash
 cd /home/pei/Project/AQP_middleware/measure
 bash ./correctness_test.sh
 ```
 
-### Full breakdown measurement (~28 min, only for final validation):
-do NOT do ANYTHING when running performance measurement to avoid any noise.
+### 5. If faster: full breakdown measurement (~28 min, only for final validation)
+Do NOT do ANYTHING when running performance measurement to avoid noise.
 ```bash
 cd /home/pei/Project/AQP_middleware/measure
 bash measure_breakdown_time_job.sh duckdb node-based pipeline o1 none
 ```
 
-## Workflow Per Iteration
-0. **Profile the bottleneck**: Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/find_top_queries.py` to identify the top-10 heaviest queries from the latest `breakdown_time_log.csv`. Then follow `perf_analysis.md` Steps 2-5 to profile those queries with `perf stat`, `perf record`, Intel VTune, and eBPF/bpftrace. Profile both baseline (none-split/none-jit) and best JIT config on the same queries: the gap shows where split+JIT overhead is; then also profile best JIT alone to find the remaining bottleneck to optimize. Think fundamentally what is the correct optimization technique for the current bottleneck. Think in the Umbra way and in the Thomas Neumann way.
- - Check detailed bottleneck in ### Profiling tool selection guide section.
-1. Read relevant source code for the optimization you're implementing
-2. Make the code change
-3. Build (`make -j12` in the appropriate build_release dir)
-4. Quick-test on 2-3 target queries, check execution time in time_log.csv
-5. If faster: run correctness check on full JOB, then measure breakdown
-6. If slower or neutral: analyze why, check the slowdown queries if it is noise, revert or adjust, try again. 
-7. If some queries speedup but some others slowdown, check what's the differences and can we fix it fundamentally or at least guard it by some condition of the slowdown query's pattern.
-8. Comparing queries where JIT with split strategy (e.g., node-based) speedup or slowdown compared to the none-split+none-JIT and compared to the last version of JIT, find out the fundamental reason.
-9. Summarize: what changed, which queries improved/regressed, by how much, and update ## Current Status in this file. Then stop compact the conversation within Claude Code and continue the next step.
+### 6. If slower or neutral
+Analyze why, check the slowdown queries if it is noise, revert or adjust (fundamentally change direction, algorithm, or guard by condition), try again.
+
+### 7. Mixed results (some queries speed up, others slow down)
+Check what's different. Fix fundamentally or at least guard by condition of the slowdown query's pattern.
+
+### 8. Compare with baselines
+Compare JIT with split strategy (e.g., node-based) speedup or slowdown vs none-split+none-JIT and vs the last version of JIT. Find the fundamental reason.
+
+### 9. Summarize and update
+Report: what changed, which queries improved/regressed, by how much, net effect on total JOB time. Update ## Current Status in this file. Then compact the conversation within Claude Code and continue the next step.
 
 ## Helper
 - Hardware feature: {"cpu_cores": 12, "simd": "avx2", "total_memory_gb": 63, "disk_type": "hdd", "l3_cache_mb": 12}. You can run any tool to detect more on this server.
