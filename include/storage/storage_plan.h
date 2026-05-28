@@ -1,7 +1,9 @@
 #pragma once
 
 #include "storage/csr_index.h"
+#include "storage/dimension_cache.h"
 #include "storage/flat_table.h"
+#include "storage/sorted_index.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,11 +46,22 @@ public:
     return tables_;
   }
 
+  const DimensionCache *GetDimensionCache() const {
+    return loaded_ ? &dim_cache_ : nullptr;
+  }
+
+  void BuildSortedIndices();
+  const SortedIndex *GetSortedIndex(const std::string &table_name,
+                                    const std::string &col_name) const;
+
 private:
   bool loaded_ = false;
   std::unordered_map<std::string, FlatTable> tables_;
   // Key: "fk_table.fk_column"
   std::unordered_map<std::string, CSRIndex> csr_indexes_;
+  DimensionCache dim_cache_;
+  // Key: "table_name.column_name"
+  std::unordered_map<std::string, SortedIndex> sorted_indices_;
 };
 
 } // namespace storage

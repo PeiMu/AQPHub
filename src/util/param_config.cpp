@@ -221,20 +221,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_storage_plan = true;
     } else if (arg.find("--storage-cache=") == 0) {
       config.storage_cache_path = arg.substr(16);
-    } else if (arg.find("--csr-support=") == 0) {
-      std::string level = to_lower(arg.substr(14));
-      if (level == "none")
-        config.csr_support = CsrSupportLevel::NONE;
-      else if (level == "semi")
-        config.csr_support = CsrSupportLevel::SEMI;
-      else if (level == "inner")
-        config.csr_support = CsrSupportLevel::INNER;
-      else if (level == "full")
-        config.csr_support = CsrSupportLevel::FULL;
-      else
-        throw std::runtime_error(
-            "Unknown CSR support level: " + arg.substr(14) +
-            " (valid: none, semi, inner, full)");
     } else if (arg == "--in-memory") {
       config.in_memory = true;
     } else if (arg.find("--csv-dir=") == 0) {
@@ -250,10 +236,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
   }
 
   config.query_path = argv[argc - 1];
-
-  if (config.NeedsCsrSupport() && !config.enable_storage_plan) {
-    throw std::runtime_error("--csr-support requires --storage-plan");
-  }
 
   if (config.in_memory) {
     if (config.engine != BackendEngine::DUCKDB)
@@ -373,9 +355,6 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --storage-cache=<path>           Binary cache file for "
                "--storage-plan (auto-creates if missing)"
-            << std::endl;
-  std::cout << "  --csr-support=<level>            CSR kernel execution: none, "
-               "semi, inner, full (requires --storage-plan)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

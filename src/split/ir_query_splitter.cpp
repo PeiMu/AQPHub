@@ -300,65 +300,118 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     log_file.close();
   }
 
-  // Print combined sub-plan SQL if enabled (print only; result comes from
-  // final_sql executed via the normal temp-table chain below)
+  // Try kernel MIN aggregate execution path
   QueryResult query_result;
-  if (config_.enable_sub_plan_combiner && !sub_plan_sqls_.empty()) {
-    std::string combined = BuildCombinedSQL(sub_plan_sqls_, final_sql);
-    if (config_.enable_timing) {
-      auto combine_sql_time =
-          chrono_toc(&timer, "Combine SQL time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3)
-               << (combine_sql_time / 1000.0) << ", ";
-      log_file.close();
+  bool kernel_final_executed = false;
+
+#ifdef HAVE_DUCKDB
+  if (storage_plan_ && storage_plan_->IsLoaded() &&
+      config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
+
+    auto final_plan = storage::AnalyzeFinalIR(
+        remaining_ir.get(), storage_plan_,
+        kernel_temp_ptrs_, runtime_csrs_,
+        storage_plan_->GetDimensionCache());
+
+    if (final_plan.valid) {
+      if (config_.enable_timing) {
+        auto analyze_time =
+            chrono_toc(&timer, "AnalyzeFinalIR time\n", false);
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (analyze_time / 1000.0) << ", ";
+        log_file << "0.000, "; // jit_compile_final = 0
+        log_file.close();
+        timer = chrono_tic();
+      }
+
+      query_result = storage::ExecuteFinalAggregate(final_plan);
+      kernel_final_executed = true;
+
+      if (config_.enable_timing) {
+        auto exec_time =
+            chrono_toc(&timer, "ExecuteFinalAggregate time\n", false);
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (exec_time / 1000.0) << ", ";
+        log_file.close();
+      }
+
+      if (config_.enable_debug_print) {
+        std::cout << "[SORTED-MIN] Kernel final aggregate: "
+                  << final_plan.min_cols.size() << " MIN columns" << std::endl;
+        for (size_t i = 0; i < final_plan.min_cols.size(); i++) {
+          std::cout << "  " << final_plan.output_names[i] << " = "
+                    << query_result.rows[0][i]
+                    << (final_plan.min_cols[i].sorted ? " (sorted)" : " (running)")
+                    << std::endl;
+        }
+      }
     }
-    if (config_.print_sql || config_.enable_debug_print) {
-      std::cout << "\n=== Combined Sub-Plan SQL ===" << std::endl;
-      std::cout << combined << std::endl;
-    }
-    // Drop temp tables created by the split loop so the combined SQL can
-    // CREATE them fresh (avoiding "already exists" errors)
-    for (const auto &plan : sub_plan_sqls_) {
-      adapter_->DropTempTable(plan.first);
-    }
-    query_result = adapter_->ExecuteSQL(combined);
-  } else {
-    if (config_.enable_debug_print) {
-      std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
-                << config_.jit_flags << std::dec << " (";
-      if (config_.jit_flags & AQP_JIT_EXPR)
-        std::cerr << "EXPR ";
-      if (config_.jit_flags & AQP_JIT_OPERATOR)
-        std::cerr << "OPERATOR ";
-      if (config_.jit_flags & AQP_JIT_PIPELINE)
-        std::cerr << "PIPELINE ";
-      if (config_.jit_flags & AQP_JIT_SIMD)
-        std::cerr << "SIMD ";
-      if (config_.jit_flags & AQP_JIT_OPT3)
-        std::cerr << "OPT3 ";
-      std::cerr << ") engine=" << (int)config_.engine << "\n";
-    }
+  }
+#endif
+
+  if (!kernel_final_executed) {
+    // Print combined sub-plan SQL if enabled (print only; result comes from
+    // final_sql executed via the normal temp-table chain below)
+    if (config_.enable_sub_plan_combiner && !sub_plan_sqls_.empty()) {
+      std::string combined = BuildCombinedSQL(sub_plan_sqls_, final_sql);
+      if (config_.enable_timing) {
+        auto combine_sql_time =
+            chrono_toc(&timer, "Combine SQL time is\n", false);
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (combine_sql_time / 1000.0) << ", ";
+        log_file.close();
+      }
+      if (config_.print_sql || config_.enable_debug_print) {
+        std::cout << "\n=== Combined Sub-Plan SQL ===" << std::endl;
+        std::cout << combined << std::endl;
+      }
+      // Drop temp tables created by the split loop so the combined SQL can
+      // CREATE them fresh (avoiding "already exists" errors)
+      for (const auto &plan : sub_plan_sqls_) {
+        adapter_->DropTempTable(plan.first);
+      }
+      query_result = adapter_->ExecuteSQL(combined);
+    } else {
+      if (config_.enable_debug_print) {
+        std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
+                  << config_.jit_flags << std::dec << " (";
+        if (config_.jit_flags & AQP_JIT_EXPR)
+          std::cerr << "EXPR ";
+        if (config_.jit_flags & AQP_JIT_OPERATOR)
+          std::cerr << "OPERATOR ";
+        if (config_.jit_flags & AQP_JIT_PIPELINE)
+          std::cerr << "PIPELINE ";
+        if (config_.jit_flags & AQP_JIT_SIMD)
+          std::cerr << "SIMD ";
+        if (config_.jit_flags & AQP_JIT_OPT3)
+          std::cerr << "OPT3 ";
+        std::cerr << ") engine=" << (int)config_.engine << "\n";
+      }
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
-    if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
-      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-      if (config_.enable_debug_print) {
-        std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
-                  << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
+      if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
+        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+        if (config_.enable_debug_print) {
+          std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
+                    << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
+        }
+        if (duck && remaining_ir)
+          duck->SetJITPendingIR(remaining_ir.get(), config_.jit_flags);
       }
-      if (duck && remaining_ir)
-        duck->SetJITPendingIR(remaining_ir.get(), config_.jit_flags);
+#else
+      std::cerr << "[AQP-JIT-TRACE] HAVE_LLVM NOT defined\n";
+#endif
+#else
+      std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB NOT defined\n";
+#endif
+      query_result = adapter_->ExecuteSQL(final_sql);
     }
-#else
-    std::cerr << "[AQP-JIT-TRACE] HAVE_LLVM NOT defined\n";
-#endif
-#else
-    std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB NOT defined\n";
-#endif
-    query_result = adapter_->ExecuteSQL(final_sql);
   }
   return query_result;
 }
@@ -459,11 +512,19 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
 #ifdef HAVE_DUCKDB
   // Try kernel execution path (CSR-based)
-  if (storage_plan_ && storage_plan_->IsLoaded() && config_.NeedsCsrSupport() &&
+  if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
     auto sub_plan = storage::AnalyzeSubIR(
-        executable_ir, config_.csr_support, storage_plan_,
-        kernel_temp_ptrs_, runtime_csrs_);
+        executable_ir, storage_plan_,
+        kernel_temp_ptrs_, runtime_csrs_,
+        storage_plan_->GetDimensionCache());
+
+    double analyze_ms = 0.0;
+    if (config_.enable_timing) {
+      auto analyze_time =
+          chrono_toc(&timer, "AnalyzeSubIR time\n", false);
+      analyze_ms = analyze_time / 1000.0;
+    }
 
     if (sub_plan.valid) {
       // Increment subquery_index to keep temp table names in sync
@@ -474,19 +535,34 @@ bool IRQuerySplitter::ExecuteOneIteration(
         std::cout << "[CSR-KERNEL] Executing sub-query via kernel: "
                   << "scan=" << sub_plan.scan_table_name
                   << " rows=" << sub_plan.scan_table->row_count
-                  << " joins=" << sub_plan.join_steps.size() << std::endl;
+                  << " joins=" << sub_plan.join_steps.size()
+                  << " filters=" << sub_plan.scan_filters.size() << std::endl;
       }
 
       if (config_.enable_timing) {
-        // Log 0 for generate_sub_sql_time (kernel doesn't generate SQL)
+        // Column 2: AnalyzeSubIR time (maps to generate_sub_sql slot)
         std::ofstream log_file;
         log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << analyze_ms << ", ";
+        // Column 3: jit_compile = 0 (kernel is pre-compiled C++)
         log_file << "0.000, ";
         log_file.close();
       }
 
       auto result_flat = storage::ExecuteSubQueryPlan(sub_plan, temp_table_name);
       cardinality = result_flat->row_count;
+
+      if (config_.enable_timing) {
+        // Column 4: ExecuteSubQueryPlan time (maps to execute_sub_sql slot)
+        auto kernel_exec_time =
+            chrono_toc(&timer, "ExecuteSubQueryPlan time\n", false);
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (kernel_exec_time / 1000.0) << ", ";
+        log_file.close();
+      }
 
       if (config_.enable_debug_print) {
         std::cout << "[CSR-KERNEL] Result: " << cardinality << " rows, "
@@ -536,6 +612,17 @@ bool IRQuerySplitter::ExecuteOneIteration(
       // Store ownership
       kernel_temp_ptrs_[temp_table_name] = result_flat.get();
       kernel_temps_[temp_table_name] = std::move(result_flat);
+
+      if (config_.enable_timing) {
+        // Column 5: materialization time (CSR build + DuckDB registration)
+        auto materialize_time =
+            chrono_toc(&timer, "Kernel materialization time\n", false);
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (materialize_time / 1000.0) << ", ";
+        log_file.close();
+      }
 
       kernel_executed = true;
     }
@@ -605,7 +692,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
     // Build runtime CSR on DuckDB-executed temps for subsequent kernel iterations
 #ifdef HAVE_DUCKDB
-    if (config_.NeedsCsrSupport() && config_.jit_flags != 0 &&
+    if (config_.enable_storage_plan && config_.jit_flags != 0 &&
         config_.engine == BackendEngine::DUCKDB) {
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
       if (duck) {

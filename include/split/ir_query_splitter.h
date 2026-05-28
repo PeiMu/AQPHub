@@ -15,7 +15,7 @@
 #endif
 #include "storage/csr_index.h"
 #include "storage/storage_plan.h"
-#include "storage/sub_query_plan.h"
+#include "kernel/sub_query_plan.h"
 #include "util/param_config.h"
 #include <chrono>
 #include <iostream>

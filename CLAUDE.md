@@ -259,7 +259,7 @@ Build auxiliary in-memory data structures in the AQP middleware and execute sub-
 
 **Full design**: `/home/pei/Project/AQP_middleware/storage_plan_design.md`
 
-**Performance estimate**: 5-20x over current DuckDB, not the full 50-170x of BespokeOLAP. The gap: (1) temp table materialization between sub-queries (BespokeOLAP has zero — single fused loop), (2) no query-specific pre-computed bitmaps, (3) generic executor vs. per-query compiled code. To close the gap further: kernel fusion (Step 7 JIT) + Direction B (fewer/smaller temps).
+**Performance estimate**: 5-20x over current DuckDB, not the full 50-170x of BespokeOLAP. The gap: (1) temp table materialization between sub-queries — BespokeOLAP has zero intermediate materialization via single fused loop, (2) no query-specific pre-computed bitmaps (~negligible, see Step 4 notes), (3) generic interpreter vs. per-query compiled code, (4) no dimension-partitioned flat tables. To close the gap: Step 7 sub-query loop fusion (eliminates temp materialization, biggest win) + Step 7 kernel compilation (eliminates interpreter overhead) + Direction B (fewer/smaller temps).
 
 **Storage components** (each verified independently via breakdown measurement):
 1. **Flat Column Arrays**: Decompress all base tables into plain C arrays at startup. Eliminates fsst_decompress (3-15%) and segment management overhead. Direct `array[row_id]` access. Code: `src/storage/flat_table.h/.cpp`
@@ -278,7 +278,7 @@ Sub-query pattern analysis (113 JOB queries, ~640 sub-queries from node-based sp
 
 Code: `src/storage/sub_query_plan.h/.cpp` (plan struct + executor)
 
-**DSL / multi-stage programming**: Not needed for v1. The generic `ExecuteSubQuery()` handles all patterns via the plan struct. If interpretation overhead in the inner loop becomes a bottleneck (checking join count, branching on agg type), consider either (a) JIT-compiling SubQueryPlan into specialized code (Step 7), or (b) a lightweight DSL that generates specialized C++ at compile time. Measure first.
+**Interpreter vs. compiled kernel**: Steps 1-6 use a generic interpreter (`ExecuteSubQueryPlan`) that evaluates `SubQueryPlan` at runtime. Step 7 replaces the interpreter with JIT-compiled native code for each sub-query, eliminating per-row interpretation overhead. The interpreter is sufficient for v1 to validate correctness and measure the benefit of storage structures alone. Step 7 then isolates the additional gain from compilation.
 
 **Interaction with Direction B (split strategy)**: A better split strategy would shift patterns toward more `1base+N_temp` and fewer multi-base patterns (`2base`/`3base`/`4base`). This is strictly better for the executor — more CSR-joinable, fewer DuckDB fallbacks. In particular, if we improve the split strategy to always start with a single filtered dimension→base join, every sub-query becomes `1base+N_temp` or `1dim+N_temp`, which are pure CSR-joinable. Direction B is NOT a prerequisite — implement storage plan first, then Direction B further improves it. After Direction B, verify if new sub-query patterns need executor support.
 
@@ -286,19 +286,53 @@ Code: `src/storage/sub_query_plan.h/.cpp` (plan struct + executor)
 - Step 1: Flat Column Arrays + basic ScanFilter → measure scan speedup (**DONE**)
 - Step 2: CSR Indexes on base tables + CSRSemiJoin → measure single FK join speedup (**DONE**)
 - Step 3: Runtime CSR on temp tables + SubQueryPlan executor → measure node-based split execution (target: 16b, 8c) (**DONE** — exe 9.60s → 6.44s, -33%. mw 1.01s → 2.60s due to FlatTable loading + runtime CSR build.)
-- Step 3.5: Filter support in kernel — add kernel-side filter evaluation for 1base+1dim patterns (e.g., `production_year > 2000`, `kind_id = movie`, `country_code = '[us]'`). BespokeOLAP uses dimension constant resolution (info_to_id, kind_to_id, etc.) + inline filters in 75/113 queries. This converts filtered dimension joins into CSR-joinable bitmap checks.
-- Step 4: Dimension Constants → cache tiny tables (<200 rows), resolve joins to constant predicates at parse time. Eliminates unnecessary joins with kind_type, info_type, etc. Code: `src/storage/dimension_cache.h/.cpp`. BespokeOLAP uses this in 83/113 queries.
-- Step 5: Sorted Indices → sorted permutation arrays for MIN/MAX early termination. Scan in sorted order, stop at first match → O(k) instead of O(n). Code: `src/storage/sorted_index.h/.cpp`. BespokeOLAP uses this in 4 queries (16b, 16c, 8c, 8d) but the speedup is dramatic (O(n)→O(1) for MIN on large tables).
+- Step 3.5: Filter support in kernel (**DONE** — 6/6 correctness pass, kernel coverage 0% → 58.7% (304/518 iterations). Supports =, !=, <, >, <=, >=, IN, NOT IN, IS NULL/NOT NULL, AND/OR/NOT. LIKE/BETWEEN → DuckDB fallback. pk_to_row for inner-join bitset. Timing CSV format unified: 6 cols/iter for both kernel and DuckDB paths. Fallback overhead logged to `fallback_waste_time.csv`. Code moved from `storage/` to `kernel/` dir.)
+- Step 4: Dimension Constants → cache tiny tables (<200 rows), resolve joins to constant predicates at kernel analysis time. (**DONE** — 6/6 correctness pass. DimensionCache built at startup from FlatTables. AnalyzeSubIR resolves filtered dim tables to FK IN-filters, eliminates dim leaf+edge. Handles single-table filtered scan path (all joins eliminated) and 2-table join path (dim on scan or lookup side). Guards: skip unfiltered dims; skip when dim resolution leaves 2 base tables (DuckDB hash join faster than linear scan). join_filters on KernelJoinStep for dim filters targeting lookup table. Code: `src/storage/dimension_cache.h/.cpp`, `src/kernel/sub_query_plan.h/.cpp`.)
+- Step 5: Sorted Indices → sorted permutation arrays for MIN early termination on final sub-query. (**DONE** — 3/3 correctness pass. SortedIndex built on 11 columns at startup (~10s), cached in --storage-cache v2. AnalyzeFinalIR handles Projection→Aggregate→child pattern, maps MIN columns through Projection's column_index to agg_fns. ExecuteFinalAggregate: Phase 1 = sorted scan with early termination for MIN columns on scan table with sorted index (O(k)), Phase 2 = running-min full scan for unsorted columns or lookup-table columns. Handles duplicate MIN columns, NULL output. Extended to N-table star joins (2-5 tables) with PK bitset fallback when no CSR exists. Guards: bail if scan table is base with >5M rows and 2+ join steps. Code: `src/storage/sorted_index.h/.cpp`, `src/kernel/sub_query_plan.h/.cpp`, `src/split/ir_query_splitter.cpp`.)
 - Step 6: Full integration + end-to-end JOB benchmark
-- Step 7 (optional, JIT): Kernel Fusion — JIT-compile SubQueryPlan into specialized loops. Code: `src/jit/kernel_codegen.cpp`. Est. +10-30% on top of generic executor.
+- Step 7 (JIT): Kernel Compilation — compile SubQueryPlan into native code via LLVM JIT, replacing the interpreter. See details below.
 
 **Known issues (Step 3)**:
 - `std::vector<uint64_t> dummy` allocated per row in semi-join path (`sub_query_plan.cpp:457`). Minor inefficiency — should pass scan_row directly to EmitRow for FROM_SCAN-only output.
 - Middleware overhead increased from 1.01s to 2.60s. Main cost: loading DuckDB temp results into FlatTable + building runtime CSR. Optimization opportunity: avoid FlatTable copy for DuckDB temps that won't be CSR-looked-up (i.e., only build CSR on columns that will actually be used as join keys in subsequent iterations).
 
+**Known issues (Step 4)**:
+- **Pre-computed bitmaps**: BespokeOLAP uses query-specific bitmaps (e.g., `us_movie_bitmap`) for O(1) existence checks before CSR probes. Our CSR semi-join lookup is already O(1) (~two array accesses). Estimated savings: ~7ms/query — **negligible** for now. Revisit if profiling shows CSR lookup as a bottleneck.
+- **Dictionary encoding for strings**: BespokeOLAP converts string comparisons to integer dict-id comparisons (~10x faster per row). No current Direction A step covers this. Impact limited because most string filters are already resolved via dim cache (dimension tables) or are on large tables where memory access dominates comparison cost. Could add as part of Step 7 (JIT could compile string constants to dict-id lookups) or as a separate FlatTable enhancement.
+- **Dimension-partitioned flat tables**: BespokeOLAP partitions tables by dimension FK (e.g., `movie_info.partitions[info_type_id]`). Our kernel scans the full flat table with a runtime filter. Estimated savings: 65-320ms per query touching large tables (see Step 7 sub-features). Only benefits kernel path — DuckDB/PostgreSQL SQL paths unaffected. Folded into Step 7.
+- **Base×base guard**: When dim resolution reduces from 3+ tables to 2 base tables (no temps), we skip kernel and fall back to DuckDB. Reason: kernel linear scan of large base tables (e.g., cast_info 36M) is much slower than DuckDB's parallel vectorized hash join. The guard is conservative — revisit after Step 7 adds loop fusion + parallelism.
+
+**Known issues (Step 5)**:
+- **Latent CSR direction bug in `AnalyzeSubIR`** (`sub_query_plan.cpp` ~line 742): `GetCSR(scan_leaf->name, scan_col_name)` can return a CSR where `fk_table == scan_leaf->name`, meaning `Lookup()` returns row indices in the scan table instead of the lookup table. When `ExecuteSubQueryPlan` uses these indices to read FROM_JOIN columns from `step.joined_table`, it indexes into the wrong table — producing wrong values or heap-buffer-overflow. **Currently silent** because runtime CSR search (line 734) is checked first and succeeds for all temp-lookup cases; base×base pairs are guarded out. The same bug was fixed in `AnalyzeFinalIR` (CSR candidates now validated with `csr->fk_table == lookup_leaf->name`). Fixing `AnalyzeSubIR` the same way broke 3/3 configs because runtime CSRs have `fk_table=temp_name` and the column-name matching between IR and FlatTable doesn't always align. **Risk**: any future change that removes the base×base guard, adds new leaf types, or changes CSR search order could silently activate this bug. **Fix path**: add the direction check to `AnalyzeSubIR` but only for the `storage_plan->GetCSR()` calls (lines 742, 747), not the runtime CSR calls (lines 734, 754) which use a different naming convention.
+
+**Step 7 — Kernel Compilation (JIT)**:
+
+The current `ExecuteSubQueryPlan()` in `src/kernel/sub_query_plan.cpp` is an **interpreter**: it takes a `SubQueryPlan` struct and loops through `join_steps`, `scan_filters`, `output_cols` at runtime, branching on `step.use_bitset`, `col.source == FROM_SCAN`, `col.type == INT32`, etc. Every row pays the cost of these generic checks (std::function calls for filters, type dispatch for column access, join step iteration).
+
+The reference implementations show the performance ceiling of **compiled queries**:
+- **BespokeOLAP** (`/home/pei/Project/BespokeOLAP/output/query_q*.cpp`): Per-query C++ source files compiled AOT to native binaries. Each query is a specialized `run_q*()` function with direct array/CSR access, hardcoded join order, inlined constants, query-specific bitmaps, sorted indices for early termination, and zero intermediate materialization. 50-170x faster than DuckDB.
+- **GenDB** (`/home/pei/Project/GenDB/output/imdb-job-sf1/runs/latest/queries/Q*/iter_0/q*.cpp`): Similar approach — per-query C++ with mmap'd flat arrays, CSR lookups, and fused scan loops.
+
+Both generate C++ at build time (AOT). We cannot do AOT at query time (~seconds compile), but we can achieve the same effect via **LLVM JIT** (~0.1-1ms compile per sub-query):
+1. `AnalyzeSubIR()` produces a `SubQueryPlan` (plan generation, analogous to "compilation frontend")
+2. **NEW**: `CompileSubQueryPlan()` translates the plan into LLVM IR — a specialized function with no per-row branching, inlined filter constants, direct array pointers, unrolled join steps. This is true compilation.
+3. LLJIT compiles LLVM IR to native machine code
+4. Execute the compiled function pointer — no interpretation overhead
+
+This eliminates: `std::function` call overhead for filters (~5-10ns/row), type dispatch branches, join step iteration, and output column source checks. On large scans (1M+ rows), even 5ns/row overhead adds up to milliseconds.
+
+Code: `src/jit/kernel_codegen.cpp` (LLVM IR generation from SubQueryPlan). Est. +10-30% on top of the generic interpreter, closing the gap toward BespokeOLAP's compiled performance.
+
+**Step 7 sub-features**:
+- **`__builtin_prefetch` for CSR accesses**: Insert prefetch instructions before CSR `row_ptr[]` and `col_idx[]` array accesses in the compiled kernel, same technique as Iter 22-24 DuckDB hash join prefetching. BespokeOLAP uses `__builtin_prefetch(&genre_csr_offsets[gkey], 0, 0)` with PF_DIST=8.
+- **Sub-query loop fusion**: Analyze the full query's sub-query sequence and generate a single fused function that chains CSR lookups without materializing intermediate temp tables. Eliminates temp allocation + memory writes (~1-2s middleware overhead) and runtime CSR building (~0.5s). This is the **single biggest remaining optimization** — BespokeOLAP processes entire queries in one fused loop with zero intermediate materialization. Requires analyzing the full split plan upfront to determine which sub-query outputs feed into which subsequent sub-query inputs.
+- **Dimension-partitioned flat tables**: Partition large base tables by dimension FK columns at load time (e.g., `movie_info` by `info_type_id`, `cast_info` by `role_id`). The kernel scans only the matching partition instead of the full table. Scan reduction: `cast_info` 36M→4M (9x), `movie_info` 14.8M→2M (7x). Estimated savings: 65-320ms per query. Most impactful after loop fusion (fused loops scan base tables directly, so partitioning avoids scanning non-matching rows). Only benefits kernel path — DuckDB/PostgreSQL SQL paths use their own storage and are unaffected.
+- **Dictionary encoding**: Compile string constant comparisons to integer dict-id lookups in the flat table.
+
 **Code organization**:
-- Non-JIT components: `src/storage/` (new directory) — general middleware feature
-- JIT kernel fusion (Step 7 only): `src/jit/kernel_codegen.cpp`
+- Storage structures: `src/storage/` (flat tables, CSR indexes, storage plan)
+- Kernel interpreter + plan analysis: `src/kernel/sub_query_plan.cpp`
+- Kernel JIT compilation (Step 7): `src/jit/kernel_codegen.cpp`
 - Integration: `src/adapters/duckdb_adapter.cpp` (loading), `src/split/ir_query_splitter.cpp` (sub-query plans reference flat tables + CSR)
 
 **Memory budget**: ~3.8 GB (flat arrays ~3.1 GB + CSR ~0.7 GB) on 63 GB machine.

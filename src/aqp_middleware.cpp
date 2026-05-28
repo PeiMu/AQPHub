@@ -361,6 +361,7 @@ int main(int argc, char **argv) {
         if (!config.fkeys_path.empty()) {
           storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
         }
+        storage_plan_ptr->BuildSortedIndices();
         if (!config.storage_cache_path.empty()) {
           storage_plan_ptr->SaveToFile(config.storage_cache_path);
         }

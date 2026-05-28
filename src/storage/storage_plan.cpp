@@ -191,7 +191,7 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
     table_names.push_back(table_result->GetValue(0, i).ToString());
   }
 
-  std::cout << "[StoragePlan] Loading " << table_names.size()
+  std::cerr << "[StoragePlan] Loading " << table_names.size()
             << " tables into flat arrays..." << std::endl;
 
   for (const auto &tname : table_names) {
@@ -267,7 +267,7 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
       table.max_pk = max_id;
     }
 
-    std::cout << "[StoragePlan]   " << tname << ": " << row_count
+    std::cerr << "[StoragePlan]   " << tname << ": " << row_count
               << " rows, " << col_names.size() << " cols, "
               << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
               << std::endl;
@@ -276,12 +276,13 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
   }
 
   loaded_ = true;
+  dim_cache_.Build(tables_);
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
-  std::cout << "[StoragePlan] Flat table loading complete in " << ms
+  std::cerr << "[StoragePlan] Flat table loading complete in " << ms
             << " ms, total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
 }
@@ -365,7 +366,7 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
                            current_table, fk_column, pk_table, pk_column);
 
       std::string key = current_table + "." + fk_column;
-      std::cout << "[StoragePlan]   CSR " << key << " → " << pk_table
+      std::cerr << "[StoragePlan]   CSR " << key << " → " << pk_table
                 << "." << pk_column << ": row_ptr="
                 << (csr.row_ptr_size * 8 / (1024 * 1024)) << " MB, col_idx="
                 << (csr.col_idx_size * 4 / (1024 * 1024)) << " MB"
@@ -385,9 +386,60 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
   for (const auto &kv : csr_indexes_)
     total_csr_mem += kv.second.GetMemoryUsage();
 
-  std::cout << "[StoragePlan] Built " << csr_count << " CSR indexes in "
+  std::cerr << "[StoragePlan] Built " << csr_count << " CSR indexes in "
             << ms << " ms, total CSR memory: "
             << (total_csr_mem / (1024 * 1024)) << " MB" << std::endl;
+}
+
+void StoragePlan::BuildSortedIndices() {
+  if (!loaded_)
+    return;
+
+  auto start = std::chrono::high_resolution_clock::now();
+
+  static const std::vector<std::pair<std::string, std::string>> kSortedCols = {
+      {"title", "title"},
+      {"title", "production_year"},
+      {"name", "name"},
+      {"char_name", "name"},
+      {"company_name", "name"},
+      {"movie_info", "info"},
+      {"movie_info_idx", "info"},
+      {"aka_name", "name"},
+      {"movie_companies", "note"},
+      {"keyword", "keyword"},
+      {"link_type", "link"},
+  };
+
+  sorted_indices_.clear();
+  for (const auto &[tname, cname] : kSortedCols) {
+    auto it = tables_.find(tname);
+    if (it == tables_.end())
+      continue;
+    if (it->second.FindColumn(cname) < 0)
+      continue;
+    std::string key = tname + "." + cname;
+    sorted_indices_[key] = BuildSortedIndex(it->second, cname);
+    std::cerr << "[StoragePlan]   Sorted index: " << key << " ("
+              << sorted_indices_[key].sorted_perm.size() << " entries)"
+              << std::endl;
+  }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
+  std::cerr << "[StoragePlan] Built " << sorted_indices_.size()
+            << " sorted indices in " << ms << " ms" << std::endl;
+}
+
+const SortedIndex *
+StoragePlan::GetSortedIndex(const std::string &table_name,
+                            const std::string &col_name) const {
+  auto it = sorted_indices_.find(table_name + "." + col_name);
+  if (it == sorted_indices_.end())
+    return nullptr;
+  return &it->second;
 }
 
 const FlatTable *StoragePlan::GetTable(const std::string &table_name) const {
@@ -415,26 +467,26 @@ uint64_t StoragePlan::GetMemoryUsage() const {
 }
 
 void StoragePlan::PrintSummary() const {
-  std::cout << "\n=== StoragePlan Summary ===" << std::endl;
-  std::cout << "Tables: " << tables_.size() << std::endl;
+  std::cerr << "\n=== StoragePlan Summary ===" << std::endl;
+  std::cerr << "Tables: " << tables_.size() << std::endl;
   for (const auto &kv : tables_) {
     const auto &table = kv.second;
-    std::cout << "  " << kv.first << ": " << table.row_count << " rows, "
+    std::cerr << "  " << kv.first << ": " << table.row_count << " rows, "
               << table.columns.size() << " cols, "
               << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
               << ", max_pk=" << table.max_pk << std::endl;
   }
-  std::cout << "CSR indexes: " << csr_indexes_.size() << std::endl;
+  std::cerr << "CSR indexes: " << csr_indexes_.size() << std::endl;
   for (const auto &kv : csr_indexes_) {
     const auto &csr = kv.second;
-    std::cout << "  " << kv.first << " -> " << csr.pk_table << "."
+    std::cerr << "  " << kv.first << " -> " << csr.pk_table << "."
               << csr.pk_column << ": "
               << (csr.GetMemoryUsage() / (1024 * 1024)) << " MB"
               << std::endl;
   }
-  std::cout << "Total memory: " << (GetMemoryUsage() / (1024 * 1024))
+  std::cerr << "Total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
-  std::cout << "===========================" << std::endl;
+  std::cerr << "===========================" << std::endl;
 }
 
 // ─── Binary cache format ─────────────────────────────────────────────────────
@@ -451,7 +503,7 @@ void StoragePlan::PrintSummary() const {
 //          col_idx_size(8) col_idx[col_idx_size * 4]
 
 static constexpr uint64_t CACHE_MAGIC = 0x41515053544F5245ULL; // "AQPSTORE"
-static constexpr uint32_t CACHE_VERSION = 1;
+static constexpr uint32_t CACHE_VERSION = 2;
 
 static void WriteStr(FILE *f, const std::string &s) {
   uint32_t len = static_cast<uint32_t>(s.size());
@@ -525,10 +577,22 @@ void StoragePlan::SaveToFile(const std::string &path) const {
     fwrite(csr.col_idx.get(), sizeof(uint32_t), csr.col_idx_size, f);
   }
 
+  // Write sorted indices
+  uint32_t num_sorted = static_cast<uint32_t>(sorted_indices_.size());
+  fwrite(&num_sorted, 4, 1, f);
+  for (const auto &kv : sorted_indices_) {
+    const auto &si = kv.second;
+    WriteStr(f, si.table_name);
+    WriteStr(f, si.column_name);
+    uint64_t perm_count = si.sorted_perm.size();
+    fwrite(&perm_count, 8, 1, f);
+    fwrite(si.sorted_perm.data(), sizeof(uint32_t), perm_count, f);
+  }
+
   fclose(f);
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-  std::cout << "[StoragePlan] Saved cache to " << path << " in " << ms << " ms"
+  std::cerr << "[StoragePlan] Saved cache to " << path << " in " << ms << " ms"
             << std::endl;
 }
 
@@ -540,7 +604,7 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
   uint64_t magic;
   uint32_t version;
   if (fread(&magic, 8, 1, f) != 1 || magic != CACHE_MAGIC) { fclose(f); return false; }
-  if (fread(&version, 4, 1, f) != 1 || version != CACHE_VERSION) { fclose(f); return false; }
+  if (fread(&version, 4, 1, f) != 1 || version > CACHE_VERSION) { fclose(f); return false; }
 
   uint32_t num_tables, num_csrs;
   fread(&num_tables, 4, 1, f);
@@ -608,15 +672,35 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
     csr_indexes_[key] = std::move(csr);
   }
 
+  // Read sorted indices (version >= 2)
+  sorted_indices_.clear();
+  if (version >= 2) {
+    uint32_t num_sorted;
+    if (fread(&num_sorted, 4, 1, f) == 1) {
+      for (uint32_t i = 0; i < num_sorted; i++) {
+        SortedIndex si;
+        si.table_name = ReadStr(f);
+        si.column_name = ReadStr(f);
+        uint64_t perm_count;
+        fread(&perm_count, 8, 1, f);
+        si.sorted_perm.resize(perm_count);
+        fread(si.sorted_perm.data(), sizeof(uint32_t), perm_count, f);
+        std::string key = si.table_name + "." + si.column_name;
+        sorted_indices_[key] = std::move(si);
+      }
+    }
+  }
+
   fclose(f);
   loaded_ = true;
+  dim_cache_.Build(tables_);
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-  std::cout << "[StoragePlan] Loaded cache from " << path << " in " << ms
+  std::cerr << "[StoragePlan] Loaded cache from " << path << " in " << ms
             << " ms (" << tables_.size() << " tables, " << csr_indexes_.size()
-            << " CSR indexes, " << (GetMemoryUsage() / (1024 * 1024)) << " MB)"
-            << std::endl;
+            << " CSR indexes, " << sorted_indices_.size() << " sorted indices, "
+            << (GetMemoryUsage() / (1024 * 1024)) << " MB)" << std::endl;
 
   return true;
 }

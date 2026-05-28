@@ -72,7 +72,14 @@ set(STORAGE_LIB_SOURCES
     src/storage/flat_table.cpp
     src/storage/storage_plan.cpp
     src/storage/csr_index.cpp
-    src/storage/sub_query_plan.cpp
+    src/storage/dimension_cache.cpp
+    src/storage/sorted_index.cpp
+)
+
+# Kernel library (sub-query executor using storage structures)
+# Built conditionally with DuckDB below.
+set(KERNEL_LIB_SOURCES
+    src/kernel/sub_query_plan.cpp
 )
 
 # DuckDB
@@ -111,7 +118,17 @@ if (EXISTS ${DUCKDB_ROOT})
         target_compile_definitions(storage_lib PUBLIC HAVE_DUCKDB)
         target_link_libraries(storage_lib PUBLIC ${DUCKDB_LIB})
 
-        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib)
+        # Kernel library (needs storage_lib + IR_SQL_Converter)
+        add_library(kernel_lib STATIC ${KERNEL_LIB_SOURCES})
+        target_include_directories(kernel_lib PUBLIC
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${DUCKDB_ROOT}/src/include
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/IR_SQL_Converter/inc
+        )
+        target_compile_definitions(kernel_lib PUBLIC HAVE_DUCKDB)
+        target_link_libraries(kernel_lib PUBLIC storage_lib ${DUCKDB_LIB})
+
+        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib kernel_lib)
         if (HAVE_LLVM)
             target_link_libraries(duckdb_adapter PUBLIC aqp_jit_lib)
             target_compile_definitions(duckdb_adapter PUBLIC HAVE_LLVM)
@@ -290,7 +307,7 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
                 IR_SQL_Converter_static
         )
         if (HAVE_DUCKDB)
-            target_link_libraries(aqp_middleware PRIVATE storage_lib)
+            target_link_libraries(aqp_middleware PRIVATE storage_lib kernel_lib)
         endif ()
 
         if (HAVE_DUCKDB)
@@ -320,7 +337,7 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
         enable_testing()
         add_executable(test_storage unit_test/test_storage.cpp)
         target_link_libraries(test_storage PRIVATE
-            storage_lib split_lib IR_SQL_Converter_static GTest::gtest_main)
+            storage_lib kernel_lib split_lib IR_SQL_Converter_static GTest::gtest_main)
         set_property(TARGET test_storage PROPERTY CXX_STANDARD 17)
         add_test(NAME StorageTests COMMAND test_storage)
         message(STATUS "test_storage: ENABLED (gtest)")
