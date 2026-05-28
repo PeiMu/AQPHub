@@ -1284,3 +1284,270 @@ Only 3 regressions, all within noise: 7c +4.2ms, 11c +1.7ms, 5a +1.0ms.
 9. HASH_JOIN → ScanInnerJoin/ScanKeyMatches equality fast path (JIT-gated)
 10. HASH_JOIN → Skip found_match writes for INNER/RIGHT joins (JIT-gated)
 11. HASH_JOIN → ResolvePredicates memcpy optimization (JIT-gated)
+
+---
+
+## Iteration 25: Direction A Step 3 — Flat Tables + CSR Indexes + Runtime CSR + Kernel Executor
+
+**Goal**: Build auxiliary in-memory storage structures (flat column arrays, CSR indexes) in middleware and execute eligible sub-queries via a kernel that bypasses DuckDB's hash join entirely. DuckDB remains unchanged — it serves as data source and SQL parser.
+
+**Commit**: `9a93673` ("implement first 3 steps for direction A")
+
+### What was implemented
+
+1. **Flat Column Arrays** (`src/storage/flat_table.h/.cpp`): Decompress all base tables into plain C arrays at startup. Direct `array[row_id]` access eliminates DuckDB's FSST decompression (3-15% CPU) and segment management.
+2. **CSR Indexes** (`src/storage/csr_index.h/.cpp`): Compressed Sparse Row indexes on all FK columns (from `--fkeys`). O(1) FK→PK lookup replaces hash table build+probe (InsertHashes 5-17%, AdvancePointers 6-8%).
+3. **Runtime CSR on Temp Tables**: After each sub-query, build CSR on temp result's integer columns. Next sub-query uses CSR lookup instead of DuckDB hash join.
+4. **SubQueryPlan Executor** (`src/storage/sub_query_plan.h/.cpp`): `AnalyzeSubIR()` converts sub-IR into a `SubQueryPlan` struct; `ExecuteSubQueryPlan()` runs it in a single scan loop with CSR lookups.
+5. **`--csr-support=inner`** flag: Kernel handles filter-free 2-table CSR joins only. Sub-queries with filters or aggregates fall back to DuckDB.
+
+### Configuration
+
+CLI flags: `--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache --csr-support=inner`
+Kernel gate: `storage_plan_ && storage_plan_->IsLoaded() && config_.NeedsCsrSupport() && config_.jit_flags != 0`
+
+### Performance
+
+Measurement data: `JOB_duckdb_152/*_csrinner_breakdown_time_log.csv` (--repeat=15, drop first 5, avg next 10)
+
+| Config | Execution (ms) | Middleware (ms) | JIT Compile (ms) | Wall (ms) |
+|--------|---------------:|----------------:|------------------:|----------:|
+| none-split / none-jit | 9,475.6 | — | — | — |
+| node-based / none-jit (csrinner) | 10,159.3 | 978.2 | — | 11,137.5 |
+| **node-based / pipeline-jit (csrinner)** | **6,436.5** | **2,602.7** | **1,805.9** | **10,845.2** |
+
+**Kernel effect on execution**: -3,722.7ms (-36.6%) from nb/nojit → nb/jit
+**vs none-split/none-jit baseline**: -3,039.0ms (-32.1%)
+
+### Top 15 kernel wins (nb-jit vs nb-nojit execution)
+
+| Query | Delta | nb-jit (ms) | nb-nojit (ms) | ns-nojit (ms) |
+|-------|------:|------------:|--------------:|--------------:|
+| 16b | -255.4 | 224.9 | 480.4 | 318.9 |
+| 8c | -151.4 | 231.3 | 382.7 | 237.3 |
+| 25c | -136.1 | 24.1 | 160.2 | 195.8 |
+| 30a | -131.1 | 40.7 | 171.8 | 113.4 |
+| 25a | -131.1 | 20.3 | 151.4 | 122.2 |
+| 31c | -130.1 | 34.4 | 164.4 | 122.1 |
+| 18c | -120.7 | 23.8 | 144.5 | 135.3 |
+| 9d | -115.0 | 136.4 | 251.4 | 151.6 |
+| 17a | -101.3 | 27.3 | 128.6 | 139.7 |
+| 19d | -97.7 | 185.2 | 282.9 | 209.0 |
+| 18a | -94.7 | 20.7 | 115.4 | 163.0 |
+| 16c | -88.4 | 95.9 | 184.3 | 93.7 |
+| 20a | -87.3 | 27.3 | 114.5 | 124.6 |
+| 30b | -85.1 | 32.9 | 118.0 | 43.4 |
+| 16d | -78.3 | 78.8 | 157.1 | 88.7 |
+
+**Zero regressions**: All 113 queries improved or stayed the same.
+
+### Top 10 heaviest queries (nb-jit)
+
+| Query | nb-jit exe (ms) | nb-nojit exe (ms) | ns-nojit exe (ms) |
+|-------|----------------:|------------------:|------------------:|
+| 8c | 231.3 | 382.7 | 237.3 |
+| 16b | 224.9 | 480.4 | 318.9 |
+| 10c | 218.0 | 250.1 | 166.7 |
+| 19d | 185.2 | 282.9 | 209.0 |
+| 6f | 159.0 | 170.2 | 222.5 |
+| 6d | 155.9 | 165.6 | 70.8 |
+| 17f | 154.8 | 183.7 | 217.2 |
+| 5a | 143.3 | 146.2 | 122.4 |
+| 9d | 136.4 | 251.4 | 151.6 |
+| 7c | 128.7 | 141.4 | 438.3 |
+
+### Analysis
+
+The kernel's advantage comes from eliminating hash table build+probe entirely for FK joins. CSR lookup is O(1) per key vs DuckDB's O(chain_length) with hash collisions, and avoids the expensive InsertHashes (5-17% CPU) and AdvancePointers (6-8% CPU) functions.
+
+**Coverage**: The `--csr-support=inner` level only handled filter-free 2-table joins. Node-based split naturally produces many such sub-queries — filters are consumed in early iterations, leaving later join iterations filter-free. These later joins are the expensive ones (large temp tables), so the kernel covers exactly the high-cost sub-queries.
+
+**Middleware overhead**: mw increased from 978ms to 2,603ms (+1,625ms) due to FlatTable loading from DuckDB temp results and runtime CSR construction. The 3,723ms execution savings more than compensates.
+
+**Key insight**: CSR eliminates hash table build entirely — no InsertHashes, no AdvancePointers, no Bloom filter. For FK joins with known key ranges, this is fundamentally faster than any hash join optimization.
+
+---
+
+## Iteration 26: Direction A Steps 3.5-5 — Filters, Dimension Cache, Sorted Indices
+
+**Goal**: Extend kernel coverage from filter-free joins only to support filters, dimension table resolution, and MIN early termination.
+
+**Commit**: `fe8ff6b` ("upload step 1-5 perf")
+
+### What was implemented
+
+**Step 3.5 — Filter Support** (`src/kernel/sub_query_plan.cpp`):
+- Compile IR filter predicates into `RowPredicate` closures for the kernel scan loop
+- Supports: `=`, `!=`, `<`, `>`, `<=`, `>=`, `IN`, `NOT IN`, `IS NULL`, `IS NOT NULL`, `AND`/`OR`/`NOT`
+- `LIKE`/`BETWEEN` → DuckDB fallback
+- `pk_to_row` mapping for inner-join bitset construction
+- **Kernel coverage**: 0% → 58.7% (304/518 iterations) — the "0%" refers to the state after removing `CsrSupportLevel` (Iter 25) but before adding filter compilation. Without `--csr-support=inner`, all sub-queries have filters, so the new `AnalyzeSubIR` initially rejected everything.
+- Code moved from `src/storage/` to `src/kernel/` directory
+
+**Step 4 — Dimension Cache** (`src/storage/dimension_cache.h/.cpp`):
+- Cache tiny tables (<200 rows) as lookup maps at startup
+- `AnalyzeSubIR` resolves filtered dimension joins to FK IN-filters at analysis time
+- Eliminates dimension leaf+edge from the sub-query plan, reducing join count
+- Handles single-table filtered scan path (all joins eliminated) and 2-table join path
+- `join_filters` on `KernelJoinStep` for dim filters targeting lookup table
+- Guards: skip unfiltered dims; skip when dim resolution leaves 2 base tables
+
+**Step 5 — Sorted Indices** (`src/storage/sorted_index.h/.cpp`):
+- Sorted permutation arrays on 11 columns for MIN early termination on final sub-queries
+- `AnalyzeFinalIR`: handles Projection→Aggregate→child pattern, maps MIN columns through projection
+- `ExecuteFinalAggregate`: Phase 1 = sorted scan with early termination for MIN columns O(k), Phase 2 = running-min full scan for unsorted/lookup-table columns
+- Extended to N-table star joins (2-5 tables) with PK bitset fallback
+- Guard: bail if scan table is base with >5M rows and 2+ join steps
+
+### Architecture change
+
+`CsrSupportLevel` enum and `--csr-support` flag **removed**. The kernel now uses a unified `AnalyzeSubIR()` that attempts to handle all sub-queries — filters, dims, aggregates — and falls back to DuckDB when it can't. This is more general than Step 3's approach but trades explicit coverage control for implicit analysis-time decisions.
+
+### Performance
+
+**No isolated breakdown measurement exists.** Steps 3.5-5 were implemented together in one commit and no breakdown was run between them. Performance is unknown — reproducing would require checking out commit `fe8ff6b`, building, and running the full breakdown measurement with `--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache`.
+
+Key uncertainty: removing `--csr-support=inner` and replacing it with the general `AnalyzeSubIR` changed which sub-queries the kernel handles. Step 3's approach (only filter-free joins) was simple and covered exactly the high-cost sub-queries. The new approach is more general but may have different coverage characteristics. Whether Steps 3.5-5 improved or regressed execution time vs Step 3 is **not confirmed**.
+
+### Correctness
+
+6/6 configurations pass (113 queries each):
+
+| Split | JIT | Status |
+|-------|-----|--------|
+| none | none | Pass |
+| none | pipeline | Pass |
+| node-based | none | Pass |
+| node-based | pipeline | Pass |
+| relationship-center | none | Pass |
+| relationship-center | pipeline | Pass |
+
+## Iteration 27: Step 6 — Kernel Threshold Tuning (num_joins >= 1)
+
+**Goal**: Tune the kernel vs DuckDB decision gate for Step 6 integration. Tuning data from `tune_kernel_threshold.py` showed pure scan+filter sub-queries (0 joins) are faster in DuckDB, while CSR-join sub-queries (1+ joins) are faster in the kernel.
+
+**Commit**: `topdown_fix` branch (threshold added to `ir_query_splitter.cpp`)
+
+### What changed
+
+**`src/split/ir_query_splitter.cpp` line 618-619** — kernel decision gate:
+```cpp
+// Before:
+if (sub_plan.valid && !config_.no_kernel) {
+// After:
+if (sub_plan.valid && !config_.no_kernel &&
+    !sub_plan.join_steps.empty()) {
+```
+
+Skip kernel for sub-queries with 0 CSR join steps (pure scan+filter). These are ~339ms slower in kernel than DuckDB across 53 sub-queries. Sub-queries with 1+ joins save ~3,695ms total across 412 sub-queries.
+
+Final sub-query path unchanged — all kernel-valid finals have 1+ joins.
+
+Only affects: node-based/pipeline-jit and relationship-center/pipeline-jit configs (requires `storage_plan_` loaded + `jit_flags != 0` + DuckDB engine).
+
+### Performance (node-based/pipeline-jit, avg of 10 runs)
+
+| Config | Execution (ms) | Middleware (ms) | JIT Compile (ms) | Wall (ms) |
+|--------|---------------:|----------------:|------------------:|----------:|
+| none-split/none-jit | 9,444 | 3 | — | 9,447 |
+| none-split/pipeline-jit | 8,857 | 13 | 8,786 | 17,656 |
+| node-based/none-jit | 10,170 | 819 | — | 10,989 |
+| **node-based/pipeline-jit** | **6,980** | **4,619** | **1,189** | **12,788** |
+
+**Execution: 10,170 → 6,980ms (−31.4%) vs node-based/none-jit**
+**Execution: 9,444 → 6,980ms (−26.1%) vs none-split/none-jit baseline**
+
+Comparison with Step 3 (Iter 25): 6,980ms vs 6,437ms — 543ms slower. The gap comes from:
+- 213 kernel-invalid iterations (31.4%) still falling back to plain DuckDB execution
+- Step 3's `--csr-support=inner` was simpler but handled exactly the high-value sub-queries
+
+Middleware overhead: 1,010ms (Iter 24) → 4,619ms — dominated by FlatTable loading from DuckDB temps + runtime CSR build.
+
+### Top 10 heaviest queries (execution time)
+
+| Query | nb-jit exe | nb-nojit exe | ns-nojit exe | Delta vs ns-nojit |
+|-------|----------:|------------:|------------:|-----------------:|
+| 10c | 232.9 | 248.7 | 165.9 | +67.0 |
+| 16b | 207.5 | 483.7 | 320.0 | −112.5 |
+| 8c | 202.6 | 383.3 | 236.2 | −33.6 |
+| 9d | 174.5 | 250.1 | 150.9 | +23.6 |
+| 6d | 155.6 | 165.8 | 71.0 | +84.6 |
+| 5a | 144.2 | 141.4 | 127.0 | +17.2 |
+| 19d | 140.7 | 293.7 | 214.3 | −73.5 |
+| 30a | 136.7 | 171.8 | 113.2 | +23.5 |
+| 25c | 136.0 | 160.8 | 195.6 | −59.6 |
+| 31c | 135.8 | 164.5 | 122.2 | +13.5 |
+
+### Biggest improvements vs none-split/none-jit
+
+| Query | Delta | nb-jit | ns-nojit |
+|-------|------:|-------:|---------:|
+| 7c | −307.9 | 129.1 | 436.9 |
+| 11d | −229.8 | 45.6 | 275.5 |
+| 22d | −163.0 | 78.8 | 241.8 |
+| 17d | −123.1 | 60.0 | 183.1 |
+| 17f | −113.5 | 103.8 | 217.3 |
+| 16b | −112.5 | 207.5 | 320.0 |
+
+### Biggest regressions vs none-split/none-jit
+
+| Query | Delta | nb-jit | ns-nojit |
+|-------|------:|-------:|---------:|
+| 6d | +84.6 | 155.6 | 71.0 |
+| 12c | +83.8 | 115.6 | 31.9 |
+| 10c | +67.0 | 232.9 | 165.9 |
+| 30b | +54.1 | 97.5 | 43.4 |
+| 12a | +50.3 | 73.8 | 23.4 |
+
+### Correctness
+
+2/2 affected configs pass (node-based/pipeline, relationship-center/pipeline). Other 4 configs unaffected.
+
+### Remaining bottleneck
+
+- 213 kernel-invalid iterations (31.4%) fall back to DuckDB — understanding why `AnalyzeSubIR` bails on these is the key to closing the gap with Step 3
+- Middleware overhead (4,619ms) dominated by FlatTable copy from DuckDB temps + runtime CSR build — optimization opportunity: skip FlatTable copy for temps not used as CSR lookup targets
+
+---
+
+## Iteration 28: Lazy FlatTable/CSR Loading (Attempted, Reverted)
+
+**Goal**: Reduce middleware overhead (4,619ms) by deferring FlatTable loading and CSR building until actually needed.
+
+### What was attempted
+
+1. **Lazy CSR building**: Instead of building CSR on ALL integer columns of every temp table, only build CSR when a column is actually looked up as a join key by `AnalyzeSubIR`.
+2. **Lazy FlatTable loading**: Instead of immediately converting DuckDB `ColumnDataCollection` → `FlatTable` after each DuckDB-fallback sub-query, defer the conversion until a future `AnalyzeSubIR` references the temp table.
+
+### Measurement result (node-based/pipeline-jit, avg of 10 runs)
+
+| Metric | Before (Step 6) | After (Lazy) | Delta |
+|--------|----------------:|-------------:|------:|
+| Execution | 6,980ms | 7,175ms | **+195ms (+2.8%)** |
+| Middleware | 4,619ms | 4,584ms | −35ms (−0.8%) |
+| Wall | 12,788ms | 12,948ms | +160ms |
+
+### Why it failed
+
+- **Most temps ARE used**: Nearly every temp table is referenced by the subsequent kernel iteration, so deferred loading just moved the work from `extra_materialization` to `generate_sub-SQL` timing bucket.
+- **Most temps have only 1-2 integer columns**: CSR savings from skipping unused columns were minimal since most temps only have the columns they need.
+- **Execution regression (+195ms)**: The deferred loading introduced overhead in the hot path — `FindOrBuildCSR` checks and lazy initialization added latency inside `AnalyzeSubIR`.
+- **Net negative**: −35ms MW savings did not compensate for +195ms exe regression.
+
+### Resolution
+
+All changes reverted (`git checkout -- include/kernel/sub_query_plan.h include/split/ir_query_splitter.h src/kernel/sub_query_plan.cpp src/split/ir_query_splitter.cpp`). Codebase returned to Step 6 (Iter 27) state.
+
+### Lesson learned
+
+Lazy/deferred approaches within the current per-sub-query architecture have diminishing returns because the iterative loop inherently needs most temps for the next iteration. The real fix for middleware overhead requires eliminating entire sub-query iterations (inverted indexes, precomputed bitmaps) or eliminating temp materialization entirely (Step 7 loop fusion).
+
+### BespokeOLAP/GenDB gap analysis (completed during this iteration)
+
+Identified 5 key structural gaps explaining the performance difference:
+
+1. **Inverted indexes** (`keyword_to_movies`, `country_to_ids`, `note_csr`): 67/113 queries benefit from `keyword_to_movies` alone. Eliminates 2 sub-query iterations per query. BespokeOLAP pre-builds `dim_value → vector<fk_row_id>` mappings.
+2. **Precomputed bitmaps** (`us_movie_bitmap`): 14 queries use `company_name.country_code="[us]"` → movie_companies → title pattern. BespokeOLAP pre-builds a bytemap to check movie membership in O(1).
+3. **`person_has_aka_bits`**: 12 queries. BespokeOLAP pre-builds a bitset for persons that have an aka_name entry, eliminating the aka_name join sub-query entirely.
+4. **Dictionary encoding + `note_csr`**: 70 queries with LIKE predicates currently fall back to DuckDB. BespokeOLAP uses dictionary memoization (`note_dict` + `note_memo` arrays) and inverted `note_csr` index.
+5. **Loop fusion** (Step 7): Eliminates ALL temp materialization. BespokeOLAP processes entire queries in single fused loops with zero intermediate tables. This is the fundamental fix for the 4,619ms middleware overhead.
