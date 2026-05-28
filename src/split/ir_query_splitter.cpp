@@ -289,17 +289,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::cout << final_sql << std::endl;
     }
   }
-  if (config_.enable_timing) {
-    auto generate_final_sub_sql_time =
-        chrono_toc(&timer, "Generate final sub-SQL time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3)
-             << (generate_final_sub_sql_time / 1000.0) << ", ";
-    log_file.close();
-  }
-
   // Try kernel MIN aggregate execution path
   QueryResult query_result;
   bool kernel_final_executed = false;
@@ -315,13 +304,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
     if (final_plan.valid) {
       if (config_.enable_timing) {
-        auto analyze_time =
-            chrono_toc(&timer, "AnalyzeFinalIR time\n", false);
+        auto gen_and_analyze_time =
+            chrono_toc(&timer, "Generate final + AnalyzeFinalIR time\n", false);
         std::ofstream log_file;
         log_file.open("time_log.csv", std::ios_base::app);
         log_file << std::fixed << std::setprecision(3)
-                 << (analyze_time / 1000.0) << ", ";
-        log_file << "0.000, "; // jit_compile_final = 0
+                 << (gen_and_analyze_time / 1000.0) << ", ";
+        log_file << "0.000, "; // jit_compile_final = 0 (kernel path)
         log_file.close();
         timer = chrono_tic();
       }
@@ -354,6 +343,15 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #endif
 
   if (!kernel_final_executed) {
+    if (config_.enable_timing) {
+      auto generate_final_sub_sql_time =
+          chrono_toc(&timer, "Generate final sub-SQL time is\n", false);
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (generate_final_sub_sql_time / 1000.0) << ", ";
+      log_file.close();
+    }
     // Print combined sub-plan SQL if enabled (print only; result comes from
     // final_sql executed via the normal temp-table chain below)
     if (config_.enable_sub_plan_combiner && !sub_plan_sqls_.empty()) {
