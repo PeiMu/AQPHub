@@ -73,7 +73,7 @@ Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/fi
 
 ### 1. Read relevant source code for the optimization you're implementing
 
-### 2. Make the code change and write unit gtests in unit_test/ dir
+### 2. Make the code change and write unit gtests in unit_test/ dir. If add new modules or code changes related to breakdown timer, decide a reasonable timer position and ask user to confirm. Confirm analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py still work. Otherwise, update the analyze_middleware_breakdown and/or analyze_none_split_breakdown, and confirm with the user.
 
 ### 3. Build and quick-test
 Build:
@@ -95,7 +95,7 @@ cd /home/pei/Project/AQP_middleware/measure
   --timing \
   /home/pei/Project/benchmarks/imdb_job-postgres/queries/{query_id}.sql
 ```
-Check time_log.csv for per-phase timing. Verify by unit tests first, then measure performance on 2-3 target queries.
+Check time_log.csv for per-phase timing. Verify by unit tests first, then measure performance on 2-3 target queries. For breakdown csv, use analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py to parse it.
 
 ### 4. Correctness check
 Quick (~2 min):

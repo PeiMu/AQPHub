@@ -7,6 +7,9 @@
 #include <cstring>
 #include <iostream>
 #include <unordered_set>
+#ifdef HAVE_OPENMP
+#include <omp.h>
+#endif
 
 using namespace ir_sql_converter;
 
@@ -14,6 +17,8 @@ namespace middleware {
 namespace storage {
 
 namespace {
+
+static constexpr uint64_t OMP_PARALLEL_THRESHOLD = 10000;
 
 struct LeafTable {
   std::string name;
@@ -485,6 +490,50 @@ struct FlatTableBuilder {
   }
 };
 
+#ifdef HAVE_OPENMP
+static FlatTableBuilder MergeBuilders(std::vector<FlatTableBuilder> &builders) {
+  FlatTableBuilder merged;
+  if (builders.empty())
+    return merged;
+
+  uint64_t total_rows = 0;
+  for (const auto &b : builders)
+    total_rows += b.row_count;
+
+  merged.column_names = builders[0].column_names;
+  merged.col_buffers.resize(builders[0].col_buffers.size());
+  merged.row_count = total_rows;
+
+  for (size_t c = 0; c < merged.col_buffers.size(); c++) {
+    merged.col_buffers[c].type = builders[0].col_buffers[c].type;
+    if (merged.col_buffers[c].type == FlatColumnType::INT32) {
+      merged.col_buffers[c].int_data.reserve(total_rows);
+      for (auto &b : builders) {
+        auto &src = b.col_buffers[c].int_data;
+        merged.col_buffers[c].int_data.insert(
+            merged.col_buffers[c].int_data.end(),
+            std::make_move_iterator(src.begin()),
+            std::make_move_iterator(src.end()));
+        src.clear();
+        src.shrink_to_fit();
+      }
+    } else {
+      merged.col_buffers[c].str_data.reserve(total_rows);
+      for (auto &b : builders) {
+        auto &src = b.col_buffers[c].str_data;
+        merged.col_buffers[c].str_data.insert(
+            merged.col_buffers[c].str_data.end(),
+            std::make_move_iterator(src.begin()),
+            std::make_move_iterator(src.end()));
+        src.clear();
+        src.shrink_to_fit();
+      }
+    }
+  }
+  return merged;
+}
+#endif
+
 } // anonymous namespace
 
 SubQueryPlan AnalyzeSubIR(
@@ -694,29 +743,63 @@ SubQueryPlan AnalyzeSubIR(
   if (edges.empty())
     return plan;
 
-  // Determine scan table vs lookup table
-  // Heuristic: scan the larger table, CSR-lookup the smaller
-  const LeafTable *scan_leaf = &leaves[0];
-  const LeafTable *lookup_leaf = &leaves[1];
-  if (scan_leaf->flat->row_count < lookup_leaf->flat->row_count)
-    std::swap(scan_leaf, lookup_leaf);
-
   // Find a CSR or runtime CSR for the join edge
   const JoinEdge &edge = edges[0];
 
-  // Determine which side of the edge is scan vs lookup
-  std::string scan_col_name;
-  std::string lookup_col_name;
+  // Resolve edge columns for each leaf
+  auto ResolveEdgeCols = [&](const LeafTable *s, const LeafTable *l,
+                             std::string &s_col, std::string &l_col) -> bool {
+    if (edge.left_table_idx == s->ir_table_index) {
+      s_col = edge.left_col_name;
+      l_col = edge.right_col_name;
+    } else if (edge.right_table_idx == s->ir_table_index) {
+      s_col = edge.right_col_name;
+      l_col = edge.left_col_name;
+    } else {
+      return false;
+    }
+    return true;
+  };
 
-  if (edge.left_table_idx == scan_leaf->ir_table_index) {
-    scan_col_name = edge.left_col_name;
-    lookup_col_name = edge.right_col_name;
-  } else if (edge.right_table_idx == scan_leaf->ir_table_index) {
-    scan_col_name = edge.right_col_name;
-    lookup_col_name = edge.left_col_name;
-  } else {
+  // Find CSR for a given scan→lookup direction.
+  // CSR must satisfy: Lookup(scan_key) returns lookup_table rows,
+  // i.e., csr->fk_table == lookup_table (for base CSRs).
+  auto FindCSR = [&](const LeafTable *l, const std::string &l_col)
+      -> const CSRIndex * {
+    // Runtime CSR on lookup side
+    auto it = runtime_csrs.find(l->name + "." + l_col);
+    if (it != runtime_csrs.end())
+      return &it->second;
+    // Base CSR where fk_table == lookup table (correct direction)
+    if (storage_plan)
+      return storage_plan->GetCSR(l->name, l_col);
+    return nullptr;
+  };
+
+  // Determine scan table vs lookup table.
+  // Prefer scanning the SMALLER table and CSR-probing the larger,
+  // but fall back to the reverse if no CSR exists for that direction.
+  const LeafTable *scan_leaf = &leaves[0];
+  const LeafTable *lookup_leaf = &leaves[1];
+  if (scan_leaf->flat->row_count > lookup_leaf->flat->row_count)
+    std::swap(scan_leaf, lookup_leaf);
+
+  std::string scan_col_name, lookup_col_name;
+  if (!ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name))
     return plan;
+
+  const CSRIndex *csr = FindCSR(lookup_leaf, lookup_col_name);
+
+  // No CSR for small-scans-large — try the reverse direction
+  if (!csr) {
+    std::swap(scan_leaf, lookup_leaf);
+    if (!ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name))
+      return plan;
+    csr = FindCSR(lookup_leaf, lookup_col_name);
   }
+
+  if (!csr)
+    return plan;
 
   // Find scan column in the FlatTable
   int scan_flat_col = scan_leaf->flat->FindColumn(scan_col_name);
@@ -725,45 +808,6 @@ SubQueryPlan AnalyzeSubIR(
 
   // Only INT32 join keys supported
   if (scan_leaf->flat->columns[scan_flat_col].type != FlatColumnType::INT32)
-    return plan;
-
-  // Look for CSR index
-  // Try runtime CSR: "lookup_table_name.lookup_col_name"
-  const CSRIndex *csr = nullptr;
-  std::string runtime_key = lookup_leaf->name + "." + lookup_col_name;
-  auto rt_it = runtime_csrs.find(runtime_key);
-  if (rt_it != runtime_csrs.end()) {
-    csr = &rt_it->second;
-  }
-
-  // Try base CSR: storage_plan->GetCSR(scan_table, scan_col)
-  if (!csr && storage_plan) {
-    csr = storage_plan->GetCSR(scan_leaf->name, scan_col_name);
-  }
-
-  // Try reverse: CSR where fk_table=lookup, fk_col=lookup_col
-  if (!csr && storage_plan) {
-    csr = storage_plan->GetCSR(lookup_leaf->name, lookup_col_name);
-  }
-
-  // Also try runtime CSR on scan side
-  if (!csr) {
-    std::string scan_key = scan_leaf->name + "." + scan_col_name;
-    auto sk_it = runtime_csrs.find(scan_key);
-    if (sk_it != runtime_csrs.end()) {
-      // Swap: scan the lookup table, CSR-lookup the scan table
-      std::swap(scan_leaf, lookup_leaf);
-      scan_flat_col = scan_leaf->flat->FindColumn(lookup_col_name);
-      if (scan_flat_col < 0)
-        return plan;
-      if (scan_leaf->flat->columns[scan_flat_col].type != FlatColumnType::INT32)
-        return plan;
-      std::swap(scan_col_name, lookup_col_name);
-      csr = &sk_it->second;
-    }
-  }
-
-  if (!csr)
     return plan;
 
   // ====== Handle filters ======
@@ -781,10 +825,13 @@ SubQueryPlan AnalyzeSubIR(
     if (!CompileAllLeafFilters(lookup_leaf->all_filters, lookup_leaf->flat, lookup_predicates))
       return plan; // unsupported filter → fall back to DuckDB
 
-    // Build PK bitset + pk_to_row from filtered dimension table
-    if (!BuildFilteredPKBitset(lookup_leaf->flat, lookup_predicates, pk_bitset, pk_to_row))
-      return plan;
-    use_bitset = true;
+    // PK bitset only valid when lookup column IS the PK ("id").
+    // Otherwise, apply filters as join_filters (evaluated per CSR match).
+    if (lookup_col_name == "id") {
+      if (!BuildFilteredPKBitset(lookup_leaf->flat, lookup_predicates, pk_bitset, pk_to_row))
+        return plan;
+      use_bitset = true;
+    }
   }
 
   // Compile scan table filters
@@ -818,8 +865,15 @@ SubQueryPlan AnalyzeSubIR(
     }
   }
 
-  // Dim-derived filters on the LOOKUP table: add as join_filters
+  // Lookup table filters applied as join_filters when not using bitset
   std::vector<RowPredicate> join_filters;
+  if (!use_bitset && !lookup_predicates.empty()) {
+    join_filters.insert(join_filters.end(),
+                        std::make_move_iterator(lookup_predicates.begin()),
+                        std::make_move_iterator(lookup_predicates.end()));
+  }
+
+  // Dim-derived filters on the LOOKUP table: add as join_filters
   auto dim_lookup_it = dim_derived_filters.find(lookup_leaf->ir_table_index);
   if (dim_lookup_it != dim_derived_filters.end()) {
     for (const auto &filt : dim_lookup_it->second) {
@@ -905,13 +959,8 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
                                                const std::string &table_name) {
   assert(plan.valid);
 
-  FlatTableBuilder builder;
-  builder.Init(plan.output_cols);
-
   uint64_t scan_rows = plan.scan_table->row_count;
-  builder.Reserve(scan_rows / 4); // estimate 25% selectivity
 
-  // Check if any join step is an inner join (needs row expansion)
   bool any_inner = false;
   for (const auto &step : plan.join_steps) {
     if (!step.is_semi) {
@@ -922,48 +971,43 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
 
   bool has_scan_filters = !plan.scan_filters.empty();
 
-  // Helper: emit one output row given scan row + joined row indices
-  auto EmitRow = [&](uint64_t scan_row,
-                     const std::vector<uint64_t> &joined_rows) {
-    for (size_t c = 0; c < plan.output_cols.size(); c++) {
-      const auto &out = plan.output_cols[c];
-      const FlatTable *src_table;
-      uint64_t src_row;
-      if (out.source == KernelOutputCol::FROM_SCAN) {
-        src_table = plan.scan_table;
-        src_row = scan_row;
-      } else {
-        src_table = plan.join_steps[out.step_idx].joined_table;
-        src_row = joined_rows[out.step_idx];
-      }
-      const auto &col = src_table->columns[out.col_idx];
-      if (col.type == FlatColumnType::INT32) {
-        builder.AppendInt(c, col.GetInt32(src_row));
-      } else {
-        uint32_t len;
-        const char *ptr = col.GetVarchar(src_row, len);
-        builder.AppendStr(c, ptr, len);
+  // Scan loop body: process one row, emit to the given builder.
+  // All reads (FlatTable, CSR, bitset, filters) are on immutable shared data.
+  auto ScanRow = [&](uint64_t row, FlatTableBuilder &builder) {
+    if (has_scan_filters) {
+      for (const auto &f : plan.scan_filters) {
+        if (!f(*plan.scan_table, row))
+          return;
       }
     }
-    builder.FinishRow();
-  };
 
-  for (uint64_t row = 0; row < scan_rows; row++) {
-    // Evaluate scan-table filters first (most selective, cheapest to check)
-    if (has_scan_filters) {
-      bool pass = true;
-      for (const auto &f : plan.scan_filters) {
-        if (!f(*plan.scan_table, row)) {
-          pass = false;
-          break;
+    // Helper: emit one output row
+    auto EmitRow = [&](uint64_t scan_row,
+                       const std::vector<uint64_t> &joined_rows) {
+      for (size_t c = 0; c < plan.output_cols.size(); c++) {
+        const auto &out = plan.output_cols[c];
+        const FlatTable *src_table;
+        uint64_t src_row;
+        if (out.source == KernelOutputCol::FROM_SCAN) {
+          src_table = plan.scan_table;
+          src_row = scan_row;
+        } else {
+          src_table = plan.join_steps[out.step_idx].joined_table;
+          src_row = joined_rows[out.step_idx];
+        }
+        const auto &col = src_table->columns[out.col_idx];
+        if (col.type == FlatColumnType::INT32) {
+          builder.AppendInt(c, col.GetInt32(src_row));
+        } else {
+          uint32_t len;
+          const char *ptr = col.GetVarchar(src_row, len);
+          builder.AppendStr(c, ptr, len);
         }
       }
-      if (!pass)
-        continue;
-    }
+      builder.FinishRow();
+    };
 
     if (!any_inner) {
-      // Semi-join path: existence check only, no row expansion
       bool pass = true;
       for (const auto &step : plan.join_steps) {
         int32_t key =
@@ -1010,12 +1054,10 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
         }
       }
       if (!pass)
-        continue;
+        return;
       std::vector<uint64_t> dummy(plan.join_steps.size(), 0);
       EmitRow(row, dummy);
     } else {
-      // Inner-join path: iterate CSR matches for row expansion.
-      // Currently supports single join step.
       assert(plan.join_steps.size() == 1);
       const auto &step = plan.join_steps[0];
       int32_t key =
@@ -1025,22 +1067,22 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
       if (step.use_bitset) {
         if (key < 0 || static_cast<size_t>(key) >= step.pk_bitset.size() ||
             !step.pk_bitset[key])
-          continue;
+          return;
         uint64_t lr = step.pk_to_row[key];
         if (has_join_filters) {
           bool jpass = true;
           for (const auto &jf : step.join_filters) {
             if (!jf(*step.joined_table, lr)) { jpass = false; break; }
           }
-          if (!jpass) continue;
+          if (!jpass) return;
         }
         std::vector<uint64_t> joined_rows = {lr};
         EmitRow(row, joined_rows);
       } else if (step.csr) {
-        auto [begin, end] = step.csr->Lookup(key);
-        if (begin == end)
-          continue;
-        for (auto it = begin; it != end; ++it) {
+        auto result = step.csr->Lookup(key);
+        if (result.first == result.second)
+          return;
+        for (auto it = result.first; it != result.second; ++it) {
           if (has_join_filters) {
             bool jpass = true;
             for (const auto &jf : step.join_filters) {
@@ -1053,8 +1095,37 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
         }
       }
     }
-  }
+  };
 
+#ifdef HAVE_OPENMP
+  if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
+    int nthreads = std::min(12, omp_get_max_threads());
+    std::vector<FlatTableBuilder> thread_builders(nthreads);
+    for (auto &tb : thread_builders)
+      tb.Init(plan.output_cols);
+
+    #pragma omp parallel num_threads(nthreads)
+    {
+      int tid = omp_get_thread_num();
+      FlatTableBuilder &my_builder = thread_builders[tid];
+
+      #pragma omp for schedule(dynamic, 4096)
+      for (int64_t row = 0; row < static_cast<int64_t>(scan_rows); row++) {
+        ScanRow(static_cast<uint64_t>(row), my_builder);
+      }
+    }
+
+    auto merged = MergeBuilders(thread_builders);
+    return merged.Finalize(table_name);
+  }
+#endif
+
+  FlatTableBuilder builder;
+  builder.Init(plan.output_cols);
+  builder.Reserve(scan_rows / 4);
+  for (uint64_t row = 0; row < scan_rows; row++) {
+    ScanRow(row, builder);
+  }
   return builder.Finalize(table_name);
 }
 
@@ -1429,13 +1500,6 @@ FinalAggregatePlan AnalyzeFinalIR(
     plan.min_cols.push_back(std::move(mc));
   }
 
-  // Guard: for multi-table star joins, bail if scan table is a large base table.
-  // Single-threaded scan of >5M rows can't compete with DuckDB's parallel hash join.
-  if (plan.join_steps.size() >= 2 && scan_leaf->is_base &&
-      plan.scan_table->row_count > 5000000) {
-    return plan;
-  }
-
   plan.valid = true;
   return plan;
 }
@@ -1528,38 +1592,37 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
   }
 
   if (need_running_min) {
-    // Track running MIN for unsorted columns
     struct RunningMin {
       size_t col_idx;
       bool found = false;
       std::string str_val;
       int32_t int_val = 0;
     };
-    std::vector<RunningMin> trackers;
-    for (size_t i = 0; i < plan.min_cols.size(); i++) {
-      const auto &mc = plan.min_cols[i];
-      if (mc.sorted && mc.on_scan_table)
-        continue; // already resolved in phase 1
-      RunningMin rm;
-      rm.col_idx = i;
-      trackers.push_back(rm);
-    }
 
-    for (uint64_t row = 0; row < scan_rows; row++) {
-      if (!row_qualifies(row))
-        continue;
+    auto MakeTrackers = [&]() {
+      std::vector<RunningMin> t;
+      for (size_t i = 0; i < plan.min_cols.size(); i++) {
+        const auto &mc = plan.min_cols[i];
+        if (mc.sorted && mc.on_scan_table)
+          continue;
+        RunningMin rm;
+        rm.col_idx = i;
+        t.push_back(rm);
+      }
+      return t;
+    };
 
-      // For each tracker, get the value from the appropriate table
-      for (auto &rm : trackers) {
+    // Per-row MIN update logic for a set of trackers
+    auto UpdateTrackers = [&](uint64_t row, std::vector<RunningMin> &trk) {
+      for (auto &rm : trk) {
         const auto &mc = plan.min_cols[rm.col_idx];
         if (mc.on_scan_table) {
-          // Column on scan table but no sorted index
           if (mc.type == FlatColumnType::VARCHAR) {
             if (mc.table->columns[mc.flat_col_idx].IsNull(row))
               continue;
             std::string val = mc.table->columns[mc.flat_col_idx].GetString(row);
             if (!rm.found || val < rm.str_val) {
-              rm.str_val = val;
+              rm.str_val = std::move(val);
               rm.found = true;
             }
           } else {
@@ -1572,7 +1635,6 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
             }
           }
         } else {
-          // Column on lookup table — find the join step for this table
           int step_idx = -1;
           for (size_t si = 0; si < steps.size(); si++) {
             if (steps[si].joined_table == mc.table) { step_idx = static_cast<int>(si); break; }
@@ -1587,7 +1649,7 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
                 if (!mc.table->columns[mc.flat_col_idx].IsNull(joined_row)) {
                   std::string val = mc.table->columns[mc.flat_col_idx].GetString(joined_row);
                   if (!rm.found || val < rm.str_val) {
-                    rm.str_val = val;
+                    rm.str_val = std::move(val);
                     rm.found = true;
                   }
                 }
@@ -1602,8 +1664,8 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
               }
             }
           } else {
-            auto [begin, end] = step.csr->Lookup(key);
-            for (auto it = begin; it != end; ++it) {
+            auto result = step.csr->Lookup(key);
+            for (auto it = result.first; it != result.second; ++it) {
               uint64_t joined_row = *it;
               bool jf_pass = true;
               for (const auto &jf : step.join_filters) {
@@ -1618,7 +1680,7 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
                 if (!mc.table->columns[mc.flat_col_idx].IsNull(joined_row)) {
                   std::string val = mc.table->columns[mc.flat_col_idx].GetString(joined_row);
                   if (!rm.found || val < rm.str_val) {
-                    rm.str_val = val;
+                    rm.str_val = std::move(val);
                     rm.found = true;
                   }
                 }
@@ -1634,6 +1696,59 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
             }
           }
         }
+      }
+    };
+
+    // Merge src tracker into dst tracker
+    auto MergeTracker = [&](const RunningMin &src, RunningMin &dst) {
+      if (!src.found) return;
+      const auto &mc = plan.min_cols[src.col_idx];
+      if (mc.type == FlatColumnType::VARCHAR) {
+        if (!dst.found || src.str_val < dst.str_val) {
+          dst.str_val = src.str_val;
+          dst.found = true;
+        }
+      } else {
+        if (!dst.found || src.int_val < dst.int_val) {
+          dst.int_val = src.int_val;
+          dst.found = true;
+        }
+      }
+    };
+
+    std::vector<RunningMin> trackers = MakeTrackers();
+
+#ifdef HAVE_OPENMP
+    if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
+      int nthreads = std::min(12, omp_get_max_threads());
+      std::vector<std::vector<RunningMin>> tl_trackers(nthreads);
+      for (int t = 0; t < nthreads; t++)
+        tl_trackers[t] = MakeTrackers();
+
+      #pragma omp parallel num_threads(nthreads)
+      {
+        int tid = omp_get_thread_num();
+        auto &local = tl_trackers[tid];
+
+        #pragma omp for schedule(dynamic, 4096)
+        for (int64_t row = 0; row < static_cast<int64_t>(scan_rows); row++) {
+          if (!row_qualifies(static_cast<uint64_t>(row)))
+            continue;
+          UpdateTrackers(static_cast<uint64_t>(row), local);
+        }
+      }
+
+      for (int t = 0; t < nthreads; t++) {
+        for (size_t i = 0; i < trackers.size(); i++)
+          MergeTracker(tl_trackers[t][i], trackers[i]);
+      }
+    } else
+#endif
+    {
+      for (uint64_t row = 0; row < scan_rows; row++) {
+        if (!row_qualifies(row))
+          continue;
+        UpdateTrackers(row, trackers);
       }
     }
 

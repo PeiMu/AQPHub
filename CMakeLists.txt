@@ -128,6 +128,13 @@ if (EXISTS ${DUCKDB_ROOT})
         target_compile_definitions(kernel_lib PUBLIC HAVE_DUCKDB)
         target_link_libraries(kernel_lib PUBLIC storage_lib ${DUCKDB_LIB})
 
+        # find_package(OpenMP)
+        # if (OpenMP_CXX_FOUND)
+        #     target_link_libraries(kernel_lib PUBLIC OpenMP::OpenMP_CXX)
+        #     target_compile_definitions(kernel_lib PUBLIC HAVE_OPENMP)
+        #     message(STATUS "kernel_lib OpenMP: ENABLED")
+        # endif()
+
         target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib kernel_lib)
         if (HAVE_LLVM)
             target_link_libraries(duckdb_adapter PUBLIC aqp_jit_lib)

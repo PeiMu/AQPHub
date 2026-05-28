@@ -4,6 +4,8 @@ Step-by-step guide for profiling operator-level bottlenecks using external tools
 
 **Why not use DuckDB's internal `operator_exe.csv`?** It sums per-thread wall times via `MetricSum` in `QueryProfiler::Flush()`. A parallel operator running on N threads reports Nx its wall time, misidentifying bottlenecks under multi-threading.
 
+For breakdown csv, use analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py to parse it.
+
 ## Prerequisites: Build with Frame Pointers + Debug Symbols
 
 Both AQPHub and DuckDB must be built with `-fno-omit-frame-pointer` and RelWithDebInfo so that `perf` and VTune can unwind call stacks accurately. This has ~1-3% overhead vs pure Release — negligible for memory-bound workloads.
