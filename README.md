@@ -445,6 +445,46 @@ bash ./measure_umbra.sh
 bash ./measure_mariadb.sh
 ```
 
+## Kernel Threshold Tuning
+
+The middleware includes a kernel execution path that uses pre-built flat column arrays and CSR indexes to execute sub-queries directly, bypassing the SQL engine's hash join and decompression. For each sub-query, the system decides whether to use the kernel or fall back to the SQL engine (e.g., DuckDB). The decision depends on sub-query features: scan table size, number of joins, number of filters, and number of output columns.
+
+The optimal threshold must be tuned empirically because the kernel and SQL engine have different performance profiles: the kernel excels on filtered scans with CSR joins but may be slower on patterns with many joins or very small tables where DuckDB's vectorized execution has lower overhead.
+
+### How to tune
+
+1. Build with storage plan support and run the tuning benchmark:
+
+```bash
+cd measure/
+bash tune_kernel_threshold.sh
+```
+
+This runs all 113 JOB queries in 4 configurations: {node-based, relationship-center} x {kernel-enabled, kernel-disabled}, each with `--repeat=5` (first 2 as warmup). Output CSVs go to `measure/tuning_data/`.
+
+2. Analyze the results:
+
+```bash
+python3 tune_kernel_threshold.py tuning_data/
+```
+
+This matches kernel vs DuckDB times per sub-query, reports which features predict kernel wins, and recommends a threshold formula.
+
+### When to retune
+
+- **New split strategy**: Recommended but not required. The threshold is based on sub-query features (scan_rows, num_joins, etc.), not the strategy itself. A new strategy produces different sub-query patterns that may not be covered by existing tuning data. Add the new strategy to the `STRATEGIES` variable in `tune_kernel_threshold.sh` and rerun.
+- **New engine**: Required if kernel support is extended beyond DuckDB. The kernel competes against the engine's own execution, so a slower engine (e.g., PostgreSQL) shifts the threshold in the kernel's favor. Currently the kernel path is DuckDB-only (`engine == BackendEngine::DUCKDB`).
+- **New hardware**: Recommended. Cache sizes, core counts, and memory bandwidth affect the crossover point.
+- **Schema/data changes**: Recommended if table sizes change significantly.
+
+### CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `--tuning` | Enable per-sub-query feature + timing logging (zero overhead when disabled) |
+| `--no-kernel` | Force SQL engine path for all sub-queries (for collecting baseline comparison data) |
+| `--storage-cache=<path>` | Binary cache file for flat arrays + CSR indexes (avoids rebuilding on each run) |
+
 ## Web Interface
 
 We provide a web interface at https://github.com/bitaasudeh/aqp-web-interface

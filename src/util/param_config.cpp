@@ -119,6 +119,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_correctness_check = true;
     } else if (arg == "--timing") {
       config.enable_timing = true;
+    } else if (arg == "--tuning") {
+      config.enable_tuning = true;
+    } else if (arg == "--no-kernel") {
+      config.no_kernel = true;
     } else if (arg == "--debug") {
       config.enable_debug_print = true;
     } else if (arg == "--combine-sub-plans") {

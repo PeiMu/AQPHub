@@ -12,10 +12,36 @@
 
 namespace middleware {
 
+namespace {
+void LogKernelDecision(const char *log_file_path,
+                       int repeat, int iteration, const char *type,
+                       bool valid, bool used,
+                       const std::string &scan_table, uint64_t scan_rows,
+                       size_t num_joins, size_t num_filters,
+                       size_t num_output_cols, double exe_time_ms) {
+  static const char *query_name = [] {
+    const char *q = getenv("AQP_QUERY_NAME");
+    return q ? q : "unknown";
+  }();
+  std::ofstream f(log_file_path, std::ios_base::app);
+  f << query_name << "," << repeat << "," << iteration << ","
+    << type << "," << (valid ? 1 : 0) << "," << (used ? 1 : 0) << ","
+    << scan_table << "," << scan_rows << ","
+    << num_joins << "," << num_filters << ","
+    << num_output_cols << ","
+    << std::fixed << std::setprecision(3) << exe_time_ms << "\n";
+}
+} // namespace
+
 IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
                                  const ParamConfig &config,
                                  storage::StoragePlan *storage_plan)
     : adapter_(adapter), storage_plan_(storage_plan), config_(config) {
+
+  if (config_.enable_tuning) {
+    const char *p = getenv("AQP_KERNEL_LOG_FILE");
+    tuning_log_file_ = p ? p : "kernel_decision_log.csv";
+  }
 
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Initializing with strategy: "
@@ -78,6 +104,9 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
         << "\n[IRQuerySplitter] ========== Starting Split Execution =========="
         << std::endl;
   }
+
+  static int s_repeat_idx = 0;
+  current_repeat_ = s_repeat_idx++;
 
   // Reset per-query state (but NOT subquery_index -- it must keep
   // incrementing across queries so temp table names stay unique)
@@ -293,6 +322,14 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   QueryResult query_result;
   bool kernel_final_executed = false;
 
+  // Kernel decision log variables (final)
+  bool log_final_valid = false;
+  std::string log_final_scan_table;
+  uint64_t log_final_scan_rows = 0;
+  size_t log_final_num_joins = 0, log_final_num_filters = 0;
+  size_t log_final_num_min_cols = 0;
+  double log_final_exe_ms = 0.0;
+
 #ifdef HAVE_DUCKDB
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
@@ -302,7 +339,17 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         kernel_temp_ptrs_, runtime_csrs_,
         storage_plan_->GetDimensionCache());
 
+    // Capture features for kernel decision log
     if (final_plan.valid) {
+      log_final_valid = true;
+      log_final_scan_table = final_plan.scan_table_name;
+      log_final_scan_rows = final_plan.scan_table->row_count;
+      log_final_num_joins = final_plan.join_steps.size();
+      log_final_num_filters = final_plan.scan_filters.size();
+      log_final_num_min_cols = final_plan.min_cols.size();
+    }
+
+    if (final_plan.valid && !config_.no_kernel) {
       if (config_.enable_timing) {
         auto gen_and_analyze_time =
             chrono_toc(&timer, "Generate final + AnalyzeFinalIR time\n", false);
@@ -315,7 +362,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         timer = chrono_tic();
       }
 
+      std::chrono::high_resolution_clock::time_point kernel_start;
+      if (config_.enable_tuning)
+        kernel_start = std::chrono::high_resolution_clock::now();
       query_result = storage::ExecuteFinalAggregate(final_plan);
+      if (config_.enable_tuning)
+        log_final_exe_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - kernel_start).count();
       kernel_final_executed = true;
 
       if (config_.enable_timing) {
@@ -374,7 +427,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       for (const auto &plan : sub_plan_sqls_) {
         adapter_->DropTempTable(plan.first);
       }
+      std::chrono::high_resolution_clock::time_point duckdb_final_start;
+      if (config_.enable_tuning)
+        duckdb_final_start = std::chrono::high_resolution_clock::now();
       query_result = adapter_->ExecuteSQL(combined);
+      if (config_.enable_tuning)
+        log_final_exe_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     } else {
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
@@ -408,9 +467,24 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #else
       std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB NOT defined\n";
 #endif
+      std::chrono::high_resolution_clock::time_point duckdb_final_start;
+      if (config_.enable_tuning)
+        duckdb_final_start = std::chrono::high_resolution_clock::now();
       query_result = adapter_->ExecuteSQL(final_sql);
+      if (config_.enable_tuning)
+        log_final_exe_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     }
   }
+
+  if (config_.enable_tuning)
+    LogKernelDecision(tuning_log_file_.c_str(),
+                      current_repeat_, iteration_count_, "final",
+                      log_final_valid, kernel_final_executed,
+                      log_final_scan_table, log_final_scan_rows,
+                      log_final_num_joins, log_final_num_filters,
+                      log_final_num_min_cols, log_final_exe_ms);
+
   return query_result;
 }
 
@@ -508,6 +582,13 @@ bool IRQuerySplitter::ExecuteOneIteration(
   uint64_t cardinality = 0;
   std::string temp_table_name;
 
+  // Kernel decision log variables
+  bool log_plan_valid = false;
+  std::string log_scan_table;
+  uint64_t log_scan_rows = 0;
+  size_t log_num_joins = 0, log_num_filters = 0, log_num_output_cols = 0;
+  double log_exe_ms = 0.0;
+
 #ifdef HAVE_DUCKDB
   // Try kernel execution path (CSR-based)
   if (storage_plan_ && storage_plan_->IsLoaded() &&
@@ -524,7 +605,17 @@ bool IRQuerySplitter::ExecuteOneIteration(
       analyze_ms = analyze_time / 1000.0;
     }
 
+    // Capture features for kernel decision log
     if (sub_plan.valid) {
+      log_plan_valid = true;
+      log_scan_table = sub_plan.scan_table_name;
+      log_scan_rows = sub_plan.scan_table->row_count;
+      log_num_joins = sub_plan.join_steps.size();
+      log_num_filters = sub_plan.scan_filters.size();
+      log_num_output_cols = sub_plan.output_cols.size();
+    }
+
+    if (sub_plan.valid && !config_.no_kernel) {
       // Increment subquery_index to keep temp table names in sync
       adapter_->subquery_index++;
       temp_table_name = GenerateTempTableName();
@@ -548,8 +639,14 @@ bool IRQuerySplitter::ExecuteOneIteration(
         log_file.close();
       }
 
+      std::chrono::high_resolution_clock::time_point kernel_start;
+      if (config_.enable_tuning)
+        kernel_start = std::chrono::high_resolution_clock::now();
       auto result_flat = storage::ExecuteSubQueryPlan(sub_plan, temp_table_name);
       cardinality = result_flat->row_count;
+      if (config_.enable_tuning)
+        log_exe_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - kernel_start).count();
 
       if (config_.enable_timing) {
         // Column 4: ExecuteSubQueryPlan time (maps to execute_sub_sql slot)
@@ -672,6 +769,9 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
 #endif
 
+    std::chrono::high_resolution_clock::time_point duckdb_exe_start;
+    if (config_.enable_tuning)
+      duckdb_exe_start = std::chrono::high_resolution_clock::now();
     if (SubPlanReferencesEmptyTemp(sub_sql)) {
       std::string short_sql = sub_sql;
       size_t semi = short_sql.rfind(';');
@@ -686,6 +786,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
     } else {
       adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
                                              config_.enable_update_temp_card);
+    }
+    if (config_.enable_tuning) {
+      log_exe_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::high_resolution_clock::now() - duckdb_exe_start).count();
     }
 
     // Build runtime CSR on DuckDB-executed temps for subsequent kernel iterations
@@ -813,6 +917,14 @@ bool IRQuerySplitter::ExecuteOneIteration(
     }
 #endif
   }
+
+  if (config_.enable_tuning)
+    LogKernelDecision(tuning_log_file_.c_str(),
+                      current_repeat_, iteration_count_, "sub",
+                      log_plan_valid, kernel_executed,
+                      log_scan_table, log_scan_rows,
+                      log_num_joins, log_num_filters,
+                      log_num_output_cols, log_exe_ms);
 
   if (config_.enable_timing)
     timer = chrono_tic();

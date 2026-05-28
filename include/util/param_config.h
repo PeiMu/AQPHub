@@ -60,8 +60,12 @@ struct ParamConfig {
   std::string csv_dir;        // --csv-dir=<path>: CSV file directory
 
   // Storage plan: load flat column arrays + CSR indexes at startup
-  bool enable_storage_plan = false;
+  bool enable_storage_plan = true;
   std::string storage_cache_path; // --storage-cache=<path>: binary cache file
+
+  // Kernel threshold tuning
+  bool enable_tuning = false;  // --tuning: log per-sub-query features + timing
+  bool no_kernel = false;      // --no-kernel: force DuckDB path (for comparison)
 
   // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
   // 0 = no JIT. Each level implies all lower levels for fallback.

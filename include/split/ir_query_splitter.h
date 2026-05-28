@@ -163,6 +163,11 @@ private:
   // Temp tables known to have 0 rows (INNER JOIN → 0 results guaranteed)
   std::set<std::string> empty_temp_tables_;
 
+  // Kernel decision logging (for threshold tuning, --tuning flag)
+  int kernel_log_repeat_idx_ = 0;
+  int current_repeat_ = 0;
+  std::string tuning_log_file_;
+
   // Sub-plan combiner: collected (temp_name, sql) pairs
   std::vector<std::pair<std::string, std::string>> sub_plan_sqls_;
 
