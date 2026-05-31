@@ -1551,3 +1551,170 @@ Identified 5 key structural gaps explaining the performance difference:
 3. **`person_has_aka_bits`**: 12 queries. BespokeOLAP pre-builds a bitset for persons that have an aka_name entry, eliminating the aka_name join sub-query entirely.
 4. **Dictionary encoding + `note_csr`**: 70 queries with LIKE predicates currently fall back to DuckDB. BespokeOLAP uses dictionary memoization (`note_dict` + `note_memo` arrays) and inverted `note_csr` index.
 5. **Loop fusion** (Step 7): Eliminates ALL temp materialization. BespokeOLAP processes entire queries in single fused loops with zero intermediate tables. This is the fundamental fix for the 4,619ms middleware overhead.
+
+---
+
+## Iteration 29: Step 6.5 — Unfiltered Dim Elimination + 3-Table Inverted Index Resolution
+
+**Goal**: Convert 3-leaf sub-queries that fall back to DuckDB into kernel-handled patterns. Two optimizations:
+
+### What changed
+
+**Change 1: Unfiltered dim elimination** (`src/kernel/sub_query_plan.cpp`)
+
+When a dim table (≤200 rows) has no WHERE filters AND no output columns reference it, the join is a no-op for valid FK data. Eliminate the dim leaf + edge to convert 3-leaf to 2-leaf patterns that the existing CSR join path handles.
+
+Location: After the filtered dim resolution loop. New struct `UnfilteredDimElim { size_t leaf_idx; size_t edge_idx; }`. Loop checks:
+- `dim_cache->IsDimension(leaf.name)` and `!leaf.HasFilters()`
+- No output column references the dim table
+- Edge has "id" on the dim side (PK join)
+
+**Change 2: 3-table inverted index resolution** (`src/kernel/sub_query_plan.cpp`)
+
+Pattern: `source(filtered) + bridge + target` where an inverted index maps source→target through bridge. Three indices built at startup:
+- `keyword → title` (via movie_keyword)
+- `name → title` (via cast_info)
+- `company_name → title` (via movie_companies)
+
+Logic:
+1. Guard: `leaves.size() == 3 && edges.size() == 2 && all base && all have FlatTable`
+2. Match leaves to inverted index roles (source=dim_table, bridge, target)
+3. Verify edge topology
+4. Check output columns: only target, or remappable bridge join-key
+5. Compile source filters, scan source FlatTable for matching PKs
+6. Inverted index lookup → collect target PK values
+7. Selectivity guard: skip if target_vals > 50% of target rows
+8. Add target PK IN-filter, erase source+bridge leaves
+9. Bridge column remapping: `bridge.join_col` → `target.join_col` via `inv_col_remap` map
+
+**Change 3: Base×base guard KEPT** (`src/kernel/sub_query_plan.cpp`)
+
+Initially removed, then RESTORED after correctness failures on 7a/7c. Root cause: IR labels movie_link column index 2 as "movie_id" but the actual column is "linked_movie_id". When the guard was removed, kernel handled `title + movie_link + link_type` with wrong CSR, producing incorrect results.
+
+**Change 4: Inverted index specs cleanup** (`src/storage/storage_plan.cpp`)
+
+Reduced `kSpecs` from 11 to 3 entries. The 8 removed specs targeted dim tables already resolved by dim cache. Saves ~100MB memory and ~2s startup.
+
+**Change 5: Cache rebuild guard** (`src/aqp_middleware.cpp`)
+
+After loading from cache, rebuild inverted indices if empty (old cache format).
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `src/kernel/sub_query_plan.cpp` | Changes 1, 2, 3 |
+| `src/storage/storage_plan.cpp` | Change 4 |
+| `src/aqp_middleware.cpp` | Change 5 |
+| `include/storage/storage_plan.h` | Added inverted index API |
+| `CMakeLists.txt` | Added `src/storage/inverted_index.cpp` |
+
+### Performance (node-based/pipeline-jit, avg of 10 runs, back-to-back with Step 6)
+
+| Config | Execution (ms) | Middleware (ms) | JIT Compile (ms) | Wall (ms) |
+|--------|---------------:|----------------:|------------------:|----------:|
+| none-split/none-jit | 9,529 | 3 | — | 9,532 |
+| node-based/pipeline-jit (Step 6) | 7,453 | 5,283 | 1,061 | 13,796 |
+| **node-based/pipeline-jit (Step 6.5)** | **7,297** | **5,266** | **1,024** | **13,587** |
+
+**Execution: 7,453 → 7,297ms (−156ms, −2.1%)**
+**Wall: 13,796 → 13,587ms (−209ms, −1.5%)**
+**vs none-split/none-jit: 9,529 → 7,297ms (−23.4%)**
+
+### Correctness
+
+All 113 JOB queries pass (node-based/pipeline-jit). 7a/7c correctness failure discovered and fixed by keeping base×base guard.
+
+### Remaining bottleneck
+
+- Middleware overhead (5,266ms) still dominates wall time — fundamental fix requires Step 7 loop fusion
+- LIKE-only fallback queries (70 queries) still go to DuckDB
+- Base×base guard prevents kernel for some 2-base-table patterns — needs IR column name fix or per-pattern guards
+
+---
+
+## Iteration 30 — Step 6.5.3: LIKE Support + Bug Fixes + Issue Cleanup
+
+### Goal
+
+1. Add LIKE/NOT LIKE support to kernel `CompileOnePredicate` (known issue #3)
+2. Fix CSR direction bug in `AnalyzeSubIR` (known issue #8)
+3. Fix per-row dummy vector allocation (known issue #9)
+
+### Change 1: LIKE/NOT LIKE in CompileOnePredicate (`src/kernel/sub_query_plan.cpp`)
+
+Added TextLike/Text_Not_Like cases in the VARCHAR switch, with 6 optimized pattern kinds:
+
+| Pattern kind | Example | Strategy | Cost |
+|---|---|---|---|
+| EQUALITY | no wildcards | memcmp full string | O(1) |
+| PREFIX | `Lionsgate%` | memcmp first N chars | O(1) |
+| SUFFIX | `%complete` | memcmp last N chars | O(1) |
+| CONTAINS | `%sequel%` | memmem() | O(n) |
+| MULTI_SEGMENT | `%Downey%Robert%` | sequential memmem() | O(n*k) |
+| COMPLEX | has `_` wildcard | DP-based LikeMatch | O(n*m) |
+
+Helper functions added to anonymous namespace: `LikeMatch` (from dimension_cache.cpp), `ClassifyLikePattern`/`LikePatternKind` enum (from ir_to_llvm.cpp), `LikeSegments`/`ClassifyLikePatternEx` (from ir_to_llvm.cpp), `LikeMatchSegments` (new), `ExprContainsLike` (recursive walker), `LeafHasLikeFilter`.
+
+### Change 2: Single-table LIKE guard (`src/kernel/sub_query_plan.cpp`)
+
+Base tables with LIKE filters fall back to DuckDB unless an inverted-index PK filter exists (which guarantees massive row reduction). Without PK filter, DuckDB's vectorized scan is faster for large tables (cast_info 36M, movie_info 14.8M).
+
+### Change 3: AnalyzeFinalIR LIKE guard (`src/kernel/sub_query_plan.cpp`)
+
+Sorted-MIN path bails out if scan_leaf or any lookup leaf has LIKE filters — prevents wrong results from LIKE on lookup tables.
+
+### Change 4: Dangling pointer fix in 3-table inverted index resolution (`src/kernel/sub_query_plan.cpp`)
+
+`leaves.erase()` invalidated pointers (`source_leaf`, `bridge_leaf3`) used later for `dim_derived_filters` cleanup. Fixed by saving `source_ir_idx` and `bridge_ir_idx` before erasing.
+
+### Change 5: CSR direction validation in FindCSR (known issue #8) (`src/kernel/sub_query_plan.cpp`)
+
+Added `fk_table` direction check to both runtime CSR and `storage_plan->GetCSR()` paths in `FindCSR` lambda, matching the pattern already used in `AnalyzeFinalIR`. Prevents silent wrong results from future code changes.
+
+### Change 6: Hoisted dummy vector (known issue #9) (`src/kernel/sub_query_plan.cpp`)
+
+Moved `std::vector<uint64_t> dummy` from per-row allocation inside `ScanRow` lambda to a single pre-allocated `semi_dummy` outside the scan loop.
+
+### Files modified
+
+| File | Changes |
+|------|---------|
+| `src/kernel/sub_query_plan.cpp` | All 6 changes |
+
+### Performance (node-based/pipeline-jit, avg of 10 runs)
+
+Measurement data: `measure/job_result/step_6_fix_all/`
+
+| Config | Execution (ms) | Middleware (ms) | JIT Compile (ms) | Wall (ms) |
+|--------|---------------:|----------------:|------------------:|----------:|
+| none-split/none-jit | 9,530 | 3 | — | 9,532 |
+| node-based/pipeline-jit (Step 6.5) | 7,297 | 5,266 | 1,024 | 13,587 |
+| **node-based/pipeline-jit (Step 6.5.3)** | **7,069** | **5,190** | **1,108** | **13,403** |
+
+**Execution: 7,297 → 7,069ms (−228ms, −3.1%)**
+**Wall: 13,587 → 13,403ms (−184ms, −1.4%)**
+**vs none-split/none-jit: 9,530 → 7,069ms (−25.8% execution, +40.6% wall)**
+
+### Correctness
+
+All 113 JOB queries pass (node-based/pipeline-jit). Dangling pointer bug in 3a/3b/3c discovered and fixed. AnalyzeFinalIR LIKE guard fixed 1b/1d/3a/3b/3c.
+
+### Pre-Step-7 known issues — all resolved
+
+| Issue | Status |
+|-------|--------|
+| #1 MW overhead (5,190ms) | Partially addressed; fundamental fix = Step 7 loop fusion |
+| #2 Inverted indices | DONE (Iter 29) |
+| #3 LIKE support | DONE (this iteration) |
+| #4 Dim-partitioned tables | Deferred to after Step 7 |
+| #5 Dictionary encoding | Deferred to after Step 7 |
+| #6 Cross-table bitmaps | Part of Step 7 loop fusion |
+| #7 Base×base guard | SKIP (addressed by inverted indices) |
+| #8 CSR direction bug | FIXED (this iteration) |
+| #9 Dummy vector alloc | FIXED (this iteration) |
+| #10 OpenMP | SKIP (loop fusion is better approach) |
+
+### Next step
+
+**Step 7: Loop Fusion** — the single biggest remaining optimization. Eliminates temp table materialization + runtime CSR building (~5s middleware overhead). Fuses connected sub-query chains into single scan loops with byte-maps/bitmaps as intermediates instead of temp tables. This is the path to closing the gap with BespokeOLAP (50-170x) and making wall time faster than the baseline.

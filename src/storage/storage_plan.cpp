@@ -442,6 +442,91 @@ StoragePlan::GetSortedIndex(const std::string &table_name,
   return &it->second;
 }
 
+void StoragePlan::BuildInvertedIndices() {
+  if (!loaded_)
+    return;
+
+  auto start = std::chrono::high_resolution_clock::now();
+
+  // Define inverted index specifications:
+  // {bridge_table, bridge_fk_col (→ dim PK), target_col, dim_table, target_table}
+  // Each spec builds: dim_pk_value → sorted [target_col values] via bridge table.
+  struct InvSpec {
+    std::string bridge_table;
+    std::string bridge_fk_col;
+    std::string target_col;
+    std::string dim_table;
+    std::string target_table;
+  };
+
+  static const std::vector<InvSpec> kSpecs = {
+      // keyword_id → movie_id via movie_keyword (67 queries)
+      {"movie_keyword", "keyword_id", "movie_id", "keyword", "title"},
+      // person_id → movie_id via cast_info (10 queries)
+      {"cast_info", "person_id", "movie_id", "name", "title"},
+      // company_id → movie_id via movie_companies (3 queries)
+      {"movie_companies", "company_id", "movie_id", "company_name", "title"},
+  };
+
+  inverted_indices_.clear();
+  int count = 0;
+
+  for (const auto &spec : kSpecs) {
+    // Need the CSR on bridge_table.bridge_fk_col
+    std::string csr_key = spec.bridge_table + "." + spec.bridge_fk_col;
+    auto csr_it = csr_indexes_.find(csr_key);
+    if (csr_it == csr_indexes_.end())
+      continue;
+
+    const auto &csr = csr_it->second;
+
+    // Need the bridge FlatTable
+    auto bridge_it = tables_.find(spec.bridge_table);
+    if (bridge_it == tables_.end())
+      continue;
+
+    const auto &bridge_flat = bridge_it->second;
+    int target_col_idx = bridge_flat.FindColumn(spec.target_col);
+    if (target_col_idx < 0)
+      continue;
+    if (bridge_flat.columns[target_col_idx].type != FlatColumnType::INT32)
+      continue;
+
+    auto inv = BuildInvertedIndex(
+        csr.row_ptr.get(), csr.col_idx.get(), csr.row_ptr_size,
+        bridge_flat, target_col_idx,
+        spec.dim_table, spec.bridge_table, spec.bridge_fk_col,
+        spec.target_col, spec.target_table);
+
+    std::string key = spec.dim_table + "->" + spec.target_table +
+                      "." + spec.bridge_table + "." + spec.bridge_fk_col;
+    std::cerr << "[StoragePlan]   Inverted index: " << key
+              << " (" << inv.target_vals_size << " entries, "
+              << (inv.GetMemoryUsage() / (1024 * 1024)) << " MB)"
+              << std::endl;
+
+    inverted_indices_[key] = std::move(inv);
+    count++;
+  }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  std::cerr << "[StoragePlan] Built " << count << " inverted indices in "
+            << ms << " ms" << std::endl;
+}
+
+const InvertedIndex *
+StoragePlan::GetInvertedIndex(const std::string &dim_table,
+                              const std::string &target_table) const {
+  // Search for any inverted index matching dim_table→target_table
+  for (const auto &kv : inverted_indices_) {
+    if (kv.second.dim_table == dim_table &&
+        kv.second.target_table == target_table)
+      return &kv.second;
+  }
+  return nullptr;
+}
+
 const FlatTable *StoragePlan::GetTable(const std::string &table_name) const {
   auto it = tables_.find(table_name);
   if (it == tables_.end())
@@ -462,6 +547,8 @@ uint64_t StoragePlan::GetMemoryUsage() const {
   for (const auto &kv : tables_)
     mem += kv.second.GetMemoryUsage();
   for (const auto &kv : csr_indexes_)
+    mem += kv.second.GetMemoryUsage();
+  for (const auto &kv : inverted_indices_)
     mem += kv.second.GetMemoryUsage();
   return mem;
 }
@@ -503,7 +590,7 @@ void StoragePlan::PrintSummary() const {
 //          col_idx_size(8) col_idx[col_idx_size * 4]
 
 static constexpr uint64_t CACHE_MAGIC = 0x41515053544F5245ULL; // "AQPSTORE"
-static constexpr uint32_t CACHE_VERSION = 2;
+static constexpr uint32_t CACHE_VERSION = 3;
 
 static void WriteStr(FILE *f, const std::string &s) {
   uint32_t len = static_cast<uint32_t>(s.size());
@@ -587,6 +674,22 @@ void StoragePlan::SaveToFile(const std::string &path) const {
     uint64_t perm_count = si.sorted_perm.size();
     fwrite(&perm_count, 8, 1, f);
     fwrite(si.sorted_perm.data(), sizeof(uint32_t), perm_count, f);
+  }
+
+  // Write inverted indices (version >= 3)
+  uint32_t num_inverted = static_cast<uint32_t>(inverted_indices_.size());
+  fwrite(&num_inverted, 4, 1, f);
+  for (const auto &kv : inverted_indices_) {
+    const auto &inv = kv.second;
+    WriteStr(f, inv.dim_table);
+    WriteStr(f, inv.bridge_table);
+    WriteStr(f, inv.bridge_fk_col);
+    WriteStr(f, inv.target_col);
+    WriteStr(f, inv.target_table);
+    fwrite(&inv.row_ptr_size, 8, 1, f);
+    fwrite(inv.row_ptr.get(), sizeof(uint64_t), inv.row_ptr_size, f);
+    fwrite(&inv.target_vals_size, 8, 1, f);
+    fwrite(inv.target_vals.get(), sizeof(int32_t), inv.target_vals_size, f);
   }
 
   fclose(f);
@@ -691,6 +794,31 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
     }
   }
 
+  // Read inverted indices (version >= 3)
+  inverted_indices_.clear();
+  if (version >= 3) {
+    uint32_t num_inverted;
+    if (fread(&num_inverted, 4, 1, f) == 1) {
+      for (uint32_t i = 0; i < num_inverted; i++) {
+        InvertedIndex inv;
+        inv.dim_table = ReadStr(f);
+        inv.bridge_table = ReadStr(f);
+        inv.bridge_fk_col = ReadStr(f);
+        inv.target_col = ReadStr(f);
+        inv.target_table = ReadStr(f);
+        fread(&inv.row_ptr_size, 8, 1, f);
+        inv.row_ptr = std::make_unique<uint64_t[]>(inv.row_ptr_size);
+        fread(inv.row_ptr.get(), sizeof(uint64_t), inv.row_ptr_size, f);
+        fread(&inv.target_vals_size, 8, 1, f);
+        inv.target_vals = std::make_unique<int32_t[]>(inv.target_vals_size);
+        fread(inv.target_vals.get(), sizeof(int32_t), inv.target_vals_size, f);
+        std::string key = inv.dim_table + "->" + inv.target_table +
+                          "." + inv.bridge_table + "." + inv.bridge_fk_col;
+        inverted_indices_[key] = std::move(inv);
+      }
+    }
+  }
+
   fclose(f);
   loaded_ = true;
   dim_cache_.Build(tables_);
@@ -700,6 +828,7 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
   std::cerr << "[StoragePlan] Loaded cache from " << path << " in " << ms
             << " ms (" << tables_.size() << " tables, " << csr_indexes_.size()
             << " CSR indexes, " << sorted_indices_.size() << " sorted indices, "
+            << inverted_indices_.size() << " inverted indices, "
             << (GetMemoryUsage() / (1024 * 1024)) << " MB)" << std::endl;
 
   return true;

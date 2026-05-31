@@ -74,6 +74,7 @@ set(STORAGE_LIB_SOURCES
     src/storage/csr_index.cpp
     src/storage/dimension_cache.cpp
     src/storage/sorted_index.cpp
+    src/storage/inverted_index.cpp
 )
 
 # Kernel library (sub-query executor using storage structures)

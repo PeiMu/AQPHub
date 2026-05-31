@@ -362,9 +362,12 @@ int main(int argc, char **argv) {
           storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
         }
         storage_plan_ptr->BuildSortedIndices();
+        storage_plan_ptr->BuildInvertedIndices();
         if (!config.storage_cache_path.empty()) {
           storage_plan_ptr->SaveToFile(config.storage_cache_path);
         }
+      } else if (storage_plan_ptr->GetInvertedIndicesMap().empty()) {
+        storage_plan_ptr->BuildInvertedIndices();
       }
       if (config.enable_debug_print) {
         storage_plan_ptr->PrintSummary();

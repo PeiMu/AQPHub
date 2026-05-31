@@ -3,6 +3,7 @@
 #include "storage/csr_index.h"
 #include "storage/dimension_cache.h"
 #include "storage/flat_table.h"
+#include "storage/inverted_index.h"
 #include "storage/sorted_index.h"
 #include <string>
 #include <unordered_map>
@@ -54,6 +55,19 @@ public:
   const SortedIndex *GetSortedIndex(const std::string &table_name,
                                     const std::string &col_name) const;
 
+  void BuildInvertedIndices();
+
+  // Lookup inverted index: given a dim table and the target table,
+  // return the inverted index that maps dim_pk → target_pk values.
+  // E.g., GetInvertedIndex("keyword", "title") returns keyword_id→movie_id.
+  const InvertedIndex *GetInvertedIndex(const std::string &dim_table,
+                                        const std::string &target_table) const;
+
+  const std::unordered_map<std::string, InvertedIndex> &
+  GetInvertedIndicesMap() const {
+    return inverted_indices_;
+  }
+
 private:
   bool loaded_ = false;
   std::unordered_map<std::string, FlatTable> tables_;
@@ -62,6 +76,8 @@ private:
   DimensionCache dim_cache_;
   // Key: "table_name.column_name"
   std::unordered_map<std::string, SortedIndex> sorted_indices_;
+  // Key: "dim_table->target_table"
+  std::unordered_map<std::string, InvertedIndex> inverted_indices_;
 };
 
 } // namespace storage

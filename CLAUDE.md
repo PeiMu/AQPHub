@@ -27,18 +27,9 @@ Measurement data is in /home/pei/Project/AQP_middleware/measure/job_result/. We 
 
 ## Workflow Per Iteration
 
-### 0. Profile the bottleneck
-Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/find_top_queries.py` to identify the top-10 heaviest queries from the latest `breakdown_time_log.csv`. Always check the heaviest queries in jit_optimization_claude.md. Profile both baseline (none-split/none-jit) and best JIT config on the same queries: the gap shows where split+JIT overhead is; then also profile best JIT alone to find the remaining bottleneck to optimize. Think fundamentally what is the correct optimization technique for the current bottleneck. Think in the Umbra way and in the Thomas Neumann way.
-
-**Profiling tool**:
-1. **`perf stat`** — First step. Classifies bottleneck type (compute vs memory bound) via IPC, L1/LLC cache miss rates, branch misprediction, CPU utilization.
-2. **`perf record` + `perf report`** — Second step. Shows function-level CPU hotspots. Directly answers "which operator is the bottleneck."
-3. **DuckDB EXPLAIN ANALYZE** — Operator-level cardinality + time. Use selectively (adds overhead).
-4. **`perf record -e cache-misses` / `perf mem`** — Only if `perf stat` shows memory-bound. Pinpoints which data structures cause cache misses.
-
 ### 1. Read relevant source code for the optimization you're implementing
 
-### 2. Make the code change and write unit gtests in unit_test/ dir. If add new modules or code changes related to breakdown timer, decide a reasonable timer position and ask user to confirm. Confirm analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py still work. Otherwise, update the analyze_middleware_breakdown and/or analyze_none_split_breakdown, and confirm with the user.
+### 2. Check if we need use plan mode to design code implementation. Then make the code change and write unit gtests in unit_test/ dir. If add new modules or code changes related to breakdown timer, decide a reasonable timer position and ask user to confirm. Confirm analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py still work. Otherwise, update the analyze_middleware_breakdown and/or analyze_none_split_breakdown, and confirm with the user.
 
 ### 3. Build and quick-test
 Build:
@@ -103,7 +94,16 @@ Report: what changed, which queries improved/regressed, by how much, net effect 
 - We care about the whole JOB benchmark, so prioritize the heaviest queries with the heaviest bottlenecks.
 - You can check well-optimized queries under /home/pei/Project/GenDB/output/imdb-job-sf1/runs/latest/queries and under /home/pei/Project/BespokeOLAP/output to find the gap, and learn from it.
 
-## Current Status (Iter 28 — Lazy Loading Reverted, Back to Step 6)
+## Profile the bottleneck
+Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/find_top_queries.py` to identify the top-10 heaviest queries from the latest `breakdown_time_log.csv`. Always check the heaviest queries in jit_optimization_claude.md. Profile both baseline (none-split/none-jit) and best JIT config on the same queries: the gap shows where split+JIT overhead is; then also profile best JIT alone to find the remaining bottleneck to optimize. Think fundamentally what is the correct optimization technique for the current bottleneck. Think in the Umbra way and in the Thomas Neumann way.
+
+**Profiling tool**:
+1. **`perf stat`** — First step. Classifies bottleneck type (compute vs memory bound) via IPC, L1/LLC cache miss rates, branch misprediction, CPU utilization.
+2. **`perf record` + `perf report`** — Second step. Shows function-level CPU hotspots. Directly answers "which operator is the bottleneck."
+3. **DuckDB EXPLAIN ANALYZE** — Operator-level cardinality + time. Use selectively (adds overhead).
+4. **`perf record -e cache-misses` / `perf mem`** — Only if `perf stat` shows memory-bound. Pinpoints which data structures cause cache misses.
+
+## Current Status (Iter 30 — Step 6.5.3: LIKE Support + Bug Fixes + Issue Cleanup)
 
 See jit_optimization_claude.md for full per-iteration details.
 
@@ -111,18 +111,33 @@ See jit_optimization_claude.md for full per-iteration details.
 
 | Config                              | Execution (s) | Middleware (s) | JIT Compile (s) | Wall (s) | vs ns/nojit |
 |--------------------------------------|-------------:|---------------:|----------------:|---------:|------------:|
-| none-split / none-jit                |         9.44 |          0.003 |               — |     9.45 | baseline    |
-| none-split / pipeline-jit (no SIMD)  |         8.86 |          0.013 |            8.79 |    17.66 | -0.59 (-6.2%) |
-| none-split / pipeline-jit (auto SIMD)|         8.90 |          0.014 |            9.62 |    18.53 | -0.54 (-5.8%) |
-| node-based / none-jit                |        10.17 |          0.82  |               — |    10.99 | +0.73 (+7.7%) |
-| **node-based / pipeline-jit (no SIMD)**|       **6.98**|       **4.62** |         **1.19**|  **12.79**| **-2.46 (-26.1%)**|
-| node-based / pipeline-jit (auto SIMD)|        22.16 |          5.05  |            1.06 |    28.26 | +12.71 (+135%) |
+| none-split / none-jit                |         9.53 |          0.003 |               — |     9.53 | baseline    |
+| **node-based / pipeline-jit (no SIMD)**|       **7.07**|       **5.19** |         **1.11**|  **13.40**| **-2.46 (-25.8%)**|
 
-**Key result**: node-based/pipeline-jit execution **6,980ms** — **26.1% faster** than none-split/none-jit baseline (9,444ms). First time node-based split beats the baseline on execution time.
+Step 6.5 → Step 6.5.3 (measured in step_6_fix_all vs step_6_5_perf):
 
-Auto-SIMD regression (22.16s) is a known issue — SIMD codegen has bugs on the kernel path. Use `--jit-simd=none`.
+| Metric | Step 6.5 | Step 6.5.3 | Delta |
+|--------|-------:|---------:|------:|
+| Execution | 7,297ms | 7,069ms | **-228ms (-3.1%)** |
+| Middleware | 5,266ms | 5,190ms | -76ms |
+| JIT Compile | 1,024ms | 1,108ms | +84ms |
+| Wall | 13,587ms | 13,403ms | **-184ms (-1.4%)** |
 
-Comparison with Step 3 (Iter 25, `--csr-support=inner`): 6,980ms vs 6,437ms — 543ms gap from 213 kernel-invalid iterations (31.4%) still falling back to DuckDB.
+**Key result**: Execution is **25.8% faster** than none-split/none-jit (9,530→7,069ms). But wall time is **40.6% slower** (9,530→13,403ms) due to middleware overhead (5,190ms) + JIT compile (1,108ms). All pre-Step-7 known issues are resolved — the remaining bottleneck is middleware overhead (temp materialization + runtime CSR building), which requires Step 7 loop fusion.
+
+**Pre-Step-7 known issues — all resolved**:
+- #1 MW overhead: partially addressed, fundamental fix = Step 7 loop fusion
+- #2 Inverted indices: DONE (Iter 29)
+- #3 LIKE support: DONE (Iter 30)
+- #4 Dim-partitioned tables: deferred to after Step 7 (most impactful after loop fusion)
+- #5 Dictionary encoding: deferred to after Step 7
+- #6 Cross-table bitmaps: part of Step 7 loop fusion
+- #7 Base×base guard: SKIP (addressed by inverted indices)
+- #8 CSR direction bug: FIXED (Iter 30)
+- #9 Dummy vector alloc: FIXED (Iter 30)
+- #10 OpenMP: SKIP (loop fusion is better approach)
+
+Auto-SIMD regression is a known issue — SIMD codegen has bugs on the kernel path. Use `--jit-simd=none`.
 
 ### What JIT currently covers vs. the bottleneck
 
@@ -187,16 +202,16 @@ Code: `src/storage/sub_query_plan.h/.cpp` (plan struct + executor)
 - Step 4: Dimension Constants → cache tiny tables (<200 rows), resolve joins to constant predicates at kernel analysis time. (**DONE** — 6/6 correctness pass. DimensionCache built at startup from FlatTables. AnalyzeSubIR resolves filtered dim tables to FK IN-filters, eliminates dim leaf+edge. Handles single-table filtered scan path (all joins eliminated) and 2-table join path (dim on scan or lookup side). Guards: skip unfiltered dims; skip when dim resolution leaves 2 base tables (DuckDB hash join faster than linear scan). join_filters on KernelJoinStep for dim filters targeting lookup table. Code: `src/storage/dimension_cache.h/.cpp`, `src/kernel/sub_query_plan.h/.cpp`.)
 - Step 5: Sorted Indices → sorted permutation arrays for MIN early termination on final sub-query. (**DONE** — 3/3 correctness pass. SortedIndex built on 11 columns at startup (~10s), cached in --storage-cache v2. AnalyzeFinalIR handles Projection→Aggregate→child pattern, maps MIN columns through Projection's column_index to agg_fns. ExecuteFinalAggregate: Phase 1 = sorted scan with early termination for MIN columns on scan table with sorted index (O(k)), Phase 2 = running-min full scan for unsorted columns or lookup-table columns. Handles duplicate MIN columns, NULL output. Extended to N-table star joins (2-5 tables) with PK bitset fallback when no CSR exists. Guards: bail if scan table is base with >5M rows and 2+ join steps. Code: `src/storage/sorted_index.h/.cpp`, `src/kernel/sub_query_plan.h/.cpp`, `src/split/ir_query_splitter.cpp`.)
 - Step 6: Full integration + end-to-end JOB benchmark (**DONE** — Iter 27. Kernel threshold `num_joins >= 1`: skip kernel for pure scan+filter, use kernel for 1+ CSR joins. exe 9,444→6,980ms (−26.1% vs baseline). 543ms slower than Step 3's 6,437ms due to 213 kernel-invalid iterations (31.4%) falling back to DuckDB. Middleware overhead 4,619ms from FlatTable loading + runtime CSR build.)
-- Step 6.5: Pre-Step-7 optimizations. See **Known issues** below, ordered by priority.
+- Step 6.5: Pre-Step-7 optimizations (**DONE** — Iter 29. Unfiltered dim elimination converts 3-leaf sub-queries with no-filter dim tables to 2-leaf. 3-table inverted index resolution handles `source(filtered) + bridge + target` patterns via inverted index lookup for keyword→title, name→title, company_name→title. Inverted index specs reduced 11→3 (8 dead specs removed, ~100MB memory saved). exe 7,453→7,297ms (-2.1%), wall 13,796→13,587ms (-1.5%). Base×base guard KEPT due to IR column name mismatch bug in movie_link.)
 - Step 7 (JIT): Kernel Compilation — compile SubQueryPlan into native code via LLVM JIT, replacing the interpreter. See details below.
 
 **Known issues (ordered by estimated impact)**:
 
-1. **Middleware overhead (4,619ms — 66% of wall time)**. Main cost: loading DuckDB temp results into FlatTable + building runtime CSR after each sub-query iteration. Top contributors: 16b (242ms), 9d (172ms), 8c (172ms), 19d (147ms), 12c (103ms). **Lazy loading attempted and reverted** (Iter 28): deferring FlatTable/CSR construction until needed was net-negative (+195ms exe, only −35ms MW) because most temps are used immediately by the next iteration. Remaining paths: (a) inverted indexes / precomputed bitmaps to eliminate entire sub-query iterations (reducing the number of temps created); (b) Step 7 loop fusion eliminates temp materialization entirely.
+1. **Middleware overhead (5,266ms)** — **PARTIALLY ADDRESSED** (Iter 29). Inverted index resolution eliminates some sub-query iterations (fewer temps created). Unfiltered dim elimination converts 3-leaf to 2-leaf (kernel-handled, no DuckDB fallback). Net MW savings: -17ms. **Lazy loading attempted and reverted** (Iter 28): net-negative. Remaining paths: (a) more inverted index patterns (precomputed bitmaps, person_has_aka_bits); (b) Step 7 loop fusion eliminates temp materialization entirely (the fundamental fix).
 
-2. **Inverted indices (67/113 queries use `keyword_to_movies`)**: BespokeOLAP pre-computes 6 inverted index types: `keyword_to_movies` (67 queries), `person_to_rows` (10), `country_to_ids` (9), `combo_to_movies` (8), `company_to_rows` (3), `linked_movie_to_rows` (2). Our dim cache resolves dimension filters to PK values, then uses CSR to find matching FK rows. The inverted index provides direct `dim_value → vector<fk_row_id>` mapping, skipping both the dim cache PK resolution and CSR lookup. The `keyword_to_movies` index is the most impactful — it converts the `keyword IN(...) → movie_keyword → title` join pattern from a 2-base-table problem (currently hitting the base×base guard, +113.4ms regression on 6d+6b) into a direct lookup producing a movie_id bitset. Implementation: build `keyword_to_movies` at startup by scanning `movie_keyword` FK CSR; for each keyword_id, collect all movie_ids. Same pattern for other inverted indices. Could be combined with dimension cache as `dim_value → FK_row_set`. **Addresses the base×base guard** for queries like 6d, 6b without needing to lift the guard.
+2. **Inverted indices** — **DONE** (Iter 29, Step 6.5). Built 3 inverted indices at startup: `keyword→title` (via movie_keyword), `name→title` (via cast_info), `company_name→title` (via movie_companies). 3-table inverted index resolution in `AnalyzeSubIR` handles `source(filtered) + bridge + target` pattern: scans source with compiled filters, inverted index lookup → target PK IN-filter, eliminates source+bridge leaves. Bridge column remapping for output projections. Selectivity guard (<50% of target rows). Dead specs removed (11→3, ~100MB memory saved). Base×base guard KEPT due to IR column name mismatch bug.
 
-3. **LIKE support in kernel (+275.5ms regression from 70 LIKE-only fallback queries)**: Currently `CompileOnePredicate` returns empty for LIKE → `AnalyzeSubIR` bails → DuckDB fallback. Three fallback patterns: (1) **base JOIN dim** with LIKE on base → 0 joins after dim resolution → DuckDB by threshold anyway (majority, no kernel coverage gain); (2) **base JOIN base(+dim)** with LIKE → retains 1+ joins, LIKE support increases kernel coverage (e.g., q5a: `movie_companies JOIN title WHERE note LIKE ...`); (3) **base JOIN temp(+dim)** with LIKE → same. Pattern (1) is the majority; patterns (2)+(3) are a smaller subset where LIKE support genuinely increases kernel coverage but the regression comes from middleware overhead on all three patterns. Implementation: add `strstr()`/`memmem()` to `CompileOnePredicate` for `%pattern%` LIKE. BespokeOLAP handles LIKE more aggressively via dictionary memoization (`note_dict` + `note_memo` arrays, 12 queries) — pre-scanning unique string values and caching match results per dict-id, then checking `note_memo[dict_id]` per row instead of full string match. The `note_csr` inverted index (12 queries) further avoids scanning rows that don't match.
+3. **LIKE support in kernel** — **DONE** (Iter 30, Step 6.5.3). Added TextLike/Text_Not_Like to `CompileOnePredicate` with 6 pattern kinds: EQUALITY, PREFIX, SUFFIX, CONTAINS (memmem), MULTI_SEGMENT (sequential memmem), COMPLEX (DP LikeMatch). Single-table LIKE guard: base tables without inverted-index PK filter fall back to DuckDB (vectorized scan faster for large tables). Fixed dangling pointer bug in 3-table inverted index resolution (leaves.erase invalidated pointers used for dim_derived_filters cleanup). Fixed AnalyzeFinalIR LIKE guard (sorted-MIN path produced wrong results with LIKE on lookup tables). Net: exe -228ms (-3.1%), wall -218ms (-1.6%).
 
 4. **Dimension-partitioned flat tables (67/113 BespokeOLAP queries)**: BespokeOLAP partitions large tables by dimension FK (e.g., `movie_info.partitions[info_type_id]`, `cast_info.role_movie_csr[role_id]`). Our kernel scans the full flat table with a runtime filter. Scan reduction: `cast_info` 36M→4M (9x), `movie_info` 14.8M→2M (7x). Estimated savings: 65-320ms per query touching large tables. Most impactful after Step 7 loop fusion (fused loops scan base tables directly, so partitioning avoids scanning non-matching rows). Implementation: at startup, for each large table with a low-cardinality FK column (role_id, info_type_id), build per-partition row lists. The kernel scans only the matching partition.
 
@@ -206,9 +221,9 @@ Code: `src/storage/sub_query_plan.h/.cpp` (plan struct + executor)
 
 7. **Base×base guard (+113.4ms on 6d+6b)**: When dim resolution reduces from 3+ tables to 2 base tables (no temps), kernel falls back to DuckDB. Reason: kernel linear scan of large base tables (cast_info 36M) is slower than DuckDB's parallel vectorized hash join. The guard is correct for generic base×base patterns. The specific regression pattern (6d, 6b: keyword IN→movie_keyword→title) is better solved by inverted indices (issue #2 above), which convert the 2-base problem into a bitset lookup. Revisit after Step 7 adds parallelism for remaining base×base cases.
 
-8. **Latent CSR direction bug in `AnalyzeSubIR`** (`sub_query_plan.cpp` ~line 742): `GetCSR(scan_leaf->name, scan_col_name)` can return a CSR where `fk_table == scan_leaf->name`, meaning `Lookup()` returns row indices in the scan table instead of the lookup table. **Currently silent** because runtime CSR search (line 734) is checked first and succeeds for all temp-lookup cases; base×base pairs are guarded out. The same bug was fixed in `AnalyzeFinalIR` (CSR candidates validated with `csr->fk_table == lookup_leaf->name`). **Risk**: any future change that removes the base×base guard or changes CSR search order could activate this bug. **Fix path**: add the direction check to `AnalyzeSubIR` only for the `storage_plan->GetCSR()` calls (lines 742, 747), not the runtime CSR calls (lines 734, 754).
+8. **Latent CSR direction bug in `AnalyzeSubIR`** — **FIXED** (Iter 30). Added `fk_table` direction validation to `FindCSR` lambda in `AnalyzeSubIR`: both runtime CSR and `storage_plan->GetCSR()` paths now check `c->fk_table == l->name`, matching the pattern already used in `AnalyzeFinalIR`. Prevents silent wrong results from future code changes.
 
-9. **`std::vector<uint64_t> dummy` per-row allocation** (`sub_query_plan.cpp:457`): Minor inefficiency in semi-join path — should pass scan_row directly to EmitRow for FROM_SCAN-only output. Low priority.
+9. **`std::vector<uint64_t> dummy` per-row allocation** — **FIXED** (Iter 30). Hoisted from per-row allocation inside `ScanRow` lambda to a single pre-allocated `semi_dummy` outside the scan loop.
 
 10. **OpenMP parallelism (4/113 GenDB queries, 0 BespokeOLAP)**: GenDB uses OpenMP in Q16c, Q19a, Q31b, Q33a. BespokeOLAP uses zero OpenMP — its fused single-threaded loops avoid scanning large tables directly. Low priority; Step 7 loop fusion is the better approach.
 

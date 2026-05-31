@@ -1,11 +1,16 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "kernel/sub_query_plan.h"
 #include "storage/dimension_cache.h"
+#include "storage/inverted_index.h"
 #include "storage/storage_plan.h"
 #include "simplest_ir.h"
 #include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <string.h>
 #include <unordered_set>
 #ifdef HAVE_OPENMP
 #include <omp.h>
@@ -19,6 +24,148 @@ namespace storage {
 namespace {
 
 static constexpr uint64_t OMP_PARALLEL_THRESHOLD = 10000;
+
+// DP-based SQL LIKE matching (handles % and _ wildcards)
+static bool LikeMatch(const char *str, uint32_t str_len, const char *pat,
+                      size_t pat_len) {
+  std::vector<bool> dp(pat_len + 1, false);
+  dp[0] = true;
+  for (size_t j = 1; j <= pat_len; j++) {
+    if (pat[j - 1] == '%')
+      dp[j] = dp[j - 1];
+  }
+  for (uint32_t i = 1; i <= str_len; i++) {
+    bool prev = dp[0];
+    dp[0] = false;
+    for (size_t j = 1; j <= pat_len; j++) {
+      bool tmp = dp[j];
+      if (pat[j - 1] == '%') {
+        dp[j] = dp[j - 1] || dp[j];
+      } else if (pat[j - 1] == '_' || pat[j - 1] == str[i - 1]) {
+        dp[j] = prev;
+      } else {
+        dp[j] = false;
+      }
+      prev = tmp;
+    }
+  }
+  return dp[pat_len];
+}
+
+enum LikePatternKind {
+  LIKE_COMPLEX = 0,
+  LIKE_EQUALITY,
+  LIKE_PREFIX,
+  LIKE_SUFFIX,
+  LIKE_CONTAINS,
+  LIKE_MULTI_SEGMENT
+};
+
+static LikePatternKind ClassifyLikePattern(const std::string &pattern,
+                                           std::string &literal_out) {
+  if (pattern.empty()) {
+    literal_out.clear();
+    return LIKE_EQUALITY;
+  }
+  if (pattern.find('_') != std::string::npos)
+    return LIKE_COMPLEX;
+
+  size_t leading = 0;
+  while (leading < pattern.size() && pattern[leading] == '%')
+    ++leading;
+  size_t trailing = 0;
+  while (trailing < pattern.size() &&
+         pattern[pattern.size() - 1 - trailing] == '%')
+    ++trailing;
+
+  size_t mid_start = leading, mid_end = pattern.size() - trailing;
+  for (size_t i = mid_start; i < mid_end; ++i)
+    if (pattern[i] == '%')
+      return LIKE_COMPLEX;
+
+  literal_out = pattern.substr(mid_start, mid_end - mid_start);
+
+  if (leading == 0 && trailing == 0)
+    return LIKE_EQUALITY;
+  if (leading == 0 && trailing > 0)
+    return LIKE_PREFIX;
+  if (leading > 0 && trailing == 0)
+    return LIKE_SUFFIX;
+  return LIKE_CONTAINS;
+}
+
+struct LikeSegments {
+  std::vector<std::string> segs;
+  bool has_leading_pct = false;
+  bool has_trailing_pct = false;
+};
+
+static LikePatternKind ClassifyLikePatternEx(const std::string &pattern,
+                                             std::string &literal_out,
+                                             LikeSegments &seg_out) {
+  LikePatternKind k = ClassifyLikePattern(pattern, literal_out);
+  if (k != LIKE_COMPLEX) return k;
+
+  if (pattern.find('_') != std::string::npos) return LIKE_COMPLEX;
+
+  seg_out.has_leading_pct = (!pattern.empty() && pattern[0] == '%');
+  seg_out.has_trailing_pct = (!pattern.empty() && pattern.back() == '%');
+
+  seg_out.segs.clear();
+  std::string cur;
+  for (char c : pattern) {
+    if (c == '%') {
+      if (!cur.empty()) { seg_out.segs.push_back(cur); cur.clear(); }
+    } else {
+      cur += c;
+    }
+  }
+  if (!cur.empty()) seg_out.segs.push_back(cur);
+
+  if (seg_out.segs.size() >= 2) return LIKE_MULTI_SEGMENT;
+  return LIKE_COMPLEX;
+}
+
+static bool LikeMatchSegments(const char *str, uint32_t str_len,
+                              const LikeSegments &segs) {
+  const char *pos = str;
+  int32_t remaining = static_cast<int32_t>(str_len);
+  for (size_t i = 0; i < segs.segs.size(); i++) {
+    const auto &seg = segs.segs[i];
+    int32_t seg_len = static_cast<int32_t>(seg.size());
+    if (i == 0 && !segs.has_leading_pct) {
+      if (remaining < seg_len ||
+          memcmp(pos, seg.data(), seg.size()) != 0)
+        return false;
+      pos += seg_len; remaining -= seg_len;
+    } else if (i == segs.segs.size() - 1 && !segs.has_trailing_pct) {
+      if (remaining < seg_len ||
+          memcmp(pos + remaining - seg_len, seg.data(), seg.size()) != 0)
+        return false;
+      remaining -= seg_len;
+    } else {
+      void *found = memmem(pos, (size_t)remaining, seg.data(), seg.size());
+      if (!found) return false;
+      int32_t offset = static_cast<int32_t>((const char *)found - pos) + seg_len;
+      pos += offset; remaining -= offset;
+    }
+  }
+  return true;
+}
+
+static bool ExprContainsLike(const AQPExpr *expr) {
+  if (!expr) return false;
+  if (expr->GetNodeType() == VarConstComparisonNode) {
+    auto et = expr->GetSimplestExprType();
+    return et == TextLike || et == Text_Not_Like;
+  }
+  if (expr->GetNodeType() == LogicalExprNode) {
+    auto *l = static_cast<const SimplestLogicalExpr *>(expr);
+    return ExprContainsLike(l->left_expr.get()) ||
+           ExprContainsLike(l->right_expr.get());
+  }
+  return false;
+}
 
 struct LeafTable {
   std::string name;
@@ -35,6 +182,16 @@ struct LeafTable {
     return false;
   }
 };
+
+static bool LeafHasLikeFilter(const LeafTable *leaf) {
+  for (const auto *qual_vec : leaf->all_filters) {
+    if (!qual_vec) continue;
+    for (const auto &expr : *qual_vec) {
+      if (ExprContainsLike(expr.get())) return true;
+    }
+  }
+  return false;
+}
 
 struct JoinEdge {
   unsigned int left_table_idx;
@@ -245,6 +402,78 @@ RowPredicate CompileOnePredicate(const AQPExpr *expr, const FlatTable *table) {
           return len != const_str.size() ||
                  std::memcmp(ptr, const_str.data(), len) != 0;
         };
+      case TextLike:
+      case Text_Not_Like: {
+        bool negate = (cmp_type == Text_Not_Like);
+        std::string literal;
+        LikeSegments seg_info;
+        LikePatternKind kind = ClassifyLikePatternEx(const_str, literal, seg_info);
+
+        if (kind == LIKE_EQUALITY) {
+          std::string lit = literal;
+          return [col_idx, lit, negate](const FlatTable &t, uint64_t row) {
+            if (t.columns[col_idx].IsNull(row)) return false;
+            uint32_t len;
+            const char *ptr = t.columns[col_idx].GetVarchar(row, len);
+            bool match = len == lit.size() &&
+                         std::memcmp(ptr, lit.data(), len) == 0;
+            return negate ? !match : match;
+          };
+        }
+        if (kind == LIKE_CONTAINS) {
+          std::string needle = literal;
+          return [col_idx, needle, negate](const FlatTable &t, uint64_t row) {
+            if (t.columns[col_idx].IsNull(row)) return false;
+            uint32_t len;
+            const char *ptr = t.columns[col_idx].GetVarchar(row, len);
+            bool match = len >= needle.size() &&
+                         memmem(ptr, len, needle.data(), needle.size()) != nullptr;
+            return negate ? !match : match;
+          };
+        }
+        if (kind == LIKE_PREFIX) {
+          std::string prefix = literal;
+          return [col_idx, prefix, negate](const FlatTable &t, uint64_t row) {
+            if (t.columns[col_idx].IsNull(row)) return false;
+            uint32_t len;
+            const char *ptr = t.columns[col_idx].GetVarchar(row, len);
+            bool match = len >= prefix.size() &&
+                         std::memcmp(ptr, prefix.data(), prefix.size()) == 0;
+            return negate ? !match : match;
+          };
+        }
+        if (kind == LIKE_SUFFIX) {
+          std::string suffix = literal;
+          return [col_idx, suffix, negate](const FlatTable &t, uint64_t row) {
+            if (t.columns[col_idx].IsNull(row)) return false;
+            uint32_t len;
+            const char *ptr = t.columns[col_idx].GetVarchar(row, len);
+            bool match = len >= suffix.size() &&
+                         std::memcmp(ptr + len - suffix.size(), suffix.data(),
+                                     suffix.size()) == 0;
+            return negate ? !match : match;
+          };
+        }
+        if (kind == LIKE_MULTI_SEGMENT) {
+          auto segs = std::make_shared<LikeSegments>(seg_info);
+          return [col_idx, segs, negate](const FlatTable &t, uint64_t row) {
+            if (t.columns[col_idx].IsNull(row)) return false;
+            uint32_t len;
+            const char *ptr = t.columns[col_idx].GetVarchar(row, len);
+            bool match = LikeMatchSegments(ptr, len, *segs);
+            return negate ? !match : match;
+          };
+        }
+        // LIKE_COMPLEX: DP-based fallback
+        std::string pat = const_str;
+        return [col_idx, pat, negate](const FlatTable &t, uint64_t row) {
+          if (t.columns[col_idx].IsNull(row)) return false;
+          uint32_t len;
+          const char *ptr = t.columns[col_idx].GetVarchar(row, len);
+          bool match = LikeMatch(ptr, len, pat.data(), pat.size());
+          return negate ? !match : match;
+        };
+      }
       default:
         return {};
       }
@@ -633,6 +862,62 @@ SubQueryPlan AnalyzeSubIR(
     }
   }
 
+  // ====== Unfiltered dim elimination ======
+  // When a dim table has no WHERE filters AND no output columns reference it,
+  // the join is a no-op (all FK values pass). Eliminate the dim leaf + edge.
+  struct UnfilteredDimElim {
+    size_t leaf_idx;
+    size_t edge_idx;
+  };
+  std::vector<UnfilteredDimElim> unfiltered_elims;
+
+  if (dim_cache) {
+    // Collect output table indices to check if any column references the dim
+    std::unordered_set<unsigned int> output_tbl_indices;
+    for (const auto &attr : sub_ir->target_list)
+      output_tbl_indices.insert(attr->GetTableIndex());
+
+    for (size_t li = 0; li < leaves.size(); li++) {
+      const auto &leaf = leaves[li];
+      if (!leaf.is_base || !dim_cache->IsDimension(leaf.name))
+        continue;
+      if (leaf.HasFilters())
+        continue; // filtered dims handled above
+
+      // Already scheduled for filtered dim resolution?
+      bool already_resolved = false;
+      for (const auto &dr : dim_resolutions) {
+        if (dr.leaf_idx == li) { already_resolved = true; break; }
+      }
+      if (already_resolved)
+        continue;
+
+      // Output must not reference this dim table
+      if (output_tbl_indices.count(leaf.ir_table_index))
+        continue;
+
+      // Find the join edge with "id" on the dim side
+      for (size_t ei = 0; ei < edges.size(); ei++) {
+        const auto &e = edges[ei];
+        bool dim_on_left = (e.left_table_idx == leaf.ir_table_index && e.left_col_name == "id");
+        bool dim_on_right = (e.right_table_idx == leaf.ir_table_index && e.right_col_name == "id");
+        if (!dim_on_left && !dim_on_right)
+          continue;
+
+        // Already scheduled for erase by filtered dim resolution?
+        bool edge_taken = false;
+        for (const auto &dr : dim_resolutions) {
+          if (dr.edge_idx == ei) { edge_taken = true; break; }
+        }
+        if (edge_taken)
+          continue;
+
+        unfiltered_elims.push_back({li, ei});
+        break;
+      }
+    }
+  }
+
   // Apply dimension resolutions: add FK filters, then erase leaves/edges
   // Collect filters first using stored other_tbl_idx (safe regardless of erase order)
   std::unordered_map<unsigned int, std::vector<std::pair<int, std::vector<int32_t>>>>
@@ -642,30 +927,357 @@ SubQueryPlan AnalyzeSubIR(
     dim_derived_filters[res.other_tbl_idx].emplace_back(res.fk_col_idx, res.pk_vals);
   }
 
-  // Erase leaves and edges by index — collect indices, sort descending, erase
+  // Erase leaves and edges by index — collect from both filtered dim resolutions
+  // and unfiltered dim eliminations, sort descending, erase
   {
     std::vector<size_t> leaf_idxs, edge_idxs;
     for (const auto &res : dim_resolutions) {
       leaf_idxs.push_back(res.leaf_idx);
       edge_idxs.push_back(res.edge_idx);
     }
+    for (const auto &elim : unfiltered_elims) {
+      leaf_idxs.push_back(elim.leaf_idx);
+      edge_idxs.push_back(elim.edge_idx);
+    }
     std::sort(leaf_idxs.rbegin(), leaf_idxs.rend());
     std::sort(edge_idxs.rbegin(), edge_idxs.rend());
+    // Deduplicate (in case of overlap, though shouldn't happen)
+    leaf_idxs.erase(std::unique(leaf_idxs.begin(), leaf_idxs.end()), leaf_idxs.end());
+    edge_idxs.erase(std::unique(edge_idxs.begin(), edge_idxs.end()), edge_idxs.end());
     for (size_t idx : leaf_idxs)
       leaves.erase(leaves.begin() + static_cast<long>(idx));
     for (size_t idx : edge_idxs)
       edges.erase(edges.begin() + static_cast<long>(idx));
   }
 
-  // Guard: if dim resolution produced a 2-table plan where both tables are
-  // base tables (no temps), DuckDB's hash join is usually faster than our
-  // linear scan + CSR lookup. Fall back to DuckDB.
-  if (!dim_resolutions.empty() && leaves.size() == 2) {
+  // ====== Inverted index resolution ======
+  // When dim resolution leaves 2 base tables (e.g., movie_keyword + title),
+  // check if an inverted index can eliminate the bridge table entirely.
+  // Pattern: dim(filtered) → bridge_table.fk_col → bridge_table.target_col → target_table
+  // If inverted index exists for dim→target through bridge, we can:
+  //   1. Use dim PK values to look up target PK values directly
+  //   2. Build a bitset of target PK values
+  //   3. Eliminate the bridge leaf + edge, leaving a single target table scan
+  if (!dim_resolutions.empty() && leaves.size() == 2 && edges.size() == 1 && storage_plan) {
     bool all_base = true;
     for (const auto &leaf : leaves) {
       if (!leaf.is_base) { all_base = false; break; }
     }
-    if (all_base) return plan;
+
+    if (all_base) {
+      // Identify which leaf is the bridge table (the one that received dim FK filters)
+      // and which is the target table (joined to bridge via the remaining edge).
+      const JoinEdge &remaining_edge = edges[0];
+      const LeafTable *bridge_leaf = nullptr;
+      const LeafTable *target_leaf = nullptr;
+      std::string bridge_col_name, target_col_name;
+
+      for (const auto &leaf : leaves) {
+        // The bridge table is the one that got dim-derived filters
+        if (dim_derived_filters.count(leaf.ir_table_index)) {
+          bridge_leaf = &leaf;
+        } else {
+          target_leaf = &leaf;
+        }
+      }
+
+      bool inverted_resolved = false;
+      if (bridge_leaf && target_leaf) {
+        // Resolve edge column names
+        if (remaining_edge.left_table_idx == bridge_leaf->ir_table_index) {
+          bridge_col_name = remaining_edge.left_col_name;
+          target_col_name = remaining_edge.right_col_name;
+        } else if (remaining_edge.right_table_idx == bridge_leaf->ir_table_index) {
+          bridge_col_name = remaining_edge.right_col_name;
+          target_col_name = remaining_edge.left_col_name;
+        }
+
+        if (!bridge_col_name.empty()) {
+          // For each dim resolution that targeted the bridge table,
+          // check if an inverted index exists
+          auto dim_it = dim_derived_filters.find(bridge_leaf->ir_table_index);
+          if (dim_it != dim_derived_filters.end()) {
+            for (const auto &res : dim_resolutions) {
+              if (res.other_tbl_idx != bridge_leaf->ir_table_index)
+                continue;
+              // Find the dim table name from the original leaves (already erased)
+              // We stored it in the DimResolution — but we only have pk_vals.
+              // Instead, look up inverted index by bridge_table + bridge_fk_col
+              // The dim_derived_filter's fk_col_idx tells us the FK column in bridge_table.
+              std::string fk_col_name;
+              if (res.fk_col_idx >= 0 && res.fk_col_idx < static_cast<int>(bridge_leaf->flat->column_names.size()))
+                fk_col_name = bridge_leaf->flat->column_names[res.fk_col_idx];
+
+              if (fk_col_name.empty())
+                continue;
+
+              // Search for inverted index matching this bridge+fk_col→target pattern
+              const InvertedIndex *inv = nullptr;
+              for (const auto &kv : storage_plan->GetInvertedIndicesMap()) {
+                const auto &idx = kv.second;
+                if (idx.bridge_table == bridge_leaf->name &&
+                    idx.bridge_fk_col == fk_col_name &&
+                    idx.target_col == bridge_col_name &&
+                    idx.target_table == target_leaf->name) {
+                  inv = &idx;
+                  break;
+                }
+              }
+              // Also try: bridge_col_name is the FK in bridge that joins to target.
+              // The inverted index target_col should match bridge_col_name.
+              if (!inv) {
+                for (const auto &kv : storage_plan->GetInvertedIndicesMap()) {
+                  const auto &idx = kv.second;
+                  if (idx.bridge_table == bridge_leaf->name &&
+                      idx.bridge_fk_col == fk_col_name &&
+                      idx.target_col == bridge_col_name) {
+                    inv = &idx;
+                    break;
+                  }
+                }
+              }
+
+              if (!inv)
+                continue;
+
+              // Use the inverted index: dim PK values → target PK values
+              // Build a bitset of qualifying target PK values
+              int target_pk_col = target_leaf->flat->FindColumn(target_col_name);
+              if (target_pk_col < 0)
+                continue;
+              if (target_leaf->flat->columns[target_pk_col].type != FlatColumnType::INT32)
+                continue;
+
+              // Collect all target values from inverted index for these dim PKs
+              std::unordered_set<int32_t> target_vals_set;
+              for (int32_t pk : res.pk_vals) {
+                auto result = inv->Lookup(pk);
+                if (result.first && result.second) {
+                  for (auto it = result.first; it != result.second; ++it)
+                    target_vals_set.insert(*it);
+                }
+              }
+
+              if (target_vals_set.empty())
+                continue;
+
+              // Selectivity guard: only use inverted index when the resulting
+              // target set covers less than 50% of the target table.
+              // Otherwise DuckDB's hash join is likely faster.
+              uint64_t target_rows = target_leaf->flat->row_count;
+              if (target_vals_set.size() > target_rows / 2)
+                continue;
+
+              // Replace the dim-derived FK filter on the bridge table with a
+              // target PK filter on the target table.
+              // Remove the bridge leaf's dim filter for this resolution
+              // and add target PK IN-filter on target leaf.
+              std::vector<int32_t> target_vals(target_vals_set.begin(), target_vals_set.end());
+              dim_derived_filters[target_leaf->ir_table_index].emplace_back(target_pk_col, target_vals);
+
+              // Remove the bridge's dim filter for this particular resolution
+              // (it was for fk_col_idx in bridge)
+              auto &bridge_filters = dim_derived_filters[bridge_leaf->ir_table_index];
+              for (auto fit = bridge_filters.begin(); fit != bridge_filters.end(); ++fit) {
+                if (fit->first == res.fk_col_idx) {
+                  bridge_filters.erase(fit);
+                  break;
+                }
+              }
+
+              inverted_resolved = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (inverted_resolved) {
+        // Bridge table is now unnecessary if it has no remaining filters/output cols.
+        // Eliminate bridge leaf and remaining edge, leaving target as single table.
+        size_t bridge_idx = 0;
+        for (size_t i = 0; i < leaves.size(); i++) {
+          if (&leaves[i] == bridge_leaf) { bridge_idx = i; break; }
+        }
+        leaves.erase(leaves.begin() + static_cast<long>(bridge_idx));
+        edges.clear();
+        dim_derived_filters.erase(bridge_leaf->ir_table_index);
+      } else {
+        // No inverted index available — fall back to DuckDB for base×base.
+        // Base tables can have mismatched column names in the IR (e.g.,
+        // movie_link col_idx=2 is "linked_movie_id" but IR labels it "movie_id").
+        return plan;
+      }
+    }
+  }
+
+  // ====== 3-table inverted index resolution ======
+  // Pattern: source(filtered) + bridge + target where inverted index maps
+  // source→target through bridge. Eliminates source+bridge, leaves single target.
+  // Column remapping: bridge join-key columns → target equivalent (they're equal via join).
+  std::unordered_map<uint64_t, std::pair<unsigned int, std::string>> inv_col_remap;
+
+  if (leaves.size() == 3 && edges.size() == 2 && storage_plan) {
+    bool all_base = true;
+    for (const auto &leaf : leaves) {
+      if (!leaf.is_base) { all_base = false; break; }
+    }
+    bool all_have_flat = true;
+    for (const auto &leaf : leaves) {
+      if (!leaf.flat) { all_have_flat = false; break; }
+    }
+
+    if (all_base && all_have_flat) {
+      bool inv3_resolved = false;
+
+      for (const auto &kv : storage_plan->GetInvertedIndicesMap()) {
+        const auto &inv = kv.second;
+
+        // Match leaves to roles
+        const LeafTable *source_leaf = nullptr;
+        const LeafTable *bridge_leaf3 = nullptr;
+        const LeafTable *target_leaf3 = nullptr;
+        for (const auto &leaf : leaves) {
+          if (leaf.name == inv.dim_table && leaf.HasFilters())
+            source_leaf = &leaf;
+          else if (leaf.name == inv.bridge_table)
+            bridge_leaf3 = &leaf;
+          else if (leaf.name == inv.target_table)
+            target_leaf3 = &leaf;
+        }
+        if (!source_leaf || !bridge_leaf3 || !target_leaf3)
+          continue;
+
+        // Verify edge topology:
+        // Edge A: source.id = bridge.fk_col
+        // Edge B: bridge.target_col = target.X
+        bool edge_a_ok = false, edge_b_ok = false;
+        std::string target_join_col;
+        for (const auto &e : edges) {
+          // Check source↔bridge edge
+          if ((e.left_table_idx == source_leaf->ir_table_index && e.left_col_name == "id" &&
+               e.right_table_idx == bridge_leaf3->ir_table_index && e.right_col_name == inv.bridge_fk_col) ||
+              (e.right_table_idx == source_leaf->ir_table_index && e.right_col_name == "id" &&
+               e.left_table_idx == bridge_leaf3->ir_table_index && e.left_col_name == inv.bridge_fk_col)) {
+            edge_a_ok = true;
+          }
+          // Check bridge↔target edge
+          if (e.left_table_idx == bridge_leaf3->ir_table_index && e.left_col_name == inv.target_col &&
+              e.right_table_idx == target_leaf3->ir_table_index) {
+            edge_b_ok = true;
+            target_join_col = e.right_col_name;
+          } else if (e.right_table_idx == bridge_leaf3->ir_table_index && e.right_col_name == inv.target_col &&
+                     e.left_table_idx == target_leaf3->ir_table_index) {
+            edge_b_ok = true;
+            target_join_col = e.left_col_name;
+          }
+        }
+        if (!edge_a_ok || !edge_b_ok || target_join_col.empty())
+          continue;
+
+        // Check output columns: all must be from target, or from bridge on the
+        // join-key column (remappable to target equivalent)
+        bool output_ok = true;
+        for (const auto &attr : sub_ir->target_list) {
+          unsigned int tbl_idx = attr->GetTableIndex();
+          if (tbl_idx == target_leaf3->ir_table_index)
+            continue;
+          if (tbl_idx == bridge_leaf3->ir_table_index) {
+            // Only the bridge join-key column can be remapped
+            if (attr->GetColumnName() == inv.target_col) {
+              continue; // will be remapped to target_join_col
+            }
+          }
+          // Output from source or non-remappable bridge col → can't resolve
+          output_ok = false;
+          break;
+        }
+        if (!output_ok)
+          continue;
+
+        // Compile source filters
+        std::vector<RowPredicate> source_preds;
+        if (!CompileAllLeafFilters(source_leaf->all_filters, source_leaf->flat, source_preds))
+          continue;
+
+        // Scan source table with compiled filters → collect matching PK values
+        int source_pk_col = source_leaf->flat->FindColumn("id");
+        if (source_pk_col < 0 || source_leaf->flat->columns[source_pk_col].type != FlatColumnType::INT32)
+          continue;
+
+        std::vector<int32_t> source_pks;
+        for (uint64_t r = 0; r < source_leaf->flat->row_count; r++) {
+          bool pass = true;
+          for (const auto &pred : source_preds) {
+            if (!pred(*source_leaf->flat, r)) { pass = false; break; }
+          }
+          if (pass && !source_leaf->flat->columns[source_pk_col].IsNull(r))
+            source_pks.push_back(source_leaf->flat->columns[source_pk_col].GetInt32(r));
+        }
+        if (source_pks.empty())
+          continue;
+
+        // Inverted index lookup → collect target PK values
+        std::unordered_set<int32_t> target_vals_set;
+        for (int32_t pk : source_pks) {
+          auto result = inv.Lookup(pk);
+          if (result.first && result.second) {
+            for (auto it = result.first; it != result.second; ++it)
+              target_vals_set.insert(*it);
+          }
+        }
+        if (target_vals_set.empty())
+          continue;
+
+        // Selectivity guard
+        uint64_t target_rows = target_leaf3->flat->row_count;
+        if (target_vals_set.size() > target_rows / 2)
+          continue;
+
+        // Find target PK column
+        int target_pk_col3 = target_leaf3->flat->FindColumn(target_join_col);
+        if (target_pk_col3 < 0 || target_leaf3->flat->columns[target_pk_col3].type != FlatColumnType::INT32)
+          continue;
+
+        // Add target IN-filter
+        std::vector<int32_t> target_vals(target_vals_set.begin(), target_vals_set.end());
+        dim_derived_filters[target_leaf3->ir_table_index].emplace_back(target_pk_col3, target_vals);
+
+        // Store column remapping for bridge join-key → target join-key
+        for (const auto &attr : sub_ir->target_list) {
+          if (attr->GetTableIndex() == bridge_leaf3->ir_table_index &&
+              attr->GetColumnName() == inv.target_col) {
+            uint64_t key = (static_cast<uint64_t>(bridge_leaf3->ir_table_index) << 32) |
+                           std::hash<std::string>{}(inv.target_col);
+            inv_col_remap[key] = {target_leaf3->ir_table_index, target_join_col};
+          }
+        }
+
+        // Save indices before erasing (pointers become dangling after erase)
+        unsigned int source_ir_idx = source_leaf->ir_table_index;
+        unsigned int bridge_ir_idx = bridge_leaf3->ir_table_index;
+
+        // Erase source + bridge leaves, clear edges
+        std::vector<size_t> erase_idxs;
+        for (size_t i = 0; i < leaves.size(); i++) {
+          if (&leaves[i] == source_leaf || &leaves[i] == bridge_leaf3)
+            erase_idxs.push_back(i);
+        }
+        std::sort(erase_idxs.rbegin(), erase_idxs.rend());
+        for (size_t idx : erase_idxs)
+          leaves.erase(leaves.begin() + static_cast<long>(idx));
+        edges.clear();
+
+        // Remove source + bridge from dim_derived_filters
+        dim_derived_filters.erase(source_ir_idx);
+        dim_derived_filters.erase(bridge_ir_idx);
+
+        inv3_resolved = true;
+        break;
+      }
+      // If not resolved, fall through (3 leaves → will fail at leaves.size() checks)
+      (void)inv3_resolved;
+    }
   }
 
   // All leaf tables must have FlatTable data
@@ -681,6 +1293,28 @@ SubQueryPlan AnalyzeSubIR(
     std::vector<RowPredicate> scan_predicates;
     if (scan_leaf->HasFilters()) {
       if (!CompileAllLeafFilters(scan_leaf->all_filters, scan_leaf->flat, scan_predicates))
+        return plan;
+    }
+
+    // Guard: single-table LIKE scan on base tables → DuckDB vectorized is
+    // faster unless an inverted-index PK filter drastically reduces rows.
+    // Dim-derived FK filters (e.g., role_id=actor) don't help enough because
+    // they filter on FK columns with low selectivity.
+    // Allow kernel only when a dim_derived_filter targets the PK column ("id"),
+    // which guarantees massive row reduction (inverted index pattern).
+    if (scan_leaf->is_base && LeafHasLikeFilter(scan_leaf)) {
+      bool has_pk_filter = false;
+      auto dim_it2 = dim_derived_filters.find(scan_leaf->ir_table_index);
+      if (dim_it2 != dim_derived_filters.end()) {
+        int pk_col = scan_leaf->flat->FindColumn("id");
+        for (const auto &filt : dim_it2->second) {
+          if (filt.first == pk_col) {
+            has_pk_filter = true;
+            break;
+          }
+        }
+      }
+      if (!has_pk_filter)
         return plan;
     }
 
@@ -716,15 +1350,28 @@ SubQueryPlan AnalyzeSubIR(
     std::vector<KernelOutputCol> output_cols;
     for (const auto &attr : target_list) {
       unsigned int tbl_idx = attr->GetTableIndex();
+      std::string col_name = attr->GetColumnName();
+
+      // Apply inverted index column remapping (bridge col → target col)
+      if (tbl_idx != scan_leaf->ir_table_index && !inv_col_remap.empty()) {
+        uint64_t remap_key = (static_cast<uint64_t>(tbl_idx) << 32) |
+                             std::hash<std::string>{}(col_name);
+        auto remap_it = inv_col_remap.find(remap_key);
+        if (remap_it != inv_col_remap.end()) {
+          tbl_idx = remap_it->second.first;
+          col_name = remap_it->second.second;
+        }
+      }
+
       if (tbl_idx != scan_leaf->ir_table_index)
         return plan;
       KernelOutputCol out;
       out.source = KernelOutputCol::FROM_SCAN;
-      out.col_idx = scan_leaf->flat->FindColumn(attr->GetColumnName());
+      out.col_idx = scan_leaf->flat->FindColumn(col_name);
       if (out.col_idx < 0)
         return plan;
       out.type = scan_leaf->flat->columns[out.col_idx].type;
-      out.name = attr->GetColumnName();
+      out.name = col_name;
       output_cols.push_back(out);
     }
 
@@ -766,13 +1413,14 @@ SubQueryPlan AnalyzeSubIR(
   // i.e., csr->fk_table == lookup_table (for base CSRs).
   auto FindCSR = [&](const LeafTable *l, const std::string &l_col)
       -> const CSRIndex * {
-    // Runtime CSR on lookup side
     auto it = runtime_csrs.find(l->name + "." + l_col);
-    if (it != runtime_csrs.end())
+    if (it != runtime_csrs.end() && it->second.fk_table == l->name)
       return &it->second;
-    // Base CSR where fk_table == lookup table (correct direction)
-    if (storage_plan)
-      return storage_plan->GetCSR(l->name, l_col);
+    if (storage_plan) {
+      auto *c = storage_plan->GetCSR(l->name, l_col);
+      if (c && c->fk_table == l->name)
+        return c;
+    }
     return nullptr;
   };
 
@@ -971,6 +1619,8 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
 
   bool has_scan_filters = !plan.scan_filters.empty();
 
+  std::vector<uint64_t> semi_dummy(plan.join_steps.size(), 0);
+
   // Scan loop body: process one row, emit to the given builder.
   // All reads (FlatTable, CSR, bitset, filters) are on immutable shared data.
   auto ScanRow = [&](uint64_t row, FlatTableBuilder &builder) {
@@ -1055,8 +1705,7 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
       }
       if (!pass)
         return;
-      std::vector<uint64_t> dummy(plan.join_steps.size(), 0);
-      EmitRow(row, dummy);
+      EmitRow(row, semi_dummy);
     } else {
       assert(plan.join_steps.size() == 1);
       const auto &step = plan.join_steps[0];
@@ -1305,6 +1954,15 @@ FinalAggregatePlan AnalyzeFinalIR(
   }
   if (!scan_leaf)
     return plan;
+
+  // Bail if any leaf has LIKE filters — sorted MIN interacts incorrectly
+  // with LIKE on lookup tables in some join topologies.
+  if (LeafHasLikeFilter(scan_leaf))
+    return plan;
+  for (const auto &leaf : leaves) {
+    if (&leaf != scan_leaf && LeafHasLikeFilter(&leaf))
+      return plan;
+  }
 
   // Compile scan filters
   std::vector<RowPredicate> scan_predicates;
