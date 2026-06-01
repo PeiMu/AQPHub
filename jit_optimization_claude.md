@@ -1717,4 +1717,224 @@ All 113 JOB queries pass (node-based/pipeline-jit). Dangling pointer bug in 3a/3
 
 ### Next step
 
-**Step 7: Loop Fusion** — the single biggest remaining optimization. Eliminates temp table materialization + runtime CSR building (~5s middleware overhead). Fuses connected sub-query chains into single scan loops with byte-maps/bitmaps as intermediates instead of temp tables. This is the path to closing the gap with BespokeOLAP (50-170x) and making wall time faster than the baseline.
+Step 7: Adaptive Middleware Overhead Reduction (see Iter 31 below).
+
+---
+
+## Iteration 31: Loop Fusion Attempt → Reverted (Adaptive QP Preserved)
+
+**Goal**: Eliminate middleware overhead (5,190ms) by replacing temp table materialization with byte-maps. Collect all sub-plans upfront (Phase A), then execute with fused byte-map intermediates (Phase B) — no FlatTable materialization, no runtime CSR building, no DuckDB temp registration.
+
+### Implementation
+
+- Added `--fusion` CLI flag
+- Phase A: Plan collection — ran SplitIR/UpdateRemainingIR with dummy temps (1 row, correct column schema) to collect all sub-IRs. `AnalyzeSubIR` validated each for kernel-handleability.
+- Phase B: `FusedQueryPlan` struct with `FusedPhase` (byte-map defs + refs), `ExecutePhaseToByteMap` (scan+filter+join → set byte-map entries), `ExecuteFusedPlan` (byte-map filters injected as scan predicates).
+- Fallback: queries with non-kernel-handleable sub-plans fell back to normal `ExecuteWithSplit`.
+
+### Correctness
+
+**113/113 JOB queries passed** (node-based/pipeline-jit with --fusion). 12 target queries executed via fused byte-map path; 101 others fell back to normal split loop.
+
+### Issues encountered
+
+1. **13b/13c crash**: DuckDB's `reorder_get.cpp:441` calls `exit(-1)` on LOGICAL_FILTER in right child during aggressive optimization with dummy temps. Fixed by reducing dummy_rows from 10000 to 1.
+2. **24a/29b/7a wrong results**: Fusion fallback used `adapter_->ExecuteSQL(original_sql_)` which bypasses split entirely. Fixed by changing fallback to `ExecuteWithSplit(original_sql_)`.
+3. **32a wrong results**: Fused plan was marked valid with 0 final byte-map refs because final plan scanned a temp table. Fixed by adding `!IsBaseTable(collected.final_plan.scan_table_name)` validity check.
+
+### Why reverted
+
+**Fundamental conflict with adaptive query processing**. The split-execute architecture's key advantage is that each iteration benefits from real runtime information (actual cardinality, selectivity) collected after executing a sub-query. This runtime info improves:
+- Join order decisions in subsequent iterations (DuckDB's optimizer sees real temp table sizes)
+- Kernel analysis accuracy (real CSR structure, real cardinalities)
+- JIT code generation quality (branch hints from actual selectivity)
+
+Loop fusion locks in ALL split decisions before execution (Phase A uses dummy temps with fake cardinalities). This:
+- Loses adaptive join reordering (DuckDB can't see real intermediate sizes)
+- Makes kernel analysis unreliable (dummy CSRs with wrong structure)
+- Prevents runtime-informed JIT (no real data to guide code generation)
+
+**Conclusion**: The correct approach is to reduce middleware overhead WITHIN the adaptive loop, not by replacing it.
+
+### Revised Step 7 Direction: Adaptive Middleware Overhead Reduction
+
+Reduce the 5,190ms middleware overhead while preserving the adaptive split-execute loop:
+
+| Sub-feature | Description | Saves | Preserves adaptiveness? |
+|-------------|-------------|-------|------------------------|
+| 7.1 Byte-maps as runtime artifacts | After executing sub-query N, build byte-map of output PKs. Inject as scan filter into iteration N+1 (replaces runtime CSR for semi-join patterns) | ~1.5s (runtime CSR build) | Yes — built from REAL execution results |
+| 7.2 Lazy FlatTable materialization | Only materialize columns actually referenced by remaining IR (skip unused columns in temp tables) | ~0.5s (less memory traffic) | Yes — runs inside adaptive loop |
+| 7.3 Skip DuckDB registration for kernel-only chains | If AnalyzeSubIR predicts next iteration is kernel-handleable, skip DuckDB temp registration (expensive) | ~1s (DuckDB overhead) | Yes — prediction based on real state |
+| 7.4 Kernel JIT compilation | Compile SubQueryPlan to LLVM IR (specialized scan+filter+join function, no per-row interpretation) | +10-30% kernel speed | Yes — compiles after plan analysis |
+| 7.5 CSR prefetch in kernel | `__builtin_prefetch` before CSR row_ptr/col_idx access, PF_DIST=8 | ~5-15% kernel speed | Yes — runtime optimization |
+| 7.6 Dim-partitioned flat tables | Partition large tables by low-cardinality FK (role_id, info_type_id). Scan only matching partition | 7-9x scan reduction | Yes — structural optimization |
+| 7.7 Dictionary encoding | String → integer dict-id comparisons for large table filters | ~10x filter speed | Yes — structural optimization |
+
+**Priority order**: 7.1 (biggest single saving, easiest) → 7.3 → 7.2 → 7.6 → 7.4 → 7.5 → 7.7
+
+### Files changed (all reverted)
+
+| File | Change | Status |
+|------|--------|--------|
+| `include/kernel/fused_query_plan.h` | New file: FusedQueryPlan struct | DELETED |
+| `src/kernel/fused_query_plan.cpp` | New file: fusion analysis + execution | DELETED |
+| `src/split/ir_query_splitter.cpp` | Plan collection + fused execution path | REVERTED |
+| `include/split/ir_query_splitter.h` | Fused plan members | REVERTED |
+| `include/util/param_config.h` | --fusion flag | REVERTED |
+| `src/util/param_config.cpp` | --fusion parsing | REVERTED |
+| `include/storage/storage_plan.h` | GetCSRs() accessor | REVERTED |
+| `CMakeLists.txt` | fused_query_plan.cpp | REVERTED |
+
+---
+
+## Step 7.3: Skip CreateTempFromFlatTable on Kernel Path (DONE)
+
+**Goal**: When kernel produces a temp and the next phase also uses the kernel path, skip the expensive `CreateTempFromFlatTable` (copies FlatTable → DuckDB ColumnDataCollection). The kernel reads from `kernel_temp_ptrs_` (FlatTable pointer), not DuckDB's `ColumnDataCollection`. DuckDB SQL can still read the data via `scan_kernel_temp` replacement scan if needed.
+
+### Implementation
+
+**Key insight**: DuckDB's `TempCollectionReplacementScan` already checks `kernel_temp_tables_` as a fallback when no `temp_collections` entry exists. So skipping `CreateTempFromFlatTable` is safe — DuckDB falls through to `KernelTempScanFunc` which reads FlatTable directly into DuckDB DataChunks.
+
+**New method**: `RegisterTempMetadata` — lightweight metadata-only registration that sets `temp_table_index_`, `intermediate_table_map`, `temp_table_types`, `chunk_col_names_`, `table_column_mappings`, and `temp_table_card_` WITHOUT copying data into ColumnDataCollection.
+
+**Code change** (single line in `ir_query_splitter.cpp` kernel path):
+```cpp
+// Before:
+duck->RegisterKernelTemp(temp_table_name, result_flat.get());
+duck->CreateTempFromFlatTable(*result_flat, temp_table_name);
+
+// After:
+duck->RegisterKernelTemp(temp_table_name, result_flat.get());
+duck->RegisterTempMetadata(*result_flat, temp_table_name);
+```
+
+DuckDB path remains unchanged — still calls `CreateTempFromFlatTable`.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `include/adapters/duckdb_adapter.h` | Added `RegisterTempMetadata` declaration |
+| `src/adapters/duckdb_adapter.cpp` | Added `RegisterTempMetadata` implementation |
+| `src/split/ir_query_splitter.cpp` | Replaced `CreateTempFromFlatTable` with `RegisterTempMetadata` on kernel path |
+
+### Correctness
+
+All 113 JOB queries pass (6 configs: 3 splits × 2 JIT levels, diff against golden files).
+
+### Performance: 7.3 vs Step 6 Baseline
+
+Data: `measure/job_result/step_7_1/` vs `measure/job_result/step_6_fix_all/`
+
+| Column | Baseline (ms) | 7.3 (ms) | Diff (ms) | Diff % |
+|--------|-------------:|----------:|----------:|-------:|
+| prepare_mw | 76.8 | 11.4 | -65.5 | -85.2% |
+| read_sql | 1.9 | 1.7 | -0.2 | -10.0% |
+| parse_sql | 47.5 | 49.3 | +1.8 | +3.8% |
+| preprocess | 0.1 | 0.0 | -0.0 | -26.3% |
+| extract | 662.4 | 668.2 | +5.8 | +0.9% |
+| analyze | 32.1 | 31.9 | -0.2 | -0.7% |
+| jit_compile | 475.3 | 475.7 | +0.5 | +0.1% |
+| execute | 6,037.1 | 6,105.9 | +68.8 | +1.1% |
+| **materialize** | **4,538.7** | **3,301.4** | **-1,237.3** | **-27.3%** |
+| update_ir | 18.2 | 20.3 | +2.1 | +11.8% |
+| gen_final | 429.3 | 426.5 | -2.8 | -0.6% |
+| jit_final | 118.1 | 118.3 | +0.2 | +0.1% |
+| final_exe | 962.0 | 984.8 | +22.8 | +2.4% |
+| show_output | 4.0 | 3.6 | -0.4 | -9.3% |
+| **MW Overhead** | **5,811.0** | **4,514.4** | **-1,296.6** | **-22.3%** |
+| **Wall Time** | **13,403.4** | **12,199.0** | **-1,204.4** | **-9.0%** |
+
+### Savings breakdown by path type
+
+- 565 total iterations across 113 queries
+- 438 kernel-path iterations (77.5%): materialize 4,516 → 3,279ms (**-1,237ms, -27.4%**)
+- 127 DuckDB-path iterations (22.5%): materialize unchanged (±0.1ms)
+
+Remaining ~3,279ms on kernel path = CSR build cost (CreateTempFromFlatTable fully eliminated).
+
+### Performance: 7.3 vs DuckDB None-Split (No AQP)
+
+Data: `measure/job_result/step_7_1/` vs `measure/job_result/step_6_perf/duckdb_none_none_*`
+
+Note: none-split baseline measured May 29 (step_6_perf), 7.3 measured June 1 (step_7_1). None-split path doesn't use AQP/kernel code, so the measurement is valid for DuckDB-native performance.
+
+| Metric | DuckDB (none-split) | AQP 7.3 (node-based) | vs DuckDB |
+|--------|-------------------:|---------------------:|----------:|
+| Execution | 9,529ms | 7,685ms | -19.4% |
+| MW Overhead | 3ms | 4,514ms | — |
+| **Wall Time** | **9,532ms** | **12,199ms** | **+28.0%** |
+
+**Execution is 1.24x faster** with AQP kernel, but MW overhead (+4,514ms) wipes out the gains.
+
+Per-query wins: AQP wins 25/113 queries, DuckDB wins 88/113 on wall time.
+
+Top AQP wins (wall time): 11d (8.5x), 11c (3.7x), 7c (2.9x), 3b (2.6x), 17d (2.1x)
+Top DuckDB wins (wall time): 33a (0.18x), 12c (0.20x), 12a (0.20x), 33c (0.23x), 11a (0.24x)
+
+---
+
+## Step 7.3b: Lazy CSR on DuckDB Path (DONE)
+
+**Goal**: Make the DuckDB-path FlatTable+CSR build lazy (on-demand) and properly timed.
+
+### Background: Hidden untimed cost
+
+After a DuckDB JIT iteration, `ir_query_splitter.cpp` lines 795-917 eagerly built FlatTable + CSR from the DuckDB `ColumnDataCollection`. This cost was **not captured in any timing column** — it happened between col 4 (execute) and the update_ir timer restart. The measured cost turned out to be **~1,294ms** across all queries (revealed by 7.3b).
+
+### Implementation
+
+1. Removed eager FlatTable+CSR build block (was lines 795-917 in `ir_query_splitter.cpp`)
+2. Added `EnsureReferencedTempsReady()`: walks sub-IR to find ChunkNode (temp) references, builds FlatTable+CSR on demand for any temp in `temp_collections_` but not in `kernel_temp_ptrs_`
+3. Called before `AnalyzeSubIR` and `AnalyzeFinalIR`
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `include/split/ir_query_splitter.h` | Added `EnsureKernelTempReady`, `CollectChunkNames`, `EnsureReferencedTempsReady` |
+| `src/split/ir_query_splitter.cpp` | Removed eager build block; added lazy build methods + calls before AnalyzeSubIR/AnalyzeFinalIR |
+
+### Correctness
+
+All 113 JOB queries pass (6 configs: 3 splits × 2 JIT levels, diff against golden files).
+
+### Performance: 7.3b vs 7.3 vs Baseline
+
+Data: `measure/job_result/step_7_2/` vs `step_7_1/` vs `step_6_fix_all/`
+
+| Column | Baseline (ms) | 7.3 (ms) | 7.3b (ms) | 7.3b vs 7.3 |
+|--------|-------------:|----------:|----------:|------------:|
+| analyze | 32.1 | 31.9 | 965.8 | +933.9 |
+| materialize | 4,538.7 | 3,301.4 | 3,290.7 | -10.7 |
+| gen_final | 429.3 | 426.5 | 786.0 | +359.5 |
+| **MW Overhead** | **5,811.0*** | **4,514.4*** | **5,788.6** | **+1,274.2** |
+| **Wall Time** | **13,403.4*** | **12,199.0*** | **13,523.9** | **+1,324.9** |
+
+*Baseline and 7.3 had ~1,294ms of untimed DuckDB-path FlatTable+CSR cost not included in sum-of-columns.
+
+### Key finding: no real performance change
+
+The apparent +1,325ms wall time increase is the **previously hidden cost becoming visible**:
+- analyze: +934ms = lazy FlatTable+CSR build before AnalyzeSubIR (D→K: +800ms, K→K: +134ms)
+- gen_final: +360ms = lazy build before AnalyzeFinalIR
+- Total newly-timed cost: 1,294ms ≈ wall time increase of 1,325ms
+
+Real elapsed wall time comparison:
+- 7.3 real: 12,199 + ~1,294 (hidden) ≈ **13,493ms**
+- 7.3b real: **13,524ms** (all costs timed)
+- Actual difference: ~31ms (noise)
+
+### Remaining MW overhead (5,789ms — all costs now timed)
+
+| Component | Time (ms) | Share | Target |
+|-----------|----------:|------:|--------|
+| CSR build — kernel path (materialize) | 3,291 | 56.8% | 7.1 byte-maps / 7.4 skip last-iter |
+| FlatTable+CSR — DuckDB path (analyze) | 934 | 16.1% | 7.1 byte-maps |
+| FlatTable+CSR — final phase (gen_final) | 360 | 6.2% | 7.1 byte-maps |
+| Extract/SplitIR | 661 | 11.4% | — |
+| Gen_final (pure analysis) | 426 | 7.4% | — |
+| Other | 117 | 2.0% | — |
+
+CSR/FlatTable build total: 3,291 + 934 + 360 = **4,585ms** (79.2% of MW overhead).
+To reach wall-time parity with DuckDB none-split (~9,532ms), need ~3,992ms MW reduction.

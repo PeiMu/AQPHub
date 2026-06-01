@@ -179,6 +179,19 @@ private:
   std::string BuildCombinedSQL(
       const std::vector<std::pair<std::string, std::string>> &sub_plans,
       const std::string &final_sql) const;
+
+#ifdef HAVE_DUCKDB
+  // Lazy CSR (7.3b): build FlatTable + CSR from DuckDB ColumnDataCollection
+  // on demand, only when a kernel iteration actually needs the temp.
+  void EnsureKernelTempReady(const std::string &temp_name);
+
+  // Collect all ChunkNode (temp table) names referenced in an IR tree.
+  static void CollectChunkNames(const ir_sql_converter::AQPStmt *node,
+                                std::set<std::string> &names);
+
+  // Ensure all temps referenced by an IR tree are ready for kernel use.
+  void EnsureReferencedTempsReady(const ir_sql_converter::AQPStmt *ir);
+#endif
 };
 
 } // namespace middleware

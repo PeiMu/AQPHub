@@ -334,6 +334,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
 
+    EnsureReferencedTempsReady(remaining_ir.get());
     auto final_plan = storage::AnalyzeFinalIR(
         remaining_ir.get(), storage_plan_,
         kernel_temp_ptrs_, runtime_csrs_,
@@ -593,6 +594,9 @@ bool IRQuerySplitter::ExecuteOneIteration(
   // Try kernel execution path (CSR-based)
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
+    // Lazy CSR (7.3b): build FlatTable + CSR on demand for DuckDB-produced
+    // temps referenced by this sub-IR, only when kernel actually needs them.
+    EnsureReferencedTempsReady(executable_ir);
     auto sub_plan = storage::AnalyzeSubIR(
         executable_ir, storage_plan_,
         kernel_temp_ptrs_, runtime_csrs_,
@@ -792,130 +796,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
           std::chrono::high_resolution_clock::now() - duckdb_exe_start).count();
     }
 
-    // Build runtime CSR on DuckDB-executed temps for subsequent kernel iterations
-#ifdef HAVE_DUCKDB
-    if (config_.enable_storage_plan && config_.jit_flags != 0 &&
-        config_.engine == BackendEngine::DUCKDB) {
-      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-      if (duck) {
-        const auto *stored = duck->GetStoredTempResult(temp_table_name);
-        if (stored && stored->collection) {
-          // Load FlatTable from ColumnDataCollection
-          auto flat = std::make_unique<storage::FlatTable>();
-          flat->table_name = temp_table_name;
-          auto &coll = *stored->collection;
-          flat->row_count = coll.Count();
-          flat->column_names = stored->column_names;
-          auto types = coll.Types();
-          flat->columns.resize(types.size());
-
-          // Scan the collection to populate flat columns
-          for (size_t c = 0; c < types.size(); c++) {
-            auto &col = flat->columns[c];
-            col.row_count = flat->row_count;
-            col.nullable = false;
-            if (types[c] == duckdb::LogicalType::INTEGER ||
-                types[c] == duckdb::LogicalType::BIGINT) {
-              col.type = storage::FlatColumnType::INT32;
-              col.data = std::unique_ptr<char[]>(
-                  new char[flat->row_count * sizeof(int32_t)]);
-            } else {
-              col.type = storage::FlatColumnType::VARCHAR;
-            }
-          }
-
-          // Scan collection and extract data
-          duckdb::ColumnDataScanState scan_state;
-          coll.InitializeScan(scan_state);
-          duckdb::DataChunk chunk;
-          coll.InitializeScanChunk(chunk);
-          uint64_t offset = 0;
-
-          // First pass: for VARCHAR columns, collect strings
-          std::vector<std::vector<std::string>> varchar_data(types.size());
-
-          while (coll.Scan(scan_state, chunk)) {
-            auto count = chunk.size();
-            chunk.Flatten();
-            for (size_t c = 0; c < types.size(); c++) {
-              auto &vec = chunk.data[c];
-              auto &validity = duckdb::FlatVector::Validity(vec);
-              if (flat->columns[c].type == storage::FlatColumnType::INT32) {
-                auto *dst = reinterpret_cast<int32_t *>(
-                                flat->columns[c].data.get()) + offset;
-                if (types[c] == duckdb::LogicalType::INTEGER) {
-                  auto *src = duckdb::FlatVector::GetData<int32_t>(vec);
-                  for (duckdb::idx_t r = 0; r < count; r++)
-                    dst[r] = validity.RowIsValid(r) ? src[r] : -1;
-                } else {
-                  auto *src = duckdb::FlatVector::GetData<int64_t>(vec);
-                  for (duckdb::idx_t r = 0; r < count; r++)
-                    dst[r] = validity.RowIsValid(r) ? static_cast<int32_t>(src[r]) : -1;
-                }
-              } else {
-                auto *src = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
-                for (duckdb::idx_t r = 0; r < count; r++) {
-                  if (validity.RowIsValid(r))
-                    varchar_data[c].emplace_back(src[r].GetData(), src[r].GetSize());
-                  else
-                    varchar_data[c].emplace_back();
-                }
-              }
-            }
-            offset += count;
-          }
-
-          // Finalize VARCHAR columns
-          for (size_t c = 0; c < types.size(); c++) {
-            if (flat->columns[c].type != storage::FlatColumnType::VARCHAR)
-              continue;
-            auto &col = flat->columns[c];
-            auto &strs = varchar_data[c];
-            uint64_t total_len = 0;
-            for (const auto &s : strs)
-              total_len += s.size();
-            col.data = std::unique_ptr<char[]>(
-                new char[(flat->row_count + 1) * sizeof(uint32_t)]);
-            col.string_pool = std::unique_ptr<char[]>(new char[total_len]);
-            col.string_pool_size = total_len;
-            auto *offsets = reinterpret_cast<uint32_t *>(col.data.get());
-            uint32_t off = 0;
-            for (uint64_t r = 0; r < flat->row_count; r++) {
-              offsets[r] = off;
-              std::memcpy(col.string_pool.get() + off, strs[r].data(),
-                          strs[r].size());
-              off += static_cast<uint32_t>(strs[r].size());
-            }
-            offsets[flat->row_count] = off;
-          }
-
-          // Build runtime CSR on integer columns (skip if domain too large)
-          static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
-          for (size_t c = 0; c < flat->columns.size(); c++) {
-            if (flat->columns[c].type != storage::FlatColumnType::INT32)
-              continue;
-            int32_t max_val = 0;
-            const auto *int_data =
-                reinterpret_cast<const int32_t *>(flat->columns[c].data.get());
-            for (uint64_t r = 0; r < flat->row_count; r++) {
-              if (int_data[r] > max_val)
-                max_val = int_data[r];
-            }
-            if (max_val > MAX_CSR_DOMAIN)
-              continue;
-            std::string csr_key =
-                temp_table_name + "." + flat->column_names[c];
-            runtime_csrs_[csr_key] = storage::BuildCSR(
-                *flat, static_cast<int>(c), max_val, temp_table_name,
-                flat->column_names[c], "", "");
-          }
-
-          kernel_temp_ptrs_[temp_table_name] = flat.get();
-          kernel_temps_[temp_table_name] = std::move(flat);
-        }
-      }
-    }
-#endif
+    // 7.3b: Lazy CSR — removed eager FlatTable+CSR build here.
+    // EnsureReferencedTempsReady() will build on demand before AnalyzeSubIR.
   }
 
   if (config_.enable_tuning)
@@ -1600,5 +1482,144 @@ std::string IRQuerySplitter::BuildCombinedSQL(
   result += StripTrailingSemicolon(final_sql) + ";";
   return result;
 }
+
+#ifdef HAVE_DUCKDB
+void IRQuerySplitter::CollectChunkNames(
+    const ir_sql_converter::AQPStmt *node, std::set<std::string> &names) {
+  if (!node)
+    return;
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::ChunkNode) {
+    auto *chunk =
+        static_cast<const ir_sql_converter::SimplestChunk *>(node);
+    names.insert(chunk->GetChunkName());
+    return;
+  }
+  for (const auto &child : node->children)
+    CollectChunkNames(child.get(), names);
+}
+
+void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
+  if (kernel_temp_ptrs_.count(temp_name))
+    return;
+  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+  if (!duck)
+    return;
+  const auto *stored = duck->GetStoredTempResult(temp_name);
+  if (!stored || !stored->collection)
+    return;
+
+  auto flat = std::make_unique<storage::FlatTable>();
+  flat->table_name = temp_name;
+  auto &coll = *stored->collection;
+  flat->row_count = coll.Count();
+  flat->column_names = stored->column_names;
+  auto types = coll.Types();
+  flat->columns.resize(types.size());
+
+  for (size_t c = 0; c < types.size(); c++) {
+    auto &col = flat->columns[c];
+    col.row_count = flat->row_count;
+    col.nullable = false;
+    if (types[c] == duckdb::LogicalType::INTEGER ||
+        types[c] == duckdb::LogicalType::BIGINT) {
+      col.type = storage::FlatColumnType::INT32;
+      col.data = std::unique_ptr<char[]>(
+          new char[flat->row_count * sizeof(int32_t)]);
+    } else {
+      col.type = storage::FlatColumnType::VARCHAR;
+    }
+  }
+
+  duckdb::ColumnDataScanState scan_state;
+  coll.InitializeScan(scan_state);
+  duckdb::DataChunk chunk;
+  coll.InitializeScanChunk(chunk);
+  uint64_t offset = 0;
+  std::vector<std::vector<std::string>> varchar_data(types.size());
+
+  while (coll.Scan(scan_state, chunk)) {
+    auto count = chunk.size();
+    chunk.Flatten();
+    for (size_t c = 0; c < types.size(); c++) {
+      auto &vec = chunk.data[c];
+      auto &validity = duckdb::FlatVector::Validity(vec);
+      if (flat->columns[c].type == storage::FlatColumnType::INT32) {
+        auto *dst =
+            reinterpret_cast<int32_t *>(flat->columns[c].data.get()) + offset;
+        if (types[c] == duckdb::LogicalType::INTEGER) {
+          auto *src = duckdb::FlatVector::GetData<int32_t>(vec);
+          for (duckdb::idx_t r = 0; r < count; r++)
+            dst[r] = validity.RowIsValid(r) ? src[r] : -1;
+        } else {
+          auto *src = duckdb::FlatVector::GetData<int64_t>(vec);
+          for (duckdb::idx_t r = 0; r < count; r++)
+            dst[r] = validity.RowIsValid(r) ? static_cast<int32_t>(src[r]) : -1;
+        }
+      } else {
+        auto *src = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+        for (duckdb::idx_t r = 0; r < count; r++) {
+          if (validity.RowIsValid(r))
+            varchar_data[c].emplace_back(src[r].GetData(), src[r].GetSize());
+          else
+            varchar_data[c].emplace_back();
+        }
+      }
+    }
+    offset += count;
+  }
+
+  for (size_t c = 0; c < types.size(); c++) {
+    if (flat->columns[c].type != storage::FlatColumnType::VARCHAR)
+      continue;
+    auto &col = flat->columns[c];
+    auto &strs = varchar_data[c];
+    uint64_t total_len = 0;
+    for (const auto &s : strs)
+      total_len += s.size();
+    col.data = std::unique_ptr<char[]>(
+        new char[(flat->row_count + 1) * sizeof(uint32_t)]);
+    col.string_pool = std::unique_ptr<char[]>(new char[total_len]);
+    col.string_pool_size = total_len;
+    auto *offsets = reinterpret_cast<uint32_t *>(col.data.get());
+    uint32_t off = 0;
+    for (uint64_t r = 0; r < flat->row_count; r++) {
+      offsets[r] = off;
+      std::memcpy(col.string_pool.get() + off, strs[r].data(), strs[r].size());
+      off += static_cast<uint32_t>(strs[r].size());
+    }
+    offsets[flat->row_count] = off;
+  }
+
+  static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
+  for (size_t c = 0; c < flat->columns.size(); c++) {
+    if (flat->columns[c].type != storage::FlatColumnType::INT32)
+      continue;
+    int32_t max_val = 0;
+    const auto *int_data =
+        reinterpret_cast<const int32_t *>(flat->columns[c].data.get());
+    for (uint64_t r = 0; r < flat->row_count; r++) {
+      if (int_data[r] > max_val)
+        max_val = int_data[r];
+    }
+    if (max_val > MAX_CSR_DOMAIN)
+      continue;
+    std::string csr_key = temp_name + "." + flat->column_names[c];
+    runtime_csrs_[csr_key] = storage::BuildCSR(
+        *flat, static_cast<int>(c), max_val, temp_name,
+        flat->column_names[c], "", "");
+  }
+
+  kernel_temp_ptrs_[temp_name] = flat.get();
+  kernel_temps_[temp_name] = std::move(flat);
+}
+
+void IRQuerySplitter::EnsureReferencedTempsReady(
+    const ir_sql_converter::AQPStmt *ir) {
+  std::set<std::string> chunk_names;
+  CollectChunkNames(ir, chunk_names);
+  for (const auto &name : chunk_names)
+    EnsureKernelTempReady(name);
+}
+#endif
 
 } // namespace middleware
