@@ -695,13 +695,13 @@ bool IRQuerySplitter::ExecuteOneIteration(
         }
       }
 
-      // Register kernel result with DuckDB's internal state directly
-      // (data_chunk_index, chunk_col_names_, temp_collections_) so the
-      // node-based splitter's UpdateRemainingIR works correctly.
+      // Register kernel result: metadata-only (7.3 optimization).
+      // DuckDB SQL can still read the data via scan_kernel_temp replacement
+      // scan, avoiding the expensive ColumnDataCollection copy.
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
       if (duck) {
         duck->RegisterKernelTemp(temp_table_name, result_flat.get());
-        duck->CreateTempFromFlatTable(*result_flat, temp_table_name);
+        duck->RegisterTempMetadata(*result_flat, temp_table_name);
       }
 
       // Store ownership

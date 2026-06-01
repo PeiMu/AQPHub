@@ -275,6 +275,14 @@ public:
   void CreateTempFromFlatTable(const storage::FlatTable &flat,
                                const std::string &temp_table_name);
 
+  // Lightweight metadata-only registration for kernel-produced temps.
+  // Sets temp_table_index_, intermediate_table_map, temp_table_types,
+  // chunk_col_names_, table_column_mappings, and temp_table_card_ WITHOUT
+  // copying data into ColumnDataCollection. DuckDB SQL can still read the
+  // data via scan_kernel_temp replacement scan.
+  void RegisterTempMetadata(const storage::FlatTable &flat,
+                            const std::string &temp_table_name);
+
   // Access a StoredTempResult (for loading into FlatTable)
   const StoredTempResult *GetStoredTempResult(const std::string &name) const;
 

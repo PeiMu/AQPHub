@@ -504,6 +504,32 @@ void DuckDBAdapter::CreateTempFromFlatTable(
                            static_cast<int64_t>(flat.row_count));
 }
 
+void DuckDBAdapter::RegisterTempMetadata(
+    const storage::FlatTable &flat, const std::string &temp_table_name) {
+
+  duckdb::vector<duckdb::LogicalType> types;
+  for (const auto &col : flat.columns) {
+    if (col.type == storage::FlatColumnType::INT32)
+      types.push_back(duckdb::LogicalType::INTEGER);
+    else
+      types.push_back(duckdb::LogicalType::VARCHAR);
+  }
+
+  auto data_chunk_index = planner->binder->GenerateTableIndex();
+  intermediate_table_map[data_chunk_index] = temp_table_name;
+  temp_table_index_ = data_chunk_index;
+  temp_table_types = types;
+
+  chunk_col_names_[data_chunk_index] = flat.column_names;
+  for (duckdb::idx_t i = 0; i < types.size(); i++) {
+    table_column_mappings.emplace(std::make_pair(data_chunk_index, i),
+                                  flat.column_names[i]);
+  }
+
+  temp_table_card_.emplace(temp_table_name,
+                           static_cast<int64_t>(flat.row_count));
+}
+
 #endif
 
 void DuckDBAdapter::ParseSQL(const std::string &sql) {
