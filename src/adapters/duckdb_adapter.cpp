@@ -2321,6 +2321,11 @@ void DuckDBAdapter::EnsureJITCompiler() {
     jit_compiler_->SetCache(true, jit_cache_dir_);
 }
 
+aqp_jit::IrToLlvmCompiler *DuckDBAdapter::GetJitCompiler() {
+  EnsureJITCompiler();
+  return jit_compiler_.get();
+}
+
 void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
                                 const ir_sql_converter::AQPStmt &ir) {
   using duckdb::PhysicalOperatorType;

@@ -40,7 +40,19 @@ typedef struct {
   uint32_t count;    /* number of entries written by the compiled expr   */
 } AQPSelView;
 
-/* dtype constants — must match aqp_jit.hpp in DuckDB */
+/* dtype constants — must match aqp_jit.hpp in DuckDB. */
+#ifdef __cplusplus
+static constexpr int32_t AQP_DTYPE_BOOL    = 0;
+static constexpr int32_t AQP_DTYPE_INT8    = 1;
+static constexpr int32_t AQP_DTYPE_INT16   = 2;
+static constexpr int32_t AQP_DTYPE_INT32   = 3;
+static constexpr int32_t AQP_DTYPE_INT64   = 4;
+static constexpr int32_t AQP_DTYPE_FLOAT   = 5;
+static constexpr int32_t AQP_DTYPE_DOUBLE  = 6;
+static constexpr int32_t AQP_DTYPE_VARCHAR = 7;
+static constexpr int32_t AQP_DTYPE_DATE    = 8;
+static constexpr int32_t AQP_DTYPE_OTHER   = 99;
+#else
 #define AQP_DTYPE_BOOL 0
 #define AQP_DTYPE_INT8 1
 #define AQP_DTYPE_INT16 2
@@ -51,6 +63,7 @@ typedef struct {
 #define AQP_DTYPE_VARCHAR 7
 #define AQP_DTYPE_DATE 8
 #define AQP_DTYPE_OTHER 99
+#endif
 
 /* JIT compilation flags — bitmask, composable.
  * Prefixed AQP_JIT_ to avoid collision with DuckDB's enum AQPJITFlags. */
@@ -62,10 +75,12 @@ typedef struct {
 #define AQP_JIT_PIPELINE                                                       \
   (1u << 2) /* Level 3: fused pipeline compilation           */
 
-/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE).
+/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE / QUERY).
  * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
+#define AQP_JIT_QUERY                                                          \
+  (1u << 4) /* Level 4: query-level kernel (CSR-based)       */
 #define AQP_JIT_LEVEL_MASK                                                       \
-  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE)
+  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_QUERY)
 
 /* Legacy aliases (backward compat) */
 #define AQP_JIT_OPT3                                                           \
@@ -155,6 +170,45 @@ typedef struct {
   const uint64_t *bf_data;        /* bloom filter bit array (nullptr = no BF)               */
   uint64_t        bf_bitmask;     /* num_sectors - 1 for BF lookup                          */
 } AQPJoinHTView;
+
+/**
+ * Pipeline kernel view: exposes the middleware's HashJoinTable internals
+ * and FlatTable column data to JIT-compiled pipeline kernel probe loops.
+ * Populated by ExecutePipelineKernel before calling the JIT function.
+ * All pointers are read-only from the JIT function's perspective.
+ */
+typedef struct {
+  /* Scan table columns */
+  uint64_t       scan_nrows;
+  const void   **scan_col_data;       /* [col] = FlatColumn.data.get()           */
+  const void   **scan_str_pools;      /* [col] = FlatColumn.string_pool.get()    */
+  const uint64_t**scan_null_bitmaps;  /* [col] = FlatColumn.null_bitmap.get()    */
+
+  /* Per join step (flattened arrays, length = num_join_steps) */
+  uint32_t       num_join_steps;
+  const uint32_t**ht_buckets;         /* [step] = ht->buckets_.data()            */
+  const uint32_t**ht_next;            /* [step] = ht->next_.data()               */
+  const int32_t **ht_keys;            /* [step] = ht->keys_.data()               */
+  const uint32_t**ht_row_ids;         /* [step] = ht->row_ids_.data()            */
+  const uint32_t *ht_masks;           /* [step] = ht->mask_                      */
+  const uint32_t *ht_sizes;           /* [step] = ht->size_                      */
+
+  /* Build table column data (for inner join output emission) */
+  const void  ***build_col_data;      /* [step][col] = columns[col].data.get()   */
+  const void  ***build_str_pools;     /* [step][col] = columns[col].string_pool  */
+
+  /* Bloom filter (per step; NULL entry = no bloom for that step) */
+  const uint64_t**bf_data;            /* [step] = bloom bit array                */
+  const uint64_t *bf_masks;           /* [step] = bloom sector mask              */
+} AQPPipelineKernelView;
+
+/* Pipeline kernel JIT function — called per thread with a row range.
+ * Returns number of output rows written. */
+typedef uint64_t (*AQPPipelineKernelFn)(
+    uint64_t start_row,
+    uint64_t end_row,
+    const AQPPipelineKernelView *view,
+    void *builder_ptr);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -244,6 +244,8 @@ public:
     jit_prefetch_entry_distance_ = entry_dist;
     jit_prefetch_row_distance_ = row_dist;
   }
+
+  aqp_jit::IrToLlvmCompiler *GetJitCompiler();
 #endif
 
   // NodeBasedSplitter support

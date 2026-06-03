@@ -185,12 +185,18 @@ private:
   // on demand, only when a kernel iteration actually needs the temp.
   void EnsureKernelTempReady(const std::string &temp_name);
 
+  // Build FlatTable only (no CSR) for pipeline kernel path
+  void EnsureKernelTempReadyNoCsr(const std::string &temp_name);
+
   // Collect all ChunkNode (temp table) names referenced in an IR tree.
   static void CollectChunkNames(const ir_sql_converter::AQPStmt *node,
                                 std::set<std::string> &names);
 
   // Ensure all temps referenced by an IR tree are ready for kernel use.
   void EnsureReferencedTempsReady(const ir_sql_converter::AQPStmt *ir);
+
+  // FlatTable only (no CSR) for pipeline kernel
+  void EnsureReferencedTempsReadyNoCsr(const ir_sql_converter::AQPStmt *ir);
 #endif
 };
 

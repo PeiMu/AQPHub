@@ -140,10 +140,12 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
       } else if (level == "pipeline") {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE;
+      } else if (level == "query") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_QUERY;
       } else {
         throw std::runtime_error(
             "Unknown JIT level: " + arg.substr(12) +
-            " (valid: expr, operator, pipeline)");
+            " (valid: expr, operator, pipeline, query)");
       }
     } else if (arg.find("--jit-simd=") == 0) {
       std::string simd = to_lower(arg.substr(11));

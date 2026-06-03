@@ -3,6 +3,7 @@
  */
 
 #include "split/ir_query_splitter.h"
+#include "kernel/pipeline_kernel.h"
 #include "jit/aqp_jit_abi.h"
 #include <set>
 
@@ -334,7 +335,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
 
-    EnsureReferencedTempsReady(remaining_ir.get());
+    if (config_.jit_flags & AQP_JIT_PIPELINE)
+      EnsureReferencedTempsReadyNoCsr(remaining_ir.get());
+    else
+      EnsureReferencedTempsReady(remaining_ir.get());
     auto final_plan = storage::AnalyzeFinalIR(
         remaining_ir.get(), storage_plan_,
         kernel_temp_ptrs_, runtime_csrs_,
@@ -453,14 +457,17 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       }
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
-      if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
-        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-        if (config_.enable_debug_print) {
-          std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
-                    << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
+      {
+        uint32_t duckdb_flags = config_.jit_flags & ~(AQP_JIT_PIPELINE | AQP_JIT_QUERY);
+        if ((duckdb_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
+          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+          if (config_.enable_debug_print) {
+            std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
+                      << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
+          }
+          if (duck && remaining_ir)
+            duck->SetJITPendingIR(remaining_ir.get(), duckdb_flags);
         }
-        if (duck && remaining_ir)
-          duck->SetJITPendingIR(remaining_ir.get(), config_.jit_flags);
       }
 #else
       std::cerr << "[AQP-JIT-TRACE] HAVE_LLVM NOT defined\n";
@@ -591,139 +598,217 @@ bool IRQuerySplitter::ExecuteOneIteration(
   double log_exe_ms = 0.0;
 
 #ifdef HAVE_DUCKDB
-  // Try kernel execution path (CSR-based)
+  // Kernel execution routing: pipeline kernel → query kernel → DuckDB fallback
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
-    // Lazy CSR (7.3b): build FlatTable + CSR on demand for DuckDB-produced
-    // temps referenced by this sub-IR, only when kernel actually needs them.
-    EnsureReferencedTempsReady(executable_ir);
-    auto sub_plan = storage::AnalyzeSubIR(
-        executable_ir, storage_plan_,
-        kernel_temp_ptrs_, runtime_csrs_,
-        storage_plan_->GetDimensionCache());
 
-    double analyze_ms = 0.0;
-    if (config_.enable_timing) {
-      auto analyze_time =
-          chrono_toc(&timer, "AnalyzeSubIR time\n", false);
-      analyze_ms = analyze_time / 1000.0;
-    }
-
-    // Capture features for kernel decision log
-    if (sub_plan.valid) {
-      log_plan_valid = true;
-      log_scan_table = sub_plan.scan_table_name;
-      log_scan_rows = sub_plan.scan_table->row_count;
-      log_num_joins = sub_plan.join_steps.size();
-      log_num_filters = sub_plan.scan_filters.size();
-      log_num_output_cols = sub_plan.output_cols.size();
-    }
-
-    if (sub_plan.valid && !config_.no_kernel) {
-      // Increment subquery_index to keep temp table names in sync
-      adapter_->subquery_index++;
-      temp_table_name = GenerateTempTableName();
-
-      if (config_.enable_debug_print) {
-        std::cout << "[CSR-KERNEL] Executing sub-query via kernel: "
-                  << "scan=" << sub_plan.scan_table_name
-                  << " rows=" << sub_plan.scan_table->row_count
-                  << " joins=" << sub_plan.join_steps.size()
-                  << " filters=" << sub_plan.scan_filters.size() << std::endl;
-      }
-
-      if (config_.enable_timing) {
-        // Column 2: AnalyzeSubIR time (maps to generate_sub_sql slot)
-        std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3)
-                 << analyze_ms << ", ";
-        // Column 3: jit_compile = 0 (kernel is pre-compiled C++)
-        log_file << "0.000, ";
-        log_file.close();
-      }
-
-      std::chrono::high_resolution_clock::time_point kernel_start;
-      if (config_.enable_tuning)
-        kernel_start = std::chrono::high_resolution_clock::now();
-      auto result_flat = storage::ExecuteSubQueryPlan(sub_plan, temp_table_name);
+    // Lambda: register a kernel-produced FlatTable (shared by both paths)
+    auto RegisterKernelResult = [&](std::unique_ptr<storage::FlatTable> result_flat,
+                                    const std::string &tname, bool build_csr) {
       cardinality = result_flat->row_count;
-      if (config_.enable_tuning)
-        log_exe_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - kernel_start).count();
-
-      if (config_.enable_timing) {
-        // Column 4: ExecuteSubQueryPlan time (maps to execute_sub_sql slot)
-        auto kernel_exec_time =
-            chrono_toc(&timer, "ExecuteSubQueryPlan time\n", false);
-        std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3)
-                 << (kernel_exec_time / 1000.0) << ", ";
-        log_file.close();
-      }
-
-      if (config_.enable_debug_print) {
-        std::cout << "[CSR-KERNEL] Result: " << cardinality << " rows, "
-                  << result_flat->columns.size() << " columns" << std::endl;
-      }
-
-      // Rename kernel FlatTable columns to match SQL generator's alias convention
       for (size_t c = 0; c < result_flat->columns.size(); c++) {
         auto &attr = executable_ir->target_list[c];
         result_flat->column_names[c] =
             ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName());
       }
-
-      // Build runtime CSR on integer columns (skip if domain too large)
-      static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
-      for (size_t c = 0; c < result_flat->columns.size(); c++) {
-        if (result_flat->columns[c].type != storage::FlatColumnType::INT32)
-          continue;
-        int32_t max_val = 0;
-        const auto *int_data =
-            reinterpret_cast<const int32_t *>(result_flat->columns[c].data.get());
-        for (uint64_t r = 0; r < cardinality; r++) {
-          if (int_data[r] > max_val)
-            max_val = int_data[r];
-        }
-        if (max_val > MAX_CSR_DOMAIN)
-          continue;
-        std::string csr_key = temp_table_name + "." + result_flat->column_names[c];
-        runtime_csrs_[csr_key] = storage::BuildCSR(
-            *result_flat, static_cast<int>(c), max_val,
-            temp_table_name, result_flat->column_names[c], "", "");
-        if (config_.enable_debug_print) {
-          std::cout << "[CSR-KERNEL] Built runtime CSR: " << csr_key
-                    << " (max_val=" << max_val << ")" << std::endl;
+      if (build_csr) {
+        static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
+        for (size_t c = 0; c < result_flat->columns.size(); c++) {
+          if (result_flat->columns[c].type != storage::FlatColumnType::INT32)
+            continue;
+          int32_t max_val = 0;
+          const auto *int_data =
+              reinterpret_cast<const int32_t *>(result_flat->columns[c].data.get());
+          for (uint64_t r = 0; r < cardinality; r++) {
+            if (int_data[r] > max_val) max_val = int_data[r];
+          }
+          if (max_val > MAX_CSR_DOMAIN) continue;
+          std::string csr_key = tname + "." + result_flat->column_names[c];
+          runtime_csrs_[csr_key] = storage::BuildCSR(
+              *result_flat, static_cast<int>(c), max_val,
+              tname, result_flat->column_names[c], "", "");
         }
       }
-
-      // Register kernel result: metadata-only (7.3 optimization).
-      // DuckDB SQL can still read the data via scan_kernel_temp replacement
-      // scan, avoiding the expensive ColumnDataCollection copy.
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
       if (duck) {
-        duck->RegisterKernelTemp(temp_table_name, result_flat.get());
-        duck->RegisterTempMetadata(*result_flat, temp_table_name);
+        duck->RegisterKernelTemp(tname, result_flat.get());
+        duck->RegisterTempMetadata(*result_flat, tname);
       }
+      kernel_temp_ptrs_[tname] = result_flat.get();
+      kernel_temps_[tname] = std::move(result_flat);
+    };
 
-      // Store ownership
-      kernel_temp_ptrs_[temp_table_name] = result_flat.get();
-      kernel_temps_[temp_table_name] = std::move(result_flat);
+    // --- Pipeline kernel path (hash-based, no CSR needed) ---
+    if ((config_.jit_flags & AQP_JIT_PIPELINE) && !config_.no_kernel) {
+      EnsureReferencedTempsReadyNoCsr(executable_ir);
+      auto pipeline_plan = storage::AnalyzePipelineKernel(
+          executable_ir, storage_plan_,
+          kernel_temp_ptrs_,
+          storage_plan_->GetDimensionCache());
 
-      if (config_.enable_timing) {
-        // Column 5: materialization time (CSR build + DuckDB registration)
-        auto materialize_time =
-            chrono_toc(&timer, "Kernel materialization time\n", false);
-        std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3)
-                 << (materialize_time / 1000.0) << ", ";
-        log_file.close();
+      if (pipeline_plan.valid) {
+        double analyze_ms = 0.0;
+        if (config_.enable_timing) {
+          auto analyze_time = chrono_toc(&timer, "AnalyzePipelineKernel time\n", false);
+          analyze_ms = analyze_time / 1000.0;
+        }
+        log_plan_valid = true;
+        log_scan_table = pipeline_plan.scan_table_name;
+        log_scan_rows = pipeline_plan.scan_table->row_count;
+        log_num_joins = pipeline_plan.join_steps.size();
+        log_num_filters = pipeline_plan.scan_filters.size();
+        log_num_output_cols = pipeline_plan.output_cols.size();
+
+        adapter_->subquery_index++;
+        temp_table_name = GenerateTempTableName();
+
+        if (config_.enable_debug_print) {
+          std::cout << "[PIPELINE-KERNEL] Executing: "
+                    << "scan=" << pipeline_plan.scan_table_name
+                    << " rows=" << pipeline_plan.scan_table->row_count
+                    << " joins=" << pipeline_plan.join_steps.size()
+                    << " filters=" << pipeline_plan.scan_filters.size() << std::endl;
+        }
+
+        double compile_ms = 0.0;
+#if defined(HAVE_LLVM) && defined(HAVE_DUCKDB)
+        if (duckdb_adapter_) {
+          auto compile_start = std::chrono::high_resolution_clock::now();
+          auto *jit = duckdb_adapter_->GetJitCompiler();
+          auto jit_fn = jit->CompilePipelineKernel(pipeline_plan);
+          compile_ms = std::chrono::duration<double, std::milli>(
+              std::chrono::high_resolution_clock::now() - compile_start).count();
+          if (config_.enable_debug_print) {
+            std::cout << "[PK-JIT] compile " << compile_ms << "ms -> "
+                      << (jit_fn ? "OK" : "FALLBACK") << std::endl;
+          }
+          if (jit_fn)
+            pipeline_plan.compiled_fn = jit_fn;
+        }
+#endif
+
+        if (config_.enable_timing) {
+          std::ofstream log_file;
+          log_file.open("time_log.csv", std::ios_base::app);
+          log_file << std::fixed << std::setprecision(3)
+                   << analyze_ms << ", " << compile_ms << ", ";
+          log_file.close();
+        }
+
+        std::chrono::high_resolution_clock::time_point kernel_start;
+        if (config_.enable_tuning)
+          kernel_start = std::chrono::high_resolution_clock::now();
+        auto result_flat = storage::ExecutePipelineKernel(pipeline_plan, temp_table_name);
+        if (config_.enable_tuning)
+          log_exe_ms = std::chrono::duration<double, std::milli>(
+              std::chrono::high_resolution_clock::now() - kernel_start).count();
+
+        if (config_.enable_timing) {
+          auto kernel_exec_time = chrono_toc(&timer, "ExecutePipelineKernel time\n", false);
+          std::ofstream log_file;
+          log_file.open("time_log.csv", std::ios_base::app);
+          log_file << std::fixed << std::setprecision(3)
+                   << (kernel_exec_time / 1000.0) << ", ";
+          log_file.close();
+        }
+
+        if (config_.enable_debug_print) {
+          std::cout << "[PIPELINE-KERNEL] Result: " << result_flat->row_count
+                    << " rows, " << result_flat->columns.size() << " columns" << std::endl;
+        }
+
+        // Pipeline kernel: NO CSR build on output
+        RegisterKernelResult(std::move(result_flat), temp_table_name, false);
+
+        if (config_.enable_timing) {
+          auto materialize_time = chrono_toc(&timer, "Kernel materialization time\n", false);
+          std::ofstream log_file;
+          log_file.open("time_log.csv", std::ios_base::app);
+          log_file << std::fixed << std::setprecision(3)
+                   << (materialize_time / 1000.0) << ", ";
+          log_file.close();
+        }
+
+        kernel_executed = true;
       }
+    }
 
-      kernel_executed = true;
+    // --- Query kernel path (CSR-based, existing) ---
+    if (!kernel_executed && (config_.jit_flags & AQP_JIT_QUERY) && !config_.no_kernel) {
+      EnsureReferencedTempsReady(executable_ir);
+      auto sub_plan = storage::AnalyzeSubIR(
+          executable_ir, storage_plan_,
+          kernel_temp_ptrs_, runtime_csrs_,
+          storage_plan_->GetDimensionCache());
+
+      if (sub_plan.valid) {
+        double analyze_ms = 0.0;
+        if (config_.enable_timing) {
+          auto analyze_time = chrono_toc(&timer, "AnalyzeSubIR time\n", false);
+          analyze_ms = analyze_time / 1000.0;
+        }
+        log_plan_valid = true;
+        log_scan_table = sub_plan.scan_table_name;
+        log_scan_rows = sub_plan.scan_table->row_count;
+        log_num_joins = sub_plan.join_steps.size();
+        log_num_filters = sub_plan.scan_filters.size();
+        log_num_output_cols = sub_plan.output_cols.size();
+
+        adapter_->subquery_index++;
+        temp_table_name = GenerateTempTableName();
+
+        if (config_.enable_debug_print) {
+          std::cout << "[CSR-KERNEL] Executing: "
+                    << "scan=" << sub_plan.scan_table_name
+                    << " rows=" << sub_plan.scan_table->row_count
+                    << " joins=" << sub_plan.join_steps.size()
+                    << " filters=" << sub_plan.scan_filters.size() << std::endl;
+        }
+
+        if (config_.enable_timing) {
+          std::ofstream log_file;
+          log_file.open("time_log.csv", std::ios_base::app);
+          log_file << std::fixed << std::setprecision(3)
+                   << analyze_ms << ", 0.000, ";
+          log_file.close();
+        }
+
+        std::chrono::high_resolution_clock::time_point kernel_start;
+        if (config_.enable_tuning)
+          kernel_start = std::chrono::high_resolution_clock::now();
+        auto result_flat = storage::ExecuteSubQueryPlan(sub_plan, temp_table_name);
+        if (config_.enable_tuning)
+          log_exe_ms = std::chrono::duration<double, std::milli>(
+              std::chrono::high_resolution_clock::now() - kernel_start).count();
+
+        if (config_.enable_timing) {
+          auto kernel_exec_time = chrono_toc(&timer, "ExecuteSubQueryPlan time\n", false);
+          std::ofstream log_file;
+          log_file.open("time_log.csv", std::ios_base::app);
+          log_file << std::fixed << std::setprecision(3)
+                   << (kernel_exec_time / 1000.0) << ", ";
+          log_file.close();
+        }
+
+        if (config_.enable_debug_print) {
+          std::cout << "[CSR-KERNEL] Result: " << result_flat->row_count
+                    << " rows, " << result_flat->columns.size() << " columns" << std::endl;
+        }
+
+        // Query kernel: build runtime CSR on output
+        RegisterKernelResult(std::move(result_flat), temp_table_name, true);
+
+        if (config_.enable_timing) {
+          auto materialize_time = chrono_toc(&timer, "Kernel materialization time\n", false);
+          std::ofstream log_file;
+          log_file.open("time_log.csv", std::ios_base::app);
+          log_file << std::fixed << std::setprecision(3)
+                   << (materialize_time / 1000.0) << ", ";
+          log_file.close();
+        }
+
+        kernel_executed = true;
+      }
     }
   }
 #endif
@@ -762,12 +847,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
-    if ((config_.jit_flags & AQP_JIT_LEVEL_MASK) &&
-        config_.engine == BackendEngine::DUCKDB) {
-      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-      if (duck) {
-        duck->SetTempColRanges({});
-        duck->SetJITPendingIR(executable_ir, config_.jit_flags);
+    {
+      // Mask out PIPELINE and QUERY flags — DuckDB only uses EXPR+OPERATOR
+      uint32_t duckdb_flags = config_.jit_flags & ~(AQP_JIT_PIPELINE | AQP_JIT_QUERY);
+      if ((duckdb_flags & AQP_JIT_LEVEL_MASK) &&
+          config_.engine == BackendEngine::DUCKDB) {
+        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+        if (duck) {
+          duck->SetTempColRanges({});
+          duck->SetJITPendingIR(executable_ir, duckdb_flags);
+        }
       }
     }
 #endif
@@ -1619,6 +1708,111 @@ void IRQuerySplitter::EnsureReferencedTempsReady(
   CollectChunkNames(ir, chunk_names);
   for (const auto &name : chunk_names)
     EnsureKernelTempReady(name);
+}
+
+void IRQuerySplitter::EnsureKernelTempReadyNoCsr(const std::string &temp_name) {
+  if (kernel_temp_ptrs_.count(temp_name))
+    return;
+  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+  if (!duck)
+    return;
+  const auto *stored = duck->GetStoredTempResult(temp_name);
+  if (!stored || !stored->collection)
+    return;
+
+  auto flat = std::make_unique<storage::FlatTable>();
+  flat->table_name = temp_name;
+  auto &coll = *stored->collection;
+  flat->row_count = coll.Count();
+  flat->column_names = stored->column_names;
+  auto types = coll.Types();
+  flat->columns.resize(types.size());
+
+  for (size_t c = 0; c < types.size(); c++) {
+    auto &col = flat->columns[c];
+    col.row_count = flat->row_count;
+    col.nullable = false;
+    if (types[c] == duckdb::LogicalType::INTEGER ||
+        types[c] == duckdb::LogicalType::BIGINT) {
+      col.type = storage::FlatColumnType::INT32;
+      col.data = std::unique_ptr<char[]>(
+          new char[flat->row_count * sizeof(int32_t)]);
+    } else {
+      col.type = storage::FlatColumnType::VARCHAR;
+    }
+  }
+
+  duckdb::ColumnDataScanState scan_state;
+  coll.InitializeScan(scan_state);
+  duckdb::DataChunk chunk;
+  coll.InitializeScanChunk(chunk);
+  uint64_t offset = 0;
+  std::vector<std::vector<std::string>> varchar_data(types.size());
+
+  while (coll.Scan(scan_state, chunk)) {
+    auto count = chunk.size();
+    chunk.Flatten();
+    for (size_t c = 0; c < types.size(); c++) {
+      auto &vec = chunk.data[c];
+      auto &validity = duckdb::FlatVector::Validity(vec);
+      if (flat->columns[c].type == storage::FlatColumnType::INT32) {
+        auto *dst =
+            reinterpret_cast<int32_t *>(flat->columns[c].data.get()) + offset;
+        if (types[c] == duckdb::LogicalType::INTEGER) {
+          auto *src = duckdb::FlatVector::GetData<int32_t>(vec);
+          for (duckdb::idx_t r = 0; r < count; r++)
+            dst[r] = validity.RowIsValid(r) ? src[r] : -1;
+        } else {
+          auto *src = duckdb::FlatVector::GetData<int64_t>(vec);
+          for (duckdb::idx_t r = 0; r < count; r++)
+            dst[r] = validity.RowIsValid(r) ? static_cast<int32_t>(src[r]) : -1;
+        }
+      } else {
+        auto *src = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+        for (duckdb::idx_t r = 0; r < count; r++) {
+          if (validity.RowIsValid(r))
+            varchar_data[c].emplace_back(src[r].GetData(), src[r].GetSize());
+          else
+            varchar_data[c].emplace_back();
+        }
+      }
+    }
+    offset += count;
+  }
+
+  for (size_t c = 0; c < types.size(); c++) {
+    if (flat->columns[c].type != storage::FlatColumnType::VARCHAR)
+      continue;
+    auto &col = flat->columns[c];
+    auto &strs = varchar_data[c];
+    uint64_t total_len = 0;
+    for (const auto &s : strs)
+      total_len += s.size();
+    col.data = std::unique_ptr<char[]>(
+        new char[(flat->row_count + 1) * sizeof(uint32_t)]);
+    col.string_pool = std::unique_ptr<char[]>(new char[total_len]);
+    col.string_pool_size = total_len;
+    auto *offsets = reinterpret_cast<uint32_t *>(col.data.get());
+    uint32_t off = 0;
+    for (uint64_t r = 0; r < flat->row_count; r++) {
+      offsets[r] = off;
+      std::memcpy(col.string_pool.get() + off, strs[r].data(), strs[r].size());
+      off += static_cast<uint32_t>(strs[r].size());
+    }
+    offsets[flat->row_count] = off;
+  }
+
+  // No CSR build — pipeline kernel uses hash join tables instead
+  kernel_temp_ptrs_[temp_name] = flat.get();
+  kernel_temps_[temp_name] = std::move(flat);
+}
+
+void IRQuerySplitter::EnsureReferencedTempsReadyNoCsr(
+    const ir_sql_converter::AQPStmt *ir) {
+  std::set<std::string> chunk_names;
+  CollectChunkNames(ir, chunk_names);
+  for (const auto &name : chunk_names)
+    EnsureKernelTempReadyNoCsr(name);
 }
 #endif
 

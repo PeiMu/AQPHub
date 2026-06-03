@@ -2,6 +2,7 @@
 #include "storage/csr_index.h"
 #include "storage/sorted_index.h"
 #include "kernel/sub_query_plan.h"
+#include "kernel/pipeline_kernel.h"
 
 #include <gtest/gtest.h>
 #include <cstring>
@@ -1513,4 +1514,346 @@ TEST(Integration, FullRepeatCycle) {
     kernel_temp_ptrs.clear();
     runtime_csrs.clear();
   }
+}
+
+// ============================================================
+// Pipeline Kernel Tests
+// ============================================================
+
+TEST(PipelineKernel, SemiJoinTwoTables) {
+  // scan: orders(id, customer_id, amount) — 6 rows
+  // build: customers(id, name) — 3 rows
+  // Join: orders.customer_id = customers.id (semi)
+  // Output: orders.id, orders.amount
+  auto orders = MakeIntTable("orders", {"id", "customer_id", "amount"},
+    {{1,2,3,4,5,6}, {10,20,10,30,20,40}, {100,200,300,400,500,600}});
+  auto customers = MakeIntTable("customers", {"id", "flag"},
+    {{10,20,30}, {1,1,1}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = orders.get();
+  plan.scan_table_name = "orders";
+
+  PipelineJoinStep step;
+  step.build_table = customers.get();
+  step.build_key_col = 0; // customers.id
+  step.scan_key_col = 1;  // orders.customer_id
+  step.probe_step_idx = -1;
+  step.is_semi = true;
+  plan.join_steps.push_back(std::move(step));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; // orders.id
+  out0.type = FlatColumnType::INT32;
+  out0.name = "id";
+
+  KernelOutputCol out1;
+  out1.source = KernelOutputCol::FROM_SCAN;
+  out1.col_idx = 2; // orders.amount
+  out1.type = FlatColumnType::INT32;
+  out1.name = "amount";
+
+  plan.output_cols = {out0, out1};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  // customer_ids 10,20,30 exist; 40 doesn't
+  // rows 1(10),2(20),3(10),4(30),5(20) pass; row 6(40) fails
+  EXPECT_EQ(result->row_count, 5u);
+  EXPECT_EQ(result->columns.size(), 2u);
+
+  // Collect output ids (order may vary with OpenMP)
+  std::set<int32_t> ids;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    ids.insert(result->columns[0].GetInt32(r));
+  EXPECT_EQ(ids, (std::set<int32_t>{1,2,3,4,5}));
+}
+
+TEST(PipelineKernel, InnerJoinTwoTables) {
+  // scan: fact(id, dim_id) — 4 rows
+  // build: dim(id, val) — 3 rows, dim_id=2 has 2 matches
+  auto fact = MakeIntTable("fact", {"id", "dim_id"},
+    {{1,2,3,4}, {10,20,10,30}});
+  auto dim = MakeIntTable("dim", {"id", "val"},
+    {{10,20,30}, {100,200,300}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = fact.get();
+  plan.scan_table_name = "fact";
+
+  PipelineJoinStep step;
+  step.build_table = dim.get();
+  step.build_key_col = 0; // dim.id
+  step.scan_key_col = 1;  // fact.dim_id
+  step.probe_step_idx = -1;
+  step.is_semi = false;
+  plan.join_steps.push_back(std::move(step));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "id";
+
+  KernelOutputCol out1;
+  out1.source = KernelOutputCol::FROM_JOIN;
+  out1.step_idx = 0; out1.col_idx = 1;
+  out1.type = FlatColumnType::INT32; out1.name = "val";
+
+  plan.output_cols = {out0, out1};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->row_count, 4u);
+
+  // Collect (fact.id, dim.val) pairs
+  std::set<std::pair<int32_t,int32_t>> pairs;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    pairs.insert({result->columns[0].GetInt32(r), result->columns[1].GetInt32(r)});
+  std::set<std::pair<int32_t,int32_t>> expected = {{1,100},{2,200},{3,100},{4,300}};
+  EXPECT_EQ(pairs, expected);
+}
+
+TEST(PipelineKernel, ScanFilterOnly) {
+  auto t = MakeIntTable("t", {"id", "val"}, {{1,2,3,4,5}, {10,20,30,40,50}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = t.get();
+  plan.scan_table_name = "t";
+  plan.scan_filters.push_back([](const FlatTable &tbl, uint64_t row) {
+    return tbl.columns[1].GetInt32(row) >= 30;
+  });
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "id";
+  plan.output_cols = {out0};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->row_count, 3u);
+  std::set<int32_t> ids;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    ids.insert(result->columns[0].GetInt32(r));
+  EXPECT_EQ(ids, (std::set<int32_t>{3,4,5}));
+}
+
+TEST(PipelineKernel, EmptyBuildTable) {
+  auto fact = MakeIntTable("fact", {"id", "fk"}, {{1,2,3}, {10,20,30}});
+  auto empty_dim = MakeIntTable("dim", {"id"}, {{}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = fact.get();
+  plan.scan_table_name = "fact";
+
+  PipelineJoinStep step;
+  step.build_table = empty_dim.get();
+  step.build_key_col = 0;
+  step.scan_key_col = 1;
+  step.probe_step_idx = -1;
+  step.is_semi = true;
+  plan.join_steps.push_back(std::move(step));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "id";
+  plan.output_cols = {out0};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(result->row_count, 0u);
+}
+
+TEST(PipelineKernel, ThreeTableStarJoin) {
+  // scan: fact(id, d1_id, d2_id) — 5 rows
+  // build1: dim1(id) — IDs {1,2}
+  // build2: dim2(id) — IDs {10,20}
+  // fact.d1_id = dim1.id AND fact.d2_id = dim2.id (both semi)
+  auto fact = MakeIntTable("fact", {"id", "d1_id", "d2_id"},
+    {{1,2,3,4,5}, {1,2,3,1,2}, {10,20,30,10,20}});
+  auto dim1 = MakeIntTable("dim1", {"id"}, {{1,2}});
+  auto dim2 = MakeIntTable("dim2", {"id"}, {{10,20}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = fact.get();
+  plan.scan_table_name = "fact";
+
+  PipelineJoinStep step1;
+  step1.build_table = dim1.get();
+  step1.build_key_col = 0;
+  step1.scan_key_col = 1; // fact.d1_id
+  step1.probe_step_idx = -1;
+  step1.is_semi = true;
+
+  PipelineJoinStep step2;
+  step2.build_table = dim2.get();
+  step2.build_key_col = 0;
+  step2.scan_key_col = 2; // fact.d2_id
+  step2.probe_step_idx = -1;
+  step2.is_semi = true;
+
+  plan.join_steps.push_back(std::move(step1));
+  plan.join_steps.push_back(std::move(step2));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "id";
+  plan.output_cols = {out0};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  // rows: 1(d1=1,d2=10)✓, 2(d1=2,d2=20)✓, 3(d1=3,d2=30)✗, 4(d1=1,d2=10)✓, 5(d1=2,d2=20)✓
+  EXPECT_EQ(result->row_count, 4u);
+  std::set<int32_t> ids;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    ids.insert(result->columns[0].GetInt32(r));
+  EXPECT_EQ(ids, (std::set<int32_t>{1,2,4,5}));
+}
+
+TEST(PipelineKernel, ChainJoin) {
+  // scan: A(id, b_id) — 4 rows
+  // build1: B(id, c_id) — 3 rows, joined to A via A.b_id = B.id
+  // build2: C(id) — 2 rows, joined to B via B.c_id = C.id (chain)
+  // Output: A.id, B.id (inner on B), semi on C
+  auto A = MakeIntTable("A", {"id", "b_id"}, {{1,2,3,4}, {10,20,30,10}});
+  auto B = MakeIntTable("B", {"id", "c_id"}, {{10,20,30}, {100,200,300}});
+  auto C = MakeIntTable("C", {"id"}, {{100,200}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = A.get();
+  plan.scan_table_name = "A";
+
+  // Step 0: A.b_id → B.id (inner, output B columns)
+  PipelineJoinStep step0;
+  step0.build_table = B.get();
+  step0.build_key_col = 0; // B.id
+  step0.scan_key_col = 1;  // A.b_id
+  step0.probe_step_idx = -1;
+  step0.is_semi = false;
+
+  // Step 1: B.c_id → C.id (semi, chain from step 0)
+  PipelineJoinStep step1;
+  step1.build_table = C.get();
+  step1.build_key_col = 0; // C.id
+  step1.scan_key_col = -1;
+  step1.probe_step_idx = 0;  // probe from step 0's build table (B)
+  step1.probe_key_col = 1;   // B.c_id
+  step1.is_semi = true;
+
+  plan.join_steps.push_back(std::move(step0));
+  plan.join_steps.push_back(std::move(step1));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "a_id";
+
+  KernelOutputCol out1;
+  out1.source = KernelOutputCol::FROM_JOIN;
+  out1.step_idx = 0; out1.col_idx = 0;
+  out1.type = FlatColumnType::INT32; out1.name = "b_id";
+
+  plan.output_cols = {out0, out1};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  // A row 1: b_id=10 → B(10, c_id=100) → C has 100 ✓
+  // A row 2: b_id=20 → B(20, c_id=200) → C has 200 ✓
+  // A row 3: b_id=30 → B(30, c_id=300) → C has 300? No ✗
+  // A row 4: b_id=10 → B(10, c_id=100) → C has 100 ✓
+  EXPECT_EQ(result->row_count, 3u);
+
+  std::set<std::pair<int32_t,int32_t>> pairs;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    pairs.insert({result->columns[0].GetInt32(r), result->columns[1].GetInt32(r)});
+  std::set<std::pair<int32_t,int32_t>> expected = {{1,10},{2,20},{4,10}};
+  EXPECT_EQ(pairs, expected);
+}
+
+TEST(PipelineKernel, BuildFilterSkipsRows) {
+  auto fact = MakeIntTable("fact", {"id", "fk"}, {{1,2,3}, {10,20,30}});
+  auto dim = MakeIntTable("dim", {"id", "active"},
+    {{10,20,30}, {1,0,1}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = fact.get();
+  plan.scan_table_name = "fact";
+
+  PipelineJoinStep step;
+  step.build_table = dim.get();
+  step.build_key_col = 0;
+  step.scan_key_col = 1;
+  step.probe_step_idx = -1;
+  step.is_semi = true;
+  // Build filter: only active=1 rows in dim
+  step.build_filters.push_back([](const FlatTable &t, uint64_t row) {
+    return t.columns[1].GetInt32(row) == 1;
+  });
+  plan.join_steps.push_back(std::move(step));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "id";
+  plan.output_cols = {out0};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  // dim with active=1: ids {10, 30}. fact rows with fk in {10,30}: rows 1,3
+  EXPECT_EQ(result->row_count, 2u);
+  std::set<int32_t> ids;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    ids.insert(result->columns[0].GetInt32(r));
+  EXPECT_EQ(ids, (std::set<int32_t>{1,3}));
+}
+
+TEST(PipelineKernel, DuplicateKeysInBuild) {
+  // Build table has duplicate keys — inner join should produce multiple rows
+  auto fact = MakeIntTable("fact", {"id", "fk"}, {{1,2}, {10,10}});
+  auto dim = MakeIntTable("dim", {"fk", "val"},
+    {{10,10,10}, {100,200,300}});
+
+  PipelineKernelPlan plan;
+  plan.scan_table = fact.get();
+  plan.scan_table_name = "fact";
+
+  PipelineJoinStep step;
+  step.build_table = dim.get();
+  step.build_key_col = 0;
+  step.scan_key_col = 1;
+  step.probe_step_idx = -1;
+  step.is_semi = false;
+  plan.join_steps.push_back(std::move(step));
+
+  KernelOutputCol out0;
+  out0.source = KernelOutputCol::FROM_SCAN;
+  out0.col_idx = 0; out0.type = FlatColumnType::INT32; out0.name = "id";
+
+  KernelOutputCol out1;
+  out1.source = KernelOutputCol::FROM_JOIN;
+  out1.step_idx = 0; out1.col_idx = 1;
+  out1.type = FlatColumnType::INT32; out1.name = "val";
+
+  plan.output_cols = {out0, out1};
+  plan.valid = true;
+
+  auto result = ExecutePipelineKernel(plan, "result");
+  ASSERT_NE(result, nullptr);
+  // 2 fact rows × 3 matching dim rows each = 6 output rows
+  EXPECT_EQ(result->row_count, 6u);
+
+  std::multiset<std::pair<int32_t,int32_t>> pairs;
+  for (uint64_t r = 0; r < result->row_count; r++)
+    pairs.insert({result->columns[0].GetInt32(r), result->columns[1].GetInt32(r)});
+  // Each fact row (1 and 2) should match all 3 dim rows
+  EXPECT_EQ(pairs.count({1,100}), 1u);
+  EXPECT_EQ(pairs.count({1,200}), 1u);
+  EXPECT_EQ(pairs.count({1,300}), 1u);
+  EXPECT_EQ(pairs.count({2,100}), 1u);
+  EXPECT_EQ(pairs.count({2,200}), 1u);
+  EXPECT_EQ(pairs.count({2,300}), 1u);
 }

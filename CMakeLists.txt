@@ -81,6 +81,7 @@ set(STORAGE_LIB_SOURCES
 # Built conditionally with DuckDB below.
 set(KERNEL_LIB_SOURCES
     src/kernel/sub_query_plan.cpp
+    src/kernel/pipeline_kernel.cpp
 )
 
 # DuckDB
@@ -144,6 +145,7 @@ if (EXISTS ${DUCKDB_ROOT})
         endif ()
 
         add_executable(test_duckdb examples/test_duckdb.cpp)
+        set_target_properties(test_duckdb PROPERTIES ENABLE_EXPORTS ON)
         target_link_libraries(test_duckdb PRIVATE duckdb_adapter split_lib)
 
         message(STATUS "DuckDB adapter: ENABLED")
@@ -310,6 +312,7 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
     # Build aqp_middleware executable if any adapter is available
     if (HAVE_DUCKDB OR HAVE_POSTGRES OR HAVE_MARIADB)
         add_executable(aqp_middleware src/aqp_middleware.cpp)
+        set_target_properties(aqp_middleware PROPERTIES ENABLE_EXPORTS ON)
         target_link_libraries(aqp_middleware PRIVATE
                 split_lib
                 IR_SQL_Converter_static

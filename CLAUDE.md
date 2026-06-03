@@ -68,6 +68,7 @@ Full:
 cd /home/pei/Project/AQP_middleware/measure
 bash ./correctness_test.sh
 ```
+If any error, debug with ../build_debug/aqp_middleware (or c++ -O0 -g) first, then re-test with ../build_release/aqp_middleware.
 
 ### 5. If faster: full breakdown measurement (~28 min, only for final validation)
 Do NOT do ANYTHING when running performance measurement to avoid noise.
