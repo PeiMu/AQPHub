@@ -637,6 +637,7 @@ PipelineKernelPlan AnalyzePipelineKernel(
   plan.output_cols = std::move(output_cols);
   plan.scan_filters = std::move(scan_predicates);
   plan.valid = true;
+
   return plan;
 }
 
@@ -988,11 +989,14 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
   assert(plan.valid);
 
   // Phase 1: Build hash tables and select probe method for each join step
-  for (auto &step : plan.join_steps) {
+  for (size_t si = 0; si < plan.join_steps.size(); si++) {
+    auto &step = plan.join_steps[si];
     step.ht = std::make_unique<PipelineJoinStep::HashJoinTable>();
     step.ht->Build(*step.build_table, step.build_key_col, step.build_filters);
     step.ht->TryBuildDirectMap();
     step.probe_method = step.ht->SelectProbeMethod();
+    if (!step.is_semi && !step.build_key_unique)
+      step.probe_method = ProbeMethod::HASH;
     step.ht->ComputePrefetchDistance();
   }
 
