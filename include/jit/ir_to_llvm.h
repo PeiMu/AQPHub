@@ -293,10 +293,6 @@ public:
                                 const ir_sql_converter::AQPStmt *proj_node,
                                 const std::vector<ColSchema> &in_schema,
                                 JITTrackerHandle &tracker);
-  AQPPipelineKernelFn CompilePipelineKernel(
-      const middleware::storage::PipelineKernelPlan &plan,
-      JITTrackerHandle &tracker);
-
   void SetPrefetch(bool enable, int distance = 8) {
     prefetch_ = enable;
     prefetch_distance_ = distance;

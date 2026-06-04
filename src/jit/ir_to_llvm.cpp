@@ -4735,13 +4735,6 @@ AQPPipelineFn IrToLlvmCompiler::CompilePipeline(
   return CompilePipeline(filter_node, proj_node, in_schema);
 }
 
-AQPPipelineKernelFn IrToLlvmCompiler::CompilePipelineKernel(
-    const middleware::storage::PipelineKernelPlan &plan,
-    JITTrackerHandle &tracker) {
-  TrackerGuard g(impl_->current_tracker, tracker);
-  return CompilePipelineKernel(plan);
-}
-
 static std::string BuildCacheContent(const std::string &tag,
                                      const std::vector<ColSchema> &schema,
                                      const std::string &extra = "") {
