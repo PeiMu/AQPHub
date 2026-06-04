@@ -1,0 +1,113 @@
+LLVM Pass Analysis: LingoDB vs AQP Middleware
+==============================================
+
+Context
+-------
+Both projects JIT-compile query operators to native code via LLVM ORC JIT.
+The generated LLVM IR is structurally simple: flat loops over column arrays
+with pointer arithmetic, conditionals, and hash computation. No complex
+control flow, no allocas (SROA targets), no call chains (inliner targets),
+no auto-vectorizable loop nests.
+
+LingoDB: Hand-Picked 4 Passes
+------------------------------
+File: lingo-db/src/execution/LLVMBackends.cpp:565-581
+
+  static llvm::Error performDefaultLLVMPasses(llvm::Module* module) {
+      llvm::legacy::FunctionPassManager funcPM(module);
+      funcPM.add(llvm::createInstructionCombiningPass());
+      funcPM.add(llvm::createReassociatePass());
+      funcPM.add(llvm::createGVNPass());
+      funcPM.add(llvm::createCFGSimplificationPass());
+      funcPM.doInitialization();
+      for (auto& func : *module) {
+          if (!func.hasOptNone()) funcPM.run(func);
+      }
+      funcPM.doFinalization();
+      return llvm::Error::success();
+  }
+
+Plus CodeGenOptLevel::Default (= O2 for register allocation and instruction
+selection).
+
+AQP Middleware: Full Default Pipeline
+--------------------------------------
+File: src/jit/ir_to_llvm.cpp:4655-4667
+
+  PassBuilder pb;
+  ...
+  ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm_opt);
+  mpm.run(mod, mam);
+
+At O1 this runs ~40 passes; at O2 ~60 passes.
+
+Pass-by-Pass Relevance for JIT'd Query Functions
+-------------------------------------------------
+Pass                             In lingo-db?  Relevance
+-------------------------------  ------------  ----------------------------------
+InstCombine                      YES           HIGH - algebraic simplification, constant folding
+Reassociate                      YES           MEDIUM - reorders commutative ops for CSE
+GVN                              YES           HIGH - eliminates redundant loads, CSE
+SimplifyCFG                      YES           HIGH - dead block elimination, branch folding
+SROA                             no            LOW - JIT code uses raw pointers, not allocas
+LoopVectorize                    no            NONE - loops are SIMD-explicit or too irregular
+SLPVectorize                     no            NONE - same reason
+LoopUnroll                       no            LOW - chunk loops are short (2048 rows)
+LICM                             no            MEDIUM - moves invariants out of loops, but
+                                                codegen already places them outside
+Inliner                          no            LOW - JIT fns don't call other JIT fns
+CorrelatedValuePropagation       no            LOW
+MemCpyOpt                        no            LOW
+DeadStoreElimination             no            LOW
+TailCallElimination              no            NONE
+JumpThreading                    no            LOW
+ADCE (Aggressive DCE)            no            LOW - little dead code in generated IR
+IndVarSimplify                   no            LOW
+LoopRotate                       no            LOW
+LoopIdiom                        no            NONE
+MergedLoadStoreMotion            no            LOW
+~20 more passes at O2...         no            Negligible for generated query code
+
+Recommendation
+--------------
+Replace buildPerModuleDefaultPipeline with a custom 4-pass pipeline matching
+lingo-db. Expected compilation time reduction: 3-5x at O1, 5-8x at O2.
+Execution time should be equivalent (the 4 passes cover everything that
+matters for our IR shape).
+
+Implementation (new-pass-manager API):
+
+  static void OptimiseModule(Module &mod, OptLevel opt) {
+    if (opt == OptLevel::O0) return;
+
+    PassBuilder pb;
+    LoopAnalysisManager lam;
+    FunctionAnalysisManager fam;
+    CGSCCAnalysisManager cgam;
+    ModuleAnalysisManager mam;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    FunctionPassManager fpm;
+    fpm.addPass(InstCombinePass());
+    fpm.addPass(ReassociatePass());
+    fpm.addPass(GVNPass());
+    fpm.addPass(SimplifyCFGPass());
+
+    ModulePassManager mpm;
+    mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.run(mod, mam);
+  }
+
+If opt_level_ distinctions are still desired, consider:
+- O1: the 4 passes above (matches lingo-db)
+- O2: add LICM before GVN (marginal benefit for loops with invariant loads)
+- O3: full buildPerModuleDefaultPipeline (only if compilation time is not a concern)
+
+Validation plan:
+1. Run JOB benchmark with current O1 pipeline, record compilation + execution times
+2. Switch to 4-pass pipeline, re-run
+3. Compare wall times (expect compilation time improvement, execution parity)
