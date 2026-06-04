@@ -47,6 +47,10 @@ public:
     return tables_;
   }
 
+  const std::unordered_map<std::string, CSRIndex> &GetCSRMap() const {
+    return csr_indexes_;
+  }
+
   const DimensionCache *GetDimensionCache() const {
     return loaded_ ? &dim_cache_ : nullptr;
   }

@@ -1938,3 +1938,100 @@ Real elapsed wall time comparison:
 
 CSR/FlatTable build total: 3,291 + 934 + 360 = **4,585ms** (79.2% of MW overhead).
 To reach wall-time parity with DuckDB none-split (~9,532ms), need ~3,992ms MW reduction.
+
+---
+
+## Iteration 32: Pipeline Kernel + Phase 1 Probe Optimizations (DONE)
+
+**Goal**: Replace query-kernel CSR-based joins with pipeline-kernel hash-based joins. Eliminate all runtime CSR build overhead, DuckDB SQL generation, and DuckDB JIT compilation for kernel-eligible iterations. Then optimize hash probe throughput with adaptive join methods, direct-mapped arrays, and unique key skip.
+
+### Part 1: Pipeline Kernel (Step A)
+
+Replaced the query-level kernel (`AnalyzeSubIR` + `ExecuteSubQueryPlan`, CSR-based) with a pipeline-level kernel (`AnalyzePipelineKernel` + `ExecutePipelineKernel`, hash-based) for `--jit-level=pipeline`.
+
+**Key design**:
+- `AnalyzePipelineKernel`: picks scan table (largest by row count), BFS orders join steps, each non-scan leaf → `PipelineJoinStep` with build table, key columns, filters, semi/inner flag
+- `ExecutePipelineKernel`: builds chained `HashJoinTable` per step (Fibonacci hash, power-of-2 capacity, ~50% load factor), scans with OpenMP, semi-joins use `Contains()`, inner-joins use iterative DFS (`ProbeStepsIterative`)
+- No CSR built on output: `RegisterKernelResult(result, name, false)` — future iterations build hash tables on temps
+
+**LLVM JIT for pipeline kernel — failed, removed**: A/B test showed LLVM O1 was 24% slower on execution than interpreted C++ (GCC -O2). 107/113 queries regressed. Causes: poor LLVM O1 code quality, excessive memory indirection, missing auto-vectorization. `CompilePipelineKernel()` and all LLVM pipeline JIT code removed. Compile time dropped 16,116ms → 238ms.
+
+### Part 2: Phase 1 Probe Optimizations (A+B+C)
+
+**A. Adaptive join method** — after HT build, select probe method by HT size:
+- SKIP (size=0), POINT (size=1), LINEAR (size 2-15), HASH (size 16+)
+
+**B. Direct-mapped array** — when `max_key - min_key < 10,000`:
+- `uint32_t direct_map[range]`, probe = `direct_map[key - min]`, no hash
+- Fits in L1 (< 40KB). Triggered for dimension tables (kind_type, company_type, role_type, info_type)
+
+**C. Unique key skip** — for inner joins where build key is PK:
+- Detected via CSR metadata (`csr.pk_table == build_table && csr.pk_column == build_col`)
+- `ProbeStepsIterative` uses single `Lookup()` instead of chain iteration
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/kernel/pipeline_kernel.cpp` | New: `AnalyzePipelineKernel`, `ExecutePipelineKernel`, `HashJoinTable` with adaptive probe methods, `ProbeStepsIterative` |
+| `include/kernel/pipeline_kernel.h` | New: `PipelineKernelPlan`, `PipelineJoinStep`, `ProbeMethod` enum, `build_key_unique` field |
+| `include/storage/storage_plan.h` | Added `GetCSRMap()` accessor |
+| `src/split/ir_query_splitter.cpp` | Pipeline kernel routing for `--jit-level=pipeline` |
+| `src/jit/ir_to_llvm.cpp` | Removed `CompilePipelineKernel()`, `AQPPipelineKernelView`, all pipeline JIT code |
+| `include/jit/ir_to_llvm.h` | Removed pipeline JIT declarations |
+| `include/jit/aqp_jit_abi.h` | Removed pipeline JIT ABI types |
+
+### Correctness
+
+All 113 JOB queries pass (diff against golden, 2 expected tie-breaking diffs in 7b/8b).
+
+### Performance
+
+Data: `measure/job_result/duckdb_node-based_pipeline_o1_none_breakdown_time_log.csv`
+
+| Column | Step 7.2 (ms) | Pipeline+Phase1 (ms) | Diff |
+|--------|-------------:|---------------------:|-----:|
+| prepare_middleware | 8.9 | 8.0 | -0.9 |
+| extract_next_sub-IR | — | 700.6 | — |
+| generate_sub-SQL | 221.7 | 300.2 | +78.5 |
+| jit_compile | 16,028.0 | 152.8 | -15,875 |
+| execute_sub-SQL | — | 9,987.7 | — |
+| extra_materialization | 36.5 | 31.3 | -5.2 |
+| update_IR | 17.4 | 14.4 | -3.0 |
+| generate_final_sub_sql | 470.0 | 524.4 | +54.4 |
+| jit_compile_final | 88.5 | 85.0 | -3.5 |
+| final_exe | 1,473.2 | 1,536.3 | +63.1 |
+| show_output | 5.4 | 2.4 | -3.0 |
+| **MW Overhead** | **6,467** | **1,581** | **-4,886** |
+| **Execution** | **7,140** | **11,524** | **+4,384** |
+| **JIT Compile** | **596** | **238** | **-358** |
+| **Wall Time** | **14,202** | **13,343** | **-859** |
+
+Note: Step 7.2 used query-kernel (CSR O(1) lookups) with 7,140ms execution. Pipeline kernel uses hash probes → execution increased to 11,524ms. But MW overhead dropped 4,886ms (CSR build eliminated, DuckDB SQL gen eliminated, DuckDB JIT eliminated).
+
+### Phase 1 probe optimization impact
+
+Compared to unoptimized pipeline kernel (`pk_jit_ab/interpreted.csv` baseline, which included 16,116ms wasted compile time):
+- Execution: 25,900ms → 11,524ms (2.25x improvement)
+- 87 queries improved (>2%), 17 regressed, 9 neutral
+- Top improvements: 3a/3b/3c: 4,400ms → 65ms each (66-988x) — DIRECT method on dimension tables
+- Top regressions: 8c +96ms (0.75x), 6a/6e +28ms each — needs investigation
+
+### Current state
+
+| Config | Execution | MW Overhead | JIT Compile | Wall | vs DuckDB baseline |
+|--------|----------:|------------:|------------:|-----:|-------------------:|
+| DuckDB baseline (none-split/none-jit) | 9,529ms | 3ms | — | 9,532ms | — |
+| Pipeline kernel + Phase 1 | 11,524ms | 1,581ms | 238ms | 13,343ms | +40% wall |
+
+**Gap**: 3,811ms (40%). Execution +1,995ms over baseline, MW overhead 1,581ms, compile 238ms.
+
+**Top 15 queries by wall time**: 8c(396), 9d(319), 17a(286), 29c(239), 19a(237), 19d(236), 30a(230), 16b(224), 24b(213), 7c(212), 19c(211), 24a(207), 22d(206), 22a(204), 29a(202).
+
+### Next steps
+
+1. **Phase 3 (E) — Software prefetch**: Prefetch HT buckets N rows ahead for HASH probe. Est. -200 to -500ms.
+2. **Phase 4 (D) — Vectorized batch + SIMD**: Batch-at-a-time with AVX2. Est. -1,000 to -2,000ms.
+3. **Step F — Additional**: Dimension-partitioned flat tables, dictionary encoding, better split strategy.
+
+See `kernel_path_opt.md` for full design details. Query-kernel CSR optimizations (superseded) in `query_jit_opt.md`.

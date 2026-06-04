@@ -671,21 +671,6 @@ bool IRQuerySplitter::ExecuteOneIteration(
         }
 
         double compile_ms = 0.0;
-#if defined(HAVE_LLVM) && defined(HAVE_DUCKDB)
-        if (duckdb_adapter_) {
-          auto compile_start = std::chrono::high_resolution_clock::now();
-          auto *jit = duckdb_adapter_->GetJitCompiler();
-          auto jit_fn = jit->CompilePipelineKernel(pipeline_plan);
-          compile_ms = std::chrono::duration<double, std::milli>(
-              std::chrono::high_resolution_clock::now() - compile_start).count();
-          if (config_.enable_debug_print) {
-            std::cout << "[PK-JIT] compile " << compile_ms << "ms -> "
-                      << (jit_fn ? "OK" : "FALLBACK") << std::endl;
-          }
-          if (jit_fn)
-            pipeline_plan.compiled_fn = jit_fn;
-        }
-#endif
 
         if (config_.enable_timing) {
           std::ofstream log_file;
@@ -693,6 +678,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
           log_file << std::fixed << std::setprecision(3)
                    << analyze_ms << ", " << compile_ms << ", ";
           log_file.close();
+          timer = chrono_tic();
         }
 
         std::chrono::high_resolution_clock::time_point kernel_start;

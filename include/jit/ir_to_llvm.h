@@ -258,17 +258,6 @@ public:
       const std::vector<int> &lhs_key_chunk_idxs = {},
       const std::vector<int32_t> &lhs_key_dtypes = {});
 
-  /**
-   * Level 4: Compile a pipeline kernel probe loop.
-   * Generates a single function that fuses scan filters → hash probe →
-   * join filters → output emission for one PipelineKernelPlan.
-   * The plan must have HTs already built (ht->size_ populated).
-   *
-   * Returns function pointer, or nullptr if compilation fails (caller
-   * falls back to interpreted ExecutePipelineKernel).
-   */
-  AQPPipelineKernelFn CompilePipelineKernel(
-      const middleware::storage::PipelineKernelPlan &plan);
 
   void SetPrefetch(bool enable, int distance = 8) {
     prefetch_ = enable;

@@ -30,7 +30,7 @@ Measurement data is in /home/pei/Project/AQP_middleware/measure/job_result/. We 
 
 ### 1. Read relevant source code for the optimization you're implementing
 
-### 2. Check if we need use plan mode to design code implementation. Then make the code change and write unit gtests in unit_test/ dir. If add new modules or code changes related to breakdown timer, decide a reasonable timer position and ask user to confirm. Confirm analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py still work. Otherwise, update the analyze_middleware_breakdown and/or analyze_none_split_breakdown, and confirm with the user.
+### 2. Check if we need use plan mode to design code implementation. Then make the code change and write unit gtests in unit_test/ dir. If add new modules or code changes related to breakdown timer, decide a reasonable timer position and ask user to confirm. Confirm the timer functions cover everything and no overlap. Confirm analyze_middleware_breakdown, analyze_none_split_breakdown in /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py still work. Otherwise, update the analyze_middleware_breakdown and/or analyze_none_split_breakdown, and confirm with the user.
 
 ### 3. Build and quick-test
 Build:
@@ -105,51 +105,50 @@ Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/fi
 3. **DuckDB EXPLAIN ANALYZE** — Operator-level cardinality + time. Use selectively (adds overhead).
 4. **`perf record -e cache-misses` / `perf mem`** — Only if `perf stat` shows memory-bound. Pinpoints which data structures cause cache misses.
 
-## Current Status (Iter 30 — Steps 1-6.5 DONE, wall time optimization phase)
+## Current Status (Iter 32 — Pipeline Kernel + Phase 1 Probe Optimizations DONE)
 
-See `jit_optimization_claude.md` for full per-iteration history (Iter 1-30).
+See `jit_optimization_claude.md` for full per-iteration history (Iter 0-32).
 
-**Performance** (step_7_2, in-memory, warm, avg of 10 runs):
+**Performance** (pipeline kernel + Phase 1, in-memory, warm, avg of 10 runs):
 
 | Config | Execution | MW Overhead | JIT Compile | Wall | vs baseline |
 |--------|----------:|------------:|------------:|-----:|------------:|
 | none-split / none-jit (baseline) | 9,529ms | 3ms | — | 9,532ms | — |
-| node-based / pipeline-jit | 7,140ms | 6,467ms | 596ms | 14,202ms | +49% wall |
+| node-based / pipeline-jit (Phase 1) | 11,524ms | 1,581ms | 238ms | 13,343ms | +40% wall |
 
-Execution is 25% faster than baseline, but MW overhead (6,467ms) makes wall time 49% worse. The bottleneck is now MW overhead, not execution.
+Execution is 21% slower than baseline (hash probes vs DuckDB vectorized), but MW overhead dropped from 6,467ms to 1,581ms. Pipeline kernel handles ALL kernel-eligible iterations (no DuckDB fallback). LLVM JIT for pipeline kernel removed (was 24% slower than interpreted C++).
 
-**MW overhead breakdown** (6,467ms):
-- CSR build on temp results: 3,291ms (50.9%)
-- Lazy FlatTable+CSR for DuckDB fallback: 1,752ms (27.1%) — in generate_sub-SQL + generate_final columns
-- SplitIR traversal: 661ms (10.2%)
-- DuckDB JIT compile: 596ms (9.2%)
-- Other: 167ms (2.6%)
+**Execution breakdown**: 9,988ms sub-query + 1,536ms final = 11,524ms total.
 
-**Storage plan components** (Steps 1-6, all DONE): Flat column arrays, base CSR indexes, runtime CSR on temps, dimension cache, sorted indices, inverted indices, LIKE support. See `storage_plan_design.md` for design details.
+**MW overhead breakdown** (1,581ms):
+- extract_next_sub-IR: 701ms (44.3%)
+- generate_sub-SQL (analyze): 300ms (19.0%)
+- generate_final_sub_sql: 524ms (33.1%)
+- Other (materialize + update_IR + prepare): 56ms (3.5%)
 
-**What works**: Query-level kernel handles ~69% of sub-query iterations via CSR-based joins on flat arrays. ~31% fall back to DuckDB (patterns with 2+ base tables, missing CSR relationships, complex projections).
+**Storage plan components** (Steps 1-6, all DONE): Flat column arrays, base CSR indexes, dimension cache, sorted indices, inverted indices, LIKE support. See `storage_plan_design.md` for design details.
+
+**What works**: Pipeline kernel handles ~69% of iterations via hash build/probe on flat arrays. ~31% fall back to DuckDB with expr-jit. Phase 1 probe optimizations (adaptive join, direct-mapped array, unique key skip) improved execution 2.25x vs unoptimized pipeline kernel.
 
 ## Next Steps — Wall Time Optimization
 
-**Full plan with analysis, cost breakdown, and design details**: `kernel_path_opt.md`
+**Full plan**: `kernel_path_opt.md` (pipeline-jit optimizations). Query-kernel CSR optimizations (superseded): `query_jit_opt.md`.
 
-**Goal**: Reduce wall time from 14,202ms to below 9,532ms (DuckDB baseline).
+**Goal**: Reduce wall time from 13,343ms to below 9,532ms (DuckDB baseline). Gap: 3,811ms.
+
+**Breakdown of gap**: execution 11,524ms vs 9,529ms baseline (+1,995ms) + MW overhead 1,581ms + compile 238ms.
 
 Implementation order (from `kernel_path_opt.md`):
 
-1. **Step A — Pipeline-level kernel** (est. -2,000 to -3,000ms): Compile DuckDB fallback iterations into native code with hash join on flat arrays, eliminating DuckDB SQL generation (966ms), DuckDB JIT (596ms), and lazy FlatTable+CSR build (1,752ms). Handles the 31% fallback iterations.
+1. **Step A — Pipeline-level kernel** — DONE. Eliminated CSR build, DuckDB SQL gen, DuckDB JIT for fallback iterations. MW overhead 6,467ms → 1,581ms.
 
-2. **Step B — Sparse CSR for small temps** (est. -1,500 to -2,000ms): Use hash-based CSR for temps < 50K rows. Eliminates 19-31MB memset per CSR build on small temps (90%+ of iterations).
+2. **Phase 1 (A+B+C) — Adaptive join + direct map + unique key skip** — DONE. Execution 2.25x faster (25,900ms → 11,524ms). 87/113 queries improved.
 
-3. **Step C — Byte-map for semi-join patterns** (est. -500ms): When runtime CSR is only used for existence checks (1-column temp), replace with byte-map.
+3. **Phase 3 (E) — Software prefetch** (est. -200 to -500ms): Prefetch HT buckets N rows ahead for HASH probe on larger HTs.
 
-4. **Step D — Skip last-iteration CSR** (est. -500ms): Don't build CSR on last iteration's output.
+4. **Phase 4 (D) — Vectorized batch + SIMD** (est. -1,000 to -2,000ms): Batch-at-a-time processing with AVX2 for hash computation, key comparison, filter evaluation.
 
-5. **Step E — Multi-threaded pipeline** (est. -300ms): Overlap CSR build with next iteration's extract+analyze.
-
-6. **Step F — Kernel JIT compilation** (est. -300ms): LLVM-compile SubQueryPlan to eliminate interpreter overhead.
-
-7. **Step G — Additional**: Dimension-partitioned flat tables, dictionary encoding, better split strategy.
+5. **Step F — Additional**: Dimension-partitioned flat tables, dictionary encoding, better split strategy.
 
 ## What I Expect
 - Follow `kernel_path_opt.md` step by step, verify each step's effect independently via breakdown measurement.
