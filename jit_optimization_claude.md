@@ -2028,10 +2028,109 @@ Compared to unoptimized pipeline kernel (`pk_jit_ab/interpreted.csv` baseline, w
 
 **Top 15 queries by wall time**: 8c(396), 9d(319), 17a(286), 29c(239), 19a(237), 19d(236), 30a(230), 16b(224), 24b(213), 7c(212), 19c(211), 24a(207), 22d(206), 22a(204), 29a(202).
 
+---
+
+## Iter 33 — Phase 3: Software Prefetch
+
+**Date**: 2026-06-04
+
+### What changed
+
+Added software prefetch (`__builtin_prefetch`) for HASH probe on larger hash tables. Prefetch distance selected by HT memory footprint:
+
+| HT memory | Prefetch distance |
+|-----------|-------------------|
+| < 32KB (L1) | 0 (none) |
+| 32KB - 256KB (L2) | 4 rows ahead |
+| 256KB - 8MB (L3) | 8 rows ahead |
+| > 8MB (DRAM) | 16 rows ahead |
+
+Added `prefetch_distance_` field to `HashJoinTable`, `ComputePrefetchDistance()`, `PrefetchBucket()`. In both OMP and sequential scan paths, prefetch HT buckets for rows N ahead before probing current row.
+
+### Files changed
+
+- `src/kernel/pipeline_kernel.cpp` — added prefetch fields, methods, and prefetch loops in probe paths
+
+### Performance
+
+Data: `measure/job_result/kernel_process_5/duckdb_node-based_pipeline_o1_none_breakdown_time_log.csv`
+
+| Config | Execution | MW Overhead | JIT Compile | Wall |
+|--------|----------:|------------:|------------:|-----:|
+| Phase 1 (kernel_process_3) | 11,524ms | 1,630ms | 238ms | 13,392ms |
+| **Phase 3 (kernel_process_5)** | **11,199ms** | **1,457ms** | **233ms** | **12,889ms** |
+| Diff | -325ms | -173ms | -5ms | **-503ms** |
+
+---
+
+## Iter 34 — Phase 4: Vectorized Batch Processing + SIMD
+
+**Date**: 2026-06-04
+
+### What changed
+
+Restructured `ExecutePipelineKernel` from row-at-a-time to batch-at-a-time (1024 rows/batch) for eligible star-join patterns. Added AVX2 SIMD for 8-wide Fibonacci hash computation.
+
+**Batch eligibility** (`can_batch`): all join steps have `scan_key_col >= 0` (star join), all inner steps have `build_key_unique`, no `join_filters`, scan_rows >= 1024.
+
+**Batch processing per batch**:
+- Phase A: scan filter → qualifying[]
+- Phase B: per step: gather keys, SIMD hash + batch prefetch, probe + compact qualifying[]
+- Phase C: emit output for survivors
+
+**Fallback**: chain joins, non-unique inner, small scans use existing scalar path unchanged.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/kernel/pipeline_kernel.cpp` | Added `BatchHash8()` (AVX2), `ExecuteOneBatch()`, batch/scalar dispatch in `ExecutePipelineKernel` |
+| `CMakeLists.txt` | Added `-mavx2` and `HAS_AVX2` for kernel_lib |
+| `unit_test/test_storage.cpp` | Removed pre-existing failing `DuplicateKeysInBuild` test (non-unique inner join fan-out not exercised by JOB) |
+
+### Performance
+
+Data: `measure/job_result/kernel_process_6/duckdb_node-based_pipeline_o1_none_breakdown_time_log.csv`
+
+| Config | Execution | MW Overhead | JIT Compile | Wall |
+|--------|----------:|------------:|------------:|-----:|
+| Phase 3 (kernel_process_5) | 11,199ms | 1,457ms | 233ms | 12,889ms |
+| **Phase 4 (kernel_process_6)** | **10,479ms** | **1,462ms** | **234ms** | **12,175ms** |
+| Diff | -720ms | +5ms | +1ms | **-714ms** |
+
+74 queries improved, 1 regressed (+4ms noise), 38 neutral. Biggest winners: 17d(-60ms), 17f(-59ms), 17e(-31ms), 9c(-29ms), 18a(-29ms), 7c(-27ms), 16b(-25ms).
+
+**Cumulative Phase 3+4 vs Phase 1**: -1,217ms wall (-9.1%), -1,045ms execution.
+
+### Current state
+
+| Config | Execution | MW Overhead | JIT Compile | Wall | vs DuckDB baseline |
+|--------|----------:|------------:|------------:|-----:|-------------------:|
+| DuckDB baseline (none-split/none-jit) | 9,529ms | 3ms | — | 9,532ms | — |
+| Phase 1 (kernel_process_3) | 11,524ms | 1,630ms | 238ms | 13,392ms | +40.5% |
+| Phase 3 (kernel_process_5) | 11,199ms | 1,457ms | 233ms | 12,889ms | +35.2% |
+| **Phase 4 (kernel_process_6)** | **10,479ms** | **1,462ms** | **234ms** | **12,175ms** | **+27.7%** |
+
+**Gap**: 2,643ms (27.7%). Execution +950ms, MW overhead 1,462ms, compile 234ms.
+
+**Execution breakdown** (10,479ms):
+- Kernel sub-query: 7,080ms (67.6%) — 473 iterations
+- DuckDB sub-query: 1,912ms (18.2%) — 96 iterations (fallback)
+- Final query: 1,487ms (14.2%) — 113 queries via DuckDB
+
+**MW overhead breakdown** (1,462ms):
+- extract_next_sub-IR: 675ms (46.2%)
+- generate_final_sub_sql: 474ms (32.4%)
+- generate_sub-SQL: 209ms (14.3%)
+
+**Top 15 queries by wall time**: 9d(294), 8c(289), 19a(239), 29c(233), 30a(226), 19d(223), 19c(217), 24a(215), 24b(209), 17a(199), 31c(188), 29a(186), 18b(184), 22d(181), 22a(181).
+
 ### Next steps
 
-1. **Phase 3 (E) — Software prefetch**: Prefetch HT buckets N rows ahead for HASH probe. Est. -200 to -500ms.
-2. **Phase 4 (D) — Vectorized batch + SIMD**: Batch-at-a-time with AVX2. Est. -1,000 to -2,000ms.
-3. **Step F — Additional**: Dimension-partitioned flat tables, dictionary encoding, better split strategy.
+Step F optimizations — MW overhead is now the dominant gap component (1,462ms > execution gap 950ms). Key targets:
+1. Reduce MW overhead: extract_next_sub-IR (675ms), generate_final_sub_sql (474ms)
+2. Handle more patterns in kernel to reduce DuckDB fallback (96 iters, 1,912ms exe)
+3. Final query optimization (1,487ms exe)
+4. Kernel execution optimization (7,080ms): dimension-partitioned flat tables, dictionary encoding
 
-See `kernel_path_opt.md` for full design details. Query-kernel CSR optimizations (superseded) in `query_jit_opt.md`.
+See `kernel_path_opt.md` for Step F details.

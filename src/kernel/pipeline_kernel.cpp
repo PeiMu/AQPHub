@@ -15,6 +15,9 @@
 #ifdef HAVE_OPENMP
 #include <omp.h>
 #endif
+#ifdef HAS_AVX2
+#include <immintrin.h>
+#endif
 
 using namespace ir_sql_converter;
 
@@ -37,6 +40,7 @@ struct PipelineJoinStep::HashJoinTable {
   std::vector<uint32_t> row_ids_;
   uint32_t mask_ = 0;
   uint32_t size_ = 0;
+  uint32_t prefetch_distance_ = 0;
 
   // Direct-map for small key ranges (Phase 2/B optimization)
   std::vector<uint32_t> direct_map_;
@@ -123,6 +127,21 @@ struct PipelineJoinStep::HashJoinTable {
     if (size_ == 1) return ProbeMethod::POINT;
     if (size_ <= 15) return ProbeMethod::LINEAR;
     return ProbeMethod::HASH;
+  }
+
+  void ComputePrefetchDistance() {
+    if (size_ == 0) { prefetch_distance_ = 0; return; }
+    uint64_t mem = static_cast<uint64_t>(size_) * 12 +
+                   static_cast<uint64_t>(mask_ + 1) * 4;
+    if (mem < 32 * 1024)            prefetch_distance_ = 0;   // fits L1
+    else if (mem < 256 * 1024)      prefetch_distance_ = 4;   // L2
+    else if (mem < 8ULL * 1024 * 1024) prefetch_distance_ = 8;   // L3
+    else                            prefetch_distance_ = 16;  // DRAM
+  }
+
+  void PrefetchBucket(int32_t key) const {
+    uint32_t h = (static_cast<uint32_t>(key) * 2654435761u) & mask_;
+    __builtin_prefetch(&buckets_[h], 0, 1);
   }
 
   // --- Contains variants by probe method ---
@@ -800,6 +819,168 @@ static void ProbeStepsIterative(
   }
 }
 
+// ============================================================================
+// Vectorized batch processing (Phase 4)
+// ============================================================================
+
+static constexpr int BATCH_SIZE = 1024;
+
+#ifdef HAS_AVX2
+static void BatchHash8(const int32_t *keys, uint32_t *hashes,
+                       int count, uint32_t mask) {
+  const __m256i vfib = _mm256_set1_epi32(static_cast<int32_t>(2654435761u));
+  const __m256i vmask = _mm256_set1_epi32(static_cast<int32_t>(mask));
+  int i = 0;
+  for (; i + 8 <= count; i += 8) {
+    __m256i vk = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i *>(keys + i));
+    __m256i vh = _mm256_mullo_epi32(vk, vfib);
+    vh = _mm256_and_si256(vh, vmask);
+    _mm256_storeu_si256(reinterpret_cast<__m256i *>(hashes + i), vh);
+  }
+  for (; i < count; i++) {
+    hashes[i] = (static_cast<uint32_t>(keys[i]) * 2654435761u) & mask;
+  }
+}
+#endif
+
+static void ExecuteOneBatch(
+    const PipelineKernelPlan &plan,
+    uint64_t batch_start, uint64_t batch_end,
+    FlatTableBuilder &builder) {
+
+  const size_t nsteps = plan.join_steps.size();
+  const bool has_scan_filters = !plan.scan_filters.empty();
+
+  alignas(32) uint32_t qualifying[BATCH_SIZE];
+  alignas(32) int32_t keys[BATCH_SIZE];
+#ifdef HAS_AVX2
+  alignas(32) uint32_t hashes[BATCH_SIZE];
+#endif
+  uint32_t matched_rows[16][BATCH_SIZE];
+
+  int inner_step_indices[16];
+  int n_inner_before[16];
+  int n_inner_total = 0;
+  for (size_t si = 0; si < nsteps; si++) {
+    n_inner_before[si] = n_inner_total;
+    if (!plan.join_steps[si].is_semi)
+      inner_step_indices[n_inner_total++] = static_cast<int>(si);
+  }
+
+  // Phase A: Scan filter → qualifying[]
+  int n_qual = 0;
+  if (has_scan_filters) {
+    for (uint64_t r = batch_start; r < batch_end; r++) {
+      bool pass = true;
+      for (const auto &f : plan.scan_filters) {
+        if (!f(*plan.scan_table, r)) { pass = false; break; }
+      }
+      if (pass) qualifying[n_qual++] = static_cast<uint32_t>(r);
+    }
+  } else {
+    int count = static_cast<int>(batch_end - batch_start);
+    for (int i = 0; i < count; i++)
+      qualifying[i] = static_cast<uint32_t>(batch_start) + i;
+    n_qual = count;
+  }
+  if (n_qual == 0) return;
+
+  // Phase B: Probe each join step, compact qualifying[]
+  for (size_t si = 0; si < nsteps && n_qual > 0; si++) {
+    const auto &step = plan.join_steps[si];
+    const auto *ht = step.ht.get();
+    const ProbeMethod method = step.probe_method;
+    const int key_col = step.scan_key_col;
+
+    // B.1: Gather keys
+    const auto *col_data = reinterpret_cast<const int32_t *>(
+        plan.scan_table->columns[key_col].data.get());
+    for (int i = 0; i < n_qual; i++)
+      keys[i] = col_data[qualifying[i]];
+
+    // B.2: SIMD hash + batch prefetch (HASH method with large HT)
+    if (method == ProbeMethod::HASH && ht->prefetch_distance_ > 0) {
+#ifdef HAS_AVX2
+      BatchHash8(keys, hashes, n_qual, ht->mask_);
+      for (int i = 0; i < n_qual; i++)
+        __builtin_prefetch(&ht->buckets_[hashes[i]], 0, 1);
+#else
+      for (int i = 0; i < n_qual; i++)
+        ht->PrefetchBucket(keys[i]);
+#endif
+    }
+
+    // B.3: Probe + compact
+    int new_n_qual = 0;
+    const int n_ib = n_inner_before[si];
+
+    if (step.is_semi) {
+      for (int i = 0; i < n_qual; i++) {
+        if (ht->Contains(keys[i], method)) {
+          if (new_n_qual != i) {
+            qualifying[new_n_qual] = qualifying[i];
+            for (int j = 0; j < n_ib; j++)
+              matched_rows[inner_step_indices[j]][new_n_qual] =
+                  matched_rows[inner_step_indices[j]][i];
+          }
+          new_n_qual++;
+        }
+      }
+    } else {
+      for (int i = 0; i < n_qual; i++) {
+        uint32_t rid = ht->Lookup(keys[i], method);
+        if (rid != PipelineJoinStep::HashJoinTable::EMPTY) {
+          if (new_n_qual != i) {
+            qualifying[new_n_qual] = qualifying[i];
+            for (int j = 0; j < n_ib; j++)
+              matched_rows[inner_step_indices[j]][new_n_qual] =
+                  matched_rows[inner_step_indices[j]][i];
+          }
+          matched_rows[si][new_n_qual] = rid;
+          new_n_qual++;
+        }
+      }
+    }
+    n_qual = new_n_qual;
+  }
+  if (n_qual == 0) return;
+
+  // Phase C: Emit output
+  for (int i = 0; i < n_qual; i++) {
+    uint32_t scan_row = qualifying[i];
+    for (size_t c = 0; c < plan.output_cols.size(); c++) {
+      const auto &out = plan.output_cols[c];
+      if (out.source == KernelOutputCol::FROM_SCAN) {
+        const auto &col = plan.scan_table->columns[out.col_idx];
+        if (col.type == FlatColumnType::INT32)
+          builder.AppendInt(c, col.GetInt32(scan_row));
+        else {
+          uint32_t len;
+          const char *ptr = col.GetVarchar(scan_row, len);
+          builder.AppendStr(c, ptr, len);
+        }
+      } else {
+        uint32_t build_row = matched_rows[out.step_idx][i];
+        const auto &col =
+            plan.join_steps[out.step_idx].build_table->columns[out.col_idx];
+        if (col.type == FlatColumnType::INT32)
+          builder.AppendInt(c, col.GetInt32(build_row));
+        else {
+          uint32_t len;
+          const char *ptr = col.GetVarchar(build_row, len);
+          builder.AppendStr(c, ptr, len);
+        }
+      }
+    }
+    builder.FinishRow();
+  }
+}
+
+// ============================================================================
+// ExecutePipelineKernel
+// ============================================================================
+
 std::unique_ptr<FlatTable> ExecutePipelineKernel(
     PipelineKernelPlan &plan,
     const std::string &table_name) {
@@ -811,18 +992,89 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
     step.ht->Build(*step.build_table, step.build_key_col, step.build_filters);
     step.ht->TryBuildDirectMap();
     step.probe_method = step.ht->SelectProbeMethod();
+    step.ht->ComputePrefetchDistance();
   }
 
   uint64_t scan_rows = plan.scan_table->row_count;
   const bool has_scan_filters = !plan.scan_filters.empty();
   const size_t nsteps = plan.join_steps.size();
 
+  // Classify: can we use the batch path?
+  bool can_batch = (scan_rows >= static_cast<uint64_t>(BATCH_SIZE));
+  for (size_t si = 0; can_batch && si < nsteps; si++) {
+    const auto &step = plan.join_steps[si];
+    if (step.scan_key_col < 0) can_batch = false;
+    if (!step.is_semi && !step.build_key_unique) can_batch = false;
+    if (!step.join_filters.empty()) can_batch = false;
+  }
+
+  if (can_batch) {
+    // === Batch path ===
+#ifdef HAVE_OPENMP
+    if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
+      int nthreads = omp_get_max_threads();
+      if (nthreads > 12) nthreads = 12;
+      if (scan_rows < 100000) nthreads = std::min(nthreads, 4);
+
+      std::vector<FlatTableBuilder> thread_builders(nthreads);
+      for (auto &tb : thread_builders)
+        tb.Init(plan.output_cols);
+
+      int64_t n_batches = (static_cast<int64_t>(scan_rows) + BATCH_SIZE - 1)
+                          / BATCH_SIZE;
+
+      #pragma omp parallel num_threads(nthreads)
+      {
+        int tid = omp_get_thread_num();
+        FlatTableBuilder &my_builder = thread_builders[tid];
+
+        #pragma omp for schedule(dynamic, 8)
+        for (int64_t bi = 0; bi < n_batches; bi++) {
+          uint64_t bs = static_cast<uint64_t>(bi) * BATCH_SIZE;
+          uint64_t be = std::min(bs + static_cast<uint64_t>(BATCH_SIZE),
+                                 scan_rows);
+          ExecuteOneBatch(plan, bs, be, my_builder);
+        }
+      }
+
+      auto merged = MergeBuilders(thread_builders);
+      return merged.Finalize(table_name);
+    }
+#endif
+
+    FlatTableBuilder builder;
+    builder.Init(plan.output_cols);
+    builder.Reserve(std::min<uint64_t>(scan_rows / 4, 1024 * 1024));
+    for (uint64_t bs = 0; bs < scan_rows; bs += BATCH_SIZE) {
+      uint64_t be = std::min(bs + static_cast<uint64_t>(BATCH_SIZE), scan_rows);
+      ExecuteOneBatch(plan, bs, be, builder);
+    }
+    return builder.Finalize(table_name);
+  }
+
+  // === Scalar fallback path (chain joins, non-unique HASH inner, small scans) ===
   bool any_inner = false;
   for (const auto &step : plan.join_steps) {
     if (!step.is_semi) { any_inner = true; break; }
   }
 
-  // Phase 2: Probe
+  struct PrefetchInfo {
+    const PipelineJoinStep::HashJoinTable *ht;
+    int scan_key_col;
+    uint32_t distance;
+  };
+  PrefetchInfo prefetch_buf[16];
+  int n_prefetch = 0;
+  for (const auto &step : plan.join_steps) {
+    if (step.probe_method == ProbeMethod::HASH &&
+        step.scan_key_col >= 0 &&
+        step.ht->prefetch_distance_ > 0 &&
+        n_prefetch < 16) {
+      prefetch_buf[n_prefetch++] = {step.ht.get(), step.scan_key_col,
+                                     step.ht->prefetch_distance_};
+    }
+  }
+
   auto ScanRow = [&](uint64_t row, FlatTableBuilder &builder) {
     if (has_scan_filters) {
       for (const auto &f : plan.scan_filters) {
@@ -851,7 +1103,6 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
         }
       }
 
-      // Emit row (all FROM_SCAN for semi-only)
       for (size_t c = 0; c < plan.output_cols.size(); c++) {
         const auto &out = plan.output_cols[c];
         const auto &col = plan.scan_table->columns[out.col_idx];
@@ -867,7 +1118,6 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
       return;
     }
 
-    // Inner join path: iterative probe with stack-allocated matched_rows
     uint32_t matched_rows[16] = {};
     ProbeStepsIterative(plan, row, matched_rows, builder);
   };
@@ -889,6 +1139,14 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
 
       #pragma omp for schedule(dynamic, 8192)
       for (int64_t r = 0; r < static_cast<int64_t>(scan_rows); r++) {
+        for (int pi = 0; pi < n_prefetch; pi++) {
+          uint64_t future = static_cast<uint64_t>(r) + prefetch_buf[pi].distance;
+          if (future < scan_rows) {
+            int32_t key = plan.scan_table->columns[prefetch_buf[pi].scan_key_col]
+                              .GetInt32(future);
+            prefetch_buf[pi].ht->PrefetchBucket(key);
+          }
+        }
         ScanRow(static_cast<uint64_t>(r), my_builder);
       }
     }
@@ -902,6 +1160,14 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
   builder.Init(plan.output_cols);
   builder.Reserve(std::min<uint64_t>(scan_rows / 4, 1024 * 1024));
   for (uint64_t r = 0; r < scan_rows; r++) {
+    for (int pi = 0; pi < n_prefetch; pi++) {
+      uint64_t future = r + prefetch_buf[pi].distance;
+      if (future < scan_rows) {
+        int32_t key = plan.scan_table->columns[prefetch_buf[pi].scan_key_col]
+                          .GetInt32(future);
+        prefetch_buf[pi].ht->PrefetchBucket(key);
+      }
+    }
     ScanRow(r, builder);
   }
   return builder.Finalize(table_name);

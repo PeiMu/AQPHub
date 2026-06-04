@@ -164,7 +164,7 @@ JOB impact: these tables are probed millions of times per query. `direct_map[key
 
 **Measured result**: execution improved 2.25x (25,900ms → 11,524ms). 87 queries improved, 17 regressed. 3a/3b/3c improved 66-988x via DIRECT method. 8c regressed 0.75x (needs investigation).
 
-#### Phase 3 (E): Software prefetch — NOT YET IMPLEMENTED
+#### Phase 3 (E): Software prefetch — DONE
 
 For HASH probe on larger HTs, prefetch the bucket entry N rows ahead:
 
@@ -184,9 +184,9 @@ Implementation:
 
 Files: `src/kernel/pipeline_kernel.cpp` — add prefetch distance field to step, add prefetch in scan loop.
 
-**Estimated savings**: ~200-500ms on memory-bound large-HT probes.
+**Measured savings**: -503ms wall (-3.8%). Data: `measure/job_result/kernel_process_5/`.
 
-#### Phase 4 (D): Vectorized batch processing + SIMD — NOT YET IMPLEMENTED
+#### Phase 4 (D): Vectorized batch processing + SIMD — DONE
 
 Restructure `ExecutePipelineKernel` from row-at-a-time to batch processing:
 
@@ -226,7 +226,7 @@ Key design decisions:
 
 Files: `src/kernel/pipeline_kernel.cpp` — new `ExecutePipelineKernelVectorized()`, batch filter eval, batch hash probe with SIMD.
 
-**Estimated savings**: ~1,000-2,000ms from reduced per-row overhead + SIMD throughput.
+**Measured savings**: -714ms wall (-5.5%) vs Phase 3. Cumulative Phase 3+4: -1,217ms wall (-9.1%) vs Phase 1. Data: `measure/job_result/kernel_process_6/`.
 
 ### Step F: Additional Optimizations (Priority 7+)
 
@@ -244,12 +244,12 @@ After Phase 3-4, re-measure and prioritize:
 | step_7_2 baseline | Query kernel (CSR) | Done | 14,202ms |
 | A: Pipeline kernel | Eliminate DuckDB fallback + CSR build | Done | — |
 | Phase 1 (A+B+C) | Adaptive join + direct map + unique key | Done | **13,343ms** |
-| Phase 3 (E) | Software prefetch for large HTs | Next | est. ~12,900ms |
-| Phase 4 (D) | Vectorized batch + SIMD | Next | est. ~11,500ms |
-| Step F | Additional (partitioning, dict encoding, etc.) | Future | est. ~10,000ms |
+| Phase 3 (E) | Software prefetch for large HTs | **Done** | **12,889ms** |
+| Phase 4 (D) | Vectorized batch + SIMD | **Done** | **12,175ms** |
+| Step F | Additional (partitioning, dict encoding, etc.) | Next | est. ~10,000ms |
 
-**Current gap**: 13,343ms vs DuckDB baseline 9,532ms = 3,811ms (40% slower).
-**Breakdown**: execution 11,524ms (vs 9,529ms baseline) + MW overhead 1,581ms + compile 238ms.
+**Current gap**: 12,175ms vs DuckDB baseline 9,532ms = 2,643ms (27.7% slower).
+**Breakdown**: execution 10,479ms (vs 9,529ms baseline, +950ms) + MW overhead 1,462ms + compile 234ms.
 **Target**: wall time < 9,532ms (DuckDB baseline).
 
 ## Code Organization

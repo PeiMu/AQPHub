@@ -105,50 +105,60 @@ Use `perf_analysis.md` as the step-by-step guide. First, run `python3 measure/fi
 3. **DuckDB EXPLAIN ANALYZE** — Operator-level cardinality + time. Use selectively (adds overhead).
 4. **`perf record -e cache-misses` / `perf mem`** — Only if `perf stat` shows memory-bound. Pinpoints which data structures cause cache misses.
 
-## Current Status (Iter 32 — Pipeline Kernel + Phase 1 Probe Optimizations DONE)
+## Current Status (Iter 34 — Phase 3+4 Prefetch + Vectorized Batch DONE)
 
-See `jit_optimization_claude.md` for full per-iteration history (Iter 0-32).
+See `jit_optimization_claude.md` for full per-iteration history (Iter 0-34).
 
-**Performance** (pipeline kernel + Phase 1, in-memory, warm, avg of 10 runs):
+**Performance** (pipeline kernel + Phase 1-4, in-memory, warm, avg of 10 runs):
 
 | Config | Execution | MW Overhead | JIT Compile | Wall | vs baseline |
 |--------|----------:|------------:|------------:|-----:|------------:|
 | none-split / none-jit (baseline) | 9,529ms | 3ms | — | 9,532ms | — |
-| node-based / pipeline-jit (Phase 1) | 11,524ms | 1,581ms | 238ms | 13,343ms | +40% wall |
+| Phase 1 (kernel_process_3) | 11,524ms | 1,630ms | 238ms | 13,392ms | +40.5% |
+| Phase 3 (kernel_process_5) | 11,199ms | 1,457ms | 233ms | 12,889ms | +35.2% |
+| **Phase 4 (kernel_process_6)** | **10,479ms** | **1,462ms** | **234ms** | **12,175ms** | **+27.7%** |
 
-Execution is 21% slower than baseline (hash probes vs DuckDB vectorized), but MW overhead dropped from 6,467ms to 1,581ms. Pipeline kernel handles ALL kernel-eligible iterations (no DuckDB fallback). LLVM JIT for pipeline kernel removed (was 24% slower than interpreted C++).
+Phase 3+4 combined: -1,217ms wall (-9.1%) vs Phase 1. 74 queries improved, 1 regressed (+4ms noise), 38 neutral.
 
-**Execution breakdown**: 9,988ms sub-query + 1,536ms final = 11,524ms total.
+**Execution breakdown** (10,479ms):
+- Kernel sub-query:  7,080ms (67.6%) — 473 iterations
+- DuckDB sub-query:  1,912ms (18.2%) — 96 iterations (fallback: Mark Join/IN, LIKE, aggregates)
+- Final query:       1,487ms (14.2%) — 113 queries via DuckDB
 
-**MW overhead breakdown** (1,581ms):
-- extract_next_sub-IR: 701ms (44.3%)
-- generate_sub-SQL (analyze): 300ms (19.0%)
-- generate_final_sub_sql: 524ms (33.1%)
-- Other (materialize + update_IR + prepare): 56ms (3.5%)
+**MW overhead breakdown** (1,462ms):
+- extract_next_sub-IR: 675ms (46.2%)
+- generate_final_sub_sql: 474ms (32.4%)
+- generate_sub-SQL: 209ms (14.3%)
+- DuckDB JIT compile: 150ms (in 96 fallback iters)
+- Other (materialize + update_IR + prepare): 104ms (7.1%)
 
 **Storage plan components** (Steps 1-6, all DONE): Flat column arrays, base CSR indexes, dimension cache, sorted indices, inverted indices, LIKE support. See `storage_plan_design.md` for design details.
 
-**What works**: Pipeline kernel handles ~69% of iterations via hash build/probe on flat arrays. ~31% fall back to DuckDB with expr-jit. Phase 1 probe optimizations (adaptive join, direct-mapped array, unique key skip) improved execution 2.25x vs unoptimized pipeline kernel.
+**What works**: Pipeline kernel handles 473/569 iterations (83%) via hash build/probe on flat arrays with vectorized batch processing + AVX2 SIMD hashing + software prefetch. 96 iterations (17%) fall back to DuckDB with expr-jit. Phase 1 probe optimizations (adaptive join, direct-mapped array, unique key skip) improved execution 2.25x. Phase 3+4 added another 9.1% wall improvement.
 
 ## Next Steps — Wall Time Optimization
 
 **Full plan**: `kernel_path_opt.md` (pipeline-jit optimizations). Query-kernel CSR optimizations (superseded): `query_jit_opt.md`.
 
-**Goal**: Reduce wall time from 13,343ms to below 9,532ms (DuckDB baseline). Gap: 3,811ms.
+**Goal**: Reduce wall time from 12,175ms to below 9,532ms (DuckDB baseline). Gap: 2,643ms.
 
-**Breakdown of gap**: execution 11,524ms vs 9,529ms baseline (+1,995ms) + MW overhead 1,581ms + compile 238ms.
+**Breakdown of gap**: execution +950ms (10,479 vs 9,529) + MW overhead 1,462ms + compile 234ms.
 
-Implementation order (from `kernel_path_opt.md`):
+**Key insight**: MW overhead (1,462ms) is now the **dominant gap component** — larger than the execution gap (950ms). The execution gap itself breaks down as: kernel exe 7,080ms + DuckDB fallback 1,912ms + final 1,487ms.
 
-1. **Step A — Pipeline-level kernel** — DONE. Eliminated CSR build, DuckDB SQL gen, DuckDB JIT for fallback iterations. MW overhead 6,467ms → 1,581ms.
+Completed:
 
-2. **Phase 1 (A+B+C) — Adaptive join + direct map + unique key skip** — DONE. Execution 2.25x faster (25,900ms → 11,524ms). 87/113 queries improved.
+1. **Step A — Pipeline-level kernel** — DONE.
+2. **Phase 1 (A+B+C) — Adaptive join + direct map + unique key skip** — DONE.
+3. **Phase 3 (E) — Software prefetch** — DONE. -503ms wall.
+4. **Phase 4 (D) — Vectorized batch + SIMD** — DONE. -714ms wall.
 
-3. **Phase 3 (E) — Software prefetch** (est. -200 to -500ms): Prefetch HT buckets N rows ahead for HASH probe on larger HTs.
+Next (Step F — see `kernel_path_opt.md`):
 
-4. **Phase 4 (D) — Vectorized batch + SIMD** (est. -1,000 to -2,000ms): Batch-at-a-time processing with AVX2 for hash computation, key comparison, filter evaluation.
-
-5. **Step F — Additional**: Dimension-partitioned flat tables, dictionary encoding, better split strategy.
+1. **Reduce MW overhead** (1,462ms target): extract_next_sub-IR (675ms), generate_final_sub_sql (474ms), generate_sub-SQL (209ms).
+2. **Reduce DuckDB fallback** (1,912ms exe + 150ms compile): 96 iterations fall back due to Mark Join/IN, LIKE, aggregates. Handle more patterns in pipeline kernel.
+3. **Reduce final query cost** (1,487ms exe + 474ms gen): final queries always go through DuckDB. Pipeline kernel for final query?
+4. **Reduce kernel execution** (7,080ms): dimension-partitioned flat tables, dictionary encoding.
 
 ## What I Expect
 - Follow `kernel_path_opt.md` step by step, verify each step's effect independently via breakdown measurement.
