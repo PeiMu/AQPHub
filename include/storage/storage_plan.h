@@ -7,6 +7,7 @@
 #include "storage/sorted_index.h"
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace duckdb {
@@ -38,6 +39,9 @@ public:
   // Lookup CSR index by "fk_table.fk_column"
   const CSRIndex *GetCSR(const std::string &fk_table,
                          const std::string &fk_column) const;
+
+  // Check if a base column name appears in any FK/PK relationship
+  bool IsJoinKeyColumn(const std::string &col_name) const;
 
   uint64_t GetMemoryUsage() const;
   void PrintSummary() const;
@@ -82,6 +86,9 @@ private:
   std::unordered_map<std::string, SortedIndex> sorted_indices_;
   // Key: "dim_table->target_table"
   std::unordered_map<std::string, InvertedIndex> inverted_indices_;
+  // Base column names that appear in FK/PK relationships (e.g., "movie_id", "id")
+  mutable std::unordered_set<std::string> join_key_cols_;
+  mutable bool join_key_cols_built_ = false;
 };
 
 } // namespace storage

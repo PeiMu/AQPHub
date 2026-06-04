@@ -144,6 +144,11 @@ struct KernelJoinStep {
   std::vector<uint32_t> pk_to_row;
   bool use_bitset = false;
 
+  // Direct PK lookup: either dense (row = key - 1) or via pk_to_row_ref
+  const std::vector<uint32_t> *pk_to_row_ref = nullptr;
+  bool use_direct_pk = false;
+  bool direct_pk_dense = false; // true: row = key - 1; false: row = pk_to_row_ref[key]
+
   // Per-row filters on joined (lookup) table rows during CSR traversal
   std::vector<RowPredicate> join_filters;
 };
@@ -166,12 +171,16 @@ struct SubQueryPlan {
   bool valid = false;
 };
 
+// Callback to lazily build a runtime CSR on demand. Returns pointer to built CSR or nullptr.
+using LazyCSRBuilder = std::function<const CSRIndex *(const std::string &key)>;
+
 SubQueryPlan AnalyzeSubIR(
     const ir_sql_converter::AQPStmt *sub_ir,
     const StoragePlan *storage_plan,
     const std::unordered_map<std::string, const FlatTable *> &kernel_temps,
     const std::unordered_map<std::string, CSRIndex> &runtime_csrs,
-    const DimensionCache *dim_cache = nullptr);
+    const DimensionCache *dim_cache = nullptr,
+    LazyCSRBuilder lazy_csr_builder = nullptr);
 
 std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
                                                const std::string &table_name);
@@ -202,7 +211,8 @@ FinalAggregatePlan AnalyzeFinalIR(
     const StoragePlan *storage_plan,
     const std::unordered_map<std::string, const FlatTable *> &kernel_temps,
     const std::unordered_map<std::string, CSRIndex> &runtime_csrs,
-    const DimensionCache *dim_cache = nullptr);
+    const DimensionCache *dim_cache = nullptr,
+    LazyCSRBuilder lazy_csr_builder = nullptr);
 
 QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan);
 

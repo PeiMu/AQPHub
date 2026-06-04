@@ -18,6 +18,7 @@
 #ifdef HAS_AVX2
 #include <immintrin.h>
 #endif
+#include "util/thread_pool.h"
 
 using namespace ir_sql_converter;
 
@@ -1012,8 +1013,9 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
     // === Batch path ===
 #ifdef HAVE_OPENMP
     if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
+      int bg = g_bg_active_threads.load(std::memory_order_relaxed);
       int nthreads = omp_get_max_threads();
-      if (nthreads > 12) nthreads = 12;
+      if (nthreads > 12 - bg) nthreads = std::max(1, 12 - bg);
       if (scan_rows < 100000) nthreads = std::min(nthreads, 4);
 
       std::vector<FlatTableBuilder> thread_builders(nthreads);
@@ -1124,8 +1126,9 @@ std::unique_ptr<FlatTable> ExecutePipelineKernel(
 
 #ifdef HAVE_OPENMP
   if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
+    int bg = g_bg_active_threads.load(std::memory_order_relaxed);
     int nthreads = omp_get_max_threads();
-    if (nthreads > 12) nthreads = 12;
+    if (nthreads > 12 - bg) nthreads = std::max(1, 12 - bg);
     if (scan_rows < 100000) nthreads = std::min(nthreads, 4);
 
     std::vector<FlatTableBuilder> thread_builders(nthreads);

@@ -17,7 +17,9 @@
 #include "storage/storage_plan.h"
 #include "kernel/sub_query_plan.h"
 #include "util/param_config.h"
+#include "util/thread_pool.h"
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -73,7 +75,7 @@ class IRQuerySplitter {
 public:
   IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config,
                   storage::StoragePlan *storage_plan = nullptr);
-  ~IRQuerySplitter() = default;
+  ~IRQuerySplitter();
 
   // Main entry: Execute query with optional splitting
   QueryResult ExecuteWithSplit(const std::string &sql);
@@ -157,8 +159,12 @@ private:
   // Non-owning view for AnalyzeSubIR
   std::unordered_map<std::string, const storage::FlatTable *>
       kernel_temp_ptrs_;
-  // Runtime CSR indexes built on temp table results
+  // Runtime CSR indexes built on temp table results (built lazily on demand)
   std::unordered_map<std::string, storage::CSRIndex> runtime_csrs_;
+
+  // Background thread pool (1 worker) for async CSR builds; reusable for other tasks
+  std::unique_ptr<ThreadPool> bg_pool_;
+  std::unordered_map<std::string, std::future<storage::CSRIndex>> async_csrs_;
 
   // Temp tables known to have 0 rows (INNER JOIN → 0 results guaranteed)
   std::set<std::string> empty_temp_tables_;

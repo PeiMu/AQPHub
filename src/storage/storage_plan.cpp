@@ -238,8 +238,11 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
     // Load each column separately to avoid holding all columns in memory
     // simultaneously during loading
     for (size_t ci = 0; ci < col_names.size(); ci++) {
+      std::string order_clause;
+      if (std::find(col_names.begin(), col_names.end(), "id") != col_names.end())
+        order_clause = " ORDER BY id";
       auto data_result =
-          connection.Query("SELECT " + col_names[ci] + " FROM " + tname);
+          connection.Query("SELECT " + col_names[ci] + " FROM " + tname + order_clause);
       if (data_result->HasError())
         throw std::runtime_error("Failed to load column " + col_names[ci] +
                                   " from " + tname + ": " +
@@ -265,11 +268,36 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
           max_id = id_data[r];
       }
       table.max_pk = max_id;
+      if (row_count > 0 && max_id == static_cast<int32_t>(row_count)) {
+        int32_t min_id = max_id;
+        for (uint64_t r = 0; r < row_count; r++) {
+          if (id_data[r] < min_id) min_id = id_data[r];
+        }
+        bool in_order = (min_id == 1);
+        if (in_order) {
+          for (uint64_t r = 0; r < row_count && in_order; r++) {
+            if (id_data[r] != static_cast<int32_t>(r + 1))
+              in_order = false;
+          }
+        }
+        if (in_order)
+          table.dense_pk = true;
+      }
+      if (!table.dense_pk) {
+        table.pk_to_row.assign(static_cast<size_t>(max_id) + 1, 0);
+        for (uint64_t r = 0; r < row_count; r++) {
+          int32_t pk = id_data[r];
+          if (pk >= 0)
+            table.pk_to_row[pk] = static_cast<uint32_t>(r);
+        }
+      }
     }
 
     std::cerr << "[StoragePlan]   " << tname << ": " << row_count
               << " rows, " << col_names.size() << " cols, "
               << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
+              << (table.dense_pk ? " [dense_pk]" : "")
+              << (!table.pk_to_row.empty() ? " [pk_to_row]" : "")
               << std::endl;
 
     tables_[tname] = std::move(table);
@@ -542,6 +570,17 @@ const CSRIndex *StoragePlan::GetCSR(const std::string &fk_table,
   return &it->second;
 }
 
+bool StoragePlan::IsJoinKeyColumn(const std::string &col_name) const {
+  if (!join_key_cols_built_) {
+    for (const auto &kv : csr_indexes_) {
+      join_key_cols_.insert(kv.second.fk_column);
+      join_key_cols_.insert(kv.second.pk_column);
+    }
+    join_key_cols_built_ = true;
+  }
+  return join_key_cols_.count(col_name) > 0;
+}
+
 uint64_t StoragePlan::GetMemoryUsage() const {
   uint64_t mem = 0;
   for (const auto &kv : tables_)
@@ -753,6 +792,31 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
       }
 
       tbl.column_names[c] = ReadStr(f);
+    }
+
+    if (tbl.max_pk >= 0) {
+      int id_col = tbl.FindColumn("id");
+      if (id_col >= 0 && tbl.columns[id_col].type == FlatColumnType::INT32) {
+        const auto *id_data =
+            reinterpret_cast<const int32_t *>(tbl.columns[id_col].data.get());
+        if (tbl.row_count > 0 && tbl.max_pk == static_cast<int32_t>(tbl.row_count)) {
+          bool in_order = (id_data[0] == 1);
+          for (uint64_t r = 1; r < tbl.row_count && in_order; r++) {
+            if (id_data[r] != static_cast<int32_t>(r + 1))
+              in_order = false;
+          }
+          if (in_order)
+            tbl.dense_pk = true;
+        }
+        if (!tbl.dense_pk) {
+          tbl.pk_to_row.assign(static_cast<size_t>(tbl.max_pk) + 1, 0);
+          for (uint64_t r = 0; r < tbl.row_count; r++) {
+            int32_t pk = id_data[r];
+            if (pk >= 0)
+              tbl.pk_to_row[pk] = static_cast<uint32_t>(r);
+          }
+        }
+      }
     }
 
     tables_[tbl.table_name] = std::move(tbl);

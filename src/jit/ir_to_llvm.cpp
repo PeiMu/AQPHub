@@ -579,6 +579,19 @@ struct IrToLlvmCompiler::Impl {
   }
 };
 
+// RAII guard: temporarily swaps the tracker slot with an isolated one,
+// restoring the original on destruction. Allows isolated-tracker overloads
+// to reuse the same Compile* bodies without touching every addIRModule site.
+struct TrackerGuard {
+  orc::ResourceTrackerSP &slot;
+  orc::ResourceTrackerSP saved;
+  TrackerGuard(orc::ResourceTrackerSP &tracker_slot, JITTrackerHandle &h)
+      : slot(tracker_slot), saved(slot) {
+    slot = *static_cast<orc::ResourceTrackerSP *>(h.ptr);
+  }
+  ~TrackerGuard() { slot = std::move(saved); }
+};
+
 // Set target CPU and features on a generated function so LLVM's backend
 // uses the best available instructions (AVX2, SSE4.2, etc.).
 static void SetTargetAttrs(Function *fn, const std::string &cpu,
@@ -4670,9 +4683,63 @@ void IrToLlvmCompiler::SetCache(bool enable, const std::string &dir) {
     impl_->EnableCache(dir);
 }
 
+// --- JITTrackerHandle ---
+
+JITTrackerHandle::~JITTrackerHandle() { Reset(); }
+
+void JITTrackerHandle::Reset() {
+  if (!ptr) return;
+  auto *sp = static_cast<orc::ResourceTrackerSP *>(ptr);
+  if (*sp) {
+    if (auto e = (*sp)->remove())
+      logAllUnhandledErrors(std::move(e), errs());
+  }
+  delete sp;
+  ptr = nullptr;
+}
+
+JITTrackerHandle IrToLlvmCompiler::CreateIsolatedTracker() {
+  JITTrackerHandle h;
+  if (impl_ && impl_->jit) {
+    auto sp = impl_->jit->getMainJITDylib().createResourceTracker();
+    h.ptr = new orc::ResourceTrackerSP(std::move(sp));
+  }
+  return h;
+}
+
 void IrToLlvmCompiler::ResetModules() {
   if (impl_)
     impl_->ResetModules();
+}
+
+// --- Isolated-tracker overloads (delegate to main methods via TrackerGuard) ---
+
+AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
+                                        const std::vector<ColSchema> &schema,
+                                        JITTrackerHandle &tracker) {
+  TrackerGuard g(impl_->current_tracker, tracker);
+  return CompileExpr(expr, schema);
+}
+
+AQPExprFn IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
+                                          const std::vector<ColSchema> &schema,
+                                          JITTrackerHandle &tracker) {
+  TrackerGuard g(impl_->current_tracker, tracker);
+  return CompileFilter(filter_node, schema);
+}
+
+AQPPipelineFn IrToLlvmCompiler::CompilePipeline(
+    const AQPStmt *filter_node, const AQPStmt *proj_node,
+    const std::vector<ColSchema> &in_schema, JITTrackerHandle &tracker) {
+  TrackerGuard g(impl_->current_tracker, tracker);
+  return CompilePipeline(filter_node, proj_node, in_schema);
+}
+
+AQPPipelineKernelFn IrToLlvmCompiler::CompilePipelineKernel(
+    const middleware::storage::PipelineKernelPlan &plan,
+    JITTrackerHandle &tracker) {
+  TrackerGuard g(impl_->current_tracker, tracker);
+  return CompilePipelineKernel(plan);
 }
 
 static std::string BuildCacheContent(const std::string &tag,

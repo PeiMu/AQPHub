@@ -99,6 +99,8 @@ struct FlatTable {
   std::vector<FlatColumn> columns;
 
   int32_t max_pk = -1; // max value of PK "id" column (-1 = not computed)
+  bool dense_pk = false; // true when PK is 1..row_count with no gaps (row = key - 1)
+  std::vector<uint32_t> pk_to_row; // only allocated for non-dense PK tables
 
   // Find column index by name (case-insensitive). Returns -1 if not found.
   int FindColumn(const std::string &name) const;

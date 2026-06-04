@@ -37,7 +37,8 @@ void LogKernelDecision(const char *log_file_path,
 IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
                                  const ParamConfig &config,
                                  storage::StoragePlan *storage_plan)
-    : adapter_(adapter), storage_plan_(storage_plan), config_(config) {
+    : adapter_(adapter), storage_plan_(storage_plan), config_(config),
+      bg_pool_(std::make_unique<ThreadPool>(1)) {
 
   if (config_.enable_tuning) {
     const char *p = getenv("AQP_KERNEL_LOG_FILE");
@@ -99,6 +100,13 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
   }
 }
 
+IRQuerySplitter::~IRQuerySplitter() {
+  for (auto &kv : async_csrs_)
+    kv.second.wait();
+  async_csrs_.clear();
+  bg_pool_.reset();
+}
+
 QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   if (config_.enable_debug_print) {
     std::cout
@@ -113,9 +121,12 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   // incrementing across queries so temp table names stay unique)
   temp_tables_.clear();
   sub_plan_sqls_.clear();
-  kernel_temps_.clear();
-  kernel_temp_ptrs_.clear();
+  for (auto &kv : async_csrs_)
+    kv.second.wait();
+  async_csrs_.clear();
   runtime_csrs_.clear();
+  kernel_temp_ptrs_.clear();
+  kernel_temps_.clear();
 #ifdef HAVE_DUCKDB
   if (config_.engine == BackendEngine::DUCKDB) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
@@ -339,10 +350,20 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       EnsureReferencedTempsReadyNoCsr(remaining_ir.get());
     else
       EnsureReferencedTempsReady(remaining_ir.get());
+
+    auto lazy_builder = [&](const std::string &key) -> const storage::CSRIndex * {
+      auto fit = async_csrs_.find(key);
+      if (fit == async_csrs_.end()) return nullptr;
+      runtime_csrs_[key] = fit->second.get();
+      async_csrs_.erase(fit);
+      return &runtime_csrs_[key];
+    };
+
     auto final_plan = storage::AnalyzeFinalIR(
         remaining_ir.get(), storage_plan_,
         kernel_temp_ptrs_, runtime_csrs_,
-        storage_plan_->GetDimensionCache());
+        storage_plan_->GetDimensionCache(),
+        lazy_builder);
 
     // Capture features for kernel decision log
     if (final_plan.valid) {
@@ -611,24 +632,6 @@ bool IRQuerySplitter::ExecuteOneIteration(
         result_flat->column_names[c] =
             ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName());
       }
-      if (build_csr) {
-        static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
-        for (size_t c = 0; c < result_flat->columns.size(); c++) {
-          if (result_flat->columns[c].type != storage::FlatColumnType::INT32)
-            continue;
-          int32_t max_val = 0;
-          const auto *int_data =
-              reinterpret_cast<const int32_t *>(result_flat->columns[c].data.get());
-          for (uint64_t r = 0; r < cardinality; r++) {
-            if (int_data[r] > max_val) max_val = int_data[r];
-          }
-          if (max_val > MAX_CSR_DOMAIN) continue;
-          std::string csr_key = tname + "." + result_flat->column_names[c];
-          runtime_csrs_[csr_key] = storage::BuildCSR(
-              *result_flat, static_cast<int>(c), max_val,
-              tname, result_flat->column_names[c], "", "");
-        }
-      }
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
       if (duck) {
         duck->RegisterKernelTemp(tname, result_flat.get());
@@ -636,6 +639,49 @@ bool IRQuerySplitter::ExecuteOneIteration(
       }
       kernel_temp_ptrs_[tname] = result_flat.get();
       kernel_temps_[tname] = std::move(result_flat);
+      if (build_csr) {
+        // Async CSR: kick off background builds only for FK/PK join key columns.
+        // Avoids wasting the single bg thread on columns that will never be joined.
+        static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
+        const auto *flat_ptr = kernel_temps_[tname].get();
+        for (size_t c = 0; c < flat_ptr->columns.size(); c++) {
+          if (flat_ptr->columns[c].type != storage::FlatColumnType::INT32)
+            continue;
+          // Extract base column name from alias "{table}_{idx}_{col}"
+          // by finding "_\d+_" pattern and taking everything after it.
+          const auto &alias = flat_ptr->column_names[c];
+          std::string base_col;
+          for (size_t p = 0; p < alias.size(); p++) {
+            if (alias[p] == '_' && p + 1 < alias.size() &&
+                std::isdigit(static_cast<unsigned char>(alias[p + 1]))) {
+              size_t d = p + 1;
+              while (d < alias.size() &&
+                     std::isdigit(static_cast<unsigned char>(alias[d])))
+                d++;
+              if (d < alias.size() && alias[d] == '_') {
+                base_col = alias.substr(d + 1);
+                break;
+              }
+            }
+          }
+          if (!base_col.empty() && storage_plan_ &&
+              !storage_plan_->IsJoinKeyColumn(base_col))
+            continue;
+          int32_t max_val = 0;
+          const auto *int_data =
+              reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data.get());
+          for (uint64_t r = 0; r < flat_ptr->row_count; r++) {
+            if (int_data[r] > max_val) max_val = int_data[r];
+          }
+          if (max_val > MAX_CSR_DOMAIN) continue;
+          std::string csr_key = tname + "." + alias;
+          async_csrs_[csr_key] = bg_pool_->Submit(
+              [flat_ptr, c_idx = static_cast<int>(c), max_val, tname, alias]() {
+                return storage::BuildCSR(*flat_ptr, c_idx, max_val,
+                                         tname, alias, "", "");
+              });
+        }
+      }
     };
 
     // --- Pipeline kernel path (hash-based, no CSR needed) ---
@@ -722,10 +768,20 @@ bool IRQuerySplitter::ExecuteOneIteration(
     // --- Query kernel path (CSR-based, existing) ---
     if (!kernel_executed && (config_.jit_flags & AQP_JIT_QUERY) && !config_.no_kernel) {
       EnsureReferencedTempsReady(executable_ir);
+
+      auto lazy_csr_build = [&](const std::string &key) -> const storage::CSRIndex * {
+        auto fit = async_csrs_.find(key);
+        if (fit == async_csrs_.end()) return nullptr;
+        runtime_csrs_[key] = fit->second.get();
+        async_csrs_.erase(fit);
+        return &runtime_csrs_[key];
+      };
+
       auto sub_plan = storage::AnalyzeSubIR(
           executable_ir, storage_plan_,
           kernel_temp_ptrs_, runtime_csrs_,
-          storage_plan_->GetDimensionCache());
+          storage_plan_->GetDimensionCache(),
+          lazy_csr_build);
 
       if (sub_plan.valid) {
         double analyze_ms = 0.0;
@@ -781,7 +837,6 @@ bool IRQuerySplitter::ExecuteOneIteration(
                     << " rows, " << result_flat->columns.size() << " columns" << std::endl;
         }
 
-        // Query kernel: build runtime CSR on output
         RegisterKernelResult(std::move(result_flat), temp_table_name, true);
 
         if (config_.enable_timing) {
@@ -1665,27 +1720,49 @@ void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
     offsets[flat->row_count] = off;
   }
 
+  kernel_temp_ptrs_[temp_name] = flat.get();
+  kernel_temps_[temp_name] = std::move(flat);
+
+  // Async CSR: kick off background builds only for FK/PK join key columns
   static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
-  for (size_t c = 0; c < flat->columns.size(); c++) {
-    if (flat->columns[c].type != storage::FlatColumnType::INT32)
+  const auto *flat_ptr = kernel_temps_[temp_name].get();
+  for (size_t c = 0; c < flat_ptr->columns.size(); c++) {
+    if (flat_ptr->columns[c].type != storage::FlatColumnType::INT32)
+      continue;
+    const auto &alias = flat_ptr->column_names[c];
+    std::string base_col;
+    for (size_t p = 0; p < alias.size(); p++) {
+      if (alias[p] == '_' && p + 1 < alias.size() &&
+          std::isdigit(static_cast<unsigned char>(alias[p + 1]))) {
+        size_t d = p + 1;
+        while (d < alias.size() &&
+               std::isdigit(static_cast<unsigned char>(alias[d])))
+          d++;
+        if (d < alias.size() && alias[d] == '_') {
+          base_col = alias.substr(d + 1);
+          break;
+        }
+      }
+    }
+    if (!base_col.empty() && storage_plan_ &&
+        !storage_plan_->IsJoinKeyColumn(base_col))
       continue;
     int32_t max_val = 0;
     const auto *int_data =
-        reinterpret_cast<const int32_t *>(flat->columns[c].data.get());
-    for (uint64_t r = 0; r < flat->row_count; r++) {
-      if (int_data[r] > max_val)
-        max_val = int_data[r];
+        reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data.get());
+    for (uint64_t r = 0; r < flat_ptr->row_count; r++) {
+      if (int_data[r] > max_val) max_val = int_data[r];
     }
-    if (max_val > MAX_CSR_DOMAIN)
-      continue;
-    std::string csr_key = temp_name + "." + flat->column_names[c];
-    runtime_csrs_[csr_key] = storage::BuildCSR(
-        *flat, static_cast<int>(c), max_val, temp_name,
-        flat->column_names[c], "", "");
+    if (max_val > MAX_CSR_DOMAIN) continue;
+    std::string csr_key = temp_name + "." + alias;
+    std::string col_name = alias;
+    int col_idx = static_cast<int>(c);
+    async_csrs_[csr_key] = bg_pool_->Submit(
+        [flat_ptr, col_idx, max_val, temp_name, col_name]() {
+          return storage::BuildCSR(*flat_ptr, col_idx, max_val,
+                                   temp_name, col_name, "", "");
+        });
   }
-
-  kernel_temp_ptrs_[temp_name] = flat.get();
-  kernel_temps_[temp_name] = std::move(flat);
 }
 
 void IRQuerySplitter::EnsureReferencedTempsReady(

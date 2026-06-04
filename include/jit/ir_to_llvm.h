@@ -36,6 +36,23 @@ class SimplestInExpr;
 
 namespace aqp_jit {
 
+// Opaque handle for an isolated LLVM ORC ResourceTracker.
+// Used to manage lifetime of background-compiled JIT modules independently
+// from the main compilation session's ResetModules() cycle.
+struct JITTrackerHandle {
+  void *ptr = nullptr; // opaque ResourceTrackerSP*
+  ~JITTrackerHandle();
+  JITTrackerHandle() = default;
+  JITTrackerHandle(JITTrackerHandle &&o) noexcept : ptr(o.ptr) { o.ptr = nullptr; }
+  JITTrackerHandle &operator=(JITTrackerHandle &&o) noexcept {
+    if (this != &o) { Reset(); ptr = o.ptr; o.ptr = nullptr; }
+    return *this;
+  }
+  JITTrackerHandle(const JITTrackerHandle &) = delete;
+  JITTrackerHandle &operator=(const JITTrackerHandle &) = delete;
+  void Reset(); // removes tracked modules and frees the handle
+};
+
 /* LLVM optimization level — maps to llvm::OptimizationLevel */
 enum class OptLevel { O0, O1, O2, O3 };
 
@@ -258,6 +275,27 @@ public:
       const std::vector<int> &lhs_key_chunk_idxs = {},
       const std::vector<int32_t> &lhs_key_dtypes = {});
 
+
+  // --- Isolated compilation for background threads ---
+  // Create an isolated tracker. Modules compiled with this tracker are
+  // independent from ResetModules() and survive until the handle is Reset().
+  JITTrackerHandle CreateIsolatedTracker();
+
+  // Compile with an isolated tracker (for background thread use).
+  // The returned function pointer is valid until tracker.Reset() is called.
+  AQPExprFn CompileExpr(const ir_sql_converter::AQPExpr &expr,
+                        const std::vector<ColSchema> &schema,
+                        JITTrackerHandle &tracker);
+  AQPExprFn CompileFilter(const ir_sql_converter::AQPStmt &filter_node,
+                          const std::vector<ColSchema> &schema,
+                          JITTrackerHandle &tracker);
+  AQPPipelineFn CompilePipeline(const ir_sql_converter::AQPStmt *filter_node,
+                                const ir_sql_converter::AQPStmt *proj_node,
+                                const std::vector<ColSchema> &in_schema,
+                                JITTrackerHandle &tracker);
+  AQPPipelineKernelFn CompilePipelineKernel(
+      const middleware::storage::PipelineKernelPlan &plan,
+      JITTrackerHandle &tracker);
 
   void SetPrefetch(bool enable, int distance = 8) {
     prefetch_ = enable;

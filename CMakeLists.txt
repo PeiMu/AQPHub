@@ -52,6 +52,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Build split library (common for both DuckDB and PostgreSQL)
 add_library(split_lib STATIC
         src/util/param_config.cpp
+        src/util/thread_pool.cpp
         src/split/ir_reorder_get.cpp
         src/split/ir_utils.cpp
         src/split/foreign_key_extractor.cpp

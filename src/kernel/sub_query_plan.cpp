@@ -15,6 +15,7 @@
 #ifdef HAVE_OPENMP
 #include <omp.h>
 #endif
+#include "util/thread_pool.h"
 
 using namespace ir_sql_converter;
 
@@ -1051,7 +1052,8 @@ SubQueryPlan AnalyzeSubIR(
     const StoragePlan *storage_plan,
     const std::unordered_map<std::string, const FlatTable *> &kernel_temps,
     const std::unordered_map<std::string, CSRIndex> &runtime_csrs,
-    const DimensionCache *dim_cache) {
+    const DimensionCache *dim_cache,
+    LazyCSRBuilder lazy_csr_builder) {
 
   SubQueryPlan plan;
   plan.valid = false;
@@ -1221,10 +1223,8 @@ SubQueryPlan AnalyzeSubIR(
     return true;
   };
 
-  // Find CSR for a given scan→lookup direction.
-  // CSR must satisfy: Lookup(scan_key) returns lookup_table rows,
-  // i.e., csr->fk_table == lookup_table (for base CSRs).
-  auto FindCSR = [&](const LeafTable *l, const std::string &l_col)
+  // Find prebuilt or already-built runtime CSR (no lazy build).
+  auto FindPrebuiltCSR = [&](const LeafTable *l, const std::string &l_col)
       -> const CSRIndex * {
     auto it = runtime_csrs.find(l->name + "." + l_col);
     if (it != runtime_csrs.end() && it->second.fk_table == l->name)
@@ -1237,9 +1237,24 @@ SubQueryPlan AnalyzeSubIR(
     return nullptr;
   };
 
+  // Find CSR including lazy on-demand build (for Temp+Temp joins).
+  auto FindCSR = [&](const LeafTable *l, const std::string &l_col)
+      -> const CSRIndex * {
+    auto *c = FindPrebuiltCSR(l, l_col);
+    if (c) return c;
+    if (lazy_csr_builder) {
+      std::string key = l->name + "." + l_col;
+      auto *built = lazy_csr_builder(key);
+      if (built && built->fk_table == l->name)
+        return built;
+    }
+    return nullptr;
+  };
+
   // Determine scan table vs lookup table.
-  // Prefer scanning the SMALLER table and CSR-probing the larger,
-  // but fall back to the reverse if no CSR exists for that direction.
+  // Priority: prebuilt CSR (Base+Base) > direct PK (Base+Temp on PK) > runtime CSR.
+  // Direct PK avoids runtime CSR build for Base+Temp joins but must not
+  // override prebuilt CSRs which are already optimal for Base+Base.
   const LeafTable *scan_leaf = &leaves[0];
   const LeafTable *lookup_leaf = &leaves[1];
   if (scan_leaf->flat->row_count > lookup_leaf->flat->row_count)
@@ -1249,17 +1264,52 @@ SubQueryPlan AnalyzeSubIR(
   if (!ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name))
     return plan;
 
-  const CSRIndex *csr = FindCSR(lookup_leaf, lookup_col_name);
-
-  // No CSR for small-scans-large — try the reverse direction
+  // 1) Try prebuilt CSR first (optimal for Base+Base joins, no build needed)
+  const CSRIndex *csr = FindPrebuiltCSR(lookup_leaf, lookup_col_name);
   if (!csr) {
     std::swap(scan_leaf, lookup_leaf);
     if (!ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name))
       return plan;
-    csr = FindCSR(lookup_leaf, lookup_col_name);
+    csr = FindPrebuiltCSR(lookup_leaf, lookup_col_name);
+    if (!csr) {
+      // Restore original direction for subsequent checks
+      std::swap(scan_leaf, lookup_leaf);
+      ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name);
+    }
   }
 
-  if (!csr)
+  // 2) No prebuilt CSR — try direct PK (avoids runtime CSR build for Base+Temp)
+  auto HasDirectPK = [](const FlatTable *t) {
+    return t->dense_pk || !t->pk_to_row.empty();
+  };
+  bool use_direct_pk = false;
+  if (!csr) {
+    if (lookup_col_name == "id" && HasDirectPK(lookup_leaf->flat)) {
+      use_direct_pk = true;
+    } else {
+      std::swap(scan_leaf, lookup_leaf);
+      if (ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name) &&
+          lookup_col_name == "id" && HasDirectPK(lookup_leaf->flat)) {
+        use_direct_pk = true;
+      } else {
+        std::swap(scan_leaf, lookup_leaf);
+        ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name);
+      }
+    }
+  }
+
+  // 3) No prebuilt CSR, no direct PK — try lazy CSR build (Temp+Temp)
+  if (!csr && !use_direct_pk) {
+    csr = FindCSR(lookup_leaf, lookup_col_name);
+    if (!csr) {
+      std::swap(scan_leaf, lookup_leaf);
+      if (!ResolveEdgeCols(scan_leaf, lookup_leaf, scan_col_name, lookup_col_name))
+        return plan;
+      csr = FindCSR(lookup_leaf, lookup_col_name);
+    }
+  }
+
+  if (!csr && !use_direct_pk)
     return plan;
 
   // Find scan column in the FlatTable
@@ -1284,15 +1334,23 @@ SubQueryPlan AnalyzeSubIR(
   // Compile lookup table filters
   if (lookup_leaf->HasFilters()) {
     if (!CompileAllLeafFilters(lookup_leaf->all_filters, lookup_leaf->flat, lookup_predicates))
-      return plan; // unsupported filter → fall back to DuckDB
+      return plan;
 
     // PK bitset only valid when lookup column IS the PK ("id").
     // Otherwise, apply filters as join_filters (evaluated per CSR match).
     if (lookup_col_name == "id") {
+      // BuildFilteredPKBitset scans ALL rows of the lookup table.
+      // When the lookup table is large, the scan cost exceeds DuckDB's
+      // hash join — fall back to DuckDB instead.
+      if (lookup_leaf->flat->row_count > 500000)
+        return plan;
       if (!BuildFilteredPKBitset(lookup_leaf->flat, lookup_predicates, pk_bitset, pk_to_row))
         return plan;
       use_bitset = true;
     }
+  } else if (use_direct_pk) {
+    // No filters on lookup table, lookup column is PK ("id") with
+    // dense PK or precomputed pk_to_row. Direct index, no CSR needed.
   }
 
   // Compile scan table filters
@@ -1401,6 +1459,12 @@ SubQueryPlan AnalyzeSubIR(
     step.pk_bitset = std::move(pk_bitset);
     step.pk_to_row = std::move(pk_to_row);
     step.csr = nullptr;
+  } else if (use_direct_pk) {
+    step.use_direct_pk = true;
+    step.direct_pk_dense = lookup_leaf->flat->dense_pk;
+    if (!step.direct_pk_dense)
+      step.pk_to_row_ref = &lookup_leaf->flat->pk_to_row;
+    step.csr = nullptr;
   } else {
     step.csr = csr;
   }
@@ -1475,7 +1539,29 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
       for (const auto &step : plan.join_steps) {
         int32_t key =
             plan.scan_table->columns[step.scan_key_col_idx].GetInt32(row);
-        if (step.use_bitset) {
+        if (step.use_direct_pk) {
+          uint64_t lr;
+          if (step.direct_pk_dense) {
+            if (key < 1 || static_cast<uint64_t>(key - 1) >= step.joined_table->row_count) {
+              pass = false; break;
+            }
+            lr = static_cast<uint64_t>(key - 1);
+          } else {
+            const auto &ptor = *step.pk_to_row_ref;
+            if (key < 0 || static_cast<size_t>(key) >= ptor.size()) {
+              pass = false; break;
+            }
+            lr = ptor[key];
+          }
+          if (!step.join_filters.empty()) {
+            for (const auto &jf : step.join_filters) {
+              if (!jf(*step.joined_table, lr)) {
+                pass = false; break;
+              }
+            }
+            if (!pass) break;
+          }
+        } else if (step.use_bitset) {
           if (key < 0 || static_cast<size_t>(key) >= step.pk_bitset.size() ||
               !step.pk_bitset[key]) {
             pass = false;
@@ -1526,7 +1612,28 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
           plan.scan_table->columns[step.scan_key_col_idx].GetInt32(row);
       bool has_join_filters = !step.join_filters.empty();
 
-      if (step.use_bitset) {
+      if (step.use_direct_pk) {
+        uint64_t lr;
+        if (step.direct_pk_dense) {
+          if (key < 1 || static_cast<uint64_t>(key - 1) >= step.joined_table->row_count)
+            return;
+          lr = static_cast<uint64_t>(key - 1);
+        } else {
+          const auto &ptor = *step.pk_to_row_ref;
+          if (key < 0 || static_cast<size_t>(key) >= ptor.size())
+            return;
+          lr = ptor[key];
+        }
+        if (has_join_filters) {
+          bool jpass = true;
+          for (const auto &jf : step.join_filters) {
+            if (!jf(*step.joined_table, lr)) { jpass = false; break; }
+          }
+          if (!jpass) return;
+        }
+        std::vector<uint64_t> joined_rows = {lr};
+        EmitRow(row, joined_rows);
+      } else if (step.use_bitset) {
         if (key < 0 || static_cast<size_t>(key) >= step.pk_bitset.size() ||
             !step.pk_bitset[key])
           return;
@@ -1561,7 +1668,8 @@ std::unique_ptr<FlatTable> ExecuteSubQueryPlan(const SubQueryPlan &plan,
 
 #ifdef HAVE_OPENMP
   if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
-    int nthreads = std::min(12, omp_get_max_threads());
+    int bg = g_bg_active_threads.load(std::memory_order_relaxed);
+    int nthreads = std::min(std::max(1, 12 - bg), omp_get_max_threads());
     std::vector<FlatTableBuilder> thread_builders(nthreads);
     for (auto &tb : thread_builders)
       tb.Init(plan.output_cols);
@@ -1600,7 +1708,8 @@ FinalAggregatePlan AnalyzeFinalIR(
     const StoragePlan *storage_plan,
     const std::unordered_map<std::string, const FlatTable *> &kernel_temps,
     const std::unordered_map<std::string, CSRIndex> &runtime_csrs,
-    const DimensionCache *dim_cache) {
+    const DimensionCache *dim_cache,
+    LazyCSRBuilder lazy_csr_builder) {
 
   FinalAggregatePlan plan;
   plan.valid = false;
@@ -1855,28 +1964,35 @@ FinalAggregatePlan AnalyzeFinalIR(
       if (c && c->fk_table == lookup_leaf->name)
         csr = c;
     }
+    if (!csr && lazy_csr_builder) {
+      auto *c = lazy_csr_builder(runtime_key);
+      if (c && c->fk_table == lookup_leaf->name)
+        csr = c;
+    }
 
-    // No CSR found — try PK bitset for base table lookup (scan_key → lookup PK).
-    // Common in star joins where center=temp, arms=base tables joined on PK.
+    // No CSR found — try direct PK or PK bitset for base table lookup.
     bool use_bitset = false;
+    bool use_direct_pk = false;
     std::vector<bool> pk_bitset;
     std::vector<uint32_t> pk_to_row;
-    if (!csr && lookup_leaf->HasFilters()) {
+    if (!csr && lookup_col_name == "id" && lookup_leaf->HasFilters()) {
       std::vector<RowPredicate> lookup_predicates;
       if (!CompileAllLeafFilters(lookup_leaf->all_filters, lookup_leaf->flat, lookup_predicates))
         return plan;
       if (!BuildFilteredPKBitset(lookup_leaf->flat, lookup_predicates, pk_bitset, pk_to_row))
         return plan;
       use_bitset = true;
+    } else if (!csr && lookup_col_name == "id" &&
+               (lookup_leaf->flat->dense_pk || !lookup_leaf->flat->pk_to_row.empty())) {
+      use_direct_pk = true;
     } else if (!csr) {
-      // No CSR and no filters — build unfiltered PK bitset for existence check
       std::vector<RowPredicate> no_filters;
       if (!BuildFilteredPKBitset(lookup_leaf->flat, no_filters, pk_bitset, pk_to_row))
         return plan;
       use_bitset = true;
     }
 
-    if (!csr && !use_bitset)
+    if (!csr && !use_bitset && !use_direct_pk)
       return plan;
 
     // Compile lookup-leaf filters as join_filters when using CSR
@@ -1911,12 +2027,19 @@ FinalAggregatePlan AnalyzeFinalIR(
     step.scan_key_col_idx = scan_flat_col;
     step.joined_table = lookup_leaf->flat;
     step.is_semi = true;
-    step.csr = csr;
     if (use_bitset) {
       step.use_bitset = true;
       step.pk_bitset = std::move(pk_bitset);
       step.pk_to_row = std::move(pk_to_row);
       step.csr = nullptr;
+    } else if (use_direct_pk) {
+      step.use_direct_pk = true;
+      step.direct_pk_dense = lookup_leaf->flat->dense_pk;
+      if (!step.direct_pk_dense)
+        step.pk_to_row_ref = &lookup_leaf->flat->pk_to_row;
+      step.csr = nullptr;
+    } else {
+      step.csr = csr;
     }
     step.join_filters = std::move(join_filters);
 
@@ -2006,8 +2129,18 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
     }
     for (const auto &step : steps) {
       int32_t key = plan.scan_table->columns[step.scan_key_col_idx].GetInt32(row);
-      if (step.use_bitset) {
-        if (key < 0 || static_cast<size_t>(key) >= step.pk_bitset.size() || !step.pk_bitset[key])
+      if (step.use_direct_pk) {
+        if (step.direct_pk_dense) {
+          if (key < 1 || static_cast<uint64_t>(key - 1) >= step.joined_table->row_count)
+            return false;
+        } else {
+          const auto &ptor = *step.pk_to_row_ref;
+          if (key < 0 || static_cast<size_t>(key) >= ptor.size())
+            return false;
+        }
+      } else if (step.use_bitset) {
+        if (key < 0 || static_cast<size_t>(key) >= step.pk_bitset.size() ||
+            !step.pk_bitset[key])
           return false;
       } else {
         auto [begin, end] = step.csr->Lookup(key);
@@ -2113,7 +2246,37 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
           if (step_idx < 0) continue;
           const auto &step = steps[step_idx];
           int32_t key = plan.scan_table->columns[step.scan_key_col_idx].GetInt32(row);
-          if (step.use_bitset) {
+          if (step.use_direct_pk) {
+            uint64_t joined_row;
+            bool valid_key;
+            if (step.direct_pk_dense) {
+              valid_key = key >= 1 && static_cast<uint64_t>(key - 1) < step.joined_table->row_count;
+              joined_row = valid_key ? static_cast<uint64_t>(key - 1) : 0;
+            } else {
+              const auto &ptor = *step.pk_to_row_ref;
+              valid_key = key >= 0 && static_cast<size_t>(key) < ptor.size();
+              joined_row = valid_key ? ptor[key] : 0;
+            }
+            if (valid_key) {
+              if (mc.type == FlatColumnType::VARCHAR) {
+                if (!mc.table->columns[mc.flat_col_idx].IsNull(joined_row)) {
+                  std::string val = mc.table->columns[mc.flat_col_idx].GetString(joined_row);
+                  if (!rm.found || val < rm.str_val) {
+                    rm.str_val = std::move(val);
+                    rm.found = true;
+                  }
+                }
+              } else {
+                if (!mc.table->columns[mc.flat_col_idx].IsNull(joined_row)) {
+                  int32_t val = mc.table->columns[mc.flat_col_idx].GetInt32(joined_row);
+                  if (!rm.found || val < rm.int_val) {
+                    rm.int_val = val;
+                    rm.found = true;
+                  }
+                }
+              }
+            }
+          } else if (step.use_bitset) {
             if (key >= 0 && static_cast<size_t>(key) < step.pk_to_row.size()) {
               uint64_t joined_row = step.pk_to_row[key];
               if (mc.type == FlatColumnType::VARCHAR) {
@@ -2191,7 +2354,8 @@ QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan) {
 
 #ifdef HAVE_OPENMP
     if (scan_rows >= OMP_PARALLEL_THRESHOLD) {
-      int nthreads = std::min(12, omp_get_max_threads());
+      int bg = g_bg_active_threads.load(std::memory_order_relaxed);
+      int nthreads = std::min(std::max(1, 12 - bg), omp_get_max_threads());
       std::vector<std::vector<RunningMin>> tl_trackers(nthreads);
       for (int t = 0; t < nthreads; t++)
         tl_trackers[t] = MakeTrackers();
