@@ -49,7 +49,7 @@ for STRATEGY in $STRATEGIES; do
           --fkeys="$BENCHMARK_DIR/fkeys.sql" \
           --storage-cache="/tmp/imdb_storage_plan.cache" \
           --split="$STRATEGY" --no-analyze \
-          --jit-level=pipeline --jit-opt=o1 --jit-simd=none \
+          --jit-level=operator --kernel-path=pipeline --jit-opt=o1 --jit-simd=none \
           --tuning $EXTRA_FLAGS \
           --repeat="$REPEAT" \
           "$query" > /dev/null 2>&1

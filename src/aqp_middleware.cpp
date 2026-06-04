@@ -187,6 +187,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       auto *duckdb_adp = dynamic_cast<DuckDBAdapter *>(adapter);
       if (duckdb_adp) {
         duckdb_adp->SetJITFlags(config.jit_flags);
+        duckdb_adp->SetKernelPath(config.kernel_path);
         duckdb_adp->SetJITOptFlags(
             config.jit_fusion_probe,
             config.jit_inline_hash, config.jit_payload_prune,

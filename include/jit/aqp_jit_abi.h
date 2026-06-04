@@ -72,15 +72,19 @@ static constexpr int32_t AQP_DTYPE_OTHER   = 99;
   (1u << 0) /* Level 1: individual expression compilation   */
 #define AQP_JIT_OPERATOR                                                       \
   (1u << 1) /* Level 2: full operator compilation            */
+/* Legacy define — kept for source compat; use ParamConfig::kernel_path instead. */
 #define AQP_JIT_PIPELINE                                                       \
-  (1u << 2) /* Level 3: fused pipeline compilation           */
+  (1u << 2) /* (legacy) pipeline kernel — use kernel_path    */
 
-/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE / QUERY).
+/* Mask covering only the JIT-level bits (EXPR / OPERATOR).
+ * PIPELINE and QUERY kernel paths are now controlled by ParamConfig::kernel_path.
  * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
+#define AQP_JIT_LEVEL_MASK (AQP_JIT_EXPR | AQP_JIT_OPERATOR)
+
+/* Legacy defines — kept for source compat; no longer part of AQP_JIT_LEVEL_MASK.
+ * Use ParamConfig::kernel_path instead. */
 #define AQP_JIT_QUERY                                                          \
-  (1u << 4) /* Level 4: query-level kernel (CSR-based)       */
-#define AQP_JIT_LEVEL_MASK                                                       \
-  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_QUERY)
+  (1u << 4) /* (legacy) query-level kernel — use kernel_path  */
 
 /* Legacy aliases (backward compat) */
 #define AQP_JIT_OPT3                                                           \

@@ -138,14 +138,23 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.jit_flags |= AQP_JIT_EXPR;
       } else if (level == "operator") {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
-      } else if (level == "pipeline") {
-        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE;
-      } else if (level == "query") {
-        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_QUERY;
       } else {
         throw std::runtime_error(
             "Unknown JIT level: " + arg.substr(12) +
-            " (valid: expr, operator, pipeline, query)");
+            " (valid: none, expr, operator)");
+      }
+    } else if (arg.find("--kernel-path=") == 0) {
+      std::string kp = to_lower(arg.substr(14));
+      if (kp == "none") {
+        config.kernel_path = KernelPath::NONE;
+      } else if (kp == "pipeline") {
+        config.kernel_path = KernelPath::PIPELINE;
+      } else if (kp == "query") {
+        config.kernel_path = KernelPath::QUERY;
+      } else {
+        throw std::runtime_error(
+            "Unknown kernel path: " + arg.substr(14) +
+            " (valid: none, pipeline, query)");
       }
     } else if (arg.find("--jit-simd=") == 0) {
       std::string simd = to_lower(arg.substr(11));
@@ -243,6 +252,9 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
 
   config.query_path = argv[argc - 1];
 
+  if (config.kernel_path != KernelPath::NONE)
+    config.enable_storage_plan = true;
+
   if (config.in_memory) {
     if (config.engine != BackendEngine::DUCKDB)
       throw std::runtime_error("--in-memory is only supported with --engine=duckdb");
@@ -308,8 +320,11 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --jit                            JIT-compile filter expressions "
                "(same as --jit-level=expr)"
             << std::endl;
-  std::cout << "  --jit-level=<level>              JIT granularity: expr, "
-               "operator, pipeline, sql (alias: subplan)"
+  std::cout << "  --jit-level=<level>              JIT granularity: none, "
+               "expr, operator"
+            << std::endl;
+  std::cout << "  --kernel-path=<path>             Kernel execution path: "
+               "none, pipeline, query (default: none)"
             << std::endl;
   std::cout << "  --jit-simd[=<level>]             Enable SIMD: sse2, avx, "
                "avx2, avx512, auto (default: auto)"

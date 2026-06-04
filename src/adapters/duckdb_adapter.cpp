@@ -2873,7 +2873,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // FindColIdx returns -1 and the filter silently becomes pass-all.
     // Skip pipeline filter compilation for LIKE predicates: DuckDB's native
     // vectorized LIKE is faster than the JIT scalar implementation.
-    if ((jit_flags_ & AQP_JIT_PIPELINE) && filter_ir && !schema.empty() &&
+    if (kernel_path_ == KernelPath::PIPELINE && filter_ir && !schema.empty() &&
         HasApplicablePredicate(filter_ir, schema) &&
         FilterAllColsAvailable(filter_ir, schema) &&
         !FilterHasLike(filter_ir)) {
@@ -3082,7 +3082,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
   // Level 3: Pipeline-JIT hash join compilation. Direct-HT path emits IR
   // that probes DuckDB's JoinHashTable directly via AQPJoinHTView, so the
   // previous "IR schema vs. DuckDB chunk layout" mismatch is resolved.
-  if ((jit_flags_ & AQP_JIT_PIPELINE) &&
+  if (kernel_path_ == KernelPath::PIPELINE &&
       op.type == PhysicalOperatorType::HASH_JOIN) {
     uint64_t eid = duckdb::ExpressionID(op);
 
@@ -3229,7 +3229,7 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
             // removed.
 
             // Level 3: attempt Filter+Probe+Projection fusion (probe pipeline)
-            if ((jit_flags_ & AQP_JIT_PIPELINE) && jit_fusion_probe_) {
+            if (kernel_path_ == KernelPath::PIPELINE && jit_fusion_probe_) {
               EnsureJITCompiler();
 
               // Payload pruning: use DuckDB's payload_columns to determine

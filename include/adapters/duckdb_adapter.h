@@ -12,6 +12,7 @@
 
 #include "adapters/db_adapter.h"
 #include "storage/flat_table.h"
+#include "util/param_config.h"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
@@ -225,6 +226,8 @@ public:
   // is not called by the splitter).
   void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
 
+  void SetKernelPath(KernelPath kp) { kernel_path_ = kp; }
+
   void SetJITOptFlags(bool fusion_probe, bool inline_hash,
                       bool payload_prune, bool prefetch, int prefetch_dist,
                       bool batch_probe, bool cache,
@@ -347,6 +350,7 @@ private:
   // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
   const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
   uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
+  KernelPath kernel_path_ = KernelPath::NONE;
 
   // Per-optimization toggles (from ParamConfig)
   bool jit_fusion_probe_ = true;

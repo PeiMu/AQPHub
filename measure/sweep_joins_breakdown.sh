@@ -61,7 +61,7 @@ for q in $QUERIES; do
       --schema="$SCHEMA" --fkeys="$FKEYS" \
       --split=none --no-analyze --timing \
       --repeat="$ITERS" \
-      --jit-level=pipeline --jit-opt=o1 --jit-simd=auto $flags \
+      --jit-level=operator --kernel-path=pipeline --jit-opt=o1 --jit-simd=auto $flags \
       "$QDIR/${q}.sql" > /dev/null 2>&1
     # Last 10 rows = measured (first 5 = warmup). Col 3 = JIT compile ms,
     # col 4 = execute ms.

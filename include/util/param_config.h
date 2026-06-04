@@ -22,6 +22,12 @@ enum class SplitStrategy {
   NODE_BASED // DuckDB MiddleOptimize-driven, works with any execution adapter
 };
 
+enum class KernelPath {
+  NONE,     // No kernel path — fall through to DuckDB
+  PIPELINE, // Pipeline kernel (hash-based, no CSR)
+  QUERY     // Query kernel (CSR-based)
+};
+
 struct ParamConfig {
   BackendEngine engine = BackendEngine::DUCKDB;
   SplitStrategy strategy = SplitStrategy::NONE;
@@ -60,12 +66,17 @@ struct ParamConfig {
   std::string csv_dir;        // --csv-dir=<path>: CSV file directory
 
   // Storage plan: load flat column arrays + CSR indexes at startup
-  bool enable_storage_plan = true;
+  bool enable_storage_plan = false;
   std::string storage_cache_path; // --storage-cache=<path>: binary cache file
 
   // Kernel threshold tuning
   bool enable_tuning = false;  // --tuning: log per-sub-query features + timing
   bool no_kernel = false;      // --no-kernel: force DuckDB path (for comparison)
+
+  // Kernel path: which kernel implementation to use for sub-query execution.
+  // NONE = no kernel (DuckDB only), PIPELINE = hash-based, QUERY = CSR-based.
+  // Set via: --kernel-path=none|pipeline|query
+  KernelPath kernel_path = KernelPath::NONE;
 
   // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
   // 0 = no JIT. Each level implies all lower levels for fallback.

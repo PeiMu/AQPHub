@@ -344,9 +344,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
 #ifdef HAVE_DUCKDB
   if (storage_plan_ && storage_plan_->IsLoaded() &&
-      config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
+      (config_.jit_flags != 0 || config_.kernel_path != KernelPath::NONE) &&
+      config_.engine == BackendEngine::DUCKDB) {
 
-    if (config_.jit_flags & AQP_JIT_PIPELINE)
+    if (config_.kernel_path == KernelPath::PIPELINE)
       EnsureReferencedTempsReadyNoCsr(remaining_ir.get());
     else
       EnsureReferencedTempsReady(remaining_ir.get());
@@ -468,8 +469,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
           std::cerr << "EXPR ";
         if (config_.jit_flags & AQP_JIT_OPERATOR)
           std::cerr << "OPERATOR ";
-        if (config_.jit_flags & AQP_JIT_PIPELINE)
-          std::cerr << "PIPELINE ";
+        if (config_.kernel_path == KernelPath::PIPELINE)
+          std::cerr << "KERNEL=PIPELINE ";
+        else if (config_.kernel_path == KernelPath::QUERY)
+          std::cerr << "KERNEL=QUERY ";
         if (config_.jit_flags & AQP_JIT_SIMD)
           std::cerr << "SIMD ";
         if (config_.jit_flags & AQP_JIT_OPT3)
@@ -479,8 +482,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
       {
-        uint32_t duckdb_flags = config_.jit_flags & ~(AQP_JIT_PIPELINE | AQP_JIT_QUERY);
-        if ((duckdb_flags & AQP_JIT_LEVEL_MASK) && config_.engine == BackendEngine::DUCKDB) {
+        uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
+        if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
           if (config_.enable_debug_print) {
             std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
@@ -621,7 +624,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_DUCKDB
   // Kernel execution routing: pipeline kernel → query kernel → DuckDB fallback
   if (storage_plan_ && storage_plan_->IsLoaded() &&
-      config_.jit_flags != 0 && config_.engine == BackendEngine::DUCKDB) {
+      (config_.jit_flags != 0 || config_.kernel_path != KernelPath::NONE) &&
+      config_.engine == BackendEngine::DUCKDB) {
 
     // Lambda: register a kernel-produced FlatTable (shared by both paths)
     auto RegisterKernelResult = [&](std::unique_ptr<storage::FlatTable> result_flat,
@@ -685,7 +689,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     };
 
     // --- Pipeline kernel path (hash-based, no CSR needed) ---
-    if ((config_.jit_flags & AQP_JIT_PIPELINE) && !config_.no_kernel) {
+    if (config_.kernel_path == KernelPath::PIPELINE && !config_.no_kernel) {
       EnsureReferencedTempsReadyNoCsr(executable_ir);
       auto pipeline_plan = storage::AnalyzePipelineKernel(
           executable_ir, storage_plan_,
@@ -766,7 +770,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     }
 
     // --- Query kernel path (CSR-based, existing) ---
-    if (!kernel_executed && (config_.jit_flags & AQP_JIT_QUERY) && !config_.no_kernel) {
+    if (!kernel_executed && config_.kernel_path == KernelPath::QUERY && !config_.no_kernel) {
       EnsureReferencedTempsReady(executable_ir);
 
       auto lazy_csr_build = [&](const std::string &key) -> const storage::CSRIndex * {
@@ -889,10 +893,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
     {
-      // Mask out PIPELINE and QUERY flags — DuckDB only uses EXPR+OPERATOR
-      uint32_t duckdb_flags = config_.jit_flags & ~(AQP_JIT_PIPELINE | AQP_JIT_QUERY);
-      if ((duckdb_flags & AQP_JIT_LEVEL_MASK) &&
-          config_.engine == BackendEngine::DUCKDB) {
+      uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
+      if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
         auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
         if (duck) {
           duck->SetTempColRanges({});

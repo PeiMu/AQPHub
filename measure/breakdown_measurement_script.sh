@@ -44,24 +44,24 @@ bash ./measure_breakdown_time_job.sh duckdb node-based operator o3 none off off 
 bash ./measure_breakdown_time_job.sh duckdb node-based operator o1 auto off off off off off off off && \
 bash ./measure_breakdown_time_job.sh duckdb node-based operator o2 auto off off off off off off off && \
 bash ./measure_breakdown_time_job.sh duckdb node-based operator o3 auto off off off off off off off && \
-# pipeline jit none split
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o1 none && \
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 none && \
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o3 none && \
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o1 auto && \
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 auto && \
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o3 auto && \
-# pipeline jit relationship-center
-bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline o1 none && \
-bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline o2 none && \
-bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline o3 none && \
-bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline o1 auto && \
-bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline o2 auto && \
-bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline o3 auto && \
-# pipeline jit node-based
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline o1 none && \
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline o2 none && \
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline o3 none && \
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline o1 auto && \
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline o2 auto && \
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline o3 auto
+# pipeline kernel none split
+bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline o1 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline o2 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline o3 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline o1 auto && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline o2 auto && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline o3 auto && \
+# pipeline kernel relationship-center
+bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline o1 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline o2 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline o3 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline o1 auto && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline o2 auto && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline o3 auto && \
+# pipeline kernel node-based
+bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline o1 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline o2 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline o3 none && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline o1 auto && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline o2 auto && \
+bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline o3 auto
