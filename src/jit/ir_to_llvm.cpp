@@ -34,6 +34,9 @@
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/Transforms/Scalar/Reassociate.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
 
 #include "simplest_ir.h"
 #include "kernel/pipeline_kernel.h"
@@ -4636,21 +4639,7 @@ static Function *BuildAggUpdateFunction(LLVMContext &llctx, Module &mod,
 // Optimise the module with the specified optimization level
 // ---------------------------------------------------------------------------
 static void OptimiseModule(Module &mod, OptLevel opt) {
-  OptimizationLevel llvm_opt;
-  switch (opt) {
-  case OptLevel::O0:
-    llvm_opt = OptimizationLevel::O0;
-    break;
-  case OptLevel::O1:
-    llvm_opt = OptimizationLevel::O1;
-    break;
-  case OptLevel::O2:
-    llvm_opt = OptimizationLevel::O2;
-    break;
-  case OptLevel::O3:
-    llvm_opt = OptimizationLevel::O3;
-    break;
-  }
+  if (opt == OptLevel::O0) return;
 
   PassBuilder pb;
   LoopAnalysisManager lam;
@@ -4663,7 +4652,14 @@ static void OptimiseModule(Module &mod, OptLevel opt) {
   pb.registerLoopAnalyses(lam);
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-  ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm_opt);
+  FunctionPassManager fpm;
+  fpm.addPass(InstCombinePass());
+  fpm.addPass(ReassociatePass());
+  fpm.addPass(GVNPass());
+  fpm.addPass(SimplifyCFGPass());
+
+  ModulePassManager mpm;
+  mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
   mpm.run(mod, mam);
 }
 
