@@ -71,6 +71,9 @@ elif [[ "$engine" == "mariadb" ]]; then
 elif [[ "$engine" == "opengauss" ]]; then
     db_conn="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132"
 
+elif [[ "$engine" == "lingodb" ]]; then
+    db_conn=""
+
 else
     echo "Unknown engine: $engine"
     exit 1
@@ -155,6 +158,8 @@ cleanup() {
         mariadb_stop
     elif [[ "$engine" == "opengauss" ]]; then
         opengauss_stop
+    elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" ]]; then
+        :
     else
 	      pg_stop
     fi
@@ -194,6 +199,8 @@ elif [[ "$engine" == "mariadb" ]]; then
     mariadb_start
 elif [[ "$engine" == "opengauss" ]]; then
     opengauss_start
+elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" ]]; then
+    :
 else
     pg_start
 fi
@@ -222,16 +229,25 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
+# LingoDB: in-memory with CSV loading instead of --db
+db_arg="--db=${db_conn}"
+lingodb_flags=""
+if [[ "$engine" == "lingodb" ]]; then
+    db_arg="--in-memory"
+    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
+fi
+
 for sql in "$dir"/*.sql; do
     echo "Running benchmark for $sql..." | tee -a "$log_name"
 
     $cmd_prefix ../build_release/aqp_middleware \
         --engine="${engine}" \
-        --db="${db_conn}" \
+        ${db_arg} \
         "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-        --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+        --schema=$JOB_PATH/schema.sql \
+        --fkeys=$JOB_PATH/fkeys.sql \
         --split="${split}" \
+        ${lingodb_flags} \
         --no-analyze --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
         ${jit_extra_flags} \
         ${storage_flags} \

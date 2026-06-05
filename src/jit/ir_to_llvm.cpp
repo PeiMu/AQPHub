@@ -30,7 +30,11 @@
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Passes/PassBuilder.h>
+#if LLVM_VERSION_MAJOR >= 16
+#include <llvm/TargetParser/Host.h>
+#else
 #include <llvm/Support/Host.h>
+#endif
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
@@ -39,6 +43,23 @@
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
 
 #include "simplest_ir.h"
+
+// LLVM version compatibility (14 vs 16+)
+#if LLVM_VERSION_MAJOR >= 16
+#define AQP_JIT_SYM(ptr) \
+  ExecutorSymbolDef(ExecutorAddr::fromPtr(ptr), JITSymbolFlags::Exported)
+#define AQP_JIT_SYM_ADDR(addr) \
+  ExecutorSymbolDef(ExecutorAddr(addr), JITSymbolFlags::Exported)
+#define AQP_JIT_GET_ADDR(sym) reinterpret_cast<void *>((sym)->getValue())
+#define AQP_JIT_GET_FN(T, sym) (sym)->toPtr<T>()
+#else
+#define AQP_JIT_SYM(ptr) \
+  JITEvaluatedSymbol(pointerToJITTargetAddress(ptr), JITSymbolFlags::Exported)
+#define AQP_JIT_SYM_ADDR(addr) \
+  JITEvaluatedSymbol(static_cast<JITTargetAddress>(addr), JITSymbolFlags::Exported)
+#define AQP_JIT_GET_ADDR(sym) reinterpret_cast<void *>((sym)->getAddress())
+#define AQP_JIT_GET_FN(T, sym) jitTargetAddressToFunction<T>((sym)->getAddress())
+#endif
 #include "kernel/pipeline_kernel.h"
 
 // Forward-declare C-linkage runtime helpers (defined in aqp_jit_runtime.cpp
@@ -401,7 +422,7 @@ struct IrToLlvmCompiler::Impl {
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT] cache HIT: " << fn_name << " (" << key << ")\n";
 #endif
-    return reinterpret_cast<void *>(sym->getAddress());
+    return AQP_JIT_GET_ADDR(sym);
   }
 
   void InstallCacheHook() {
@@ -425,8 +446,7 @@ struct IrToLlvmCompiler::Impl {
 
     // Detect CPU features for SIMD
     host_cpu = std::string(sys::getHostCPUName());
-    StringMap<bool> host_features;
-    sys::getHostCPUFeatures(host_features);
+    auto host_features = sys::getHostCPUFeatures();
 
     has_sse42 = host_features.count("sse4.2") && host_features["sse4.2"];
     has_avx2 = host_features.count("avx2") && host_features["avx2"];
@@ -466,96 +486,38 @@ struct IrToLlvmCompiler::Impl {
     current_tracker = jit->getMainJITDylib().createResourceTracker();
 
     // Make runtime helper symbols (aqp_like_match etc.) visible to JIT.
-    // LLVM 14 uses JITEvaluatedSymbol(JITTargetAddress, JITSymbolFlags).
     auto &es = jit->getExecutionSession();
     auto &jd = jit->getMainJITDylib();
     (void)jd.define(absoluteSymbols({
-        {es.intern("aqp_like_match"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_like_match),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ilike_match"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ilike_match),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_str_eq"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_eq),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_str_cmp"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_cmp),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_str_contains"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_str_contains),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_like_match_segments"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_like_match_segments),
-                            JITSymbolFlags::Exported)},
-        {es.intern("memcmp"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::memcmp),
-                            JITSymbolFlags::Exported)},
+        {es.intern("aqp_like_match"), AQP_JIT_SYM(::aqp_like_match)},
+        {es.intern("aqp_ilike_match"), AQP_JIT_SYM(::aqp_ilike_match)},
+        {es.intern("aqp_str_eq"), AQP_JIT_SYM(::aqp_str_eq)},
+        {es.intern("aqp_str_cmp"), AQP_JIT_SYM(::aqp_str_cmp)},
+        {es.intern("aqp_str_contains"), AQP_JIT_SYM(::aqp_str_contains)},
+        {es.intern("aqp_like_match_segments"), AQP_JIT_SYM(::aqp_like_match_segments)},
+        {es.intern("memcmp"), AQP_JIT_SYM(::memcmp)},
         {es.intern("memchr"),
-         JITEvaluatedSymbol(
-             static_cast<JITTargetAddress>(
-                 reinterpret_cast<uintptr_t>(
-                     static_cast<void *(*)(void *, int, size_t)>(::memchr))),
-             JITSymbolFlags::Exported)},
-        {es.intern("aqp_in_set_i32"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_i32),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_in_set_i64"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_i64),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_in_set_str"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_in_set_str),
-                            JITSymbolFlags::Exported)},
-        // Hash table runtime
-        {es.intern("aqp_ht_create"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_create),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_destroy"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_destroy),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_insert"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_insert),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_insert_prehash"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_insert_prehash),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_probe"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_probe),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_probe_prehash"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_probe_prehash),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_iter_reset"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_iter_reset),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_next"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_next),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_size"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_size),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_slots_base"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_slots_base),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_mask"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_mask),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_ht_slot_size"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_ht_slot_size),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_hash"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_hash),
-                            JITSymbolFlags::Exported)},
-        {es.intern("aqp_copy_string"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress(::aqp_copy_string),
-                            JITSymbolFlags::Exported)},
-        // libc symbols needed by compiled code
-        {es.intern("memcpy"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress((void *)&memcpy),
-                            JITSymbolFlags::Exported)},
-        {es.intern("memset"),
-         JITEvaluatedSymbol(pointerToJITTargetAddress((void *)&memset),
-                            JITSymbolFlags::Exported)},
+         AQP_JIT_SYM_ADDR(reinterpret_cast<uintptr_t>(
+             static_cast<void *(*)(void *, int, size_t)>(::memchr)))},
+        {es.intern("aqp_in_set_i32"), AQP_JIT_SYM(::aqp_in_set_i32)},
+        {es.intern("aqp_in_set_i64"), AQP_JIT_SYM(::aqp_in_set_i64)},
+        {es.intern("aqp_in_set_str"), AQP_JIT_SYM(::aqp_in_set_str)},
+        {es.intern("aqp_ht_create"), AQP_JIT_SYM(::aqp_ht_create)},
+        {es.intern("aqp_ht_destroy"), AQP_JIT_SYM(::aqp_ht_destroy)},
+        {es.intern("aqp_ht_insert"), AQP_JIT_SYM(::aqp_ht_insert)},
+        {es.intern("aqp_ht_insert_prehash"), AQP_JIT_SYM(::aqp_ht_insert_prehash)},
+        {es.intern("aqp_ht_probe"), AQP_JIT_SYM(::aqp_ht_probe)},
+        {es.intern("aqp_ht_probe_prehash"), AQP_JIT_SYM(::aqp_ht_probe_prehash)},
+        {es.intern("aqp_ht_iter_reset"), AQP_JIT_SYM(::aqp_ht_iter_reset)},
+        {es.intern("aqp_ht_next"), AQP_JIT_SYM(::aqp_ht_next)},
+        {es.intern("aqp_ht_size"), AQP_JIT_SYM(::aqp_ht_size)},
+        {es.intern("aqp_ht_slots_base"), AQP_JIT_SYM(::aqp_ht_slots_base)},
+        {es.intern("aqp_ht_mask"), AQP_JIT_SYM(::aqp_ht_mask)},
+        {es.intern("aqp_ht_slot_size"), AQP_JIT_SYM(::aqp_ht_slot_size)},
+        {es.intern("aqp_hash"), AQP_JIT_SYM(::aqp_hash)},
+        {es.intern("aqp_copy_string"), AQP_JIT_SYM(::aqp_copy_string)},
+        {es.intern("memcpy"), AQP_JIT_SYM((void *)&memcpy)},
+        {es.intern("memset"), AQP_JIT_SYM((void *)&memset)},
     }));
   }
 
@@ -3679,7 +3641,7 @@ static Function *BuildPipelineFunctionSIMD(
   // Since we moved the builder around, let's just find any BB without
   // terminator.
   for (auto &bb : *fn) {
-    if (bb.getTerminator() == nullptr && bb.getName().startswith("val_done")) {
+    if (bb.getTerminator() == nullptr && bb.getName().starts_with("val_done")) {
       IRBuilder<> b_term(&bb);
       b_term.CreateBr(vec_scatter_bb);
     }
@@ -4810,7 +4772,7 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
     return nullptr;
   }
 
-  return jitTargetAddressToFunction<AQPExprFn>(sym->getAddress());
+  return AQP_JIT_GET_FN(AQPExprFn, sym);
 }
 
 AQPExprFn
@@ -4945,7 +4907,7 @@ IrToLlvmCompiler::CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
     return nullptr;
   }
 
-  return jitTargetAddressToFunction<AQPExprFn>(sym->getAddress());
+  return AQP_JIT_GET_FN(AQPExprFn, sym);
 }
 
 AQPExprFn
@@ -5095,7 +5057,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     return nullptr;
   }
 
-  return jitTargetAddressToFunction<AQPExprFn>(sym->getAddress());
+  return AQP_JIT_GET_FN(AQPExprFn, sym);
 }
 
 AQPOperatorFn
@@ -5184,7 +5146,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
     return nullptr;
   }
 
-  return jitTargetAddressToFunction<AQPOperatorFn>(sym->getAddress());
+  return AQP_JIT_GET_FN(AQPOperatorFn, sym);
 }
 
 #if !DISABLE_AGG_JIT
@@ -5330,7 +5292,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
             << "\n";
 #endif
 
-  return reinterpret_cast<void *>(sym->getAddress());
+  return AQP_JIT_GET_ADDR(sym);
 }
 
 void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops,
@@ -5420,7 +5382,7 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
             << "\n";
 #endif
 
-  return reinterpret_cast<void *>(sym->getAddress());
+  return AQP_JIT_GET_ADDR(sym);
 }
 
 #endif // !DISABLE_AGG_JIT
@@ -5558,7 +5520,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
             << (cache_key.empty() ? "" : " [cached]") << "\n";
 #endif
 
-  return jitTargetAddressToFunction<AQPPipelineFn>(sym->getAddress());
+  return AQP_JIT_GET_FN(AQPPipelineFn, sym);
 }
 
 // ---------------------------------------------------------------------------
@@ -5802,7 +5764,7 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
             << "  agg_ops=" << agg_ops.size() << "\n";
 #endif
 
-  return reinterpret_cast<void *>(sym->getAddress());
+  return AQP_JIT_GET_ADDR(sym);
 }
 #endif // !DISABLE_AGG_JIT
 
@@ -6708,7 +6670,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
             << "  payload_width=" << payload_width << "\n";
 #endif
 
-  return reinterpret_cast<void *>(sym->getAddress());
+  return AQP_JIT_GET_ADDR(sym);
 }
 
 // ---------------------------------------------------------------------------

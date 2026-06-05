@@ -36,10 +36,12 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.engine = BackendEngine::MARIADB;
       } else if (engine_str == "opengauss") {
         config.engine = BackendEngine::OPENGAUSS;
+      } else if (engine_str == "lingodb" || engine_str == "lingo-db") {
+        config.engine = BackendEngine::LINGODB;
       } else {
         throw std::runtime_error(
             "Unknown engine: " + arg.substr(9) +
-            " (valid: duckdb, postgres, umbra, mariadb, opengauss)");
+            " (valid: duckdb, postgres, umbra, mariadb, opengauss, lingodb)");
       }
     }
     // Parse --db=<value>
@@ -256,8 +258,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     config.enable_storage_plan = true;
 
   if (config.in_memory) {
-    if (config.engine != BackendEngine::DUCKDB)
-      throw std::runtime_error("--in-memory is only supported with --engine=duckdb");
+    if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB)
+      throw std::runtime_error("--in-memory is only supported with --engine=duckdb or --engine=lingodb");
     if (config.csv_dir.empty() && !config.schema_path.empty()) {
       auto pos = config.schema_path.find_last_of('/');
       config.csv_dir = (pos != std::string::npos ? config.schema_path.substr(0, pos) : ".") + "/csv";

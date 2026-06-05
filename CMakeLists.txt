@@ -4,19 +4,11 @@ project(AQP_middleware)
 set(CMAKE_CXX_STANDARD 14)
 
 # ---------------------------------------------------------------------------
-# LLVM JIT support
-# LLVM 14 is the default system installation; 17/19 also available.
+# LLVM 20 (shared with lingo-db and JIT)
 # ---------------------------------------------------------------------------
-find_package(LLVM 14 CONFIG
-        HINTS /usr/lib/llvm-14/lib/cmake/llvm
-        QUIET)
-if (NOT LLVM_FOUND)
-    # Try LLVM 17 or 19 as fallback
-    find_package(LLVM CONFIG
-            HINTS /usr/lib/llvm-17/lib/cmake/llvm
-                  /usr/lib/llvm-19/lib/cmake/llvm
-            QUIET)
-endif ()
+find_package(LLVM 20.1 CONFIG
+        HINTS /usr/lib/llvm-20/lib/cmake/llvm
+        REQUIRED)
 
 if (LLVM_FOUND)
     message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
@@ -260,6 +252,104 @@ else ()
     message(WARNING "MariaDB not found at ${MARIADB_ROOT}")
 endif ()
 
+# LingoDB
+set(LINGODB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../lingo-db" CACHE PATH "LingoDB source path")
+set(LINGODB_BUILD "${LINGODB_ROOT}/build/lingodb-release" CACHE PATH "LingoDB build path")
+set(HAVE_LINGODB FALSE)
+if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
+    message(STATUS "Found LingoDB at: ${LINGODB_ROOT}")
+
+    # MLIR (required by lingo-db; LLVM already found at top level)
+    set(MLIR_DIR "${LLVM_DIR}/../mlir")
+    find_package(MLIR CONFIG HINTS ${MLIR_DIR} QUIET)
+
+    if (HAVE_LLVM AND MLIR_FOUND)
+        set(HAVE_LINGODB TRUE)
+
+        # Collect all lingo-db static libraries
+        set(LINGODB_LIBS
+                ${LINGODB_BUILD}/src/execution/librunner.a
+                ${LINGODB_BUILD}/src/compiler/frontend/libMLIRSQLFrontend.a
+                ${LINGODB_BUILD}/src/compiler/frontend/libMLIRSQLFrontendGen.a
+                ${LINGODB_BUILD}/src/catalog/libcatalog.a
+                ${LINGODB_BUILD}/src/catalog/libmlirTypes.a
+                ${LINGODB_BUILD}/src/utility/libutility.a
+                ${LINGODB_BUILD}/src/scheduler/libscheduler.a
+                ${LINGODB_BUILD}/lib/libMLIRCompilerHelper.a
+                ${LINGODB_BUILD}/lib/libMLIRRelAlg.a
+                ${LINGODB_BUILD}/lib/libMLIRTupleStream.a
+                ${LINGODB_BUILD}/lib/libMLIRSubOperator.a
+                ${LINGODB_BUILD}/lib/libMLIRUtil.a
+                ${LINGODB_BUILD}/lib/libMLIRUtilToLLVM.a
+                ${LINGODB_BUILD}/lib/libMLIRDB.a
+                ${LINGODB_BUILD}/lib/libMLIRArrow.a
+                ${LINGODB_BUILD}/lib/libMLIRArrowToStd.a
+                ${LINGODB_BUILD}/lib/libMLIRDBToArrowStd.a
+                ${LINGODB_BUILD}/lib/libMLIRelAlgToSubOp.a
+                ${LINGODB_BUILD}/lib/libMLIRSubOpToControlFlow.a
+                ${LINGODB_BUILD}/libruntime_funcs_ptr.a
+                ${LINGODB_BUILD}/vendored/mimalloc/libmimalloc.a
+        )
+
+        # Get MLIR and LLVM libraries
+        get_property(MLIR_DIALECT_LIBS GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+        get_property(MLIR_CONVERSION_LIBS GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+        get_property(MLIR_TRANSLATION_LIBS GLOBAL PROPERTY MLIR_TRANSLATION_LIBS)
+        get_property(MLIR_EXTENSION_LIBS GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
+
+        add_library(lingodb_adapter STATIC
+                src/adapters/lingodb_adapter.cpp
+                src/util/util.cpp)
+        target_include_directories(lingodb_adapter PUBLIC
+                ${CMAKE_CURRENT_SOURCE_DIR}/include
+                ${LINGODB_ROOT}/include
+                ${LINGODB_ROOT}/vendored
+                ${LINGODB_BUILD}/include
+                ${LLVM_INCLUDE_DIRS}
+                ${MLIR_INCLUDE_DIRS}
+        )
+        target_compile_definitions(lingodb_adapter PUBLIC HAVE_LINGODB)
+        target_compile_definitions(split_lib PUBLIC HAVE_LINGODB)
+
+        # LingoDB requires C++20
+        set_property(TARGET lingodb_adapter PROPERTY CXX_STANDARD 20)
+
+        # Link lingo-db libraries, MLIR, LLVM, Arrow
+        set(zstd_DIR "/usr/lib/x86_64-linux-gnu/cmake/zstd" CACHE PATH "" FORCE)
+        find_package(Arrow REQUIRED)
+        set(Boost_USE_STATIC_LIBS ON)
+        find_package(Boost 1.83.0 REQUIRED COMPONENTS context)
+        # Collect runtime object files (OBJECT library in lingo-db)
+        file(GLOB_RECURSE LINGODB_RUNTIME_OBJS
+                "${LINGODB_BUILD}/src/runtime/CMakeFiles/runtime.dir/*.o")
+        target_link_libraries(lingodb_adapter PUBLIC
+                -Wl,--start-group
+                ${LINGODB_LIBS}
+                ${LINGODB_RUNTIME_OBJS}
+                ${MLIR_DIALECT_LIBS}
+                ${MLIR_CONVERSION_LIBS}
+                ${MLIR_TRANSLATION_LIBS}
+                ${MLIR_EXTENSION_LIBS}
+                -Wl,--end-group
+                Arrow::arrow_shared
+                /usr/lib/x86_64-linux-gnu/libarrow_compute.so
+                Boost::context
+                split_lib
+                -lpthread -lrt -latomic
+        )
+
+        message(STATUS "LingoDB adapter: ENABLED (LLVM ${LLVM_PACKAGE_VERSION})")
+    else ()
+        if (NOT HAVE_LLVM)
+            message(STATUS "LLVM not found — LingoDB adapter disabled")
+        else ()
+            message(STATUS "MLIR not found — LingoDB adapter disabled")
+        endif ()
+    endif ()
+else ()
+    message(STATUS "LingoDB not found at ${LINGODB_ROOT}")
+endif ()
+
 # libpg_query
 set(LIBPG_QUERY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../libpg_query" CACHE PATH "libpg_query source path")
 if (EXISTS ${LIBPG_QUERY_ROOT})
@@ -281,6 +371,11 @@ if (EXISTS ${LIBPG_QUERY_ROOT})
     if (LIBPG_QUERY_LIB AND HAVE_MARIADB)
         target_link_libraries(mariadb_adapter PUBLIC ${LIBPG_QUERY_LIB})
         message(STATUS "libpg_query: ENABLED (MariaDB)")
+    endif ()
+
+    if (LIBPG_QUERY_LIB AND HAVE_LINGODB)
+        target_link_libraries(lingodb_adapter PUBLIC ${LIBPG_QUERY_LIB})
+        message(STATUS "libpg_query: ENABLED (LingoDB)")
     endif ()
 
     if (NOT LIBPG_QUERY_LIB)
@@ -319,7 +414,7 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
     endif ()
 
     # Build aqp_middleware executable if any adapter is available
-    if (HAVE_DUCKDB OR HAVE_POSTGRES OR HAVE_MARIADB)
+    if (HAVE_DUCKDB OR HAVE_POSTGRES OR HAVE_MARIADB OR HAVE_LINGODB)
         add_executable(aqp_middleware src/aqp_middleware.cpp)
         set_target_properties(aqp_middleware PROPERTIES ENABLE_EXPORTS ON)
         target_link_libraries(aqp_middleware PRIVATE
@@ -344,6 +439,9 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
         endif ()
         if (HAVE_OPENGAUSS)
             target_link_libraries(aqp_middleware PRIVATE opengauss_adapter)
+        endif ()
+        if (HAVE_LINGODB)
+            target_link_libraries(aqp_middleware PRIVATE lingodb_adapter)
         endif ()
 
         message(STATUS "aqp_middleware: ENABLED")

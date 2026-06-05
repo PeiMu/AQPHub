@@ -31,6 +31,10 @@
 #include "adapters/opengauss_adapter.h"
 #endif
 
+#ifdef HAVE_LINGODB
+#include "adapters/lingodb_adapter.h"
+#endif
+
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -104,6 +108,21 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
       return std::make_unique<MariaDBAdapter>(config.db_path_or_connection,
                                               config.helper_db);
     }
+  }
+#endif
+
+#if defined(HAVE_LINGODB)
+  case BackendEngine::LINGODB: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
+    if (config.enable_debug_print) {
+      std::cout << "[AQP Middleware] Creating LingoDB adapter: "
+                << db_path << std::endl;
+    }
+    auto adapter = std::make_unique<LingoDBAdapter>(db_path);
+    if (config.in_memory) {
+      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
   }
 #endif
 
@@ -330,7 +349,8 @@ int main(int argc, char **argv) {
     if ((config.engine == BackendEngine::POSTGRESQL ||
          config.engine == BackendEngine::UMBRA ||
          config.engine == BackendEngine::MARIADB ||
-         config.engine == BackendEngine::OPENGAUSS) &&
+         config.engine == BackendEngine::OPENGAUSS ||
+         config.engine == BackendEngine::LINGODB) &&
         !config.schema_path.empty()) {
       if (!ir_sql_converter::InitSchemaParser(config.schema_path)) {
         std::cerr << "Warning: Failed to load schema, column indices will be 0"
