@@ -227,6 +227,7 @@ public:
   void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
 
   void SetKernelPath(KernelPath kp) { kernel_path_ = kp; }
+  void SetJITDebug(bool debug) { jit_debug_ = debug; }
 
   void SetJITOptFlags(bool fusion_probe, bool inline_hash,
                       bool payload_prune, bool prefetch, int prefetch_dist,
@@ -363,6 +364,7 @@ private:
   int  jit_prefetch_entry_distance_ = 24;
   int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
+  bool jit_debug_ = false;
   bool jit_cache_ = false;
   std::string jit_cache_dir_;
   // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.

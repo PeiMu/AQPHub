@@ -207,6 +207,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       if (duckdb_adp) {
         duckdb_adp->SetJITFlags(config.jit_flags);
         duckdb_adp->SetKernelPath(config.kernel_path);
+        duckdb_adp->SetJITDebug(config.enable_debug_print);
         duckdb_adp->SetJITOptFlags(
             config.jit_fusion_probe,
             config.jit_inline_hash, config.jit_payload_prune,
@@ -285,16 +286,39 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
   int passed = 0;
   int failed = 0;
 
-  for (const auto &sql_file : sql_files) {
+  for (size_t qi = 0; qi < sql_files.size(); qi++) {
+    const auto &sql_file = sql_files[qi];
     std::cout << "Run " + sql_file << std::endl;
-    TestResult result;
-    ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan);
-    results.push_back(result);
+    if (config.enable_timing) {
+      std::ofstream log_file;
+      log_file.open("time_log.csv", std::ios_base::app);
+      log_file << "Running benchmark for " << sql_file << "...\n";
+      log_file.close();
+    }
+    for (int iter = 0; iter < config.repeat_count; iter++) {
+      std::chrono::high_resolution_clock::time_point timer;
+      if (config.enable_timing)
+        timer = chrono_tic();
+      if (qi > 0 || iter > 0)
+        adapter->ResetQueryState();
+      if (config.enable_timing) {
+        auto reset_time = chrono_toc(&timer, "", false);
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (reset_time / 1000.0) << ", ";
+        log_file.close();
+      }
 
-    if (result.success) {
-      passed++;
-    } else {
-      failed++;
+      TestResult result;
+      ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan);
+      results.push_back(result);
+
+      if (result.success) {
+        passed++;
+      } else {
+        failed++;
+      }
     }
   }
 
@@ -366,17 +390,18 @@ int main(int argc, char **argv) {
     std::unique_ptr<middleware::storage::StoragePlan> storage_plan_ptr;
     middleware::storage::StoragePlan *storage_plan = nullptr;
     if (config.enable_storage_plan) {
-#ifdef HAVE_DUCKDB
-      if (config.engine != BackendEngine::DUCKDB) {
-        throw std::runtime_error(
-            "--storage-plan is only supported with --engine=duckdb");
-      }
       storage_plan_ptr = std::make_unique<middleware::storage::StoragePlan>();
       bool loaded_from_cache = false;
       if (!config.storage_cache_path.empty()) {
         loaded_from_cache = storage_plan_ptr->LoadFromFile(config.storage_cache_path);
       }
       if (!loaded_from_cache) {
+#ifdef HAVE_DUCKDB
+        if (config.engine != BackendEngine::DUCKDB) {
+          throw std::runtime_error(
+              "--storage-plan without a pre-built cache requires --engine=duckdb. "
+              "Build the cache first with: --engine=duckdb --storage-cache=<path>");
+        }
         auto *duck = dynamic_cast<DuckDBAdapter *>(adapter.get());
         storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
         if (!config.fkeys_path.empty()) {
@@ -387,6 +412,10 @@ int main(int argc, char **argv) {
         if (!config.storage_cache_path.empty()) {
           storage_plan_ptr->SaveToFile(config.storage_cache_path);
         }
+#else
+        throw std::runtime_error(
+            "--storage-plan requires a pre-built cache (--storage-cache=<path>)");
+#endif
       } else if (storage_plan_ptr->GetInvertedIndicesMap().empty()) {
         storage_plan_ptr->BuildInvertedIndices();
       }
@@ -394,21 +423,18 @@ int main(int argc, char **argv) {
         storage_plan_ptr->PrintSummary();
       }
       storage_plan = storage_plan_ptr.get();
-#else
-      throw std::runtime_error(
-          "--storage-plan requires DuckDB support");
-#endif
     }
 
     if (config.enable_timing) {
       auto prepare_middleware_time =
           chrono_toc(&timer, "Prepare Middleware time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3)
-               << (prepare_middleware_time / 1000.0) << ", ";
-      log_file.close();
+      if (!config.benchmark_mode) {
+        std::ofstream log_file;
+        log_file.open("time_log.csv", std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (prepare_middleware_time / 1000.0) << ", ";
+        log_file.close();
+      }
     }
 
     // Execute based on mode

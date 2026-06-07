@@ -80,7 +80,7 @@ struct ParamConfig {
 
   // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
   // 0 = no JIT. Each level implies all lower levels for fallback.
-  // Set via: --jit (=AQPJIT_EXPR), --jit-level=operator, --jit-simd, --jit-opt=3
+  // Set via: --jit (=AQPJIT_EXPR), --jit-level=operator, --jit-simd
   uint32_t jit_flags = 0;
 
   // Per-optimization toggles (pipeline-level and above).

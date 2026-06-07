@@ -4598,10 +4598,10 @@ static Function *BuildAggUpdateFunction(LLVMContext &llctx, Module &mod,
 #endif // !DISABLE_AGG_JIT (BuildAggUpdateFunction)
 
 // ---------------------------------------------------------------------------
-// Optimise the module with the specified optimization level
+// Optimise the module (skipped in debug mode)
 // ---------------------------------------------------------------------------
-static void OptimiseModule(Module &mod, OptLevel opt) {
-  if (opt == OptLevel::O0) return;
+static void OptimiseModule(Module &mod, bool skip) {
+  if (skip) return;
 
   PassBuilder pb;
   LoopAnalysisManager lam;
@@ -4628,8 +4628,8 @@ static void OptimiseModule(Module &mod, OptLevel opt) {
 // ---------------------------------------------------------------------------
 // IrToLlvmCompiler public API
 // ---------------------------------------------------------------------------
-IrToLlvmCompiler::IrToLlvmCompiler(OptLevel opt, SimdISA simd)
-    : opt_level_(opt), simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
+IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd)
+    : skip_opt_(debug), simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
       impl_(std::make_unique<Impl>(simd)) {}
 
 IrToLlvmCompiler::~IrToLlvmCompiler() = default;
@@ -4756,7 +4756,7 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   // Add module to ORC JIT
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -4893,7 +4893,7 @@ IrToLlvmCompiler::CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto err2 = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
@@ -4932,8 +4932,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string expr_text =
         const_cast<AQPStmt &>(filter_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)opt_level_) + "." +
-                          std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("filter:" + opt_tag, schema, expr_text));
     fn_name = "aqp_expr_c" + cache_key.substr(0, 12);
@@ -5034,7 +5033,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     }
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -5095,8 +5094,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string proj_text =
         const_cast<AQPStmt &>(proj_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)opt_level_) + "." +
-                          std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("proj:" + opt_tag, in_schema, proj_text));
     fn_name = "aqp_proj_c" + cache_key.substr(0, 12);
@@ -5123,7 +5121,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -5219,8 +5217,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string agg_text =
         const_cast<AQPStmt &>(agg_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)opt_level_) + "." +
-                          std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("agg:" + opt_tag, in_schema, agg_text));
     fn_name = "aqp_agg_c" + cache_key.substr(0, 12);
@@ -5263,7 +5260,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -5362,7 +5359,7 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
     }
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
@@ -5439,8 +5436,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
         ? const_cast<AQPStmt *>(filter_node)->Print(false, 0) : "";
     std::string pt = proj_node
         ? const_cast<AQPStmt *>(proj_node)->Print(false, 0) : "";
-    std::string opt_tag = std::to_string((int)opt_level_) + "." +
-                          std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("pipe:" + opt_tag, in_schema, ft + "||" + pt));
     fn_name = "aqp_pipe_c" + cache_key.substr(0, 12);
@@ -5490,7 +5486,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -5744,7 +5740,7 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
@@ -6648,7 +6644,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     return nullptr;
   }
 
-  OptimiseModule(*mod, opt_level_);
+  OptimiseModule(*mod, skip_opt_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {

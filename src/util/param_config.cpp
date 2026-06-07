@@ -215,21 +215,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_cache_dir = arg.substr(12);
     } else if (arg == "--no-jit-cache") {
       config.jit_cache = false;
-    } else if (arg.find("--jit-opt=") == 0) {
-      std::string opt = to_lower(arg.substr(10));
-      config.jit_flags &= ~AQP_JIT_OPT_MASK;
-      if (opt == "o0" || opt == "0")
-        config.jit_flags |= AQP_JIT_OPT_O0;
-      else if (opt == "o1" || opt == "1")
-        config.jit_flags |= AQP_JIT_OPT_O1;
-      else if (opt == "o2" || opt == "2")
-        config.jit_flags |= AQP_JIT_OPT_O2;
-      else if (opt == "o3" || opt == "3")
-        config.jit_flags |= AQP_JIT_OPT_O3;
-      else
-        throw std::runtime_error(
-            "Unknown JIT opt level: " + opt +
-            " (valid: O0, O1, O2, O3)");
     } else if (arg.find("--repeat=") == 0) {
       config.repeat_count = std::stoi(arg.substr(9));
       if (config.repeat_count < 1)
@@ -330,9 +315,6 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --jit-simd[=<level>]             Enable SIMD: sse2, avx, "
                "avx2, avx512, auto (default: auto)"
-            << std::endl;
-  std::cout << "  --jit-opt=<O0|O1|O2|O3>         LLVM optimization level "
-               "(default: O1)"
             << std::endl;
   std::cout << "  --no-jit                         Disable JIT compilation"
             << std::endl;

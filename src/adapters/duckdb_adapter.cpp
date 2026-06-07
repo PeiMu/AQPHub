@@ -35,23 +35,6 @@
 #include "duckdb/common/types/hash.hpp"
 
 // Resolve jit_flags bitfields to typed enums for IrToLlvmCompiler
-static aqp_jit::OptLevel ResolveOptLevel(uint32_t flags) {
-  // Legacy AQP_JIT_OPT3 (0x08) maps to O3
-  if (flags & AQP_JIT_OPT3)
-    return aqp_jit::OptLevel::O3;
-  switch (flags & AQP_JIT_OPT_MASK) {
-  case AQP_JIT_OPT_O0:
-    return aqp_jit::OptLevel::O0;
-  case AQP_JIT_OPT_O1:
-    return aqp_jit::OptLevel::O1;
-  case AQP_JIT_OPT_O2:
-    return aqp_jit::OptLevel::O2;
-  case AQP_JIT_OPT_O3:
-    return aqp_jit::OptLevel::O3;
-  }
-  return aqp_jit::OptLevel::O1; // default
-}
-
 static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
   // Legacy AQP_JIT_SIMD (0x20) maps to AUTO
   if (flags & AQP_JIT_SIMD)
@@ -2310,7 +2293,7 @@ FilterAllColsAvailable(const ir_sql_converter::AQPStmt *filter_ir,
 void DuckDBAdapter::EnsureJITCompiler() {
   if (!jit_compiler_) {
     jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        ResolveOptLevel(jit_flags_), ResolveSimdISA(jit_flags_));
+        jit_debug_, ResolveSimdISA(jit_flags_));
   }
   jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,

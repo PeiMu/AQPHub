@@ -177,8 +177,7 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
-for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
-  echo "Running benchmark for $sql..." | tee -a "$log_name"
+for dsb_dir in "$dir_1" "$dir_2"; do
   $cmd_prefix ../build_release/aqp_middleware \
     --engine="${engine}" \
     --db="${db_conn}" \
@@ -189,7 +188,8 @@ for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
     --timing \
     --no-analyze \
     --repeat=${iteration} \
-    "${sql}"
+    --benchmark \
+    "${dsb_dir}"
 done
 
 mv "${log_name}" job_result/${engine}_${split}_breakdown_"${log_name}"

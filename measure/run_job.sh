@@ -3,15 +3,14 @@
 engine=$1
 split=$2
 jit_level=$3
-jit_opt=$4
-jit_simd=$5
-fusion_build=${6:-on}
-fusion_probe=${7:-on}
-inline_hash=${8:-on}
-payload_prune=${9:-on}
-prefetch=${10:-on}
-batch_probe=${11:-on}
-cache=${12:-off}
+jit_simd=$4
+fusion_build=${5:-on}
+fusion_probe=${6:-on}
+inline_hash=${7:-on}
+payload_prune=${8:-on}
+prefetch=${9:-on}
+batch_probe=${10:-on}
+cache=${11:-off}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -49,7 +48,7 @@ if [[ "$jit_level" != "none" ]]; then
     storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
 fi
 
-log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_job.txt
+log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_job.txt
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
@@ -237,23 +236,20 @@ if [[ "$engine" == "lingodb" ]]; then
     lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
 fi
 
-for sql in "$dir"/*.sql; do
-    echo "Running benchmark for $sql..." | tee -a "$log_name"
-
-    $cmd_prefix ../build_release/aqp_middleware \
-        --engine="${engine}" \
-        ${db_arg} \
-        "${helper_db_arg}" \
-        --schema=$JOB_PATH/schema.sql \
-        --fkeys=$JOB_PATH/fkeys.sql \
-        --split="${split}" \
-        ${lingodb_flags} \
-        --no-analyze --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
-        ${jit_extra_flags} \
-        ${storage_flags} \
-        "${sql}" \
-        2>&1 | tee -a "$log_name"
-done
+$cmd_prefix ../build_release/aqp_middleware \
+    --engine="${engine}" \
+    ${db_arg} \
+    "${helper_db_arg}" \
+    --schema=$JOB_PATH/schema.sql \
+    --fkeys=$JOB_PATH/fkeys.sql \
+    --split="${split}" \
+    ${lingodb_flags} \
+    --no-analyze --jit-level=${jit_level} --jit-simd=${jit_simd} \
+    ${jit_extra_flags} \
+    ${storage_flags} \
+    --benchmark \
+    "${dir}" \
+    2>&1 | tee -a "$log_name"
 end=$(date +%s%N)
 elapsed_ns=$((end - start))
 elapsed_ms=$((elapsed_ns / 1000000))

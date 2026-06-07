@@ -130,8 +130,12 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #ifdef HAVE_DUCKDB
   if (config_.engine == BackendEngine::DUCKDB) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-    if (duck)
+    if (duck) {
       duck->ClearKernelTemps();
+#ifdef HAVE_LLVM
+      duck->SetJITDebug(config_.enable_debug_print);
+#endif
+    }
   }
 #endif
 
@@ -475,8 +479,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
           std::cerr << "KERNEL=QUERY ";
         if (config_.jit_flags & AQP_JIT_SIMD)
           std::cerr << "SIMD ";
-        if (config_.jit_flags & AQP_JIT_OPT3)
-          std::cerr << "OPT3 ";
         std::cerr << ") engine=" << (int)config_.engine << "\n";
       }
 #ifdef HAVE_DUCKDB

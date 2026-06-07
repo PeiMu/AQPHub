@@ -3,15 +3,14 @@
 engine=$1
 split=$2
 jit_level=$3
-jit_opt=$4
-jit_simd=$5
-fusion_build=${6:-on}     # on / off
-fusion_probe=${7:-on}     # on / off
-inline_hash=${8:-on}      # on / off
-payload_prune=${9:-on}    # on / off
-prefetch=${10:-on}        # on / off / <distance>
-batch_probe=${11:-on}     # on / off
-cache=${12:-off}          # off / on / <path>
+jit_simd=$4
+fusion_build=${5:-on}     # on / off
+fusion_probe=${6:-on}     # on / off
+inline_hash=${7:-on}      # on / off
+payload_prune=${8:-on}    # on / off
+prefetch=${9:-on}         # on / off / <distance>
+batch_probe=${10:-on}     # on / off
+cache=${11:-off}          # off / on / <path>
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -43,7 +42,7 @@ flag_suffix=""
 [[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$cache"         != "off" ]] && flag_suffix+="_cache"
 
-log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_job.csv
+log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_job.csv
 if [[ "$engine" == "mariadb" ]]; then
     dir="$JOB_PATH/mariadb_queries"
 else 
@@ -122,7 +121,7 @@ for sql in "${dir}"/*.sql; do
     \"${helper_db_arg}\" \
     --schema=$JOB_PATH/schema.sql \
     --fkeys=$JOB_PATH/fkeys.sql \
-    --split=\"${split}\" ${lingodb_flags} --no-analyze --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} ${jit_extra_flags} ${sql}"
+    --split=\"${split}\" ${lingodb_flags} --no-analyze --jit-level=${jit_level} --jit-simd=${jit_simd} ${jit_extra_flags} ${sql}"
     cat temp.csv >> "${log_name}"
 done
 

@@ -293,12 +293,12 @@ void LingoDBAdapter::SetTempTableCardinality(
 
 std::pair<double, double>
 LingoDBAdapter::GetEstimatedCost(const std::string &sql) {
-  // LingoDB has no EXPLAIN. For temp tables, return real cardinality.
-  // For base-table queries, the node-based strategy uses DuckDB as the
-  // planning helper, so this is only called for temp table subqueries.
-  // Return max to let the splitter use its own heuristics.
-  return {std::numeric_limits<double>::max(),
-          std::numeric_limits<double>::max()};
+  double rows = lingodb::execution::estimateQueryRows(*session_, sql);
+  if (rows < 0) {
+    return {std::numeric_limits<double>::max(),
+            std::numeric_limits<double>::max()};
+  }
+  return {rows, rows};
 }
 
 void LingoDBAdapter::CleanUp() {

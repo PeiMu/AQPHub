@@ -86,18 +86,11 @@ static constexpr int32_t AQP_DTYPE_OTHER   = 99;
 #define AQP_JIT_QUERY                                                          \
   (1u << 4) /* (legacy) query-level kernel — use kernel_path  */
 
-/* Legacy aliases (backward compat) */
+/* Legacy aliases (backward compat — debug prints only) */
 #define AQP_JIT_OPT3                                                           \
-  (1u << 3) /* Use LLVM O3 optimization                     */
+  (1u << 3) /* (legacy, unused)                              */
 #define AQP_JIT_SIMD                                                           \
   (1u << 5) /* Enable explicit SIMD vectorization            */
-
-/* LLVM optimization level — bits 6-7 */
-#define AQP_JIT_OPT_MASK (0x3u << 6)
-#define AQP_JIT_OPT_O0 (0x0u << 6) /* No optimization          */
-#define AQP_JIT_OPT_O1 (0x1u << 6) /* Basic optimization       */
-#define AQP_JIT_OPT_O2 (0x2u << 6) /* Standard optimization    */
-#define AQP_JIT_OPT_O3 (0x3u << 6) /* Aggressive optimization  */
 
 /* SIMD ISA level — bits 8-10 */
 #define AQP_JIT_SIMD_MASK (0x7u << 8)

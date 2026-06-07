@@ -3,14 +3,13 @@
 engine=$1
 split=$2
 kernel_path=$3        # none | pipeline | query
-jit_opt=${4:-o1}
-jit_simd=${5:-auto}
-fusion_probe=${6:-on}
-inline_hash=${7:-on}
-payload_prune=${8:-on}
-prefetch=${9:-on}
-batch_probe=${10:-on}
-cache=${11:-off}
+jit_simd=${4:-auto}
+fusion_probe=${5:-on}
+inline_hash=${6:-on}
+payload_prune=${7:-on}
+prefetch=${8:-on}
+batch_probe=${9:-on}
+cache=${10:-off}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -51,7 +50,7 @@ if [[ "$kernel_path" != "none" ]]; then
     kernel_path_flag="--kernel-path=${kernel_path}"
 fi
 
-log_name=aqp_middleware_${engine}_${split}_kernel-${kernel_path}_${jit_opt}_${jit_simd}${flag_suffix}_job.txt
+log_name=aqp_middleware_${engine}_${split}_kernel-${kernel_path}_${jit_simd}${flag_suffix}_job.txt
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
@@ -235,25 +234,22 @@ if [[ "$engine" == "lingodb" ]]; then
     lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
 fi
 
-for sql in "$dir"/*.sql; do
-    echo "Running benchmark for $sql..." | tee -a "$log_name"
-
-    $cmd_prefix ../build_release/aqp_middleware \
-        --engine="${engine}" \
-        ${db_arg} \
-        "${helper_db_arg}" \
-        --schema=$JOB_PATH/schema.sql \
-        --fkeys=$JOB_PATH/fkeys.sql \
-        --split="${split}" \
-        ${lingodb_flags} \
-        --no-analyze \
-        --jit-level=${jit_level_flag} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
-        ${kernel_path_flag} \
-        ${jit_extra_flags} \
-        ${storage_flags} \
-        "${sql}" \
-        2>&1 | tee -a "$log_name"
-done
+$cmd_prefix ../build_release/aqp_middleware \
+    --engine="${engine}" \
+    ${db_arg} \
+    "${helper_db_arg}" \
+    --schema=$JOB_PATH/schema.sql \
+    --fkeys=$JOB_PATH/fkeys.sql \
+    --split="${split}" \
+    ${lingodb_flags} \
+    --no-analyze \
+    --jit-level=${jit_level_flag} --jit-simd=${jit_simd} \
+    ${kernel_path_flag} \
+    ${jit_extra_flags} \
+    ${storage_flags} \
+    --benchmark \
+    "${dir}" \
+    2>&1 | tee -a "$log_name"
 end=$(date +%s%N)
 elapsed_ns=$((end - start))
 elapsed_ms=$((elapsed_ns / 1000000))

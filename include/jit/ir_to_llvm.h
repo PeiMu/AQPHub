@@ -53,9 +53,6 @@ struct JITTrackerHandle {
   void Reset(); // removes tracked modules and frees the handle
 };
 
-/* LLVM optimization level — maps to llvm::OptimizationLevel */
-enum class OptLevel { O0, O1, O2, O3 };
-
 /* SIMD ISA selection — determines vector width and available instructions */
 enum class SimdISA { OFF, SSE2, AVX, AVX2, AVX512, AUTO };
 
@@ -103,7 +100,7 @@ struct AggOp {
  */
 class IrToLlvmCompiler {
 public:
-  explicit IrToLlvmCompiler(OptLevel opt = OptLevel::O1,
+  explicit IrToLlvmCompiler(bool debug = false,
                             SimdISA simd = SimdISA::OFF);
   ~IrToLlvmCompiler();
 
@@ -332,7 +329,7 @@ public:
   void ResetModules();
 
 private:
-  OptLevel opt_level_;
+  bool skip_opt_;
   SimdISA simd_isa_;
   bool use_simd_; // derived: true if simd_isa_ != OFF
   bool prefetch_ = false;

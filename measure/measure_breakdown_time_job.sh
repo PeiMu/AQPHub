@@ -3,15 +3,14 @@
 engine=$1
 split=$2
 jit_level=${3:-none}
-jit_opt=${4:-o1}
-jit_simd=${5:-off}
-fusion_build=${6:-on}
-fusion_probe=${7:-on}
-inline_hash=${8:-on}
-payload_prune=${9:-on}
-prefetch=${10:-on}
-batch_probe=${11:-on}
-cache=${12:-off}
+jit_simd=${4:-off}
+fusion_build=${5:-on}
+fusion_probe=${6:-on}
+inline_hash=${7:-on}
+payload_prune=${8:-on}
+prefetch=${9:-on}
+batch_probe=${10:-on}
+cache=${11:-off}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -234,23 +233,21 @@ if [[ "$engine" == "lingodb" ]]; then
     lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
 fi
 
-for sql in "$dir"/*.sql; do
-  echo "Running benchmark for $sql..." | tee -a "$log_name"
-  $cmd_prefix ../build_release/aqp_middleware \
-    --engine="${engine}" \
-    ${db_arg} \
-    "${helper_db_arg}" \
-    --schema=$JOB_PATH/schema.sql \
-    --fkeys=$JOB_PATH/fkeys.sql \
-    --split="${split}" \
-    ${lingodb_flags} \
-    --timing \
-    --no-analyze \
-    --repeat=${iteration} \
-    --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
-    ${jit_extra_flags} \
-    ${storage_flags} \
-    "${sql}"
-done
+$cmd_prefix ../build_release/aqp_middleware \
+  --engine="${engine}" \
+  ${db_arg} \
+  "${helper_db_arg}" \
+  --schema=$JOB_PATH/schema.sql \
+  --fkeys=$JOB_PATH/fkeys.sql \
+  --split="${split}" \
+  ${lingodb_flags} \
+  --timing \
+  --no-analyze \
+  --repeat=${iteration} \
+  --jit-level=${jit_level} --jit-simd=${jit_simd} \
+  ${jit_extra_flags} \
+  ${storage_flags} \
+  --benchmark \
+  "${dir}"
 
-mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"
+mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"

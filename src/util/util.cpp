@@ -1,5 +1,7 @@
 #include "util/util.h"
 
+#include <algorithm>
+
 namespace middleware {
 
 // Helper function to check if a file ends with .sql
@@ -39,6 +41,7 @@ std::vector<std::string> get_sql_files(const std::string &directory) {
   }
 
   closedir(dir);
+  std::sort(sql_files.begin(), sql_files.end());
   return sql_files;
 }
 
