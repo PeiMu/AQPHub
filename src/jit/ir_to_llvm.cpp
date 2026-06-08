@@ -110,14 +110,12 @@ void aqp_copy_string(void *dst_data, void *src_data,
 #include <atomic>
 #include <climits>
 #include <cstdint>
-#include <fstream>
 #include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <dlfcn.h>
-#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
 
@@ -357,24 +355,13 @@ struct IrToLlvmCompiler::Impl {
   bool has_avx512f = false;
   bool has_sse42 = false;
 
-  // Cross-process object cache
+  // In-memory object cache (benchmark mode only).
+  // Stores compiled object code bytes keyed by content hash so that
+  // identical IR across queries can skip LLVM compilation. The object
+  // bytes survive ResetModules() and are re-loaded via addObjectFile.
   bool cache_enabled = false;
-  std::string cache_dir;
-  std::string pending_cache_key; // set before addIRModule, cleared after
-
-  static std::string DefaultCacheDir() {
-    const char *env = std::getenv("AQP_JIT_CACHE_DIR");
-    if (env && env[0])
-      return std::string(env);
-    const char *home = std::getenv("HOME");
-    if (home)
-      return std::string(home) + "/.cache/aqp_jit";
-    return "/tmp/aqp_jit_cache";
-  }
-
-  static void MkdirP(const std::string &path) {
-    ::mkdir(path.c_str(), 0755);
-  }
+  std::unordered_map<std::string, std::string> obj_cache;
+  std::string pending_cache_key;
 
   static std::string ComputeCacheKey(const std::string &content) {
     uint64_t h = 14695981039346656037ULL;
@@ -387,28 +374,16 @@ struct IrToLlvmCompiler::Impl {
     return std::string(buf);
   }
 
-  std::string CachePath(const std::string &key) const {
-    return cache_dir + "/" + key + ".o";
-  }
-
-  void WriteCacheFile(const std::string &key, const char *data, size_t size) {
-    MkdirP(cache_dir);
-    std::string path = CachePath(key);
-    std::ofstream f(path, std::ios::binary);
-    if (f)
-      f.write(data, (std::streamsize)size);
-  }
-
   void *TryCacheLoad(const std::string &key, const std::string &fn_name) {
     if (!cache_enabled || key.empty())
       return nullptr;
-    std::string path = CachePath(key);
-    auto buf_or = MemoryBuffer::getFile(path);
-    if (!buf_or)
+    auto it = obj_cache.find(key);
+    if (it == obj_cache.end())
       return nullptr;
 
-    auto tsm_buf = std::move(*buf_or);
-    if (auto e = jit->addObjectFile(current_tracker, std::move(tsm_buf))) {
+    auto buf = MemoryBuffer::getMemBufferCopy(
+        StringRef(it->second.data(), it->second.size()));
+    if (auto e = jit->addObjectFile(current_tracker, std::move(buf))) {
       logAllUnhandledErrors(std::move(e), errs());
       return nullptr;
     }
@@ -428,13 +403,12 @@ struct IrToLlvmCompiler::Impl {
   void InstallCacheHook() {
     if (!cache_enabled)
       return;
-    MkdirP(cache_dir);
     jit->getObjTransformLayer().setTransform(
         [this](std::unique_ptr<MemoryBuffer> obj)
             -> Expected<std::unique_ptr<MemoryBuffer>> {
           if (!pending_cache_key.empty()) {
-            WriteCacheFile(pending_cache_key, obj->getBufferStart(),
-                           obj->getBufferSize());
+            obj_cache[pending_cache_key] =
+                std::string(obj->getBufferStart(), obj->getBufferSize());
             pending_cache_key.clear();
           }
           return std::move(obj);
@@ -521,9 +495,10 @@ struct IrToLlvmCompiler::Impl {
     }));
   }
 
-  void EnableCache(const std::string &dir) {
+  void EnableCache() {
+    if (cache_enabled)
+      return;
     cache_enabled = true;
-    cache_dir = dir.empty() ? DefaultCacheDir() : dir;
     InstallCacheHook();
   }
 
@@ -4271,35 +4246,7 @@ static Function *BuildAggUpdateFunctionSIMD(
 }
 #endif // !DISABLE_AGG_JIT (AllAggOpsSIMDFriendly + BuildAggUpdateFunctionSIMD)
 
-// Emit FNV-1a hash computation as inline LLVM IR.
-// key_width must be known at compile time so the loop is fully unrolled.
-static Value *EmitInlineFNV1a(IRBuilder<> &b, LLVMContext &llctx,
-                               Value *key_ptr, unsigned key_width) {
-  Type *i8 = Type::getInt8Ty(llctx);
-  Type *i64 = Type::getInt64Ty(llctx);
 
-  Value *h = ConstantInt::get(i64, 14695981039346656037ULL);
-  for (unsigned i = 0; i < key_width; i++) {
-    Value *byte_ptr = b.CreateGEP(i8, key_ptr, b.getInt32(i));
-    Value *byte = b.CreateZExt(b.CreateLoad(i8, byte_ptr), i64);
-    h = b.CreateXor(h, byte);
-    h = b.CreateMul(h, ConstantInt::get(i64, 1099511628211ULL));
-  }
-  return h;
-}
-
-// Emit hash: inline FNV-1a when inline_hash is true, otherwise call aqp_hash.
-static Value *EmitHash(IRBuilder<> &b, LLVMContext &llctx, Module &mod,
-                       Value *key_ptr, unsigned key_width, bool inline_hash) {
-  if (inline_hash)
-    return EmitInlineFNV1a(b, llctx, key_ptr, key_width);
-  Type *i8p = PointerType::getUnqual(Type::getInt8Ty(llctx));
-  Type *i32 = Type::getInt32Ty(llctx);
-  Type *i64 = Type::getInt64Ty(llctx);
-  FunctionType *hash_ft = FunctionType::get(i64, {i8p, i32}, false);
-  FunctionCallee hash_fn = mod.getOrInsertFunction("aqp_hash", hash_ft);
-  return b.CreateCall(hash_fn, {key_ptr, ConstantInt::get(i32, key_width)});
-}
 
 // Build a hash join build function:
 //   void aqp_hbuild_<id>(AQPChunkView* in, i8* hash_table)
@@ -4634,11 +4581,10 @@ IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd)
 
 IrToLlvmCompiler::~IrToLlvmCompiler() = default;
 
-void IrToLlvmCompiler::SetCache(bool enable, const std::string &dir) {
+void IrToLlvmCompiler::SetCache(bool enable) {
   cache_enabled_ = enable;
-  cache_dir_ = dir;
   if (enable && impl_)
-    impl_->EnableCache(dir);
+    impl_->EnableCache();
 }
 
 // --- JITTrackerHandle ---
@@ -4927,7 +4873,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_expr_" + std::to_string(fn_id);
 
-  // Cache lookup
+  // In-memory cache lookup
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string expr_text =
@@ -5045,9 +4991,9 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
-  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
+  impl_->pending_cache_key.clear();
   if (!sym) {
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
@@ -5089,7 +5035,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_proj_" + std::to_string(fn_id);
 
-  // Cache lookup
+  // In-memory cache lookup
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string proj_text =
@@ -5133,9 +5079,9 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
-  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
+  impl_->pending_cache_key.clear();
   if (!sym) {
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
@@ -5212,7 +5158,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_agg_" + std::to_string(fn_id);
 
-  // Cache lookup
+  // In-memory cache lookup
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string agg_text =
@@ -5272,9 +5218,9 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
-  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
+  impl_->pending_cache_key.clear();
   if (!sym) {
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
@@ -5429,7 +5375,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_pipe_" + std::to_string(fn_id);
 
-  // Cache lookup
+  // In-memory cache lookup
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string ft = filter_node
@@ -5498,9 +5444,9 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
-  impl_->pending_cache_key.clear();
 
   auto sym = impl_->jit->lookup(fn_name);
+  impl_->pending_cache_key.clear();
   if (!sym) {
 #ifndef NDEBUG
     std::cerr << "[AQP-JIT] lookup failed for " << fn_name << "\n";
@@ -5861,6 +5807,22 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     }
   }
 
+  // skip_hash_cmp: for integer keys, skip salt comparison in probe loop
+  bool all_keys_integer = true;
+  for (const auto &kc : probe_key_cols) {
+    if (kc.dtype != AQP_DTYPE_INT8 && kc.dtype != AQP_DTYPE_INT16 &&
+        kc.dtype != AQP_DTYPE_INT32 && kc.dtype != AQP_DTYPE_INT64) {
+      all_keys_integer = false;
+      break;
+    }
+  }
+  const bool do_skip_salt = skip_hash_cmp_ && all_keys_integer;
+#ifndef NDEBUG
+  std::cerr << "[AQP-JIT] skip_hash_cmp: flag=" << skip_hash_cmp_
+            << " all_keys_integer=" << all_keys_integer
+            << " do_skip_salt=" << do_skip_salt << "\n";
+#endif
+
   // Compute payload column byte offsets
   struct PayloadColInfo {
     unsigned offset;
@@ -6088,7 +6050,8 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
   BasicBlock *hash_bb = BasicBlock::Create(*ctx, "hash", fn);
   BasicBlock *probe_bb = BasicBlock::Create(*ctx, "probe", fn);
-  BasicBlock *salt_ok_bb = BasicBlock::Create(*ctx, "salt_ok", fn);
+  BasicBlock *salt_ok_bb =
+      do_skip_salt ? nullptr : BasicBlock::Create(*ctx, "salt_ok", fn);
   BasicBlock *key_eq_bb = BasicBlock::Create(*ctx, "key_eq", fn);
   BasicBlock *miss_bb = BasicBlock::Create(*ctx, "miss", fn);
   BasicBlock *chain_bb = BasicBlock::Create(*ctx, "chain", fn);
@@ -6111,7 +6074,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       i8p, cc.b.CreateStructGEP(ViewTy, view_ptr, 0), "v_entries");
   Value *v_bitmask = cc.b.CreateLoad(
       i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 1), "v_bitmask");
-  // field 2 use_salt: salt always checked, runtime value not needed
+  // field 2 use_salt: skipped when do_skip_salt, otherwise always checked
   // field 3 layout_ptr: only for debug
   // field 4 tuple_size: not needed (data_offsets has every column)
   Value *v_ptr_off32 = cc.b.CreateLoad(
@@ -6436,7 +6399,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   } else {
     ht_off_init = cc.b.CreateAnd(hash_val, v_bitmask, "ht_off_init");
   }
-  Value *probe_salt = cc.b.CreateOr(hash_val, POINTER_MASK, "probe_salt");
+  Value *probe_salt = do_skip_salt
+      ? nullptr
+      : cc.b.CreateOr(hash_val, POINTER_MASK, "probe_salt");
 
   // ---- Bloom filter pre-check: skip HT probe for definite non-matches ----
   BasicBlock *bf_check_bb = BasicBlock::Create(*ctx, "bf_check", fn);
@@ -6476,13 +6441,17 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   Value *entry_addr = cc.b.CreateGEP(i64, entries_typed, ht_off);
   Value *entry = cc.b.CreateLoad(i64, entry_addr, "entry");
   Value *is_empty = cc.b.CreateICmpEQ(entry, ConstantInt::get(i64, 0));
-  cc.b.CreateCondBr(is_empty, next_bb, salt_ok_bb);
+  if (do_skip_salt) {
+    cc.b.CreateCondBr(is_empty, next_bb, key_eq_bb);
+  } else {
+    cc.b.CreateCondBr(is_empty, next_bb, salt_ok_bb);
 
-  // ---- Salt compare ----
-  cc.b.SetInsertPoint(salt_ok_bb);
-  Value *entry_salt = cc.b.CreateOr(entry, POINTER_MASK);
-  Value *salt_match = cc.b.CreateICmpEQ(entry_salt, probe_salt);
-  cc.b.CreateCondBr(salt_match, key_eq_bb, miss_bb);
+    // ---- Salt compare ----
+    cc.b.SetInsertPoint(salt_ok_bb);
+    Value *entry_salt = cc.b.CreateOr(entry, POINTER_MASK);
+    Value *salt_match = cc.b.CreateICmpEQ(entry_salt, probe_salt);
+    cc.b.CreateCondBr(salt_match, key_eq_bb, miss_bb);
+  }
 
   // ---- Key compare ----
   cc.b.SetInsertPoint(key_eq_bb);

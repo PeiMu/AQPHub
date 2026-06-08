@@ -20,6 +20,15 @@ bash ./measure_breakdown_time_job.sh duckdb relationship-center operator auto of
 # operator jit node-based
 bash ./measure_breakdown_time_job.sh duckdb node-based operator none off off off off off off off && \
 bash ./measure_breakdown_time_job.sh duckdb node-based operator auto off off off off off off off && \
+# pipeline jit none split
+bash ./measure_breakdown_time_job.sh duckdb none pipeline none && \
+bash ./measure_breakdown_time_job.sh duckdb none pipeline auto && \
+# pipeline jit relationship-center
+bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline none && \
+bash ./measure_breakdown_time_job.sh duckdb relationship-center pipeline auto && \
+# pipeline jit node-based
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline none && \
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline auto && \
 # pipeline kernel none split
 bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline none && \
 bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline auto && \

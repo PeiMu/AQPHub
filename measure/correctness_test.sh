@@ -25,6 +25,12 @@ JIT_CONFIGS=(
   "duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt"
   "duckdb|relationship-center|operator|none|duckdb_job_relationship-center_golden.txt"
   "duckdb|relationship-center|operator|auto|duckdb_job_relationship-center_golden.txt"
+  "duckdb|none|pipeline|none|duckdb_job_no-split_golden.txt"
+  "duckdb|none|pipeline|auto|duckdb_job_no-split_golden.txt"
+  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt"
+  "duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt"
+  "duckdb|relationship-center|pipeline|none|duckdb_job_relationship-center_golden.txt"
+  "duckdb|relationship-center|pipeline|auto|duckdb_job_relationship-center_golden.txt"
   "lingodb|none|none|none|lingodb_job_no-split_golden.txt"
   "lingodb|node-based|none|none|duckdb_job_node-based_golden.txt"
   "lingodb|relationship-center|none|none|lingodb_job_no-split_golden.txt"
@@ -46,8 +52,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   IFS='|' read -r engine split jit_level jit_simd golden <<< "$entry"
   echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} ==="
 
-  bash run_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
-       on on on on on on off
+  bash run_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}"
 
   output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}_job.txt"
 

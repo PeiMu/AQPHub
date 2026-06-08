@@ -2299,9 +2299,9 @@ void DuckDBAdapter::EnsureJITCompiler() {
   jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
                                            jit_prefetch_row_distance_);
   jit_compiler_->SetBatchProbe(jit_batch_probe_);
-  jit_compiler_->SetInlineHash(jit_inline_hash_);
-  if (jit_cache_)
-    jit_compiler_->SetCache(true, jit_cache_dir_);
+  jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
+  if (benchmark_mode_)
+    jit_compiler_->SetCache(true);
 }
 
 aqp_jit::IrToLlvmCompiler *DuckDBAdapter::GetJitCompiler() {
@@ -2856,7 +2856,9 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
     // FindColIdx returns -1 and the filter silently becomes pass-all.
     // Skip pipeline filter compilation for LIKE predicates: DuckDB's native
     // vectorized LIKE is faster than the JIT scalar implementation.
-    if (kernel_path_ == KernelPath::PIPELINE && filter_ir && !schema.empty() &&
+    if ((kernel_path_ == KernelPath::PIPELINE ||
+         (jit_flags_ & AQP_JIT_PIPELINE_JIT)) &&
+        filter_ir && !schema.empty() &&
         HasApplicablePredicate(filter_ir, schema) &&
         FilterAllColsAvailable(filter_ir, schema) &&
         !FilterHasLike(filter_ir)) {
@@ -3065,7 +3067,9 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
   // Level 3: Pipeline-JIT hash join compilation. Direct-HT path emits IR
   // that probes DuckDB's JoinHashTable directly via AQPJoinHTView, so the
   // previous "IR schema vs. DuckDB chunk layout" mismatch is resolved.
-  if (kernel_path_ == KernelPath::PIPELINE &&
+  // Note: kernel-path=pipeline uses PipelineKernel's own HashJoinTable, not
+  // DuckDB's JoinHashTable, so this gate is pipeline-jit only.
+  if ((jit_flags_ & AQP_JIT_PIPELINE_JIT) &&
       op.type == PhysicalOperatorType::HASH_JOIN) {
     uint64_t eid = duckdb::ExpressionID(op);
 
@@ -3083,6 +3087,20 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
             ? FindJoinNodeByBuildTableIndex(&ir, build_tidx,
                                             jit_consumed_ir_joins_)
             : FindFirstJoinNode(&ir);
+    // Validate: when using FindFirstJoinNode fallback, verify the matched
+    // IR JoinNode's condition count matches the physical operator's. A
+    // mismatch means the IR JoinNode doesn't correspond to this physical
+    // HASH_JOIN — the build-side schema/keys would be wrong, producing
+    // silent incorrect results (wrong payload offsets, zero matches).
+    if (build_tidx == UINT_MAX && join_ir) {
+      auto *join_check =
+          dynamic_cast<const ir_sql_converter::SimplestJoin *>(join_ir);
+      auto &hj_check = op.Cast<duckdb::PhysicalHashJoin>();
+      if (!join_check ||
+          join_check->join_conditions.size() != hj_check.conditions.size()) {
+        join_ir = nullptr;
+      }
+    }
     const ir_sql_converter::AQPStmt *hash_ir = FindFirstHashNode(&ir);
 
 #ifndef NDEBUG
@@ -3211,8 +3229,9 @@ void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,
             // feed CompileFilterHashBuildFusion / CompileHashBuild, both
             // removed.
 
-            // Level 3: attempt Filter+Probe+Projection fusion (probe pipeline)
-            if (kernel_path_ == KernelPath::PIPELINE && jit_fusion_probe_) {
+            // Level 3: attempt Filter+Probe+Projection fusion (probe pipeline).
+            // Activated by jit-level=pipeline only (kernel-path uses PipelineKernel).
+            if (jit_flags_ & AQP_JIT_PIPELINE_JIT) {
               EnsureJITCompiler();
 
               // Payload pruning: use DuckDB's payload_columns to determine

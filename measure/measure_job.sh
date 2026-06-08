@@ -7,13 +7,11 @@ engine=$1
 split=$2
 jit_level=$3
 jit_simd=$4
-fusion_build=${5:-on}
-fusion_probe=${6:-on}
-inline_hash=${7:-on}
-payload_prune=${8:-on}
-prefetch=${9:-on}
-batch_probe=${10:-on}
-cache=${11:-off}
+payload_prune=${5:-on}
+prefetch=${6:-on}
+batch_probe=${7:-on}
+skip_hash_cmp=${8:-on}
+cache=${9:-off}
 
 ########################################
 # Start / Stop PostgreSQL
@@ -139,7 +137,6 @@ fi
 echo "ANALYZE done"
 
 cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
-    "${fusion_build}" "${fusion_probe}" "${inline_hash}" "${payload_prune}" \
-    "${prefetch}" "${batch_probe}" "${cache}"
+    "${payload_prune}" "${prefetch}" "${batch_probe}" "${skip_hash_cmp}" "${cache}"
 
 #mv compile.log job_result/.

@@ -4,43 +4,29 @@ engine=$1
 split=$2
 jit_level=${3:-none}
 jit_simd=${4:-off}
-fusion_build=${5:-on}
-fusion_probe=${6:-on}
-inline_hash=${7:-on}
-payload_prune=${8:-on}
-prefetch=${9:-on}
-batch_probe=${10:-on}
-cache=${11:-off}
+payload_prune=${5:-on}
+prefetch=${6:-on}
+batch_probe=${7:-on}
+skip_hash_cmp=${8:-on}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
-[[ "$fusion_probe"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-probe"
-[[ "$inline_hash"   == "off" ]] && jit_extra_flags+=" --no-jit-inline-hash"
-[[ "$payload_prune" == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
+[[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
 elif [[ "$prefetch" != "on" ]]; then
     jit_extra_flags+=" --jit-prefetch=${prefetch}"
 fi
-[[ "$batch_probe" == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
-if [[ "$cache" == "off" ]]; then
-    jit_extra_flags+=" --no-jit-cache"
-elif [[ "$cache" == "on" ]]; then
-    jit_extra_flags+=" --jit-cache"
-else
-    jit_extra_flags+=" --jit-cache=${cache}"
-fi
+[[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
+[[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
 
 # Build a short suffix for the log filename
 flag_suffix=""
-[[ "$fusion_build"  == "off" ]] && flag_suffix+="_nofusbuild"
-[[ "$fusion_probe"  == "off" ]] && flag_suffix+="_nofusprobe"
-[[ "$inline_hash"   == "off" ]] && flag_suffix+="_noinlhash"
-[[ "$payload_prune" == "off" ]] && flag_suffix+="_nopayprune"
-[[ "$prefetch"      == "off" ]] && flag_suffix+="_noprefetch"
+[[ "$payload_prune"  == "off" ]] && flag_suffix+="_nopayprune"
+[[ "$prefetch"       == "off" ]] && flag_suffix+="_noprefetch"
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
-[[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
-[[ "$cache"         != "off" ]] && flag_suffix+="_cache"
+[[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
+[[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 
 # Storage plan flags (enabled when JIT is active)
 storage_flags=""

@@ -59,6 +59,10 @@ target_include_directories(split_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# Utility library (shared across adapters — compiled once to avoid duplicate symbols)
+add_library(util_lib STATIC src/util/util.cpp)
+target_include_directories(util_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 # Storage plan library (flat column arrays, CSR indexes)
 # Built conditionally with DuckDB below.
 set(STORAGE_LIB_SOURCES
@@ -93,7 +97,7 @@ if (EXISTS ${DUCKDB_ROOT})
 
     if (DUCKDB_LIB)
         set(HAVE_DUCKDB TRUE)
-        add_library(duckdb_adapter STATIC src/adapters/duckdb_adapter.cpp src/util/util.cpp)
+        add_library(duckdb_adapter STATIC src/adapters/duckdb_adapter.cpp)
         target_include_directories(duckdb_adapter PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${DUCKDB_ROOT}/src/include
@@ -138,7 +142,7 @@ if (EXISTS ${DUCKDB_ROOT})
             message(STATUS "kernel_lib OpenMP: ENABLED")
         endif()
 
-        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib kernel_lib)
+        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib kernel_lib util_lib)
         if (HAVE_LLVM)
             target_link_libraries(duckdb_adapter PUBLIC aqp_jit_lib)
             target_compile_definitions(duckdb_adapter PUBLIC HAVE_LLVM)
@@ -175,7 +179,7 @@ if (EXISTS ${POSTGRES_ROOT})
 
     if (LIBPQ_LIB)
         set(HAVE_POSTGRES TRUE)
-        add_library(postgres_adapter STATIC src/adapters/postgres_adapter.cpp src/util/util.cpp)
+        add_library(postgres_adapter STATIC src/adapters/postgres_adapter.cpp)
         target_include_directories(postgres_adapter PUBLIC
                 ${POSTGRES_ROOT}/include
         )
@@ -184,7 +188,7 @@ if (EXISTS ${POSTGRES_ROOT})
         target_compile_definitions(postgres_adapter PUBLIC HAVE_POSTGRES)
         target_compile_definitions(split_lib PUBLIC HAVE_POSTGRES)
 
-        target_link_libraries(postgres_adapter PUBLIC ${LIBPQ_LIB} split_lib)
+        target_link_libraries(postgres_adapter PUBLIC ${LIBPQ_LIB} split_lib util_lib)
 
         add_executable(test_postgres examples/test_postgres.cpp)
         target_link_libraries(test_postgres PRIVATE postgres_adapter split_lib)
@@ -233,7 +237,7 @@ if (EXISTS ${MARIADB_ROOT})
 
     if (LIBMARIADB_LIB)
         set(HAVE_MARIADB TRUE)
-        add_library(mariadb_adapter STATIC src/adapters/mariadb_adapter.cpp src/util/util.cpp)
+        add_library(mariadb_adapter STATIC src/adapters/mariadb_adapter.cpp)
         target_include_directories(mariadb_adapter PUBLIC
                 ${MARIADB_ROOT}/include
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -242,7 +246,7 @@ if (EXISTS ${MARIADB_ROOT})
         target_compile_definitions(mariadb_adapter PUBLIC HAVE_MARIADB)
         target_compile_definitions(split_lib PUBLIC HAVE_MARIADB)
 
-        target_link_libraries(mariadb_adapter PUBLIC ${LIBMARIADB_LIB} split_lib)
+        target_link_libraries(mariadb_adapter PUBLIC ${LIBMARIADB_LIB} split_lib util_lib)
 
         message(STATUS "MariaDB adapter: ENABLED")
     else ()
@@ -298,8 +302,7 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
         get_property(MLIR_EXTENSION_LIBS GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 
         add_library(lingodb_adapter STATIC
-                src/adapters/lingodb_adapter.cpp
-                src/util/util.cpp)
+                src/adapters/lingodb_adapter.cpp)
         target_include_directories(lingodb_adapter PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${LINGODB_ROOT}/include
@@ -335,6 +338,7 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
                 /usr/lib/x86_64-linux-gnu/libarrow_compute.so
                 Boost::context
                 split_lib
+                util_lib
                 -lpthread -lrt -latomic
         )
 

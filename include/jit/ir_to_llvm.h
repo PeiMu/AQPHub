@@ -311,9 +311,9 @@ public:
 
   void SetBatchProbe(bool enable) { batch_probe_ = enable; }
 
-  void SetInlineHash(bool enable) { inline_hash_ = enable; }
+  void SetSkipHashCmp(bool enable) { skip_hash_cmp_ = enable; }
 
-  void SetCache(bool enable, const std::string &dir = "");
+  void SetCache(bool enable);
 
   // Releases all JIT-compiled modules (machine code, IR, symbol-table
   // entries, ExecutionSession state) added since the last reset. The
@@ -343,9 +343,8 @@ private:
   int prefetch_entry_distance_ = 24;
   int prefetch_row_distance_ = 12;
   bool batch_probe_ = false;
-  bool inline_hash_ = true;
+  bool skip_hash_cmp_ = true;
   bool cache_enabled_ = false;
-  std::string cache_dir_;
 
   // LLVM state — managed via unique_ptr to avoid including LLVM headers here
   struct Impl;

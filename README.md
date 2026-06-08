@@ -370,19 +370,16 @@ Go to directory `measure/`. The scripts accept the following positional argument
 ```
 $1  engine          duckdb / postgres / umbra / mariadb / opengauss
 $2  split           none / relationship-center / entity-center / min-subquery / node-based
-$3  jit_level       none / expr / operator / pipeline / sql
-$4  jit_opt         o0 / o1 / o2 / o3
-$5  jit_simd        off / sse2 / avx / avx2 / avx512 / auto
-$6  fusion_build    on / off                    (default: on)
-$7  fusion_probe    on / off                    (default: on)
-$8  inline_hash     on / off                    (default: on)
-$9  payload_prune   on / off                    (default: on)
-$10 prefetch        on / off / <distance>       (default: on, distance=8)
-$11 batch_probe     on / off                    (default: on)
-$12 cache           off / on / <path>           (default: off)
+$3  jit_level       none / expr / operator / pipeline
+$4  jit_simd        off / sse2 / avx / avx2 / avx512 / auto
+$5  payload_prune   on / off                    (default: on)
+$6  prefetch        on / off / <distance>       (default: on, distance=8)
+$7  batch_probe     on / off                    (default: on)
+$8  skip_hash_cmp   on / off                    (default: on)
+$9  cache           off / on / <path>           (default: off)
 ```
 
-Arguments 6-12 are optional and default to all optimizations enabled (cache off).
+Arguments 5-9 are optional and default to all optimizations enabled (cache off).
 
 ### Run a single benchmark pass
 
@@ -427,7 +424,7 @@ bash ./run_job.sh duckdb none sql o2 auto on on on on on off
 bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 auto on on on on on off
 ```
 
-Log filenames encode the active flags, e.g., `aqp_middleware_duckdb_none_sql_o2_auto_nofusbuild_job.csv`.
+Log filenames encode the active flags, e.g., `aqp_middleware_duckdb_none_pipeline_auto_nopayprune_job.csv`.
 
 ### Native engine scripts
 

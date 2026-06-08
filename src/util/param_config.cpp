@@ -140,10 +140,12 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.jit_flags |= AQP_JIT_EXPR;
       } else if (level == "operator") {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+      } else if (level == "pipeline") {
+        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
       } else {
         throw std::runtime_error(
             "Unknown JIT level: " + arg.substr(12) +
-            " (valid: none, expr, operator)");
+            " (valid: none, expr, operator, pipeline)");
       }
     } else if (arg.find("--kernel-path=") == 0) {
       std::string kp = to_lower(arg.substr(14));
@@ -181,15 +183,7 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_flags = (config.jit_flags & ~AQP_JIT_SIMD_MASK) | AQP_JIT_SIMD_AUTO;
     }
     // Per-optimization toggles
-    else if (arg == "--jit-fusion-probe") {
-      config.jit_fusion_probe = true;
-    } else if (arg == "--no-jit-fusion-probe") {
-      config.jit_fusion_probe = false;
-    } else if (arg == "--jit-inline-hash") {
-      config.jit_inline_hash = true;
-    } else if (arg == "--no-jit-inline-hash") {
-      config.jit_inline_hash = false;
-    } else if (arg == "--jit-payload-prune") {
+    else if (arg == "--jit-payload-prune") {
       config.jit_payload_prune = true;
     } else if (arg == "--no-jit-payload-prune") {
       config.jit_payload_prune = false;
@@ -208,13 +202,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_batch_probe = true;
     } else if (arg == "--no-jit-batch-probe") {
       config.jit_batch_probe = false;
-    } else if (arg == "--jit-cache") {
-      config.jit_cache = true;
-    } else if (arg.find("--jit-cache=") == 0) {
-      config.jit_cache = true;
-      config.jit_cache_dir = arg.substr(12);
-    } else if (arg == "--no-jit-cache") {
-      config.jit_cache = false;
+    } else if (arg == "--jit-skip-hash-cmp") {
+      config.jit_skip_hash_cmp = true;
+    } else if (arg == "--no-jit-skip-hash-cmp") {
+      config.jit_skip_hash_cmp = false;
     } else if (arg.find("--repeat=") == 0) {
       config.repeat_count = std::stoi(arg.substr(9));
       if (config.repeat_count < 1)
@@ -241,6 +232,13 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
 
   if (config.kernel_path != KernelPath::NONE)
     config.enable_storage_plan = true;
+
+  if ((config.jit_flags & AQP_JIT_PIPELINE_JIT) &&
+      config.kernel_path != KernelPath::NONE)
+    throw std::runtime_error(
+        "--jit-level=pipeline and --kernel-path are mutually exclusive: "
+        "pipeline-jit compiles probe chains in the DuckDB execution path, "
+        "while kernel-path routes through PipelineKernel");
 
   if (config.in_memory) {
     if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB)
@@ -308,7 +306,7 @@ void ParamConfig::PrintUsage() {
                "(same as --jit-level=expr)"
             << std::endl;
   std::cout << "  --jit-level=<level>              JIT granularity: none, "
-               "expr, operator"
+               "expr, operator, pipeline"
             << std::endl;
   std::cout << "  --kernel-path=<path>             Kernel execution path: "
                "none, pipeline, query (default: none)"
@@ -320,12 +318,6 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "\n  Pipeline-JIT optimization toggles (enabled by "
                "default at pipeline+ level):"
-            << std::endl;
-  std::cout << "  --[no-]jit-fusion-probe          Filter+Probe+"
-               "Projection fusion"
-            << std::endl;
-  std::cout << "  --[no-]jit-inline-hash           Inline FNV-1a hash "
-               "as LLVM IR"
             << std::endl;
   std::cout << "  --[no-]jit-payload-prune         Hash build payload "
                "pruning"
@@ -342,8 +334,8 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --[no-]jit-batch-probe           Batch/vectorized "
                "hash probe"
             << std::endl;
-  std::cout << "  --[no-]jit-cache[=path]          Cross-process "
-               "compiled binary cache"
+  std::cout << "  --[no-]jit-skip-hash-cmp         Skip hash/salt cmp "
+               "for integer keys"
             << std::endl;
   std::cout << "\n  Measurement:" << std::endl;
   std::cout << "  --repeat=N                       Run query N times in-process "

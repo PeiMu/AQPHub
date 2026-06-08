@@ -229,19 +229,16 @@ public:
   void SetKernelPath(KernelPath kp) { kernel_path_ = kp; }
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
 
-  void SetJITOptFlags(bool fusion_probe, bool inline_hash,
-                      bool payload_prune, bool prefetch, int prefetch_dist,
-                      bool batch_probe, bool cache,
-                      const std::string &cache_dir) {
-    jit_fusion_probe_ = fusion_probe;
-    jit_inline_hash_ = inline_hash;
+  void SetJITOptFlags(bool payload_prune, bool prefetch, int prefetch_dist,
+                      bool batch_probe, bool skip_hash_cmp) {
     jit_payload_prune_ = payload_prune;
     jit_prefetch_ = prefetch;
     jit_prefetch_distance_ = prefetch_dist;
     jit_batch_probe_ = batch_probe;
-    jit_cache_ = cache;
-    jit_cache_dir_ = cache_dir;
+    jit_skip_hash_cmp_ = skip_hash_cmp;
   }
+
+  void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
   // Phase 6: ROF probe-side look-ahead distances. 0 disables that level.
   void SetJITProbePrefetchDistances(int entry_dist, int row_dist) {
@@ -354,8 +351,6 @@ private:
   KernelPath kernel_path_ = KernelPath::NONE;
 
   // Per-optimization toggles (from ParamConfig)
-  bool jit_fusion_probe_ = true;
-  bool jit_inline_hash_ = true;
   bool jit_payload_prune_ = true;
   bool jit_prefetch_ = true;
   int  jit_prefetch_distance_ = 8;
@@ -364,9 +359,9 @@ private:
   int  jit_prefetch_entry_distance_ = 24;
   int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
+  bool jit_skip_hash_cmp_ = true;
   bool jit_debug_ = false;
-  bool jit_cache_ = false;
-  std::string jit_cache_dir_;
+  bool benchmark_mode_ = false;
   // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
   std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
   // Pre-built logical plan for PrepareFromPlan (avoids redundant parse+optimize).

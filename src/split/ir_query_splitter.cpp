@@ -134,6 +134,14 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duck->ClearKernelTemps();
 #ifdef HAVE_LLVM
       duck->SetJITDebug(config_.enable_debug_print);
+      duck->SetJITOptFlags(
+          config_.jit_payload_prune,
+          config_.jit_prefetch, config_.jit_prefetch_distance,
+          config_.jit_batch_probe, config_.jit_skip_hash_cmp);
+      duck->SetJITProbePrefetchDistances(
+          config_.jit_prefetch_entry_distance,
+          config_.jit_prefetch_row_distance);
+      duck->SetBenchmarkMode(config_.benchmark_mode);
 #endif
     }
   }

@@ -4,41 +4,29 @@ engine=$1
 split=$2
 kernel_path=$3        # none | pipeline | query
 jit_simd=${4:-auto}
-fusion_probe=${5:-on}
-inline_hash=${6:-on}
-payload_prune=${7:-on}
-prefetch=${8:-on}
-batch_probe=${9:-on}
-cache=${10:-off}
+payload_prune=${5:-on}
+prefetch=${6:-on}
+batch_probe=${7:-on}
+skip_hash_cmp=${8:-on}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
-[[ "$fusion_probe"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-probe"
-[[ "$inline_hash"   == "off" ]] && jit_extra_flags+=" --no-jit-inline-hash"
-[[ "$payload_prune" == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
+[[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
 elif [[ "$prefetch" != "on" ]]; then
     jit_extra_flags+=" --jit-prefetch=${prefetch}"
 fi
-[[ "$batch_probe" == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
-if [[ "$cache" == "off" ]]; then
-    jit_extra_flags+=" --no-jit-cache"
-elif [[ "$cache" == "on" ]]; then
-    jit_extra_flags+=" --jit-cache"
-else
-    jit_extra_flags+=" --jit-cache=${cache}"
-fi
+[[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
+[[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
 
 # Build a short suffix for the log filename
 flag_suffix=""
-[[ "$fusion_probe"  == "off" ]] && flag_suffix+="_nofusprobe"
-[[ "$inline_hash"   == "off" ]] && flag_suffix+="_noinlhash"
-[[ "$payload_prune" == "off" ]] && flag_suffix+="_nopayprune"
-[[ "$prefetch"      == "off" ]] && flag_suffix+="_noprefetch"
+[[ "$payload_prune"  == "off" ]] && flag_suffix+="_nopayprune"
+[[ "$prefetch"       == "off" ]] && flag_suffix+="_noprefetch"
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
-[[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
-[[ "$cache"         != "off" ]] && flag_suffix+="_cache"
+[[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
+[[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 
 # Storage plan flags (always enabled for kernel path)
 storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"

@@ -209,10 +209,10 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
         duckdb_adp->SetKernelPath(config.kernel_path);
         duckdb_adp->SetJITDebug(config.enable_debug_print);
         duckdb_adp->SetJITOptFlags(
-            config.jit_fusion_probe,
-            config.jit_inline_hash, config.jit_payload_prune,
+            config.jit_payload_prune,
             config.jit_prefetch, config.jit_prefetch_distance,
-            config.jit_batch_probe, config.jit_cache, config.jit_cache_dir);
+            config.jit_batch_probe, config.jit_skip_hash_cmp);
+        duckdb_adp->SetBenchmarkMode(config.benchmark_mode);
         duckdb_adp->SetJITProbePrefetchDistances(
             config.jit_prefetch_entry_distance,
             config.jit_prefetch_row_distance);

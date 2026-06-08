@@ -83,9 +83,7 @@ struct ParamConfig {
   // Set via: --jit (=AQPJIT_EXPR), --jit-level=operator, --jit-simd
   uint32_t jit_flags = 0;
 
-  // Per-optimization toggles (pipeline-level and above).
-  bool jit_fusion_probe = true;
-  bool jit_inline_hash = true;
+  // Per-optimization toggles (pipeline-jit and kernel-path).
   bool jit_payload_prune = true;
   bool jit_prefetch = true;
   int jit_prefetch_distance = 8;
@@ -95,8 +93,7 @@ struct ParamConfig {
   int jit_prefetch_entry_distance = 24;
   int jit_prefetch_row_distance = 12;
   bool jit_batch_probe = true;
-  bool jit_cache = false;
-  std::string jit_cache_dir;
+  bool jit_skip_hash_cmp = false;
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);

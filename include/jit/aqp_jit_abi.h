@@ -76,10 +76,15 @@ static constexpr int32_t AQP_DTYPE_OTHER   = 99;
 #define AQP_JIT_PIPELINE                                                       \
   (1u << 2) /* (legacy) pipeline kernel — use kernel_path    */
 
-/* Mask covering only the JIT-level bits (EXPR / OPERATOR).
- * PIPELINE and QUERY kernel paths are now controlled by ParamConfig::kernel_path.
+/* Pipeline-JIT: compile entire probe pipeline as a single function.
+ * Unlike kernel_path=PIPELINE (which routes through PipelineKernel),
+ * this compiles the probe chain directly in the DuckDB execution path. */
+#define AQP_JIT_PIPELINE_JIT (1u << 6)
+
+/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE_JIT).
+ * Legacy PIPELINE and QUERY kernel paths are controlled by ParamConfig::kernel_path.
  * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
-#define AQP_JIT_LEVEL_MASK (AQP_JIT_EXPR | AQP_JIT_OPERATOR)
+#define AQP_JIT_LEVEL_MASK (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT)
 
 /* Legacy defines — kept for source compat; no longer part of AQP_JIT_LEVEL_MASK.
  * Use ParamConfig::kernel_path instead. */
