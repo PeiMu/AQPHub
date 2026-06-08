@@ -45,19 +45,30 @@ fi
 # Start / Stop Umbra
 ########################################
 start_umbra() {
-    echo "Starting Umbra docker..."
+    echo "Starting Umbra docker (in-memory via tmpfs)..."
 
     docker run -d \
         --name "$container_name" \
         --network=host \
-        -v umbra-db:/var/db \
+        --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
+        -v "$DSB_CSV_DIR":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
         umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
 
     wait_for_umbra
+    load_umbra_dsb_data
+}
+
+load_umbra_dsb_data() {
+    echo "Loading schema and CSV data into Umbra..."
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$DSB_SCHEMA"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$DSB_IMPORT_CSV"
+    echo "Data loading done."
 }
 
 stop_umbra() {
