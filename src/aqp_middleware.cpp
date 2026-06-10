@@ -211,8 +211,10 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
         duckdb_adp->SetJITOptFlags(
             config.jit_payload_prune,
             config.jit_prefetch, config.jit_prefetch_distance,
-            config.jit_batch_probe, config.jit_skip_hash_cmp);
+            config.jit_batch_probe, config.jit_skip_hash_cmp,
+            config.single_col_int_join_mode);
         duckdb_adp->SetBenchmarkMode(config.benchmark_mode);
+        duckdb_adp->SetJITCache(config.jit_cache);
         duckdb_adp->SetJITProbePrefetchDistances(
             config.jit_prefetch_entry_distance,
             config.jit_prefetch_row_distance);

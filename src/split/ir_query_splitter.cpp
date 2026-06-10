@@ -32,6 +32,15 @@ void LogKernelDecision(const char *log_file_path,
     << num_output_cols << ","
     << std::fixed << std::setprecision(3) << exe_time_ms << "\n";
 }
+bool HasCrossProduct(const ir_sql_converter::AQPStmt *node) {
+  if (!node) return false;
+  if (node->GetNodeType() ==
+      ir_sql_converter::SimplestNodeType::CrossProductNode)
+    return true;
+  for (const auto &child : node->children)
+    if (HasCrossProduct(child.get())) return true;
+  return false;
+}
 } // namespace
 
 IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
@@ -137,11 +146,13 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duck->SetJITOptFlags(
           config_.jit_payload_prune,
           config_.jit_prefetch, config_.jit_prefetch_distance,
-          config_.jit_batch_probe, config_.jit_skip_hash_cmp);
+          config_.jit_batch_probe, config_.jit_skip_hash_cmp,
+          config_.single_col_int_join_mode);
       duck->SetJITProbePrefetchDistances(
           config_.jit_prefetch_entry_distance,
           config_.jit_prefetch_row_distance);
       duck->SetBenchmarkMode(config_.benchmark_mode);
+      duck->SetJITCache(config_.jit_cache);
 #endif
     }
   }
@@ -499,8 +510,12 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
             std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
                       << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
           }
-          if (duck && remaining_ir)
+          if (duck && remaining_ir && !HasCrossProduct(remaining_ir.get()))
             duck->SetJITPendingIR(remaining_ir.get(), duckdb_flags);
+          else if (duck)
+            // JIT skipped: still record the flags so the adapter emits the
+            // jit_compile timing column (keeps the CSV rectangular).
+            duck->SetJITFlags(duckdb_flags);
         }
       }
 #else
@@ -908,7 +923,12 @@ bool IRQuerySplitter::ExecuteOneIteration(
         auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
         if (duck) {
           duck->SetTempColRanges({});
-          duck->SetJITPendingIR(executable_ir, duckdb_flags);
+          if (!HasCrossProduct(executable_ir))
+            duck->SetJITPendingIR(executable_ir, duckdb_flags);
+          else
+            // JIT skipped: still record the flags so the adapter emits the
+            // jit_compile timing column (keeps the CSV rectangular).
+            duck->SetJITFlags(duckdb_flags);
         }
       }
     }

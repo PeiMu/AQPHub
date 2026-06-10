@@ -8,9 +8,11 @@ payload_prune=${5:-on}
 prefetch=${6:-on}
 batch_probe=${7:-on}
 skip_hash_cmp=${8:-on}
+jit_cache=${9:-off}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
+[[ "$jit_cache"      == "on"  ]] && jit_extra_flags+=" --jit-cache"
 [[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
@@ -27,6 +29,7 @@ flag_suffix=""
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
+[[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
 
 # Storage plan flags (enabled when JIT is active)
 storage_flags=""

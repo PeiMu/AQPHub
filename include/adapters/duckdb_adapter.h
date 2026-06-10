@@ -51,6 +51,8 @@
 #include "jit/ir_to_llvm.h"
 #endif
 
+namespace duckdb { class PhysicalHashJoin; }
+
 #define IN_MEM_TMP_TABLE true
 
 namespace duckdb {
@@ -230,15 +232,20 @@ public:
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
 
   void SetJITOptFlags(bool payload_prune, bool prefetch, int prefetch_dist,
-                      bool batch_probe, bool skip_hash_cmp) {
+                      bool batch_probe, bool skip_hash_cmp,
+                      bool single_col_int_join = true) {
     jit_payload_prune_ = payload_prune;
     jit_prefetch_ = prefetch;
     jit_prefetch_distance_ = prefetch_dist;
     jit_batch_probe_ = batch_probe;
     jit_skip_hash_cmp_ = skip_hash_cmp;
+    jit_single_col_int_join_ = single_col_int_join;
   }
 
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
+
+  // In-memory JIT object cache across repeats (--jit-cache, default off).
+  void SetJITCache(bool enable) { jit_cache_ = enable; }
 
   // Phase 6: ROF probe-side look-ahead distances. 0 disables that level.
   void SetJITProbePrefetchDistances(int entry_dist, int row_dist) {
@@ -360,8 +367,10 @@ private:
   int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
   bool jit_skip_hash_cmp_ = true;
+  bool jit_single_col_int_join_ = true;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
+  bool jit_cache_ = false;
   // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
   std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
   // Pre-built logical plan for PrepareFromPlan (avoids redundant parse+optimize).
@@ -376,7 +385,8 @@ private:
 
   // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
   void RegisterJIT(duckdb::PhysicalOperator &op,
-                          const ir_sql_converter::AQPStmt &ir);
+                          const ir_sql_converter::AQPStmt &ir,
+                          bool is_build_side = false);
   // Walk physical plan tree; register pending bloom filters in aqp_jit_context.
   void RegisterBloomFilters(duckdb::PhysicalOperator &op);
 

@@ -5717,7 +5717,7 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
 // Emits inline MurmurHash64 + salt-aware linear probe + chain walk.
 // ---------------------------------------------------------------------------
 void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
-    const AQPStmt *filter_node, const AQPStmt &join_node,
+    const AQPStmt *filter_node, const AQPStmt *join_node,
     const AQPStmt *proj_node, const std::vector<ColSchema> &probe_schema,
     const std::vector<ColSchema> &payload_schema,
     const std::vector<int> &payload_row_indices,
@@ -5728,8 +5728,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     const std::vector<int> &lhs_key_chunk_idxs,
     const std::vector<int32_t> &lhs_key_dtypes) {
 
-  auto *join = dynamic_cast<const SimplestJoin *>(&join_node);
-  if (!join || join->join_conditions.empty()) {
+  const SimplestJoin *join =
+      join_node ? dynamic_cast<const SimplestJoin *>(join_node) : nullptr;
+  if (!join && lhs_key_chunk_idxs.empty()) {
     return nullptr;
   }
 
@@ -5747,9 +5748,11 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   // unsafe when AQP IR ordering diverges from DuckDB's physical chunk.
   std::vector<HashColDesc> probe_key_cols;
   unsigned key_width = 0;
+  const size_t num_join_conds =
+      join ? join->join_conditions.size() : lhs_key_chunk_idxs.size();
   const bool use_duckdb_keys =
       !lhs_key_chunk_idxs.empty() &&
-      lhs_key_chunk_idxs.size() == join->join_conditions.size() &&
+      lhs_key_chunk_idxs.size() == num_join_conds &&
       lhs_key_dtypes.size() == lhs_key_chunk_idxs.size();
   if (use_duckdb_keys) {
     for (size_t i = 0; i < lhs_key_chunk_idxs.size(); ++i) {
@@ -5771,7 +5774,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       key_width += kc.elem_size;
       probe_key_cols.push_back(kc);
     }
-  } else {
+  } else if (join) {
     for (const auto &cond : join->join_conditions) {
       HashColDesc kc;
       kc.col_idx = -1;
@@ -5805,6 +5808,8 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       key_width += kc.elem_size;
       probe_key_cols.push_back(kc);
     }
+  } else {
+    return nullptr;
   }
 
   // skip_hash_cmp: for integer keys, skip salt comparison in probe loop
@@ -6025,9 +6030,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   // AQPJoinHTView layout (must match aqp_jit_abi.h / aqp_jit.hpp):
   //   { void *entries; u64 bitmask; u64 use_salt; void *layout_ptr;
   //     u32 tuple_size; u32 pointer_offset; const u64 *data_offsets;
-  //     u64 no_chains; const u64 *bf_data; u64 bf_bitmask; }
-  StructType *ViewTy =
-      StructType::get(*ctx, {i8p, i64, i64, i8p, i32, i32, i64p, i64, i64p, i64});
+  //     u64 no_chains; const u64 *bf_data; u64 bf_bitmask; u64 has_row_validity; }
+  StructType *ViewTy = StructType::get(
+      *ctx, {i8p, i64, i64, i8p, i32, i32, i64p, i64, i64p, i64, i64});
 
   // int64_t fn(AQPChunkView *in, AQPChunkView *out, void *view)
   FunctionType *fn_ty = FunctionType::get(
@@ -6092,6 +6097,10 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 9), "v_bf_bitmask");
   Value *has_bf = cc.b.CreateICmpNE(
       cc.b.CreatePtrToInt(v_bf_data, i64), ConstantInt::get(i64, 0), "has_bf");
+  Value *v_has_rv64 = cc.b.CreateLoad(
+      i64, cc.b.CreateStructGEP(ViewTy, view_ptr, 10), "v_has_rv");
+  Value *has_rv = cc.b.CreateICmpNE(
+      v_has_rv64, ConstantInt::get(i64, 0), "has_rv");
 
   // Phase 7.1 — hoist data_offsets[*] used in the row loop into entry-block
   // SSA values. Inside the body LLVM treats `load i64, GEP v_offsets, idx`
@@ -6146,18 +6155,74 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     cc.col_validity[i] = cc.LoadColValidity((unsigned)i);
   }
 
-  // Load output column data pointers
+  // Load output column data + validity pointers
   Value *out_cols_pp = cc.b.CreateStructGEP(ChunkViewTy, out_arg, 0);
   Value *out_cols_v = cc.b.CreateLoad(PointerType::getUnqual(ColViewTy),
                                       out_cols_pp, "out_cols");
   std::vector<Value *> out_data_ptrs;
+  std::vector<Value *> out_valid_ptrs;
   for (size_t oi = 0; oi < out_cols.size(); oi++) {
     Value *col_i =
         cc.b.CreateGEP(ColViewTy, out_cols_v, ConstantInt::get(i64, oi));
     out_data_ptrs.push_back(
         cc.b.CreateLoad(i8p, cc.b.CreateStructGEP(ColViewTy, col_i, 0),
                         "out_data_" + std::to_string(oi)));
+    out_valid_ptrs.push_back(
+        cc.b.CreateLoad(i64p, cc.b.CreateStructGEP(ColViewTy, col_i, 1),
+                        "out_valid_" + std::to_string(oi)));
   }
+
+  // ---- NULL-validity helpers ----
+  // The dispatcher (MakeChunkViewAt with writable_validity) guarantees every
+  // output column has a non-null, all-valid mask; the emit path clears bits
+  // for NULL outputs. Input masks may be null (= all valid) — the select-on-
+  // address trick below reads a constant all-ones word in that case, keeping
+  // the hot path branchless.
+  GlobalVariable *all_valid_gv = new GlobalVariable(
+      *mod, i64, /*isConstant=*/true, GlobalValue::PrivateLinkage,
+      ConstantInt::get(i64, -1), "aqp_all_valid");
+  ArrayType *zero_pad_ty = ArrayType::get(i8, 64);
+  GlobalVariable *zero_pad_gv = new GlobalVariable(
+      *mod, zero_pad_ty, /*isConstant=*/true, GlobalValue::PrivateLinkage,
+      ConstantAggregateZero::get(zero_pad_ty), "aqp_zero_pad");
+
+  // i1: validity of input column col_idx at row r (nullptr mask = valid).
+  auto emit_input_valid = [&](int col_idx, Value *r) -> Value * {
+    Value *vp = cc.col_validity[col_idx];
+    Value *has_mask = cc.b.CreateICmpNE(
+        cc.b.CreatePtrToInt(vp, i64), ConstantInt::get(i64, 0));
+    Value *word_idx = cc.b.CreateLShr(r, ConstantInt::get(i64, 6));
+    Value *word_addr = cc.b.CreateGEP(i64, vp, word_idx);
+    Value *addr = cc.b.CreateSelect(has_mask, word_addr, all_valid_gv);
+    Value *word = cc.b.CreateLoad(i64, addr);
+    Value *bitpos = cc.b.CreateAnd(r, ConstantInt::get(i64, 63));
+    Value *bit = cc.b.CreateAnd(cc.b.CreateLShr(word, bitpos),
+                                ConstantInt::get(i64, 1));
+    return cc.b.CreateICmpNE(bit, ConstantInt::get(i64, 0), "in_valid");
+  };
+  // i1: validity of HT row column (bit col_bit_idx of the row's validity
+  // byte prefix); true when the layout has no validity prefix.
+  auto emit_row_valid = [&](Value *row_ptr, int col_bit_idx) -> Value * {
+    Value *byte_addr = cc.b.CreateGEP(
+        i8, row_ptr, ConstantInt::get(i64, col_bit_idx / 8));
+    Value *byte = cc.b.CreateLoad(i8, byte_addr);
+    Value *bit = cc.b.CreateAnd(
+        cc.b.CreateLShr(byte, ConstantInt::get(i8, col_bit_idx % 8)),
+        ConstantInt::get(i8, 1));
+    Value *raw = cc.b.CreateICmpNE(bit, ConstantInt::get(i8, 0));
+    return cc.b.CreateSelect(has_rv, raw, ConstantInt::getTrue(*ctx),
+                             "row_valid");
+  };
+  // Clear output validity bit out_idx of column oi when !is_valid.
+  auto emit_out_validity = [&](size_t oi, Value *out_idx, Value *is_valid) {
+    Value *word_idx = cc.b.CreateLShr(out_idx, ConstantInt::get(i64, 6));
+    Value *wp = cc.b.CreateGEP(i64, out_valid_ptrs[oi], word_idx);
+    Value *word = cc.b.CreateLoad(i64, wp);
+    Value *bitpos = cc.b.CreateAnd(out_idx, ConstantInt::get(i64, 63));
+    Value *inval = cc.b.CreateZExt(cc.b.CreateNot(is_valid), i64);
+    Value *clear_mask = cc.b.CreateShl(inval, bitpos);
+    cc.b.CreateStore(cc.b.CreateAnd(word, cc.b.CreateNot(clear_mask)), wp);
+  };
 
   // ---- Hash helpers (shared between stage-1 prelude and stage-2 key cmp) ----
   auto key_llvm_ty = [&](int32_t dt) -> Type * {
@@ -6204,7 +6269,16 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
           cc.b.CreateBitCast(elem_ptr, PointerType::getUnqual(kty));
       Value *kval = cc.b.CreateLoad(kty, typed_ptr);
       if (out_keys) out_keys->push_back(kval);
-      Value *u64_val = (kty == i64) ? kval : cc.b.CreateZExt(kval, i64);
+      // Match DuckDB's Hash<T>: int8/int16 are first cast to uint32_t
+      // (sign-extending), then zero-extended to 64 bits. int32 zero-extends.
+      Value *u64_val;
+      if (kty == i64) {
+        u64_val = kval;
+      } else if (kty == cc.i32()) {
+        u64_val = cc.b.CreateZExt(kval, i64);
+      } else {
+        u64_val = cc.b.CreateZExt(cc.b.CreateSExt(kval, cc.i32()), i64);
+      }
       Value *hj = emitMurmur(u64_val);
       h = (j == 0) ? hj : emitCombine(h, hj);
     }
@@ -6468,6 +6542,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     Value *rkval = cc.b.CreateLoad(kty, typed_ptr);
     Value *eq = cc.b.CreateICmpEQ(rkval, probe_key_vals[j]);
     all_eq = cc.b.CreateAnd(all_eq, eq);
+    // NULL probe key never matches (inner join semantics). The garbage
+    // bytes under a NULL slot could otherwise equal a real build key.
+    all_eq = cc.b.CreateAnd(all_eq, emit_input_valid(kc.col_idx, row_i));
   }
   cc.b.CreateCondBr(all_eq, chain_bb, miss_bb);
 
@@ -6510,24 +6587,14 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     else if (oc.dtype == AQP_DTYPE_BOOL || oc.dtype == AQP_DTYPE_INT8)
       elem_ty = i8;
 
+    Value *is_valid = nullptr;
+    Value *src_byte_ptr = nullptr; // i8* to the source slot (memcpy path)
     if (oc.source == OutColDesc::PROBE) {
-      if (elem_ty) {
-        Type *ptr_ty = PointerType::getUnqual(elem_ty);
-        Value *src_typed =
-            cc.b.CreateBitCast(cc.col_data[oc.probe_col_idx], ptr_ty);
-        Value *val =
-            cc.b.CreateLoad(elem_ty, cc.b.CreateGEP(elem_ty, src_typed, row_i));
-        Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
-        cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, chain_oc));
-      } else {
-        Value *src = cc.b.CreateGEP(
+      is_valid = emit_input_valid(oc.probe_col_idx, row_i);
+      if (!elem_ty) {
+        src_byte_ptr = cc.b.CreateGEP(
             i8, cc.col_data[oc.probe_col_idx],
             cc.b.CreateMul(row_i, ConstantInt::get(i64, oc.elem_size)));
-        Value *dst = cc.b.CreateGEP(
-            i8, out_data_ptrs[oi],
-            cc.b.CreateMul(chain_oc, ConstantInt::get(i64, oc.elem_size)));
-        cc.b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
-                          ConstantInt::get(i64, oc.elem_size));
       }
     } else {
       // PAYLOAD: row offset = data_offsets[num_keys + payload_row_indices[k]]
@@ -6536,22 +6603,41 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
           (k >= 0 && k < (int)payload_row_indices.size())
               ? payload_row_indices[k]
               : k;
-      Value *pay_off = get_hoisted((int)num_keys + row_col_idx);
-      Value *pay_src = cc.b.CreateGEP(i8, chain_ptr, pay_off);
-      if (elem_ty) {
-        Type *ptr_ty = PointerType::getUnqual(elem_ty);
-        Value *val =
-            cc.b.CreateLoad(elem_ty, cc.b.CreateBitCast(pay_src, ptr_ty));
-        Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
-        cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, chain_oc));
-      } else {
-        Value *dst = cc.b.CreateGEP(
-            i8, out_data_ptrs[oi],
-            cc.b.CreateMul(chain_oc, ConstantInt::get(i64, oc.elem_size)));
-        cc.b.CreateMemCpy(dst, MaybeAlign(1), pay_src, MaybeAlign(1),
-                          ConstantInt::get(i64, oc.elem_size));
-      }
+      is_valid = emit_row_valid(chain_ptr, (int)num_keys + row_col_idx);
+      src_byte_ptr =
+          cc.b.CreateGEP(i8, chain_ptr, get_hoisted((int)num_keys + row_col_idx));
     }
+
+    if (elem_ty) {
+      Value *val;
+      if (oc.source == OutColDesc::PROBE) {
+        Type *ptr_ty = PointerType::getUnqual(elem_ty);
+        Value *src_typed =
+            cc.b.CreateBitCast(cc.col_data[oc.probe_col_idx], ptr_ty);
+        val =
+            cc.b.CreateLoad(elem_ty, cc.b.CreateGEP(elem_ty, src_typed, row_i));
+      } else {
+        val = cc.b.CreateLoad(
+            elem_ty,
+            cc.b.CreateBitCast(src_byte_ptr, PointerType::getUnqual(elem_ty)));
+      }
+      // NULL source: store zero instead of the garbage slot bytes
+      val = cc.b.CreateSelect(is_valid, val, Constant::getNullValue(elem_ty));
+      Type *ptr_ty = PointerType::getUnqual(elem_ty);
+      Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
+      cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, chain_oc));
+    } else {
+      // NULL source: copy zero bytes (a garbage string_t must never be
+      // visible — later Flatten/heap ops may dereference it)
+      Value *zero_src = cc.b.CreateBitCast(zero_pad_gv, i8p);
+      Value *src = cc.b.CreateSelect(is_valid, src_byte_ptr, zero_src);
+      Value *dst = cc.b.CreateGEP(
+          i8, out_data_ptrs[oi],
+          cc.b.CreateMul(chain_oc, ConstantInt::get(i64, oc.elem_size)));
+      cc.b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
+                        ConstantInt::get(i64, oc.elem_size));
+    }
+    emit_out_validity(oi, chain_oc, is_valid);
   }
   Value *chain_oc_next = cc.b.CreateAdd(chain_oc, ConstantInt::get(i64, 1));
   cc.b.CreateBr(advance_bb);
@@ -6633,6 +6719,937 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
             << "  num_keys=" << probe_key_cols.size()
             << "  out_cols=" << out_cols.size()
             << "  payload_width=" << payload_width << "\n";
+#endif
+
+  return AQP_JIT_GET_ADDR(sym);
+}
+
+// ---------------------------------------------------------------------------
+// CompileMultiProbeChain — fuse N consecutive hash-join probes into one
+// LLVM function. stages[0] = innermost (receives scan input), stages[N-1]
+// = outermost. Output columns match the outermost HJ's output layout.
+// ---------------------------------------------------------------------------
+void *IrToLlvmCompiler::CompileMultiProbeChain(
+    const std::vector<ProbeStageInfo> &stages) {
+
+  const size_t N = stages.size();
+  if (N < 2) return nullptr;
+
+  // --- Per-stage key descriptors ---
+  struct StageKeyCol {
+    int col_idx;       // stage 0: index into probe_schema. stage k>0: index into stage k-1 output
+    int32_t dtype;
+    unsigned elem_size;
+  };
+  struct StageDesc {
+    std::vector<StageKeyCol> keys;
+    bool do_skip_salt;
+    unsigned num_keys;
+  };
+  std::vector<StageDesc> stage_descs(N);
+
+  for (size_t s = 0; s < N; s++) {
+    auto &sd = stage_descs[s];
+    auto &st = stages[s];
+    bool all_int = true;
+    for (size_t j = 0; j < st.lhs_key_chunk_idxs.size(); j++) {
+      StageKeyCol kc;
+      kc.col_idx = st.lhs_key_chunk_idxs[j];
+      kc.dtype = st.lhs_key_dtypes[j];
+      kc.elem_size = DtypeElemSize(kc.dtype);
+      if (kc.elem_size == 0) return nullptr;
+      if (kc.dtype != AQP_DTYPE_INT8 && kc.dtype != AQP_DTYPE_INT16 &&
+          kc.dtype != AQP_DTYPE_INT32 && kc.dtype != AQP_DTYPE_INT64)
+        all_int = false;
+      sd.keys.push_back(kc);
+    }
+    sd.do_skip_salt = skip_hash_cmp_ && all_int;
+    sd.num_keys = (unsigned)sd.keys.size();
+  }
+
+  // --- Resolve final output columns ---
+  // FinalOutCol tells the emit block where to load each output value from.
+  struct FinalOutCol {
+    enum Source { PROBE_INPUT, HT_STAGE };
+    Source source;
+    int stage_idx;    // HT stage index (0-based), unused for PROBE_INPUT
+    int col_idx;      // probe_schema idx (PROBE_INPUT) or HT layout idx (HT_STAGE)
+    int32_t dtype;
+    unsigned elem_size;
+  };
+  std::vector<FinalOutCol> final_out;
+
+  // For a 2-probe chain: stages[0]=inner, stages[1]=outer
+  // stages[1].lhs_output_idxs index into stages[0]'s output = [lhs0..., rhs0...]
+  // stages[1].rhs_output_layout_idxs index into HT₂ layout = [keys1, payload1]
+  //
+  // For N-probe: trace lhs outputs recursively through the chain.
+
+  // Helper: resolve an index in stage k's input to a FinalOutCol
+  // stage k's input = stage k-1's output = [lhs_{k-1} cols..., rhs_{k-1} cols...]
+  struct ColOrigin {
+    FinalOutCol::Source source;
+    int stage_idx;
+    int col_idx;
+    int32_t dtype;
+    unsigned elem_size;
+  };
+  // Build stage output layouts: each stage's output is [lhs_output, rhs_output]
+  // stage_output_origins[s] maps output column index → ColOrigin
+  std::vector<std::vector<ColOrigin>> stage_output_origins(N);
+
+  // Stage 0: lhs comes from probe input, rhs from HT₀
+  {
+    auto &st = stages[0];
+    for (size_t i = 0; i < st.lhs_output_idxs.size(); i++) {
+      ColOrigin co;
+      co.source = FinalOutCol::PROBE_INPUT;
+      co.stage_idx = -1;
+      co.col_idx = st.lhs_output_idxs[i];
+      co.dtype = (i < st.lhs_output_dtypes.size()) ? st.lhs_output_dtypes[i]
+                     : st.probe_schema[st.lhs_output_idxs[i]].dtype;
+      co.elem_size = DtypeElemSize(co.dtype);
+      stage_output_origins[0].push_back(co);
+    }
+    for (size_t i = 0; i < st.rhs_output_layout_idxs.size(); i++) {
+      ColOrigin co;
+      co.source = FinalOutCol::HT_STAGE;
+      co.stage_idx = 0;
+      co.col_idx = st.rhs_output_layout_idxs[i];
+      co.dtype = (i < st.rhs_output_dtypes.size()) ? st.rhs_output_dtypes[i]
+                     : AQP_DTYPE_OTHER;
+      co.elem_size = DtypeElemSize(co.dtype);
+      stage_output_origins[0].push_back(co);
+    }
+  }
+
+  // Stages 1..N-1: lhs indices refer to previous stage's output
+  for (size_t s = 1; s < N; s++) {
+    auto &st = stages[s];
+    auto &prev_out = stage_output_origins[s - 1];
+    for (size_t i = 0; i < st.lhs_output_idxs.size(); i++) {
+      int idx = st.lhs_output_idxs[i];
+      if (idx < 0 || idx >= (int)prev_out.size()) return nullptr;
+      ColOrigin co = prev_out[idx];
+      if (i < st.lhs_output_dtypes.size())
+        co.dtype = st.lhs_output_dtypes[i];
+      co.elem_size = DtypeElemSize(co.dtype);
+      stage_output_origins[s].push_back(co);
+    }
+    for (size_t i = 0; i < st.rhs_output_layout_idxs.size(); i++) {
+      ColOrigin co;
+      co.source = FinalOutCol::HT_STAGE;
+      co.stage_idx = (int)s;
+      co.col_idx = st.rhs_output_layout_idxs[i];
+      co.dtype = (i < st.rhs_output_dtypes.size()) ? st.rhs_output_dtypes[i]
+                     : AQP_DTYPE_OTHER;
+      co.elem_size = DtypeElemSize(co.dtype);
+      stage_output_origins[s].push_back(co);
+    }
+  }
+
+  // Final output = outermost stage's output
+  auto &final_origins = stage_output_origins[N - 1];
+  for (auto &co : final_origins) {
+    FinalOutCol fc;
+    fc.source = co.source;
+    fc.stage_idx = co.stage_idx;
+    fc.col_idx = co.col_idx;
+    fc.dtype = co.dtype;
+    fc.elem_size = co.elem_size;
+    if (fc.elem_size == 0) return nullptr;
+    final_out.push_back(fc);
+  }
+  if (final_out.empty()) return nullptr;
+
+  // --- Resolve stage k>0 key sources ---
+  // For stage k, each key's BoundRef index points into stage k-1's output.
+  // We resolve to ColOrigin to know where to load from in LLVM.
+  struct StageKeySource {
+    ColOrigin origin;
+  };
+  std::vector<std::vector<StageKeySource>> stage_key_sources(N);
+  // Stage 0 keys: from probe input directly
+  for (auto &kc : stage_descs[0].keys) {
+    StageKeySource sks;
+    sks.origin.source = FinalOutCol::PROBE_INPUT;
+    sks.origin.stage_idx = -1;
+    sks.origin.col_idx = kc.col_idx;
+    sks.origin.dtype = kc.dtype;
+    sks.origin.elem_size = kc.elem_size;
+    stage_key_sources[0].push_back(sks);
+  }
+  for (size_t s = 1; s < N; s++) {
+    auto &prev_out = stage_output_origins[s - 1];
+    for (auto &kc : stage_descs[s].keys) {
+      int idx = kc.col_idx; // index into prev stage output
+      if (idx < 0 || idx >= (int)prev_out.size()) return nullptr;
+      StageKeySource sks;
+      sks.origin = prev_out[idx];
+      stage_key_sources[s].push_back(sks);
+    }
+  }
+
+  // --- LLVM IR generation ---
+  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+  std::string fn_name = "aqp_multi_probe_" + std::to_string(N) + "x_" + std::to_string(fn_id);
+
+  auto ctx = std::make_unique<LLVMContext>();
+  auto mod = std::make_unique<Module>("aqp_multi_probe_mod", *ctx);
+
+  Type *i8 = Type::getInt8Ty(*ctx);
+  Type *i8p = PointerType::getUnqual(i8);
+  Type *i32 = Type::getInt32Ty(*ctx);
+  Type *i64 = Type::getInt64Ty(*ctx);
+  Type *i64p = PointerType::getUnqual(i64);
+  Type *i16 = Type::getInt16Ty(*ctx);
+
+  StructType *ColViewTy = StructType::get(*ctx, {i8p, i64p, i32, i32});
+  StructType *ChunkViewTy =
+      StructType::get(*ctx, {PointerType::getUnqual(ColViewTy), i64, i64});
+  // AQPJoinHTView: { entries, bitmask, use_salt, layout_ptr, tuple_size,
+  //   pointer_offset, data_offsets, no_chains, bf_data, bf_bitmask,
+  //   has_row_validity }
+  StructType *ViewTy = StructType::get(
+      *ctx, {i8p, i64, i64, i8p, i32, i32, i64p, i64, i64p, i64, i64});
+
+  // AQPMultiProbeState: { AQPJoinHTView*[4], uint32_t num_stages }
+  StructType *MPSTy = StructType::get(
+      *ctx, {ArrayType::get(PointerType::getUnqual(ViewTy), 4), i32});
+
+  // int64_t fn(AQPChunkView *in, AQPChunkView *out, void *state)
+  FunctionType *fn_ty = FunctionType::get(
+      i64,
+      {PointerType::getUnqual(ChunkViewTy),
+       PointerType::getUnqual(ChunkViewTy), i8p},
+      false);
+  Function *fn =
+      Function::Create(fn_ty, Function::ExternalLinkage, fn_name, mod.get());
+
+  Value *in_arg = fn->getArg(0);  in_arg->setName("in");
+  Value *out_arg = fn->getArg(1); out_arg->setName("out");
+  Value *state_arg = fn->getArg(2); state_arg->setName("state");
+
+  BasicBlock *entry_bb = BasicBlock::Create(*ctx, "entry", fn);
+  BasicBlock *outer_bb = BasicBlock::Create(*ctx, "outer", fn);
+  BasicBlock *next_bb = BasicBlock::Create(*ctx, "next", fn);
+  BasicBlock *bail_bb = BasicBlock::Create(*ctx, "bail", fn);
+  BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
+
+  auto &probe_schema = stages[0].probe_schema;
+  Value *dummy_sel = ConstantPointerNull::get(
+      PointerType::getUnqual(
+          StructType::get(*ctx, {PointerType::getUnqual(i32), i32})));
+  CompileCtx cc(*ctx, *mod, probe_schema, in_arg, dummy_sel);
+  cc.b.SetInsertPoint(entry_bb);
+
+  // --- Load AQPMultiProbeState, extract per-stage HT views ---
+  Value *mps_ptr = cc.b.CreateBitCast(state_arg, PointerType::getUnqual(MPSTy), "mps");
+  Value *views_arr = cc.b.CreateStructGEP(MPSTy, mps_ptr, 0, "views_arr");
+
+  struct HTViewVals {
+    Value *entries;
+    Value *bitmask;
+    Value *ptr_off;
+    Value *offsets;
+    Value *no_chains;
+    Value *skip_chain;
+    Value *has_rv; // i1: rows carry a validity byte prefix
+  };
+  std::vector<HTViewVals> ht_vals(N);
+
+  for (size_t s = 0; s < N; s++) {
+    Value *view_pp = cc.b.CreateGEP(
+        ArrayType::get(PointerType::getUnqual(ViewTy), 4), views_arr,
+        {ConstantInt::get(i64, 0), ConstantInt::get(i64, s)});
+    Value *view_ptr = cc.b.CreateLoad(
+        PointerType::getUnqual(ViewTy), view_pp,
+        "view_" + std::to_string(s));
+
+    auto &hv = ht_vals[s];
+    std::string sfx = "_" + std::to_string(s);
+    hv.entries = cc.b.CreateLoad(i8p,
+        cc.b.CreateStructGEP(ViewTy, view_ptr, 0), "entries" + sfx);
+    hv.bitmask = cc.b.CreateLoad(i64,
+        cc.b.CreateStructGEP(ViewTy, view_ptr, 1), "bitmask" + sfx);
+    Value *ptr_off32 = cc.b.CreateLoad(i32,
+        cc.b.CreateStructGEP(ViewTy, view_ptr, 5), "ptr_off32" + sfx);
+    hv.ptr_off = cc.b.CreateZExt(ptr_off32, i64, "ptr_off" + sfx);
+    hv.offsets = cc.b.CreateLoad(i64p,
+        cc.b.CreateStructGEP(ViewTy, view_ptr, 6), "offsets" + sfx);
+    hv.no_chains = cc.b.CreateLoad(i64,
+        cc.b.CreateStructGEP(ViewTy, view_ptr, 7), "no_chains" + sfx);
+    hv.skip_chain = cc.b.CreateICmpNE(
+        hv.no_chains, ConstantInt::get(i64, 0), "skip_chain" + sfx);
+    Value *has_rv64 = cc.b.CreateLoad(i64,
+        cc.b.CreateStructGEP(ViewTy, view_ptr, 10), "has_rv64" + sfx);
+    hv.has_rv = cc.b.CreateICmpNE(
+        has_rv64, ConstantInt::get(i64, 0), "has_rv" + sfx);
+  }
+
+  // --- Hoist data_offsets for all stages ---
+  // Per-stage maps from layout_idx → hoisted Value*
+  std::vector<std::unordered_map<int, Value *>> hoisted_per_stage(N);
+  {
+    for (size_t s = 0; s < N; s++) {
+      auto load_off = [&](int idx) {
+        if (hoisted_per_stage[s].count(idx)) return;
+        Value *off = cc.b.CreateLoad(
+            i64,
+            cc.b.CreateGEP(i64, ht_vals[s].offsets, ConstantInt::get(i64, (int64_t)idx)),
+            "off_s" + std::to_string(s) + "_" + std::to_string(idx));
+        hoisted_per_stage[s][idx] = off;
+      };
+      // Key offsets
+      for (unsigned j = 0; j < stage_descs[s].num_keys; j++) load_off(j);
+      // Output column offsets (only for this stage's HT)
+      int nk = (int)stage_descs[s].num_keys;
+      for (auto &fc : final_out) {
+        if (fc.source == FinalOutCol::HT_STAGE && fc.stage_idx == (int)s) {
+          int layout_idx = fc.col_idx;
+          if (layout_idx < nk) {
+            load_off(layout_idx);
+          } else {
+            int pi = layout_idx - nk;
+            int row_idx = (pi >= 0 && pi < (int)stages[s].payload_row_indices.size())
+                              ? stages[s].payload_row_indices[pi] : pi;
+            load_off(nk + row_idx);
+          }
+        }
+      }
+      // Key source offsets for stages that load from this HT
+      for (size_t s2 = 0; s2 < N; s2++) {
+        for (auto &sks : stage_key_sources[s2]) {
+          if (sks.origin.source == FinalOutCol::HT_STAGE && sks.origin.stage_idx == (int)s) {
+            int layout_idx = sks.origin.col_idx;
+            if (layout_idx < nk) {
+              load_off(layout_idx);
+            } else {
+              int pi = layout_idx - nk;
+              int row_idx = (pi >= 0 && pi < (int)stages[s].payload_row_indices.size())
+                                ? stages[s].payload_row_indices[pi] : pi;
+              load_off(nk + row_idx);
+            }
+          }
+        }
+      }
+    }
+  }
+  auto get_stage_offset = [&](int stage, int idx) -> Value * {
+    auto it = hoisted_per_stage[stage].find(idx);
+    assert(it != hoisted_per_stage[stage].end() && "hoisted offset miss");
+    return it->second;
+  };
+
+  Constant *POINTER_MASK = ConstantInt::get(i64, 0x0000FFFFFFFFFFFFULL);
+
+  Value *nrows = cc.b.CreateLoad(
+      i64, cc.b.CreateStructGEP(ChunkViewTy, in_arg, 1), "nrows");
+
+  // Load probe input column data
+  cc.col_data.resize(probe_schema.size());
+  cc.col_validity.resize(probe_schema.size());
+  for (size_t i = 0; i < probe_schema.size(); i++) {
+    cc.col_data[i] = cc.LoadColData((unsigned)i);
+    cc.col_validity[i] = cc.LoadColValidity((unsigned)i);
+  }
+
+  // Load output column data + validity pointers
+  Value *out_cols_pp = cc.b.CreateStructGEP(ChunkViewTy, out_arg, 0);
+  Value *out_cols_v = cc.b.CreateLoad(
+      PointerType::getUnqual(ColViewTy), out_cols_pp, "out_cols");
+  std::vector<Value *> out_data_ptrs;
+  std::vector<Value *> out_valid_ptrs;
+  for (size_t oi = 0; oi < final_out.size(); oi++) {
+    Value *col_i = cc.b.CreateGEP(ColViewTy, out_cols_v, ConstantInt::get(i64, oi));
+    out_data_ptrs.push_back(
+        cc.b.CreateLoad(i8p, cc.b.CreateStructGEP(ColViewTy, col_i, 0),
+                        "out_data_" + std::to_string(oi)));
+    out_valid_ptrs.push_back(
+        cc.b.CreateLoad(i64p, cc.b.CreateStructGEP(ColViewTy, col_i, 1),
+                        "out_valid_" + std::to_string(oi)));
+  }
+
+  // ---- NULL-validity helpers (see CompileFilterProbeProjectFusion) ----
+  GlobalVariable *all_valid_gv = new GlobalVariable(
+      *mod, i64, /*isConstant=*/true, GlobalValue::PrivateLinkage,
+      ConstantInt::get(i64, -1), "aqp_all_valid");
+  ArrayType *zero_pad_ty = ArrayType::get(i8, 64);
+  GlobalVariable *zero_pad_gv = new GlobalVariable(
+      *mod, zero_pad_ty, /*isConstant=*/true, GlobalValue::PrivateLinkage,
+      ConstantAggregateZero::get(zero_pad_ty), "aqp_zero_pad");
+
+  auto emit_input_valid = [&](int col_idx, Value *r) -> Value * {
+    Value *vp = cc.col_validity[col_idx];
+    Value *has_mask = cc.b.CreateICmpNE(
+        cc.b.CreatePtrToInt(vp, i64), ConstantInt::get(i64, 0));
+    Value *word_idx = cc.b.CreateLShr(r, ConstantInt::get(i64, 6));
+    Value *word_addr = cc.b.CreateGEP(i64, vp, word_idx);
+    Value *addr = cc.b.CreateSelect(has_mask, word_addr, all_valid_gv);
+    Value *word = cc.b.CreateLoad(i64, addr);
+    Value *bitpos = cc.b.CreateAnd(r, ConstantInt::get(i64, 63));
+    Value *bit = cc.b.CreateAnd(cc.b.CreateLShr(word, bitpos),
+                                ConstantInt::get(i64, 1));
+    return cc.b.CreateICmpNE(bit, ConstantInt::get(i64, 0), "in_valid");
+  };
+  auto emit_row_valid = [&](Value *row_ptr, int col_bit_idx,
+                            Value *stage_has_rv) -> Value * {
+    Value *byte_addr = cc.b.CreateGEP(
+        i8, row_ptr, ConstantInt::get(i64, col_bit_idx / 8));
+    Value *byte = cc.b.CreateLoad(i8, byte_addr);
+    Value *bit = cc.b.CreateAnd(
+        cc.b.CreateLShr(byte, ConstantInt::get(i8, col_bit_idx % 8)),
+        ConstantInt::get(i8, 1));
+    Value *raw = cc.b.CreateICmpNE(bit, ConstantInt::get(i8, 0));
+    return cc.b.CreateSelect(stage_has_rv, raw, ConstantInt::getTrue(*ctx),
+                             "row_valid");
+  };
+  auto emit_out_validity = [&](size_t oi, Value *out_idx, Value *is_valid) {
+    Value *word_idx = cc.b.CreateLShr(out_idx, ConstantInt::get(i64, 6));
+    Value *wp = cc.b.CreateGEP(i64, out_valid_ptrs[oi], word_idx);
+    Value *word = cc.b.CreateLoad(i64, wp);
+    Value *bitpos = cc.b.CreateAnd(out_idx, ConstantInt::get(i64, 63));
+    Value *inval = cc.b.CreateZExt(cc.b.CreateNot(is_valid), i64);
+    Value *clear_mask = cc.b.CreateShl(inval, bitpos);
+    cc.b.CreateStore(cc.b.CreateAnd(word, cc.b.CreateNot(clear_mask)), wp);
+  };
+
+  // Map an HT-stage layout reference (as used by key sources and final
+  // output columns) to the index into data_offsets — also the validity
+  // bit index within the row's validity prefix.
+  auto layout_off_idx = [&](int src_stage, int layout_idx) -> int {
+    int nk_src = (int)stage_descs[src_stage].num_keys;
+    if (layout_idx < nk_src) return layout_idx;
+    int pi = layout_idx - nk_src;
+    int row_idx = (pi >= 0 && pi < (int)stages[src_stage].payload_row_indices.size())
+                      ? stages[src_stage].payload_row_indices[pi] : pi;
+    return nk_src + row_idx;
+  };
+
+  // --- Hash helpers ---
+  auto key_llvm_ty = [&](int32_t dt) -> Type * {
+    if (dt == AQP_DTYPE_INT32 || dt == AQP_DTYPE_DATE) return i32;
+    if (dt == AQP_DTYPE_INT64) return i64;
+    if (dt == AQP_DTYPE_INT16) return i16;
+    if (dt == AQP_DTYPE_BOOL || dt == AQP_DTYPE_INT8) return i8;
+    return nullptr;
+  };
+  // Validate all key types are supported
+  for (size_t s = 0; s < N; s++)
+    for (auto &kc : stage_descs[s].keys)
+      if (!key_llvm_ty(kc.dtype)) return nullptr;
+
+  Constant *MURMUR_MUL = ConstantInt::get(i64, 0xd6e8feb86659fd93ULL);
+  Constant *SHIFT32 = ConstantInt::get(i64, 32);
+  auto emitMurmur = [&](Value *x) -> Value * {
+    Value *t = cc.b.CreateXor(x, cc.b.CreateLShr(x, SHIFT32));
+    t = cc.b.CreateMul(t, MURMUR_MUL);
+    t = cc.b.CreateXor(t, cc.b.CreateLShr(t, SHIFT32));
+    t = cc.b.CreateMul(t, MURMUR_MUL);
+    t = cc.b.CreateXor(t, cc.b.CreateLShr(t, SHIFT32));
+    return t;
+  };
+  auto emitCombine = [&](Value *a, Value *b) -> Value * {
+    Value *t = cc.b.CreateXor(a, cc.b.CreateLShr(a, SHIFT32));
+    t = cc.b.CreateMul(t, MURMUR_MUL);
+    return cc.b.CreateXor(t, b);
+  };
+
+  cc.b.CreateBr(outer_bb);
+
+  // ---- Outer loop header ----
+  cc.b.SetInsertPoint(outer_bb);
+  PHINode *row_i = cc.b.CreatePHI(i64, 2, "i");
+  PHINode *out_count = cc.b.CreatePHI(i64, 2, "out_count");
+  row_i->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+  out_count->addIncoming(ConstantInt::get(i64, 0), entry_bb);
+
+  BasicBlock *body_bb = BasicBlock::Create(*ctx, "body", fn);
+  cc.b.CreateCondBr(cc.b.CreateICmpEQ(row_i, nrows), exit_bb, body_bb);
+
+  // ---- Body: evaluate filter for stage 0 (if any) ----
+  cc.b.SetInsertPoint(body_bb);
+  cc.row_idx = row_i;
+
+  // Stage 0 filter
+  std::vector<const AQPExpr *> filter_exprs;
+  if (stages[0].filter_ir) {
+    for (const auto &qe : stages[0].filter_ir->qual_vec)
+      filter_exprs.push_back(qe.get());
+  }
+  SortFiltersByCost(filter_exprs);
+
+  BasicBlock *hash_0_bb = BasicBlock::Create(*ctx, "hash_0", fn);
+  BasicBlock *after_filter_bb;
+  if (!filter_exprs.empty()) {
+    BasicBlock *filt_fail = BasicBlock::Create(*ctx, "filt_fail", fn);
+    EmitShortCircuitFilter(cc, fn, filter_exprs, hash_0_bb, filt_fail);
+    cc.b.SetInsertPoint(filt_fail);
+    cc.b.CreateBr(next_bb);
+    after_filter_bb = filt_fail;
+  } else {
+    cc.b.CreateBr(hash_0_bb);
+    after_filter_bb = body_bb;
+  }
+
+  // ================================================================
+  // Generate nested probe stages.
+  //
+  // For each stage s=0..N-1 we generate:
+  //   hash_s  → probe_s → [salt_s] → key_eq_s → chain_s → emit/next_stage
+  //   miss_s  (linear probe)
+  //   advance_s (chain walk)
+  //   chain_done_s
+  //
+  // Stage s+1 is nested inside chain_s of stage s. The innermost stage
+  // (s=N-1) emits output columns. After the innermost chain exhausts,
+  // control returns to the outer stage's advance block.
+  //
+  // SSA values for chain_ptr_s are available as PHI nodes in chain_s_bb.
+  // These are used to load HT keys and output columns.
+  // ================================================================
+
+  // Per-stage SSA values we need to thread through
+  struct StageBBs {
+    BasicBlock *hash_bb;
+    BasicBlock *probe_bb;
+    BasicBlock *salt_ok_bb; // nullptr if skip_salt
+    BasicBlock *key_eq_bb;
+    BasicBlock *miss_bb;
+    BasicBlock *chain_bb;
+    BasicBlock *emit_or_next_bb; // emit for last stage, next_stage hash for non-last
+    BasicBlock *advance_bb;
+    BasicBlock *chain_walk_bb;
+    BasicBlock *chain_done_bb;
+    PHINode *ht_off;
+    PHINode *chain_ptr;
+    PHINode *chain_oc;   // running output count in this stage's chain walk
+    Value *row_ptr_init; // initial row pointer from entry probe
+    std::vector<Value *> probe_key_vals; // loaded key values for this stage
+    Value *hash_val;
+    Value *probe_salt;
+  };
+  std::vector<StageBBs> sbb(N);
+
+  // Create all basic blocks upfront so forward references work
+  for (size_t s = 0; s < N; s++) {
+    std::string sfx = "_" + std::to_string(s);
+    auto &sb = sbb[s];
+    if (s == 0) {
+      sb.hash_bb = hash_0_bb;
+    } else {
+      sb.hash_bb = BasicBlock::Create(*ctx, "hash" + sfx, fn);
+    }
+    sb.probe_bb = BasicBlock::Create(*ctx, "probe" + sfx, fn);
+    sb.salt_ok_bb = stage_descs[s].do_skip_salt ? nullptr
+                        : BasicBlock::Create(*ctx, "salt_ok" + sfx, fn);
+    sb.key_eq_bb = BasicBlock::Create(*ctx, "key_eq" + sfx, fn);
+    sb.miss_bb = BasicBlock::Create(*ctx, "miss" + sfx, fn);
+    sb.chain_bb = BasicBlock::Create(*ctx, "chain" + sfx, fn);
+    sb.advance_bb = BasicBlock::Create(*ctx, "advance" + sfx, fn);
+    sb.chain_walk_bb = BasicBlock::Create(*ctx, "chain_walk" + sfx, fn);
+    sb.chain_done_bb = BasicBlock::Create(*ctx, "chain_done" + sfx, fn);
+  }
+
+  for (size_t s = 0; s < N; s++) {
+    std::string sfx = "_" + std::to_string(s);
+    auto &sd = stage_descs[s];
+    auto &sb = sbb[s];
+    auto &hv = ht_vals[s];
+
+    // ---- Hash: load keys + compute hash ----
+    cc.b.SetInsertPoint(sb.hash_bb);
+    sb.probe_key_vals.clear();
+    sb.hash_val = nullptr;
+
+    for (size_t j = 0; j < sd.keys.size(); j++) {
+      auto &kc = sd.keys[j];
+      auto &ks = stage_key_sources[s][j];
+      Type *kty = key_llvm_ty(kc.dtype);
+      Value *kval = nullptr;
+
+      if (ks.origin.source == FinalOutCol::PROBE_INPUT) {
+        // Load from input chunk
+        Value *src = cc.col_data[ks.origin.col_idx];
+        Value *elem_ptr = cc.b.CreateGEP(
+            i8, src,
+            cc.b.CreateMul(row_i, ConstantInt::get(i64, kc.elem_size)));
+        Value *typed_ptr = cc.b.CreateBitCast(elem_ptr, PointerType::getUnqual(kty));
+        kval = cc.b.CreateLoad(kty, typed_ptr, "key" + sfx + "_" + std::to_string(j));
+      } else {
+        // Load from a previous stage's chain_ptr
+        int src_stage = ks.origin.stage_idx;
+        int layout_idx = ks.origin.col_idx;
+        int nk_src = (int)stage_descs[src_stage].num_keys;
+        int off_idx;
+        if (layout_idx < nk_src) {
+          off_idx = layout_idx;
+        } else {
+          int pi = layout_idx - nk_src;
+          int row_idx = (pi >= 0 && pi < (int)stages[src_stage].payload_row_indices.size())
+                            ? stages[src_stage].payload_row_indices[pi] : pi;
+          off_idx = nk_src + row_idx;
+        }
+        Value *offset_val = get_stage_offset(src_stage, off_idx);
+        Value *ptr = cc.b.CreateGEP(i8, sbb[src_stage].chain_ptr, offset_val);
+        Value *typed_ptr = cc.b.CreateBitCast(ptr, PointerType::getUnqual(kty));
+        kval = cc.b.CreateLoad(kty, typed_ptr, "key" + sfx + "_" + std::to_string(j));
+      }
+
+      sb.probe_key_vals.push_back(kval);
+      // Match DuckDB's Hash<T>: int8/int16 are first cast to uint32_t
+      // (sign-extending), then zero-extended to 64 bits. int32 zero-extends.
+      Value *u64_val;
+      if (kty == i64) {
+        u64_val = kval;
+      } else if (kty == cc.i32()) {
+        u64_val = cc.b.CreateZExt(kval, i64);
+      } else {
+        u64_val = cc.b.CreateZExt(cc.b.CreateSExt(kval, cc.i32()), i64);
+      }
+      Value *hj = emitMurmur(u64_val);
+      sb.hash_val = (j == 0) ? hj : emitCombine(sb.hash_val, hj);
+    }
+
+    Value *ht_off_init = cc.b.CreateAnd(sb.hash_val, hv.bitmask, "ht_off_init" + sfx);
+    sb.probe_salt = sd.do_skip_salt
+        ? nullptr
+        : cc.b.CreateOr(sb.hash_val, POINTER_MASK, "probe_salt" + sfx);
+    cc.b.CreateBr(sb.probe_bb);
+
+    // ---- Probe: load entry, check empty ----
+    cc.b.SetInsertPoint(sb.probe_bb);
+    sb.ht_off = cc.b.CreatePHI(i64, 2, "ht_off" + sfx);
+    sb.ht_off->addIncoming(ht_off_init, sb.hash_bb);
+
+    Value *entries_typed = cc.b.CreateBitCast(hv.entries, i64p);
+    Value *entry_addr = cc.b.CreateGEP(i64, entries_typed, sb.ht_off);
+    Value *entry = cc.b.CreateLoad(i64, entry_addr, "entry" + sfx);
+    Value *is_empty = cc.b.CreateICmpEQ(entry, ConstantInt::get(i64, 0));
+
+    // On empty: for stage 0 → next_bb (next input row);
+    //           for stage s>0 → advance of stage s-1 (try next chain_ptr in outer HT)
+    BasicBlock *empty_target = (s == 0) ? next_bb : sbb[s - 1].advance_bb;
+
+    if (sd.do_skip_salt) {
+      cc.b.CreateCondBr(is_empty, empty_target, sb.key_eq_bb);
+    } else {
+      cc.b.CreateCondBr(is_empty, empty_target, sb.salt_ok_bb);
+
+      cc.b.SetInsertPoint(sb.salt_ok_bb);
+      Value *entry_salt = cc.b.CreateOr(entry, POINTER_MASK);
+      Value *salt_match = cc.b.CreateICmpEQ(entry_salt, sb.probe_salt);
+      cc.b.CreateCondBr(salt_match, sb.key_eq_bb, sb.miss_bb);
+    }
+
+    // ---- Key compare ----
+    cc.b.SetInsertPoint(sb.key_eq_bb);
+    sb.row_ptr_init = cc.b.CreateIntToPtr(
+        cc.b.CreateAnd(entry, POINTER_MASK), i8p, "row_ptr" + sfx);
+    Value *all_eq = ConstantInt::getTrue(*ctx);
+    for (size_t j = 0; j < sd.keys.size(); j++) {
+      Type *kty = key_llvm_ty(sd.keys[j].dtype);
+      Value *koff = get_stage_offset((int)s, (int)j);
+      Value *row_key_ptr = cc.b.CreateGEP(i8, sb.row_ptr_init, koff);
+      Value *typed_ptr = cc.b.CreateBitCast(row_key_ptr, PointerType::getUnqual(kty));
+      Value *rkval = cc.b.CreateLoad(kty, typed_ptr);
+      Value *eq = cc.b.CreateICmpEQ(rkval, sb.probe_key_vals[j]);
+      all_eq = cc.b.CreateAnd(all_eq, eq);
+      // NULL probe-side key never matches (inner join semantics)
+      auto &ks = stage_key_sources[s][j];
+      Value *key_valid;
+      if (ks.origin.source == FinalOutCol::PROBE_INPUT) {
+        key_valid = emit_input_valid(ks.origin.col_idx, row_i);
+      } else {
+        int src_stage = ks.origin.stage_idx;
+        key_valid = emit_row_valid(
+            sbb[src_stage].chain_ptr,
+            layout_off_idx(src_stage, ks.origin.col_idx),
+            ht_vals[src_stage].has_rv);
+      }
+      all_eq = cc.b.CreateAnd(all_eq, key_valid);
+    }
+    cc.b.CreateCondBr(all_eq, sb.chain_bb, sb.miss_bb);
+
+    // ---- Miss: linear probe ----
+    cc.b.SetInsertPoint(sb.miss_bb);
+    Value *ht_off_next = cc.b.CreateAnd(
+        cc.b.CreateAdd(sb.ht_off, ConstantInt::get(i64, 1)), hv.bitmask);
+    sb.ht_off->addIncoming(ht_off_next, sb.miss_bb);
+    cc.b.CreateBr(sb.probe_bb);
+
+    // ---- Chain walk header ----
+    cc.b.SetInsertPoint(sb.chain_bb);
+    sb.chain_ptr = cc.b.CreatePHI(i8p, 2, "chain_ptr" + sfx);
+    sb.chain_oc = cc.b.CreatePHI(i64, 2, "chain_oc" + sfx);
+    sb.chain_ptr->addIncoming(sb.row_ptr_init, sb.key_eq_bb);
+
+    if (s == 0) {
+      sb.chain_oc->addIncoming(out_count, sb.key_eq_bb);
+    } else {
+      // Inner stages inherit out_count from outer stage's chain_oc
+      sb.chain_oc->addIncoming(sbb[s - 1].chain_oc, sb.key_eq_bb);
+    }
+
+    if (s == N - 1) {
+      // Innermost (last) stage: bail check + emit
+      Value *overflow = cc.b.CreateICmpUGE(sb.chain_oc, ConstantInt::get(i64, 2048));
+      BasicBlock *emit_bb = BasicBlock::Create(*ctx, "emit", fn);
+      cc.b.CreateCondBr(overflow, bail_bb, emit_bb);
+
+      // ---- Emit: write all final output columns ----
+      cc.b.SetInsertPoint(emit_bb);
+      for (size_t oi = 0; oi < final_out.size(); oi++) {
+        auto &fc = final_out[oi];
+        Type *elem_ty = nullptr;
+        if (fc.dtype == AQP_DTYPE_INT32 || fc.dtype == AQP_DTYPE_DATE)
+          elem_ty = i32;
+        else if (fc.dtype == AQP_DTYPE_INT64)
+          elem_ty = i64;
+        else if (fc.dtype == AQP_DTYPE_FLOAT)
+          elem_ty = Type::getFloatTy(*ctx);
+        else if (fc.dtype == AQP_DTYPE_DOUBLE)
+          elem_ty = Type::getDoubleTy(*ctx);
+        else if (fc.dtype == AQP_DTYPE_INT16)
+          elem_ty = i16;
+        else if (fc.dtype == AQP_DTYPE_BOOL || fc.dtype == AQP_DTYPE_INT8)
+          elem_ty = i8;
+
+        Value *is_valid = nullptr;
+        Value *src_byte_ptr = nullptr;
+        if (fc.source == FinalOutCol::PROBE_INPUT) {
+          is_valid = emit_input_valid(fc.col_idx, row_i);
+          src_byte_ptr = cc.b.CreateGEP(
+              i8, cc.col_data[fc.col_idx],
+              cc.b.CreateMul(row_i, ConstantInt::get(i64, fc.elem_size)));
+        } else {
+          // Load from HT stage's chain_ptr at layout offset
+          int src_stage = fc.stage_idx;
+          int off_idx = layout_off_idx(src_stage, fc.col_idx);
+          is_valid = emit_row_valid(sbb[src_stage].chain_ptr, off_idx,
+                                    ht_vals[src_stage].has_rv);
+          src_byte_ptr = cc.b.CreateGEP(i8, sbb[src_stage].chain_ptr,
+                                        get_stage_offset(src_stage, off_idx));
+        }
+
+        if (elem_ty) {
+          Type *ptr_ty = PointerType::getUnqual(elem_ty);
+          Value *val = cc.b.CreateLoad(
+              elem_ty, cc.b.CreateBitCast(src_byte_ptr, ptr_ty));
+          // NULL source: store zero instead of the garbage slot bytes
+          val = cc.b.CreateSelect(is_valid, val,
+                                  Constant::getNullValue(elem_ty));
+          Value *dst_typed = cc.b.CreateBitCast(out_data_ptrs[oi], ptr_ty);
+          cc.b.CreateStore(val, cc.b.CreateGEP(elem_ty, dst_typed, sb.chain_oc));
+        } else {
+          // NULL source: copy zero bytes (garbage string_t must not escape)
+          Value *zero_src = cc.b.CreateBitCast(zero_pad_gv, i8p);
+          Value *src = cc.b.CreateSelect(is_valid, src_byte_ptr, zero_src);
+          Value *dst = cc.b.CreateGEP(
+              i8, out_data_ptrs[oi],
+              cc.b.CreateMul(sb.chain_oc, ConstantInt::get(i64, fc.elem_size)));
+          cc.b.CreateMemCpy(dst, MaybeAlign(1), src, MaybeAlign(1),
+                            ConstantInt::get(i64, fc.elem_size));
+        }
+        emit_out_validity(oi, sb.chain_oc, is_valid);
+      }
+      Value *chain_oc_next = cc.b.CreateAdd(sb.chain_oc, ConstantInt::get(i64, 1));
+      cc.b.CreateBr(sb.advance_bb);
+
+      // ---- Advance (innermost): chain walk ----
+      cc.b.SetInsertPoint(sb.advance_bb);
+      cc.b.CreateCondBr(hv.skip_chain, sb.chain_done_bb, sb.chain_walk_bb);
+
+      cc.b.SetInsertPoint(sb.chain_walk_bb);
+      Value *next_ptr_addr = cc.b.CreateGEP(i8, sb.chain_ptr, hv.ptr_off);
+      Value *next_ptr_pp = cc.b.CreateBitCast(next_ptr_addr, PointerType::getUnqual(i8p));
+      Value *next_ptr = cc.b.CreateLoad(i8p, next_ptr_pp, "next_ptr" + sfx);
+      Value *next_is_null = cc.b.CreateICmpEQ(
+          cc.b.CreatePtrToInt(next_ptr, i64), ConstantInt::get(i64, 0));
+      cc.b.CreateCondBr(next_is_null, sb.chain_done_bb, sb.chain_bb);
+      sb.chain_ptr->addIncoming(next_ptr, sb.chain_walk_bb);
+      sb.chain_oc->addIncoming(chain_oc_next, sb.chain_walk_bb);
+
+      // chain_done: return to outer stage's advance
+      cc.b.SetInsertPoint(sb.chain_done_bb);
+      // Collect the final oc count at chain_done (from chain_walk or advance skip)
+      PHINode *done_oc = cc.b.CreatePHI(i64, 2, "done_oc" + sfx);
+      done_oc->addIncoming(chain_oc_next, sb.advance_bb);  // from skip_chain path
+      done_oc->addIncoming(chain_oc_next, sb.chain_walk_bb); // chain exhausted (null)
+
+      if (s > 0) {
+        // Return to outer stage's advance block with updated out_count
+        cc.b.CreateBr(sbb[s - 1].advance_bb);
+        // Update outer stage's chain_oc phi from this chain_done
+        // (deferred — set below after all stages created)
+      } else {
+        // Stage 0 chain done → next input row
+        cc.b.CreateBr(next_bb);
+      }
+
+      // Store done_oc for use by outer stages
+      // We'll wire PHI incoming values after the loop
+
+    } else {
+      // Non-innermost stage: after chain match, enter next stage
+      // No bail check here — bail is checked at innermost emit
+      cc.b.CreateBr(sbb[s + 1].hash_bb);
+
+      // ---- Advance (non-innermost): after inner stage returns, chain walk ----
+      cc.b.SetInsertPoint(sb.advance_bb);
+      cc.b.CreateCondBr(hv.skip_chain, sb.chain_done_bb, sb.chain_walk_bb);
+
+      cc.b.SetInsertPoint(sb.chain_walk_bb);
+      Value *next_ptr_addr = cc.b.CreateGEP(i8, sb.chain_ptr, hv.ptr_off);
+      Value *next_ptr_pp = cc.b.CreateBitCast(next_ptr_addr, PointerType::getUnqual(i8p));
+      Value *next_ptr = cc.b.CreateLoad(i8p, next_ptr_pp, "next_ptr" + sfx);
+      Value *next_is_null = cc.b.CreateICmpEQ(
+          cc.b.CreatePtrToInt(next_ptr, i64), ConstantInt::get(i64, 0));
+      cc.b.CreateCondBr(next_is_null, sb.chain_done_bb, sb.chain_bb);
+      sb.chain_ptr->addIncoming(next_ptr, sb.chain_walk_bb);
+      // chain_oc for non-innermost: updated by inner stage's chain_done
+      // (wired below)
+
+      cc.b.SetInsertPoint(sb.chain_done_bb);
+      // done_oc phi merges from: advance_bb (skip_chain) and chain_walk_bb (null next)
+      PHINode *done_oc = cc.b.CreatePHI(i64, 2, "done_oc" + sfx);
+      // Incoming values set below after all stages exist
+
+      if (s > 0) {
+        cc.b.CreateBr(sbb[s - 1].advance_bb);
+      } else {
+        cc.b.CreateBr(next_bb);
+      }
+    }
+  }
+
+  // --- Wire up cross-stage PHI incoming values ---
+  // The tricky part: chain_oc for stage s is updated by stage s+1's chain_done.
+  // When s+1's chain exhausts (chain_done_s+1), the accumulated count flows
+  // back to stage s's chain walk via chain_oc.
+  //
+  // For each non-innermost stage s:
+  //   chain_oc_s gets incoming from: key_eq_s (initial = outer_oc), chain_walk_s (= done_oc from s+1)
+  //   done_oc_s gets incoming from: advance_s (skip_chain), chain_walk_s (chain null)
+  //
+  // For innermost stage (N-1):
+  //   chain_oc gets incoming from key_eq and chain_walk (= chain_oc_next)
+  //   done_oc merges chain_oc_next from both paths
+
+  // Retrieve done_oc PHIs for each stage
+  std::vector<PHINode *> done_ocs(N);
+  for (size_t s = 0; s < N; s++) {
+    // done_oc is the first PHI in chain_done_bb
+    done_ocs[s] = cast<PHINode>(&sbb[s].chain_done_bb->front());
+  }
+
+  // Wire done_oc incoming values for non-innermost stages
+  for (size_t s = 0; s < N - 1; s++) {
+    // done_oc_s gets the accumulated count from inner stage s+1
+    PHINode *done_oc = done_ocs[s];
+    Value *inner_done = done_ocs[s + 1]; // result from inner stage
+
+    // From advance_bb (skip_chain path): the inner stage's done_oc was already
+    // produced when we returned to advance_bb. But since advance_bb branches to
+    // chain_done_bb (skip) or chain_walk_bb, the done_oc should capture the
+    // oc from the inner return.
+    //
+    // Actually for non-innermost stages, advance_bb is entered from the inner
+    // stage's chain_done. At that point inner_done_oc has the accumulated count.
+    // We need to pass it through.
+    //
+    // The problem: sbb[s].advance_bb can be reached multiple times (once per
+    // inner chain_done). Each time, the accumulated oc is different.
+    // We need a PHI at advance_bb to capture the incoming oc.
+
+    // advance_bb is entered from: (1) inner stage's chain_done (normal path),
+    // (2) inner stage's probe_bb (empty entry → no match, oc unchanged).
+    // The phi captures the accumulated oc from whichever path.
+    IRBuilder<> tmp_builder(sbb[s].advance_bb, sbb[s].advance_bb->begin());
+    PHINode *adv_oc = tmp_builder.CreatePHI(i64, 2, "adv_oc_" + std::to_string(s));
+    adv_oc->addIncoming(inner_done, sbb[s + 1].chain_done_bb);
+    adv_oc->addIncoming(sbb[s].chain_oc, sbb[s + 1].probe_bb);
+
+    // done_oc incoming: from advance_bb (skip) = adv_oc, from chain_walk = adv_oc (same value threaded)
+    done_oc->addIncoming(adv_oc, sbb[s].advance_bb);
+    done_oc->addIncoming(adv_oc, sbb[s].chain_walk_bb);
+
+    // chain_oc for this stage gets updated from chain_walk
+    sbb[s].chain_oc->addIncoming(adv_oc, sbb[s].chain_walk_bb);
+  }
+
+  // --- Bail block ---
+  cc.b.SetInsertPoint(bail_bb);
+  cc.b.CreateRet(ConstantInt::get(i64, -1));
+
+  // --- Next: advance row_i ---
+  cc.b.SetInsertPoint(next_bb);
+  // out_count update: from filter fail, stage 0 empty, or stage 0 chain_done
+  PHINode *oc_next = cc.b.CreatePHI(i64, 3, "oc_next");
+  if (!filter_exprs.empty()) {
+    oc_next->addIncoming(out_count, after_filter_bb);  // filter failed
+  }
+  // stage 0 probe empty → next_bb
+  oc_next->addIncoming(out_count, sbb[0].probe_bb);
+  // stage 0 chain done → next_bb
+  oc_next->addIncoming(done_ocs[0], sbb[0].chain_done_bb);
+
+  Value *i_next = cc.b.CreateAdd(row_i, ConstantInt::get(i64, 1));
+  row_i->addIncoming(i_next, next_bb);
+  out_count->addIncoming(oc_next, next_bb);
+  cc.b.CreateBr(outer_bb);
+
+  // --- Exit ---
+  cc.b.SetInsertPoint(exit_bb);
+  cc.b.CreateStore(out_count,
+                   cc.b.CreateStructGEP(ChunkViewTy, out_arg, 1));
+  cc.b.CreateRet(out_count);
+
+  SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
+
+  std::string err;
+  raw_string_ostream es(err);
+  if (verifyFunction(*fn, &es)) {
+#ifndef NDEBUG
+    std::cerr << "[AQP-JIT-MULTI] LLVM verify failed: " << err << "\n";
+    fn->print(errs());
+#endif
+    return nullptr;
+  }
+
+  OptimiseModule(*mod, skip_opt_);
+
+  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
+    logAllUnhandledErrors(std::move(e), errs());
+    return nullptr;
+  }
+
+  auto sym = impl_->jit->lookup(fn_name);
+  if (!sym) {
+    logAllUnhandledErrors(sym.takeError(), errs());
+    return nullptr;
+  }
+
+#ifndef NDEBUG
+  std::cerr << "[AQP-JIT-MULTI] compiled " << N << "-probe chain fn="
+            << fn_name << " out_cols=" << final_out.size() << "\n";
+  for (size_t oi = 0; oi < final_out.size(); oi++) {
+    auto &fc = final_out[oi];
+    std::cerr << "  final_out[" << oi << "] source="
+              << (fc.source == FinalOutCol::PROBE_INPUT ? "PROBE" : "HT")
+              << " stage=" << fc.stage_idx << " col=" << fc.col_idx
+              << " dtype=" << fc.dtype << " elem=" << fc.elem_size << "\n";
+  }
+  for (size_t s = 0; s < N; s++) {
+    std::cerr << "  stage_output_origins[" << s << "]: ";
+    for (size_t j = 0; j < stage_output_origins[s].size(); j++) {
+      auto &co = stage_output_origins[s][j];
+      std::cerr << (co.source == FinalOutCol::PROBE_INPUT ? "P" : "H")
+                << co.stage_idx << ":" << co.col_idx << "(" << co.dtype << ") ";
+    }
+    std::cerr << "\n";
+  }
 #endif
 
   return AQP_JIT_GET_ADDR(sym);

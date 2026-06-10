@@ -171,7 +171,18 @@ typedef struct {
   uint64_t        no_chains;      /* 1 if chains_longer_than_one is false (skip chain walk) */
   const uint64_t *bf_data;        /* bloom filter bit array (nullptr = no BF)               */
   uint64_t        bf_bitmask;     /* num_sectors - 1 for BF lookup                          */
+  uint64_t        has_row_validity; /* 1 if rows start with a per-column validity bit prefix */
 } AQPJoinHTView;
+
+/**
+ * Multi-probe state: array of AQPJoinHTView pointers for fused multi-probe
+ * functions. views[0] = innermost HT (probed first), views[num_stages-1] =
+ * outermost. Passed as pipeline_state arg to compiled multi-probe functions.
+ */
+typedef struct {
+  AQPJoinHTView *views[4];
+  uint32_t       num_stages;
+} AQPMultiProbeState;
 
 #ifdef __cplusplus
 } // extern "C"

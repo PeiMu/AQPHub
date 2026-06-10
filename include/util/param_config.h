@@ -94,6 +94,14 @@ struct ParamConfig {
   int jit_prefetch_row_distance = 12;
   bool jit_batch_probe = true;
   bool jit_skip_hash_cmp = false;
+  // In-memory JIT object cache across repeats. Default OFF so every repeat
+  // measures the real compile time (warm-run cache hits would skew the
+  // jit_compile CSV column).
+  bool jit_cache = false;
+  // Force the regular hash-table path (bypass perfect/array hash join) for
+  // HJs that are members of a fused multi-probe chain, so the fused probe
+  // function can dispatch. Mirrors lingo-db, which has no perfect-HJ path.
+  bool single_col_int_join_mode = true;
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);

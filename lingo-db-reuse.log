@@ -1,0 +1,249 @@
+# LingoDB Optimization Reuse Log
+# AQP Middleware Pipeline-JIT — Phases 1-5 COMPLETE (2026-06-10)
+
+## Phase 1: skip_hash_cmp (lingo-db SpecializeSubOp)
+Status: COMPLETE
+Date: 2026-06-07
+Source: lingo-db SpecializeSubOpPass.cpp:116-117
+Implementation: ir_to_llvm.cpp:5836-5849 (do_skip_salt decision)
+Description: For integer join keys, skip salt/hash comparison during HT probe.
+  Direct key comparison is cheaper than hash+key comparison.
+  Matches lingo-db's SpecializeSubOp pass behavior.
+Flag: --jit-skip-hash-cmp (on by default)
+Files modified:
+  - src/jit/ir_to_llvm.cpp (codegen: skip salt check for integer keys)
+  - src/adapters/duckdb_adapter.cpp (plumbing)
+
+## Phase 2: IR-Matching Bug Fix (synth_keys mismatch)
+Status: COMPLETE
+Date: 2026-06-08
+Description: ~30-50% of HASH_JOIN operators failed JIT compilation because
+  FindJoinNodeByBuildTableIndex matched IR JoinNodes whose join conditions
+  referenced different tables than the physical HASH_JOIN's build table.
+Root cause: FindJoinNodeByBuildTableIndex only checked if the IR JoinNode's
+  subtree contained the target table scan, but did NOT verify the join
+  conditions referenced that table's columns.
+Fix: Added condition validation — after finding a candidate IR JoinNode,
+  verify at least one join condition references a column from the build table.
+Result (none-split): 558/910 (61%) compiled, up from ~50-75% per query.
+Files modified:
+  - src/adapters/duckdb_adapter.cpp (FindJoinNodeByBuildTableIndex)
+
+## Table Index Mismatch Fix (split-query support)
+Status: COMPLETE
+Date: 2026-06-09
+Description: Split sub-queries (node-based, relationship-center) re-parse SQL,
+  causing DuckDB to assign fresh logical_table_index values (e.g., 0, 1) that
+  don't match the IR's original indices (e.g., 7, 2). This caused 84%/72%
+  compilation failure for node-based/rc splits.
+Fix: Three-part solution:
+  1. Name-based index remapping (RemapToIRIndex lambda): maps DuckDB's fresh
+     indices to IR's original indices via table name lookup, using existing
+     CollectIRTableNameToIndex helper.
+  2. Physical-plan-only fallback: when no IR JoinNode matches, derives
+     probe_schema, build_schema, keys, and output maps entirely from DuckDB's
+     PhysicalHashJoin object. Calls CompileFilterProbeProjectFusion with
+     nullptr for filter/join/proj IR nodes.
+  3. Swapped-side guard (skip_phys_fallback): blocks physical fallback for
+     HJs where IR's probe/build sides differ from physical plan. These would
+     produce wrong results because probe_schema and key mapping don't match.
+UPDATE 2026-06-10: The physical-plan-only fallback (part 2) was REMOVED.
+  Bisection showed it caused 5 of 6 node-based wrong-result failures: it
+  compiled probe functions for HJs without checking is_build_side, and for
+  HJs whose eids belonged to stale sub-query plans under split execution.
+  Single-probe compilation is now IR-path only. If re-attempted later, it
+  must (a) skip build-side HJs and (b) be keyed per sub-query iteration.
+  The single-probe dispatch path itself remains physical-plan-driven; only
+  the IR-less registration path was removed. (Multi-probe chain detection
+  is still physical-plan-only — it never needed the IR.)
+Signature change: CompileFilterProbeProjectFusion join_node parameter changed
+  from const AQPStmt& (reference) to const AQPStmt* (nullable pointer).
+Files modified:
+  - src/adapters/duckdb_adapter.cpp (RemapToIRIndex, physical fallback, guard)
+  - include/jit/ir_to_llvm.h (signature change)
+  - src/jit/ir_to_llvm.cpp (null join_node handling)
+
+## Phase 3: Multi-Probe Re-evaluation
+Status: COMPLETE (evaluation only)
+Date: 2026-06-09
+Description: Measured multi-probe chain HJ compilation rates after Phase 2 fixes.
+  0/23 multi-probe queries have ALL HJs compiled — every query has at least one
+  swapped-side HJ. However, swapped-side handling is orthogonal to multi-probe
+  fusion. Decision: proceed to Phase 4-5.
+
+## Final Compilation Rates (2026-06-09)
+
+### After all Phase 1-3 fixes:
+
+| Split              | Compiled   | Rate | Swapped  | Other skip |
+|--------------------|------------|------|----------|------------|
+| none               | 581/910    | 63%  | 283 (31%)| 46 (5%)    |
+| node-based         | 735/867    | 84%  | 89 (10%) | 43 (4%)    |
+| relationship-center| 710/910    | 78%  | 154 (16%)| 46 (5%)    |
+
+### Before Phase 2 fixes (baseline):
+
+| Split              | Compiled   | Rate | Swapped  | Other skip |
+|--------------------|------------|------|----------|------------|
+| none               | ~50-75%/q  | ~60% | ~30%     | ~10%       |
+| node-based         | 75/867     | 8%   | 59 (6%)  | 733 (84%)  |
+| relationship-center| 94/910     | 10%  | 154 (16%)| 662 (72%)  |
+
+### Correctness (2026-06-09, all 113 JOB queries):
+
+| Split              | New failures | Pre-existing failures |
+|--------------------|:------------:|:---------------------:|
+| none               | 0            | 0                     |
+| node-based         | 0            | 6 (10c,20c,26a,26b,26c,29c) |
+| relationship-center| 0            | 9 (10c,20c,26a,26c,28a,28b,28c,29c,33c) |
+
+Pre-existing failures are split-level issues unrelated to pipeline-JIT.
+
+## LingoDB Optimizations Applied
+
+| LingoDB optimization               | AQP flag           | Status      |
+|-------------------------------------|--------------------|-------------|
+| SpecializeSubOp (skip hash cmp)     | --jit-skip-hash-cmp| Implemented |
+| PullGatherUp (late materialization) | --jit-payload-prune| Implemented |
+| FoldColumns (eliminate redundant)   | Implicit in codegen| Implemented |
+| Same 4 LLVM passes                 | (always applied)   | Implemented |
+| Single-function pipeline           | --jit-level=pipeline| Single-probe done |
+| Software prefetch                   | --jit-prefetch     | Implemented (AQP-only) |
+| Batch/ROF probe                     | --jit-batch-probe  | Implemented (AQP-only) |
+
+## Phase 4-5: Multi-Probe Chain Fusion
+Status: COMPLETE
+Date: 2026-06-09 (initial), 2026-06-10 (bug fixes, full correctness)
+Source: lingo-db handleExecutionStepCPU() single-function pipeline pattern
+Implementation:
+  - ir_to_llvm.cpp: CompileMultiProbeChain() (~1100 lines, N-stage generalized)
+  - duckdb_adapter.cpp: chain detection at outermost HJ (DFS-first), per-stage
+    ProbeStageInfo collection (physical-plan-only, no IR), registration keyed
+    by innermost eid
+  - physical_hash_join.cpp: multi-probe dispatch at innermost HJ, passthrough
+    at outer HJs (thread-local multi_probe_active_eid), chunk reinitialization
+    to outer types, scratch-chunk first attempt before committing layout
+  - physical_operator.cpp: CachingPhysicalOperator disables chunk caching for
+    chain members (fused layout differs from member's own layout)
+  - pipeline_executor.cpp: resets multi_probe_active_eid per executor
+  - join_hashtable.cpp / aqp_jit.cpp: AQPJoinHTView population, writable
+    output validity masks
+  - aqp_jit.hpp / aqp_jit_abi.h: AQPMultiProbeState, chain registries
+  - ir_to_llvm.h: ProbeStageInfo struct, CompileMultiProbeChain declaration
+Description: Fuses consecutive HASH_JOIN probes on DuckDB probe pipeline into
+  a single LLVM function. Eliminates per-operator dispatch overhead and enables
+  cross-probe optimizations (shared hash values, register-resident intermediate
+  values, no intermediate materialization). N-stage generalized codegen with
+  per-stage skip_hash_cmp, payload pruning, and bail on overflow.
+
+Bugs found and fixed (2026-06-09/10):
+  1. Thread race on multi_probe_active_eid (was plain member, shared across
+     pipeline worker threads) → static thread_local, reset per PipelineExecutor.
+  2. Chain overwrite: DFS re-detected a shorter chain at a middle HJ of an
+     N>=3 chain, overwriting the fused fn at the same innermost eid →
+     already_in_chain check (multi_probe_fns / multi_probe_passthrough_eids)
+     + skip single-probe registration for chain members.
+  3. Build-side chains: fused output types broke the parent HJ's Sink →
+     is_build_side flag threaded through RegisterJIT DFS, chain detection
+     skipped on build pipelines.
+  4. N>=3 passthrough type mismatch (23b crash): middle HJs verify input
+     matches the CHAIN's outer types (not their own GetTypes()); fallback
+     path restores the member's own layout if a previous passthrough left
+     the chunk with the chain layout.
+  5. Bail row loss after layout commit: post-commit bail restores this HJ's
+     own output layout and falls through to the interpreter (which handles
+     >2048-row outputs via HAVE_MORE_OUTPUT). HAVE_MORE_OUTPUT continuation
+     also skips JIT dispatch entirely (state.scan_structure check) so a
+     mid-scan interpreter pass is never clobbered.
+  6. Perfect-join bypass (--single-column-int-join-mode, default ON):
+     PhysicalHashJoin::Finalize forces the regular hash-table path for chain
+     members (force_hash_join_for_chains + multi_probe_chain_members), since
+     the fused probe reads JoinHashTable directly. Mirrors lingo-db, which
+     has no perfect-HJ path. Dispatch still validates every chain member at
+     runtime (count>0, !external, !perfect) and falls back gracefully.
+  7. Sign-extension: non-i64 integer keys are sign-extended (not zero-
+     extended) before hashing/comparison, matching DuckDB's key layout.
+  8. NULL-validity (the last wrong-results bug — node-based 10c/29c, rc
+     10c/22d/28a): fused codegen copied data slots blindly with no validity
+     handling; NULL build columns (e.g. cast_info.person_role_id, NULL in
+     1,435,424/1,435,439 filtered rows) emitted uninitialized garbage as
+     "valid" MIN() inputs. Fix (both single-probe and multi-probe codegen):
+       - Input validity: per-row bit check on probe chunk masks (branchless
+         select-on-address against an all-valid i64 constant global).
+       - HT row validity: AQPJoinHTView.has_row_validity (new ABI field at
+         END of struct, offsets stable) + per-column bit in the row's
+         validity byte prefix (TupleDataLayout convention).
+       - NULL keys never match: key validity ANDed into the key-equality
+         result (NULL key → linear probe terminates at an empty slot).
+       - Output validity: dispatcher allocates fresh owned all-valid masks
+         (MakeChunkViewAt writable_validity=true); JIT clears bits via RMW
+         word stores for NULL outputs; NULL fixed-size values store zero;
+         NULL varchar memcpy sources redirect to a 64-byte zero global.
+       - Bail hazard: interpreter gather only CLEARS validity bits, so the
+         single-probe bail path does chunk.Reset() to drop stale masks.
+  9. CROSS_PRODUCT IR guard: ir_query_splitter skips SetJITPendingIR when
+     the sub-query IR contains a CrossProductNode (IR is unusable for join
+     matching; previously caused exceptions/garbage matching in RegisterJIT).
+
+Correctness (2026-06-10, all 113 JOB queries, golden file comparison,
+release build, both --jit-level=pipeline and pipeline + --jit-skip-hash-cmp):
+  - none-split:            0 diffs, 0 crashes, 0 timeouts
+  - node-based:            0 diffs, 0 crashes, 0 timeouts
+  - relationship-center:   0 diffs, 0 crashes, 0 timeouts
+  All previously-failing queries now pass, including the formerly
+  "pre-existing" split-level failures (node-based 28b/28c, rc CROSS_PRODUCT
+  set) — fixed by items 8 and 9 above.
+
+### Corrected lingo-db execution model understanding (2026-06-09)
+
+Lingo-db uses a HYBRID model — streaming within NestedMapOp regions (consecutive
+hash-join probes share SSA values without materialization), but materialization
+between ExecutionStepOp boundaries. For non-consecutive HJs (e.g., FILTER/PROJ
+between them), lingo-db also materializes. Our consecutive-HJ fusion matches
+lingo-db's streaming behavior within a single execution step.
+
+## LingoDB Optimizations Applied (final, 2026-06-10)
+
+| LingoDB optimization               | AQP flag           | Status      |
+|-------------------------------------|--------------------|-------------|
+| SpecializeSubOp (skip hash cmp)     | --jit-skip-hash-cmp| Implemented |
+| PullGatherUp (late materialization) | --jit-payload-prune| Implemented |
+| FoldColumns (eliminate redundant)   | Implicit in codegen| Implemented |
+| Same 4 LLVM passes                 | (always applied)   | Implemented |
+| Single-function pipeline (1 probe)  | --jit-level=pipeline| Implemented |
+| Multi-probe fusion (N probes)       | --jit-level=pipeline| Implemented |
+| No perfect-HJ special case          | --single-column-int-join-mode | Implemented (default ON) |
+| NULL semantics in compiled probes   | (always on)        | Implemented |
+| Software prefetch                   | --jit-prefetch     | Implemented (AQP-only) |
+| Batch/ROF probe                     | --jit-batch-probe  | Implemented (AQP-only) |
+
+Design verdicts vs lingo-db (2026-06-10):
+- Whole-pipeline compile (scan/filter/sink in one function): NOT replicated
+  inside the DuckDB adapter — DuckDB's PipelineExecutor owns morsel-parallel
+  scan and sink combine/finalize; we can only intercept at operator
+  boundaries. The fused operator segment (filter + N probes + projection)
+  captures lingo-db's main win. A true scan-to-sink compile requires owning
+  the runtime (see "next-level sql-jit runtime" plan in CLAUDE.md).
+- 2048-row output cap with bail vs lingo-db's growing buffers: bail kept.
+  DuckDB's contract is 2048-row chunks + HAVE_MORE_OUTPUT iteration;
+  overflow only occurs for non-unique build keys, the bail path restores
+  state, and the interpreter re-emits in chunks. Growing buffers would add
+  a copy back into chunks for no benefit.
+
+## Remaining Work
+
+- Performance sweep: multi-probe vs single-probe vs interpreter, all splits
+  (measure_breakdown_time_job.sh)
+- Phase 6: JIT compilation cache for CompileFilterProbeProjectFusion +
+  CompileMultiProbeChain (+ --jit-cache CLI flag)
+- Phase 7: Per-query flag tuning (skip_hash_cmp/payload_prune/batch_probe/
+  prefetch sweep, optimal config JSON)
+- Swapped-side HJ handling (orthogonal — would unlock the remaining ~31% of
+  HJs on none-split, ~10-16% on the splits; also the main multi-probe chain
+  breaker)
+- Non-consecutive HJ fusion: FILTER/PROJ between HJs (21a, 21c, 27c, 5a, 5c).
+  Lingo-db fuses these (they are streaming ops within one execution step);
+  requires extending CompileMultiProbeChain with inter-stage filter/project
+  codegen.
+- Next-level sql-jit runtime (lingo-db-style, owns scan-to-sink): see
+  CLAUDE.md plan.

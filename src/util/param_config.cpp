@@ -206,6 +206,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_skip_hash_cmp = true;
     } else if (arg == "--no-jit-skip-hash-cmp") {
       config.jit_skip_hash_cmp = false;
+    } else if (arg == "--jit-cache") {
+      config.jit_cache = true;
+    } else if (arg == "--no-jit-cache") {
+      config.jit_cache = false;
+    } else if (arg == "--single-column-int-join-mode") {
+      config.single_col_int_join_mode = true;
+    } else if (arg == "--no-single-column-int-join-mode") {
+      config.single_col_int_join_mode = false;
     } else if (arg.find("--repeat=") == 0) {
       config.repeat_count = std::stoi(arg.substr(9));
       if (config.repeat_count < 1)

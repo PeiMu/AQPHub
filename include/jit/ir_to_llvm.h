@@ -34,6 +34,8 @@ class SimplestIsNullExpr;
 class SimplestInExpr;
 } // namespace ir_sql_converter
 
+namespace duckdb { class PhysicalHashJoin; }
+
 namespace aqp_jit {
 
 // Opaque handle for an isolated LLVM ORC ResourceTracker.
@@ -65,6 +67,24 @@ struct ColSchema {
   unsigned int table_idx;
   unsigned int col_idx;
   int32_t dtype; // AQP_DTYPE_* constant
+};
+
+struct ProbeStageInfo {
+  duckdb::PhysicalHashJoin *hj = nullptr;
+  uint64_t eid = 0;
+  std::vector<ColSchema> probe_schema;
+  std::vector<ColSchema> payload_schema;
+  std::vector<int> payload_row_indices;
+  std::vector<int> lhs_output_idxs;
+  std::vector<int> rhs_output_layout_idxs;
+  std::vector<int32_t> lhs_output_dtypes;
+  std::vector<int32_t> rhs_output_dtypes;
+  std::vector<int> lhs_key_chunk_idxs;
+  std::vector<int32_t> lhs_key_dtypes;
+  bool skip_hash_cmp_eligible = false;
+  const ir_sql_converter::AQPStmt *filter_ir = nullptr;
+  const ir_sql_converter::AQPStmt *join_ir = nullptr;
+  bool eligible = false;
 };
 
 // Aggregate JIT disabled: JOB has no aggregate-heavy queries (only MIN on
@@ -260,7 +280,7 @@ public:
   // physical chunk ordering even when dtypes happen to coincide.
   void *CompileFilterProbeProjectFusion(
       const ir_sql_converter::AQPStmt *filter_node,
-      const ir_sql_converter::AQPStmt &join_node,
+      const ir_sql_converter::AQPStmt *join_node,
       const ir_sql_converter::AQPStmt *proj_node,
       const std::vector<ColSchema> &probe_schema,
       const std::vector<ColSchema> &payload_schema,
@@ -272,6 +292,13 @@ public:
       const std::vector<int> &lhs_key_chunk_idxs = {},
       const std::vector<int32_t> &lhs_key_dtypes = {});
 
+  /**
+   * Multi-probe fusion: compile the entire probe chain as a single function.
+   * stages[0] = innermost HJ (receives scan input), stages[N-1] = outermost.
+   * Returns function pointer with AQPPipelineFn signature, where pipeline_state
+   * is AQPMultiProbeState*. Returns nullptr on failure.
+   */
+  void *CompileMultiProbeChain(const std::vector<ProbeStageInfo> &stages);
 
   // --- Isolated compilation for background threads ---
   // Create an isolated tracker. Modules compiled with this tracker are
