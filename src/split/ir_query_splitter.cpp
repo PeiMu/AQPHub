@@ -443,7 +443,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
 #ifdef HAVE_DUCKDB
   if (storage_plan_ && storage_plan_->IsLoaded() &&
-      (config_.jit_flags != 0 || config_.kernel_path != KernelPath::NONE) &&
+      config_.kernel_path != KernelPath::NONE &&
       config_.engine == BackendEngine::DUCKDB) {
 
     if (config_.kernel_path == KernelPath::PIPELINE)
@@ -1304,7 +1304,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_DUCKDB
   // Kernel execution routing: pipeline kernel → query kernel → DuckDB fallback
   if (storage_plan_ && storage_plan_->IsLoaded() &&
-      (config_.jit_flags != 0 || config_.kernel_path != KernelPath::NONE) &&
+      config_.kernel_path != KernelPath::NONE &&
       config_.engine == BackendEngine::DUCKDB) {
 
     // Lambda: register a kernel-produced FlatTable (shared by both paths)

@@ -34,12 +34,6 @@ flag_suffix=""
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
 [[ "$spec_jit"       == "off" ]] && flag_suffix+="_nospecjit"
 
-# Storage plan flags (enabled when JIT is active)
-storage_flags=""
-if [[ "$jit_level" != "none" ]]; then
-    storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
-fi
-
 log_name=time_log.csv
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
@@ -249,7 +243,6 @@ $cmd_prefix ../build_release/aqp_middleware \
   --repeat=${iteration} \
   --jit-level=${jit_level} --jit-simd=${jit_simd} \
   ${jit_extra_flags} \
-  ${storage_flags} \
   --benchmark \
   "${dir}"
 
