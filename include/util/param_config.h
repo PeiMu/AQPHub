@@ -102,6 +102,8 @@ struct ParamConfig {
   // HJs that are members of a fused multi-probe chain, so the fused probe
   // function can dispatch. Mirrors lingo-db, which has no perfect-HJ path.
   bool single_col_int_join_mode = true;
+  // Speculative JIT: only takes effect for node-based split + DuckDB + JIT
+  bool enable_spec_jit = true;
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);

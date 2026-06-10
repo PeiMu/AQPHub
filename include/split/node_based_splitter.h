@@ -110,6 +110,24 @@ private:
   std::unique_ptr<ir_sql_converter::AQPStmt> TakePlanAsIR();
 
   bool enable_debug_print_ = false;
+
+public:
+  // Peek at the next subquery group (speculative — uses current split state
+  // before MiddleOptimize of the next iteration).  Returns IR for the predicted
+  // next sub-query, or nullptr if terminal / empty.  Does NOT consume any
+  // entries from subqueries_ or table_expr_queue_.
+  //
+  // The next group's CHUNK_GET slot is still null at peek time (the real
+  // MergeDataChunk only runs in UpdateRemainingIR, after execution), so a
+  // speculative LogicalColumnDataGet for the temp table the CURRENT iteration
+  // is about to produce is injected with the given chunk index / types /
+  // estimated cardinality, and reverted before returning.
+  std::unique_ptr<ir_sql_converter::AQPStmt>
+  PeekNextSubquery(duckdb::idx_t spec_chunk_index,
+                   const duckdb::vector<duckdb::LogicalType> &chunk_types,
+                   duckdb::idx_t est_card);
+
+  bool HasNextSubquery() const { return subqueries_.size() >= 1; }
 };
 
 } // namespace middleware

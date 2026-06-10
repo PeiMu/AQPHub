@@ -9,6 +9,7 @@ prefetch=${6:-on}
 batch_probe=${7:-on}
 skip_hash_cmp=${8:-on}
 jit_cache=${9:-off}
+spec_jit=${10:-on}
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -21,6 +22,7 @@ elif [[ "$prefetch" != "on" ]]; then
 fi
 [[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
 [[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
+[[ "$spec_jit"       == "off" ]] && jit_extra_flags+=" --no-spec-jit"
 
 # Build a short suffix for the log filename
 flag_suffix=""
@@ -30,6 +32,7 @@ flag_suffix=""
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
+[[ "$spec_jit"       == "off" ]] && flag_suffix+="_nospecjit"
 
 # Storage plan flags (enabled when JIT is active)
 storage_flags=""

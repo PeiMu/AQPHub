@@ -214,6 +214,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.single_col_int_join_mode = true;
     } else if (arg == "--no-single-column-int-join-mode") {
       config.single_col_int_join_mode = false;
+    } else if (arg == "--spec-jit") {
+      config.enable_spec_jit = true;
+    } else if (arg == "--no-spec-jit") {
+      config.enable_spec_jit = false;
     } else if (arg.find("--repeat=") == 0) {
       config.repeat_count = std::stoi(arg.substr(9));
       if (config.repeat_count < 1)
@@ -344,6 +348,12 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --[no-]jit-skip-hash-cmp         Skip hash/salt cmp "
                "for integer keys"
+            << std::endl;
+  std::cout << "  --jit-cache                      Enable JIT compilation cache "
+               "across --repeat runs (default: disabled)"
+            << std::endl;
+  std::cout << "  --no-spec-jit                    Disable speculative JIT "
+               "pipelining (default: enabled)"
             << std::endl;
   std::cout << "\n  Measurement:" << std::endl;
   std::cout << "  --repeat=N                       Run query N times in-process "

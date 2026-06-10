@@ -296,6 +296,16 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
       log_file.open("time_log.csv", std::ios_base::app);
       log_file << "Running benchmark for " << sql_file << "...\n";
       log_file.close();
+      if (config.engine == BackendEngine::LINGODB) {
+        std::ofstream ldb_log;
+        ldb_log.open("lingodb_compile_time.csv", std::ios_base::app);
+        ldb_log << "Running benchmark for " << sql_file << "...\n";
+        ldb_log << "frontend, QOpt, lowerRelAlg, lowerSubOp, lowerDB, "
+                   "lowerArrow, lowerToLLVM, toLLVMIR, llvmOptimize, "
+                   "llvmCodeGen, baselineLowering, baselineCodeGen, "
+                   "baselineEmit, executionTime, total\n";
+        ldb_log.close();
+      }
     }
     for (int iter = 0; iter < config.repeat_count; iter++) {
       std::chrono::high_resolution_clock::time_point timer;

@@ -1,6 +1,7 @@
 #include "adapters/lingodb_adapter.h"
 
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 
 #include <arrow/api.h>
@@ -12,6 +13,7 @@
 #include <lingodb/compiler/mlir-support/eval.h>
 #include <lingodb/execution/Execution.h>
 #include <lingodb/execution/ResultProcessing.h>
+#include <lingodb/execution/Timing.h>
 #include <lingodb/runtime/RelationHelper.h>
 #include <lingodb/scheduler/Scheduler.h>
 
@@ -122,6 +124,29 @@ middleware::QueryResult ArrowTableToQueryResult(
   return result;
 }
 
+static const std::vector<std::string> kLingoDBTimingColumns = {
+    "frontend", "QOpt", "lowerRelAlg", "lowerSubOp", "lowerDB", "lowerArrow",
+    "lowerToLLVM", "toLLVMIR", "llvmOptimize", "llvmCodeGen",
+    "baselineLowering", "baselineCodeGen", "baselineEmit",
+    "executionTime", "total"};
+
+static void WriteLingoDBTimingRow(
+    const std::unordered_map<std::string, double> &timing) {
+  std::ofstream log_file;
+  log_file.open("lingodb_compile_time.csv", std::ios_base::app);
+  for (size_t i = 0; i < kLingoDBTimingColumns.size(); i++) {
+    const auto &col = kLingoDBTimingColumns[i];
+    auto it = timing.find(col);
+    if (it != timing.end()) {
+      log_file << std::fixed << std::setprecision(3) << it->second;
+    }
+    if (i + 1 < kLingoDBTimingColumns.size())
+      log_file << ", ";
+  }
+  log_file << "\n";
+  log_file.close();
+}
+
 } // namespace
 
 namespace middleware {
@@ -170,12 +195,24 @@ QueryResult LingoDBAdapter::ExecuteSingleSQL(const std::string &sql) {
   config->resultProcessor =
       lingodb::execution::createTableRetriever(result_table);
 
+  lingodb::execution::TimingCollector *timing_collector = nullptr;
+  if (enable_timing_) {
+    auto collector =
+        std::make_unique<lingodb::execution::TimingCollector>();
+    timing_collector = collector.get();
+    config->timingProcessor = std::move(collector);
+  }
+
   auto executer = lingodb::execution::QueryExecuter::createDefaultExecuter(
       std::move(config), *session_);
   executer->fromData(sql);
   lingodb::scheduler::awaitEntryTask(
       std::make_unique<lingodb::execution::QueryExecutionTask>(
           std::move(executer)));
+
+  if (enable_timing_ && timing_collector) {
+    WriteLingoDBTimingRow(timing_collector->getTiming());
+  }
 
   if (result_table) {
     return ArrowTableToQueryResult(result_table);
@@ -222,6 +259,14 @@ void LingoDBAdapter::ExecuteSQLandCreateTempTable(
   config->resultProcessor =
       lingodb::execution::createTableRetriever(result_table);
 
+  lingodb::execution::TimingCollector *timing_collector = nullptr;
+  if (enable_timing_) {
+    auto collector =
+        std::make_unique<lingodb::execution::TimingCollector>();
+    timing_collector = collector.get();
+    config->timingProcessor = std::move(collector);
+  }
+
   auto executer = lingodb::execution::QueryExecuter::createDefaultExecuter(
       std::move(config), *session_);
 
@@ -233,6 +278,10 @@ void LingoDBAdapter::ExecuteSQLandCreateTempTable(
   lingodb::scheduler::awaitEntryTask(
       std::make_unique<lingodb::execution::QueryExecutionTask>(
           std::move(executer)));
+
+  if (enable_timing_ && timing_collector) {
+    WriteLingoDBTimingRow(timing_collector->getTiming());
+  }
 
   if (!result_table) {
     throw std::runtime_error(

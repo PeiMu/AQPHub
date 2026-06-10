@@ -24,7 +24,13 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+#include "duckdb/main/connection.hpp"
+#include "jit/ir_to_llvm.h"
+#endif
 
 namespace middleware {
 
@@ -49,10 +55,6 @@ struct TempTableInfo {
   // Mapping from old (table_idx, col_idx) to position in this temp table
   // column_mappings[i] contains the original (table_idx, col_idx) for column i
   std::vector<ColumnMapping> column_mappings;
-
-  // Min/max per column index (integer columns only).
-  // Used for JIT range-predicate injection into downstream scans.
-  std::unordered_map<size_t, std::pair<int64_t, int64_t>> col_min_max;
 
   TempTableInfo(std::string name, unsigned int idx, uint64_t card)
       : table_name(std::move(name)), table_index(idx), cardinality(card) {}
@@ -133,7 +135,11 @@ private:
   // Cross-sub-plan optimizations (range pred injection + bloom filter).
   // Outlined from ExecuteOneIteration to keep the hot path compact for
   // better instruction cache utilization (expert knowledge #9, #18).
-  void ApplyCrossSubPlanOptimizations(std::string &sub_sql);
+  // Range preds change the SQL text; bloom filters are side-band (pending in
+  // the adapter), so the spec-check path can skip building them on a HIT.
+  void ApplyCrossSubPlanOptimizations(std::string &sub_sql,
+                                      bool inject_range_preds = true,
+                                      bool build_bloom_filters = true);
 
   EngineAdapter *adapter_;
   storage::StoragePlan *storage_plan_ = nullptr;
@@ -169,6 +175,12 @@ private:
   // Temp tables known to have 0 rows (INNER JOIN → 0 results guaranteed)
   std::set<std::string> empty_temp_tables_;
 
+  // Cached integer-column min/max per temp table (immutable once stored);
+  // avoids re-scanning collections on repeated range-pred injection.
+  std::unordered_map<std::string,
+                     std::unordered_map<size_t, std::pair<int64_t, int64_t>>>
+      temp_min_max_cache_;
+
   // Kernel decision logging (for threshold tuning, --tuning flag)
   int kernel_log_repeat_idx_ = 0;
   int current_repeat_ = 0;
@@ -185,6 +197,79 @@ private:
   std::string BuildCombinedSQL(
       const std::vector<std::pair<std::string, std::string>> &sub_plans,
       const std::string &final_sql) const;
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  struct SpeculativeCompilation {
+    std::future<bool> future;
+    std::string speculative_sql;
+    // Temp table + estimated cardinality the speculative Prepare planned
+    // against. If the actual cardinality diverges, the frozen physical plan
+    // (join sides, HT sizing, parallelism) may be slow — reject the hit.
+    std::string assumed_temp_name;
+    duckdb::idx_t assumed_card = 0;
+    std::unique_ptr<duckdb::Connection> spec_conn;
+    std::unique_ptr<duckdb::PreparedStatement> spec_prepared;
+    // Speculative IR owned here so bg thread can read it safely.
+    std::unique_ptr<ir_sql_converter::AQPStmt> spec_ir;
+    // Bloom filters built on the main thread at launch (same set the inline
+    // path would build); registered into the spec plan by the bg task.
+    std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
+    // Iteration this speculation targets (for cross-repeat miss learning).
+    int target_iter = 0;
+    // Snapshot of temp-table collections taken on the main thread at launch
+    // so the bg RegisterJITImpl can build join bloom filters race-free.
+    DuckDBAdapter::TempCollectionSnapshot temp_snapshot;
+  };
+  std::unique_ptr<ThreadPool> jit_compile_pool_;
+  std::unique_ptr<SpeculativeCompilation> pending_spec_;
+  // Stale speculations whose bg compile may still be running. Kept alive here
+  // (instead of blocking the main thread on future.wait()) so the bg task's
+  // raw pointer into the SpeculativeCompilation stays valid. Reaped
+  // non-blockingly by RetirePendingSpec; drained (blocking) by DrainSpecs.
+  std::vector<std::unique_ptr<SpeculativeCompilation>> zombie_specs_;
+  // Move pending_spec_ into zombie_specs_ without blocking, then reap any
+  // zombies whose futures are ready.
+  void RetirePendingSpec();
+  // Blocking: wait for pending + zombies (end of query / destructor).
+  void DrainSpecs();
+  // Long-lived compilers for speculative JIT — reused across iterations to
+  // avoid LLVM LLJIT memory growth from creating/destroying instances.
+  // Two instances, used alternately (ping-pong): on a HIT the next bg compile
+  // is launched WHILE the hit's JIT code is executing, and its ResetModules
+  // must not free that code — so it runs on the other compiler.
+  std::unique_ptr<aqp_jit::IrToLlvmCompiler> spec_compilers_[2];
+  int spec_compiler_idx_ = 0;
+  int spec_hits_ = 0;
+  int spec_misses_ = 0;
+  int spec_card_misses_ = 0;
+  int spec_not_ready_ = 0;
+  int spec_bg_errors_ = 0;
+  // Key into the cross-repeat miss-history map (the original query SQL).
+  std::string spec_history_key_;
+
+  // Phase A: peek at next subquery and launch bg Prepare+JIT. Invoked via
+  // the adapter's post-Prepare hook — after Prepare(i) (when the result temp
+  // table's identity is known and registered as a placeholder) and before
+  // ExecuteRow(i), so the bg compile overlaps the whole execution.
+  void LaunchSpeculativeCompile(const std::string &temp_table_name,
+                                duckdb::idx_t chunk_index,
+                                const duckdb::vector<duckdb::LogicalType> &types,
+                                const std::vector<std::string> &col_names,
+                                duckdb::idx_t est_card, bool post_execute);
+  // Phase B: run real SplitIR(i+1) AFTER UpdateRemainingIR to produce
+  // precomputed_extraction_ for the next iteration.
+  void PrecomputeNextExtraction(
+      std::unique_ptr<ir_sql_converter::AQPStmt> &remaining_ir);
+  bool CheckSpeculativeResult(const std::string &actual_sql,
+                              const std::string &temp_table_name);
+  // Extraction pre-computed by PrecomputeNextExtraction (real SplitIR).
+  // If non-null, the next iteration uses it instead of calling SplitIR.
+  std::unique_ptr<SubqueryExtraction> precomputed_extraction_;
+  // Main-thread time (µs) spent in PrecomputeNextExtraction; added to the
+  // NEXT iteration's extract_next_sub-IR timer column so the breakdown CSV
+  // stays complete (the work is that iteration's extraction, done early).
+  double pending_extract_us_ = 0.0;
+#endif
 
 #ifdef HAVE_DUCKDB
   // Lazy CSR (7.3b): build FlatTable + CSR from DuckDB ColumnDataCollection

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -74,6 +75,11 @@ struct StoredTempResult {
   bool has_override_cardinality = false;
   uint64_t override_cardinality = 0;
   std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> column_stats;
+  // True while this entry is a speculative placeholder (empty collection,
+  // estimated cardinality). The real result is Combine()d into the same
+  // collection object — a speculative Prepare's bind data holds a raw
+  // pointer to it, so it must never be replaced.
+  bool is_placeholder = false;
 };
 
 // ReplacementScanData subclass: holds pointer to temp_collections_ map
@@ -189,12 +195,28 @@ public:
   const std::vector<BloomFilterInfo> &GetPendingBloomFilters() const {
     return pending_bloom_filters_;
   }
+  std::vector<BloomFilterInfo> TakePendingBloomFilters() {
+    return std::move(pending_bloom_filters_);
+  }
+
+  // Walk a physical plan tree; register the given bloom filters into ctx's
+  // aqp_jit_context. Moves bf_data out of the entries. Safe to call from the
+  // speculative bg thread when op/ctx are exclusively owned by it.
+  void RegisterBloomFilters(duckdb::PhysicalOperator &op,
+                            duckdb::ClientContext *ctx,
+                            std::vector<BloomFilterInfo> &bfs);
 
   // Build a Bloom filter from a temp table's integer column.
   // Returns empty bf_data if column is not INT32/INT64 or table not found.
   BloomFilterInfo BuildBloomFilter(const std::string &temp_table_name,
                                    size_t col_idx,
                                    uint64_t temp_card);
+
+  // Same as above but from a collection directly (thread-safe: no map
+  // lookups). ctx is only used to allocate the scan chunk.
+  static BloomFilterInfo BuildBloomFilter(duckdb::ColumnDataCollection &collection,
+                                          size_t col_idx,
+                                          duckdb::ClientContext &ctx);
 
   // Build a BF from a ColumnDataCollection directly (supports any hashable type).
   static BloomFilterInfo BuildBloomFilterFromCollection(
@@ -213,6 +235,9 @@ public:
 
   // Get the DuckDB connection (for StoragePlan loading)
   duckdb::Connection &GetConnection() { return *conn; }
+
+  // Get the DuckDB instance (for creating speculative connections)
+  duckdb::DuckDB &GetDB() { return *db; }
 
 #ifdef HAVE_LLVM
   // JIT: set the sub-IR and flags for compilation before the next
@@ -254,6 +279,66 @@ public:
   }
 
   aqp_jit::IrToLlvmCompiler *GetJitCompiler();
+
+  void ExecuteSpeculativeAndCreateTempTable(
+      duckdb::PreparedStatement &prepared, duckdb::Connection &spec_conn,
+      const std::string &temp_table_name, bool update_temp_card);
+
+  // Invoked twice per ExecuteSQLandCreateTempTable:
+  // 1. post_execute=false — after Prepare (chunk index, column names/types and
+  //    ESTIMATED cardinality known), BEFORE ExecuteRow, so a speculative
+  //    compile for the NEXT subquery can overlap this subquery's execution.
+  // 2. post_execute=true — after ExecuteRow + result store, with the ACTUAL
+  //    cardinality, so the speculation layer can keep or relaunch the compile
+  //    with an accurately-planned Prepare.
+  using PostPrepareHook = std::function<void(
+      const std::string &temp_table_name, duckdb::idx_t chunk_index,
+      const duckdb::vector<duckdb::LogicalType> &types,
+      const std::vector<std::string> &col_names, duckdb::idx_t est_card,
+      bool post_execute)>;
+  void SetPostPrepareHook(PostPrepareHook hook) {
+    post_prepare_hook_ = std::move(hook);
+  }
+
+  // Register an empty placeholder temp collection (exact names/types,
+  // estimated cardinality) so a speculative Prepare on another connection can
+  // bind temp_table_name before the real result exists. The real result is
+  // later Combine()d into the placeholder by ExecuteSQLandCreateTempTable.
+  void RegisterPlaceholderTemp(const std::string &temp_table_name,
+                               const duckdb::vector<duckdb::LogicalType> &types,
+                               const std::vector<std::string> &col_names,
+                               duckdb::idx_t est_card);
+
+  // Immutable snapshot of (table index -> temp collection) taken on the main
+  // thread, so a bg compile thread can build join bloom filters without
+  // racing on intermediate_table_map / temp_collections_. The collections
+  // themselves are never mutated after registration (only placeholders are
+  // Combine()d into, and those are excluded), and they outlive any compile:
+  // speculations are drained before temp tables are cleared.
+  using TempCollectionSnapshot =
+      std::unordered_map<duckdb::idx_t, duckdb::ColumnDataCollection *>;
+  TempCollectionSnapshot SnapshotTempCollections() const;
+
+  // Core JIT registration logic, parameterized for speculative compilation.
+  // bf_temp_snapshot: nullptr on the main thread (use the live maps);
+  // non-null for bg thread calls (use the snapshot, thread-safe).
+  void RegisterJITImpl(
+      duckdb::PhysicalOperator &op, const ir_sql_converter::AQPStmt &ir,
+      duckdb::ClientContext *jit_ctx, aqp_jit::IrToLlvmCompiler *jit_comp,
+      std::unordered_set<const ir_sql_converter::AQPStmt *> &consumed_filters,
+      std::unordered_set<const ir_sql_converter::AQPStmt *> &consumed_joins,
+      const TempCollectionSnapshot *bf_temp_snapshot = nullptr,
+      bool is_build_side = false);
+
+  bool GetJitDebug() const { return jit_debug_; }
+  uint32_t GetJitFlags() const { return jit_flags_; }
+  bool GetJitPrefetch() const { return jit_prefetch_; }
+  int GetJitPrefetchDistance() const { return jit_prefetch_distance_; }
+  int GetJitPrefetchEntryDistance() const { return jit_prefetch_entry_distance_; }
+  int GetJitPrefetchRowDistance() const { return jit_prefetch_row_distance_; }
+  bool GetJitBatchProbe() const { return jit_batch_probe_; }
+  bool GetJitSkipHashCmp() const { return jit_skip_hash_cmp_; }
+  bool GetJitCache() const { return jit_cache_; }
 #endif
 
   // NodeBasedSplitter support
@@ -380,15 +465,15 @@ private:
   // compiled function pointers stored in AQPJITContext remain valid.
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
 
+  // Speculative-compile kickoff hook (set by IRQuerySplitter when --spec-jit).
+  PostPrepareHook post_prepare_hook_;
+
   // Lazily create and configure the JIT compiler with all flags.
   void EnsureJITCompiler();
 
   // Walk physical plan tree; compile IR filters and register in aqp_jit_context.
   void RegisterJIT(duckdb::PhysicalOperator &op,
-                          const ir_sql_converter::AQPStmt &ir,
-                          bool is_build_side = false);
-  // Walk physical plan tree; register pending bloom filters in aqp_jit_context.
-  void RegisterBloomFilters(duckdb::PhysicalOperator &op);
+                          const ir_sql_converter::AQPStmt &ir);
 
   // Temp column ranges from temp table min/max (set before each sub-plan).
   std::vector<TempColRange> temp_col_ranges_;
