@@ -24,6 +24,13 @@ fi
 [[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
 [[ "$spec_jit"       == "off" ]] && jit_extra_flags+=" --no-spec-jit"
 
+# Query-jit scans base tables through the storage plan; the binary cache file
+# is built on first use if missing (--storage-plan is auto-enabled by the
+# binary for --jit-level=query, kept explicit here for clarity).
+if [[ "$jit_level" == "query" ]]; then
+    jit_extra_flags+=" --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
+fi
+
 # Build a short suffix for the log filename
 flag_suffix=""
 [[ "$payload_prune"  == "off" ]] && flag_suffix+="_nopayprune"

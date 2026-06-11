@@ -32,7 +32,10 @@ public:
 
   // Deserialize storage plan from a binary file created by SaveToFile.
   // Returns false if the file doesn't exist or is corrupt.
-  bool LoadFromFile(const std::string &path);
+  // skip_indexes: seek past the CSR/sorted/inverted index sections instead of
+  // materializing them (query-jit consumes FlatTables only; the index maps
+  // stay empty). The file format is unchanged.
+  bool LoadFromFile(const std::string &path, bool skip_indexes = false);
 
   const FlatTable *GetTable(const std::string &table_name) const;
 
@@ -62,6 +65,11 @@ public:
   void BuildSortedIndices();
   const SortedIndex *GetSortedIndex(const std::string &table_name,
                                     const std::string &col_name) const;
+
+  const std::unordered_map<std::string, SortedIndex> &
+  GetSortedIndicesMap() const {
+    return sorted_indices_;
+  }
 
   void BuildInvertedIndices();
 

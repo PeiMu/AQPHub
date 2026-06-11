@@ -142,10 +142,12 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
       } else if (level == "pipeline") {
         config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
+      } else if (level == "query") {
+        config.jit_flags |= AQP_JIT_QUERY_JIT;
       } else {
         throw std::runtime_error(
             "Unknown JIT level: " + arg.substr(12) +
-            " (valid: none, expr, operator, pipeline)");
+            " (valid: none, expr, operator, pipeline, query)");
       }
     } else if (arg.find("--kernel-path=") == 0) {
       std::string kp = to_lower(arg.substr(14));
@@ -218,6 +220,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_spec_jit = true;
     } else if (arg == "--no-spec-jit") {
       config.enable_spec_jit = false;
+    } else if (arg.find("--query-jit-threads=") == 0) {
+      config.query_jit_threads = std::stoi(arg.substr(20));
+      if (config.query_jit_threads < 0)
+        throw std::runtime_error("--query-jit-threads must be >= 0");
+    } else if (arg.find("--query-jit-morsel=") == 0) {
+      config.query_jit_morsel = std::stoi(arg.substr(19));
+      if (config.query_jit_morsel < 1)
+        throw std::runtime_error("--query-jit-morsel must be >= 1");
     } else if (arg.find("--repeat=") == 0) {
       config.repeat_count = std::stoi(arg.substr(9));
       if (config.repeat_count < 1)
@@ -251,6 +261,20 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         "--jit-level=pipeline and --kernel-path are mutually exclusive: "
         "pipeline-jit compiles probe chains in the DuckDB execution path, "
         "while kernel-path routes through PipelineKernel");
+
+  if (config.jit_flags & AQP_JIT_QUERY_JIT) {
+    if (config.kernel_path != KernelPath::NONE)
+      throw std::runtime_error(
+          "--jit-level=query and --kernel-path are mutually exclusive: "
+          "query-jit owns scan-to-sink execution, kernel-path routes through "
+          "PipelineKernel");
+    if (config.jit_flags & AQP_JIT_LEVEL_MASK)
+      throw std::runtime_error(
+          "--jit-level=query cannot be combined with other --jit-level "
+          "values: query-jit bypasses the DuckDB-embedded JIT path");
+    // Query-jit scans base tables through the storage plan's flat tables.
+    config.enable_storage_plan = true;
+  }
 
   if (config.in_memory) {
     if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB)
@@ -318,7 +342,7 @@ void ParamConfig::PrintUsage() {
                "(same as --jit-level=expr)"
             << std::endl;
   std::cout << "  --jit-level=<level>              JIT granularity: none, "
-               "expr, operator, pipeline"
+               "expr, operator, pipeline, query"
             << std::endl;
   std::cout << "  --kernel-path=<path>             Kernel execution path: "
                "none, pipeline, query (default: none)"
@@ -354,6 +378,12 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --no-spec-jit                    Disable speculative JIT "
                "pipelining (default: enabled)"
+            << std::endl;
+  std::cout << "  --query-jit-threads=N            Query-jit worker threads "
+               "(default 0 = hardware concurrency; 1 = serial debug)"
+            << std::endl;
+  std::cout << "  --query-jit-morsel=N             Query-jit morsel size in "
+               "rows (default 20000)"
             << std::endl;
   std::cout << "\n  Measurement:" << std::endl;
   std::cout << "  --repeat=N                       Run query N times in-process "

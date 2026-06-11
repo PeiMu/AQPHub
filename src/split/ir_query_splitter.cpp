@@ -180,6 +180,11 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
           config_.jit_prefetch_row_distance);
       duck->SetBenchmarkMode(config_.benchmark_mode);
       duck->SetJITCache(config_.jit_cache);
+      // Query-jit is plumbed separately: the SetJITFlags sites below mask
+      // jit_flags with AQP_JIT_LEVEL_MASK, which excludes AQP_JIT_QUERY_JIT.
+      duck->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+                        config_.query_jit_threads, config_.query_jit_morsel);
+      duck->SetQueryJitStoragePlan(storage_plan_);
 #endif
     }
   }
@@ -326,7 +331,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   if (config_.enable_spec_jit &&
       config_.strategy == SplitStrategy::NODE_BASED &&
       config_.engine == BackendEngine::DUCKDB &&
-      (config_.jit_flags & AQP_JIT_LEVEL_MASK)) {
+      (config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_QUERY_JIT))) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duck) {
       duck->SetPostPrepareHook(
@@ -442,6 +447,9 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   double log_final_exe_ms = 0.0;
 
 #ifdef HAVE_DUCKDB
+  // Mask out AQP_JIT_QUERY_JIT: query-jit's final query must reach the
+  // adapter's ExecuteSQL (analysis trace + interpreter fallback), not the
+  // kernel sorted-MIN aggregate path.
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.kernel_path != KernelPath::NONE &&
       config_.engine == BackendEngine::DUCKDB) {
@@ -652,6 +660,11 @@ static void EnsureSpecCompiler(
     spec_compiler->SetSkipHashCmp(duck->GetJitSkipHashCmp());
     if (duck->GetJitCache())
       spec_compiler->SetCache(true);
+    // Query-jit bg compiles need the qjit_* runtime symbols. Once per
+    // compiler lifetime (absoluteSymbols defines survive ResetModules;
+    // re-registering would be a duplicate define).
+    if (duck->GetQueryJit())
+      duck->RegisterQjitRuntimeSymbols(spec_compiler.get());
   }
   // NOTE: ResetModules is NOT called here. It runs at the start of each bg
   // compile task instead — the 1-worker jit_compile_pool_ serializes tasks,
@@ -680,6 +693,18 @@ void IRQuerySplitter::RetirePendingSpec() {
       ++it;
     }
   }
+}
+
+void IRQuerySplitter::WaitSpecsBorrowingIR(
+    const ir_sql_converter::AQPStmt *ir) {
+  if (!ir)
+    return;
+  if (pending_spec_ && pending_spec_->borrowed_ir == ir &&
+      pending_spec_->future.valid())
+    pending_spec_->future.wait();
+  for (auto &z : zombie_specs_)
+    if (z->borrowed_ir == ir && z->future.valid())
+      z->future.wait();
 }
 
 void IRQuerySplitter::DrainSpecs() {
@@ -725,7 +750,8 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   if (!duck)
     return;
   uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
-  if (!duckdb_flags)
+  bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+  if (!duckdb_flags && !query_jit)
     return;
 
   // Skip launches that an earlier in-process repeat learned will miss.
@@ -772,11 +798,19 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   temp_tables_.emplace_back(temp_table_name,
                             static_cast<unsigned int>(chunk_index), est_card);
   temp_tables_.back().column_names = col_names;
-  ApplyCrossSubPlanOptimizations(spec_sql);
+  if (query_jit)
+    // Range predicates only: query-jit's own runtime ignores DuckDB bloom
+    // filters, and a HIT executes the compiled fn (there is no prepared
+    // plan to register them into).
+    ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/true,
+                                   /*build_bloom_filters=*/false);
+  else
+    ApplyCrossSubPlanOptimizations(spec_sql);
   temp_tables_.pop_back();
 
   auto spec = std::make_unique<SpeculativeCompilation>();
-  spec->bloom_filters = duck->TakePendingBloomFilters();
+  if (!query_jit)
+    spec->bloom_filters = duck->TakePendingBloomFilters();
   spec->speculative_sql = std::move(spec_sql);
   spec->assumed_temp_name = temp_table_name;
   spec->assumed_card = est_card == 0 ? 1 : est_card;
@@ -794,48 +828,72 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   EnsureSpecCompiler(compiler_slot, duck, jit_flags);
   auto *spec_comp = compiler_slot.get();
 
-  spec->future = jit_compile_pool_->Submit(
-      [spec_raw, &db_ref, spec_comp, spec_ir_ptr, duck]() -> bool {
-        try {
-          spec_comp->ResetModules();
-          spec_raw->spec_conn =
-              std::make_unique<duckdb::Connection>(db_ref);
-          spec_raw->spec_prepared =
-              spec_raw->spec_conn->Prepare(spec_raw->speculative_sql);
-          if (spec_raw->spec_prepared->HasError())
+  if (query_jit) {
+    // Query-jit bg task: full parse→optimize→IR→analyze→compile on the spec
+    // connection (no DuckDB-embedded registration; the payload's sources are
+    // resolved at HIT time on the main thread, after the consumed temp is
+    // stored). A reject returns false — CheckSpeculativeResult counts it as
+    // BG_ERROR and learns the miss, which is correct: the inline path would
+    // reject the identical sub-query too.
+    std::string label = "spec-iter" + std::to_string(iteration_count_ + 1);
+    spec->future = jit_compile_pool_->Submit(
+        [spec_raw, &db_ref, spec_comp, duck, label]() -> bool {
+          try {
+            spec_comp->ResetModules();
+            spec_raw->spec_conn =
+                std::make_unique<duckdb::Connection>(db_ref);
+            spec_raw->qjit = duck->SpeculativeQueryJitCompile(
+                spec_raw->speculative_sql, label, *spec_raw->spec_conn,
+                spec_comp);
+            return spec_raw->qjit != nullptr;
+          } catch (...) {
             return false;
-          if (!spec_raw->spec_prepared->data ||
-              !spec_raw->spec_prepared->data->physical_plan)
-            return false;
+          }
+        });
+  } else {
+    spec->future = jit_compile_pool_->Submit(
+        [spec_raw, &db_ref, spec_comp, spec_ir_ptr, duck]() -> bool {
+          try {
+            spec_comp->ResetModules();
+            spec_raw->spec_conn =
+                std::make_unique<duckdb::Connection>(db_ref);
+            spec_raw->spec_prepared =
+                spec_raw->spec_conn->Prepare(spec_raw->speculative_sql);
+            if (spec_raw->spec_prepared->HasError())
+              return false;
+            if (!spec_raw->spec_prepared->data ||
+                !spec_raw->spec_prepared->data->physical_plan)
+              return false;
 
-          auto *spec_ctx = spec_raw->spec_conn->context.get();
-          spec_ctx->aqp_jit_context =
-              duckdb::make_uniq<duckdb::AQPJITContext>();
+            auto *spec_ctx = spec_raw->spec_conn->context.get();
+            spec_ctx->aqp_jit_context =
+                duckdb::make_uniq<duckdb::AQPJITContext>();
 
-          std::unordered_set<const ir_sql_converter::AQPStmt *>
-              consumed_filters, consumed_joins;
-          duck->RegisterJITImpl(
-              spec_raw->spec_prepared->data->physical_plan->Root(),
-              *spec_ir_ptr, spec_ctx, spec_comp,
-              consumed_filters, consumed_joins,
-              &spec_raw->temp_snapshot);
-
-          if (!spec_raw->bloom_filters.empty())
-            duck->RegisterBloomFilters(
+            std::unordered_set<const ir_sql_converter::AQPStmt *>
+                consumed_filters, consumed_joins;
+            duck->RegisterJITImpl(
                 spec_raw->spec_prepared->data->physical_plan->Root(),
-                spec_ctx, spec_raw->bloom_filters);
+                *spec_ir_ptr, spec_ctx, spec_comp,
+                consumed_filters, consumed_joins,
+                &spec_raw->temp_snapshot);
 
-          // Mirror the inline path: it only force-sets AQPJIT_PIPELINE when
-          // RegisterJIT compiled nothing (to keep JIT-gated optimizations
-          // like prefetch active). Unconditionally OR-ing it here would
-          // diverge from inline behavior at expr/operator JIT levels.
-          if (spec_ctx->aqp_jit_context->flags == 0)
-            spec_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
-          return true;
-        } catch (...) {
-          return false;
-        }
-      });
+            if (!spec_raw->bloom_filters.empty())
+              duck->RegisterBloomFilters(
+                  spec_raw->spec_prepared->data->physical_plan->Root(),
+                  spec_ctx, spec_raw->bloom_filters);
+
+            // Mirror the inline path: it only force-sets AQPJIT_PIPELINE when
+            // RegisterJIT compiled nothing (to keep JIT-gated optimizations
+            // like prefetch active). Unconditionally OR-ing it here would
+            // diverge from inline behavior at expr/operator JIT levels.
+            if (spec_ctx->aqp_jit_context->flags == 0)
+              spec_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+            return true;
+          } catch (...) {
+            return false;
+          }
+        });
+  }
 
   pending_spec_ = std::move(spec);
 
@@ -863,7 +921,8 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   if (!duck)
     return;
   uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
-  if (!duckdb_flags)
+  bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+  if (!duckdb_flags && !query_jit)
     return;
 
   if (splitter_->IsComplete(remaining_ir.get()))
@@ -934,10 +993,14 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   RetirePendingSpec();
 
   // Relaunch happens: now build the bloom filters the bg task will register
-  // (range preds were already injected above).
-  ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/false,
-                                 /*build_bloom_filters=*/true);
-  auto spec_bfs = duck->TakePendingBloomFilters();
+  // (range preds were already injected above). Query-jit skips them — its
+  // runtime ignores DuckDB bloom filters.
+  std::vector<DuckDBAdapter::BloomFilterInfo> spec_bfs;
+  if (!query_jit) {
+    ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/false,
+                                   /*build_bloom_filters=*/true);
+    spec_bfs = duck->TakePendingBloomFilters();
+  }
 
   auto spec = std::make_unique<SpeculativeCompilation>();
   spec->bloom_filters = std::move(spec_bfs);
@@ -945,6 +1008,12 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   spec->target_iter = iteration_count_ + 1;
   spec->temp_snapshot = duck->SnapshotTempCollections();
   auto *spec_ir_ptr = precomputed_extraction_->GetExecutableIR();
+  // The pipeline-jit bg task below reads this IR but the owning extraction
+  // is destroyed at the end of the iteration it drives; record the borrow so
+  // ExecuteOneIteration can wait before freeing it. (The query-jit bg task
+  // re-converts from its own prepared plan and never touches it.)
+  if (!query_jit)
+    spec->borrowed_ir = spec_ir_ptr;
 
   auto *spec_raw = spec.get();
   auto &db_ref = duck->GetDB();
@@ -955,48 +1024,68 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   EnsureSpecCompiler(compiler_slot, duck, jit_flags);
   auto *spec_comp = compiler_slot.get();
 
-  spec->future = jit_compile_pool_->Submit(
-      [spec_raw, &db_ref, spec_comp, spec_ir_ptr, duck]() -> bool {
-        try {
-          spec_comp->ResetModules();
-          spec_raw->spec_conn =
-              std::make_unique<duckdb::Connection>(db_ref);
-          spec_raw->spec_prepared =
-              spec_raw->spec_conn->Prepare(spec_raw->speculative_sql);
-          if (spec_raw->spec_prepared->HasError())
+  if (query_jit) {
+    // See the Phase A query-jit lambda for the contract (reject ⇒ false ⇒
+    // BG_ERROR + learned miss; sources resolved at HIT time).
+    std::string label = "spec-iter" + std::to_string(iteration_count_ + 1);
+    spec->future = jit_compile_pool_->Submit(
+        [spec_raw, &db_ref, spec_comp, duck, label]() -> bool {
+          try {
+            spec_comp->ResetModules();
+            spec_raw->spec_conn =
+                std::make_unique<duckdb::Connection>(db_ref);
+            spec_raw->qjit = duck->SpeculativeQueryJitCompile(
+                spec_raw->speculative_sql, label, *spec_raw->spec_conn,
+                spec_comp);
+            return spec_raw->qjit != nullptr;
+          } catch (...) {
             return false;
-          if (!spec_raw->spec_prepared->data ||
-              !spec_raw->spec_prepared->data->physical_plan)
-            return false;
+          }
+        });
+  } else {
+    spec->future = jit_compile_pool_->Submit(
+        [spec_raw, &db_ref, spec_comp, spec_ir_ptr, duck]() -> bool {
+          try {
+            spec_comp->ResetModules();
+            spec_raw->spec_conn =
+                std::make_unique<duckdb::Connection>(db_ref);
+            spec_raw->spec_prepared =
+                spec_raw->spec_conn->Prepare(spec_raw->speculative_sql);
+            if (spec_raw->spec_prepared->HasError())
+              return false;
+            if (!spec_raw->spec_prepared->data ||
+                !spec_raw->spec_prepared->data->physical_plan)
+              return false;
 
-          auto *spec_ctx = spec_raw->spec_conn->context.get();
-          spec_ctx->aqp_jit_context =
-              duckdb::make_uniq<duckdb::AQPJITContext>();
+            auto *spec_ctx = spec_raw->spec_conn->context.get();
+            spec_ctx->aqp_jit_context =
+                duckdb::make_uniq<duckdb::AQPJITContext>();
 
-          std::unordered_set<const ir_sql_converter::AQPStmt *>
-              consumed_filters, consumed_joins;
-          duck->RegisterJITImpl(
-              spec_raw->spec_prepared->data->physical_plan->Root(),
-              *spec_ir_ptr, spec_ctx, spec_comp,
-              consumed_filters, consumed_joins,
-              &spec_raw->temp_snapshot);
-
-          if (!spec_raw->bloom_filters.empty())
-            duck->RegisterBloomFilters(
+            std::unordered_set<const ir_sql_converter::AQPStmt *>
+                consumed_filters, consumed_joins;
+            duck->RegisterJITImpl(
                 spec_raw->spec_prepared->data->physical_plan->Root(),
-                spec_ctx, spec_raw->bloom_filters);
+                *spec_ir_ptr, spec_ctx, spec_comp,
+                consumed_filters, consumed_joins,
+                &spec_raw->temp_snapshot);
 
-          // Mirror the inline path: it only force-sets AQPJIT_PIPELINE when
-          // RegisterJIT compiled nothing (to keep JIT-gated optimizations
-          // like prefetch active). Unconditionally OR-ing it here would
-          // diverge from inline behavior at expr/operator JIT levels.
-          if (spec_ctx->aqp_jit_context->flags == 0)
-            spec_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
-          return true;
-        } catch (...) {
-          return false;
-        }
-      });
+            if (!spec_raw->bloom_filters.empty())
+              duck->RegisterBloomFilters(
+                  spec_raw->spec_prepared->data->physical_plan->Root(),
+                  spec_ctx, spec_raw->bloom_filters);
+
+            // Mirror the inline path: it only force-sets AQPJIT_PIPELINE when
+            // RegisterJIT compiled nothing (to keep JIT-gated optimizations
+            // like prefetch active). Unconditionally OR-ing it here would
+            // diverge from inline behavior at expr/operator JIT levels.
+            if (spec_ctx->aqp_jit_context->flags == 0)
+              spec_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+            return true;
+          } catch (...) {
+            return false;
+          }
+        });
+  }
 
   pending_spec_ = std::move(spec);
 
@@ -1303,6 +1392,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
 #ifdef HAVE_DUCKDB
   // Kernel execution routing: pipeline kernel → query kernel → DuckDB fallback
+  // (AQP_JIT_QUERY_JIT masked out: query-jit sub-queries never use kernels)
   if (storage_plan_ && storage_plan_->IsLoaded() &&
       config_.kernel_path != KernelPath::NONE &&
       config_.engine == BackendEngine::DUCKDB) {
@@ -1602,9 +1692,18 @@ bool IRQuerySplitter::ExecuteOneIteration(
       // ExecuteSpeculativeAndCreateTempTable and its RetirePendingSpec()
       // would otherwise destroy the prepared statement while it executes.
       auto hit_spec = std::move(pending_spec_);
-      duck->ExecuteSpeculativeAndCreateTempTable(
-          *hit_spec->spec_prepared, *hit_spec->spec_conn,
-          temp_table_name, config_.enable_update_temp_card);
+      if (hit_spec->qjit) {
+        // Query-jit HIT: hand the bg-compiled payload to the adapter; the
+        // normal execute call resolves sources and runs the compiled fn
+        // (jit_compile column ≈ 0 — no Prepare, no codegen on this thread).
+        duck->SetQjitSpecHit(std::move(hit_spec->qjit));
+        adapter_->ExecuteSQLandCreateTempTable(
+            sub_sql, temp_table_name, config_.enable_update_temp_card);
+      } else {
+        duck->ExecuteSpeculativeAndCreateTempTable(
+            *hit_spec->spec_prepared, *hit_spec->spec_conn,
+            temp_table_name, config_.enable_update_temp_card);
+      }
       // hit_spec (and the compiler holding its JIT code) outlives execution;
       // the hook's bg compile used the other ping-pong compiler.
     } else
@@ -1776,6 +1875,12 @@ bool IRQuerySplitter::ExecuteOneIteration(
       PrecomputeNextExtraction(remaining_ir);
     }
   }
+
+  // `extraction` (and the IR behind executable_ir) dies at this return. A
+  // Phase B bg compile launched in the PREVIOUS iteration may still be
+  // reading it: kernel-path iterations never call CheckSpeculativeResult,
+  // and a MISS retires the spec to zombie_specs_ without waiting.
+  WaitSpecsBorrowingIR(executable_ir);
 #endif
 
   return true;
@@ -1788,6 +1893,12 @@ TempTableInfo IRQuerySplitter::ExecuteSubIR(
   std::string temp_table_name = GenerateTempTableName();
   std::string sub_sql =
       adapter_->GenerateSQL(*sub_ir, adapter_->subquery_index++);
+
+  if (config_.print_sql || config_.enable_debug_print) {
+    std::cout << "\n=== Sub-Query SQL (" << temp_table_name
+              << ") ===" << std::endl;
+    std::cout << sub_sql << std::endl;
+  }
 
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
                                          config_.enable_update_temp_card);

@@ -104,6 +104,11 @@ struct ParamConfig {
   bool single_col_int_join_mode = true;
   // Speculative JIT: only takes effect for node-based split + DuckDB + JIT
   bool enable_spec_jit = true;
+  // Query-jit (--jit-level=query) worker count; 0 = hardware_concurrency.
+  // 1 runs the same outlined-morsel code path serially (debug/bisect knob).
+  int query_jit_threads = 0;
+  // Query-jit morsel size in rows (lingo-db uses 20000).
+  int query_jit_morsel = 20000;
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);

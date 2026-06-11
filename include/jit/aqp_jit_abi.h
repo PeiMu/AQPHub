@@ -81,6 +81,15 @@ static constexpr int32_t AQP_DTYPE_OTHER   = 99;
  * this compiles the probe chain directly in the DuckDB execution path. */
 #define AQP_JIT_PIPELINE_JIT (1u << 6)
 
+/* Query-JIT: lingo-db-style runtime. Each sub-query IR is compiled into one
+ * LLVM module / one entry function (build loops + probe pipeline + sink) and
+ * executed by the middleware's own morsel scheduler. DuckDB is used only for
+ * parse/optimize/IR and base-table scans; unsupported sub-queries fall back
+ * to the DuckDB interpreter. Deliberately NOT part of AQP_JIT_LEVEL_MASK:
+ * that mask gates the DuckDB-embedded RegisterJIT path, which query-jit
+ * bypasses entirely (this also keeps spec-jit inactive under query-jit). */
+#define AQP_JIT_QUERY_JIT (1u << 7)
+
 /* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE_JIT).
  * Legacy PIPELINE and QUERY kernel paths are controlled by ParamConfig::kernel_path.
  * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */

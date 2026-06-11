@@ -218,6 +218,10 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
         duckdb_adp->SetJITProbePrefetchDistances(
             config.jit_prefetch_entry_distance,
             config.jit_prefetch_row_distance);
+        duckdb_adp->SetQueryJit((config.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+                                config.query_jit_threads,
+                                config.query_jit_morsel);
+        duckdb_adp->SetQueryJitStoragePlan(storage_plan);
       }
 #endif
 
@@ -403,9 +407,13 @@ int main(int argc, char **argv) {
     middleware::storage::StoragePlan *storage_plan = nullptr;
     if (config.enable_storage_plan) {
       storage_plan_ptr = std::make_unique<middleware::storage::StoragePlan>();
+      // CSR/sorted/inverted indexes are kernel-path-only; query-jit (the only
+      // other storage-plan consumer) reads FlatTable columns exclusively.
+      bool need_indexes = config.kernel_path != KernelPath::NONE;
       bool loaded_from_cache = false;
       if (!config.storage_cache_path.empty()) {
-        loaded_from_cache = storage_plan_ptr->LoadFromFile(config.storage_cache_path);
+        loaded_from_cache = storage_plan_ptr->LoadFromFile(
+            config.storage_cache_path, /*skip_indexes=*/!need_indexes);
       }
       if (!loaded_from_cache) {
 #ifdef HAVE_DUCKDB
@@ -416,11 +424,17 @@ int main(int argc, char **argv) {
         }
         auto *duck = dynamic_cast<DuckDBAdapter *>(adapter.get());
         storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
-        if (!config.fkeys_path.empty()) {
-          storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
+        if (need_indexes) {
+          if (!config.fkeys_path.empty()) {
+            storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
+          }
+          storage_plan_ptr->BuildSortedIndices();
+          storage_plan_ptr->BuildInvertedIndices();
         }
-        storage_plan_ptr->BuildSortedIndices();
-        storage_plan_ptr->BuildInvertedIndices();
+        // Without indexes SaveToFile writes empty index sections; a later
+        // kernel-path run against this cache rebuilds them (below). Keep
+        // kernel-path and query-jit on separate --storage-cache paths to
+        // avoid repeated rebuilds.
         if (!config.storage_cache_path.empty()) {
           storage_plan_ptr->SaveToFile(config.storage_cache_path);
         }
@@ -428,8 +442,19 @@ int main(int argc, char **argv) {
         throw std::runtime_error(
             "--storage-plan requires a pre-built cache (--storage-cache=<path>)");
 #endif
-      } else if (storage_plan_ptr->GetInvertedIndicesMap().empty()) {
-        storage_plan_ptr->BuildInvertedIndices();
+      } else if (need_indexes) {
+        // Trimmed cache (built by a query-jit run) detection: rebuild the
+        // index sections kernel-path needs.
+        if (storage_plan_ptr->GetCSRMap().empty() &&
+            !config.fkeys_path.empty()) {
+          storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
+        }
+        if (storage_plan_ptr->GetSortedIndicesMap().empty()) {
+          storage_plan_ptr->BuildSortedIndices();
+        }
+        if (storage_plan_ptr->GetInvertedIndicesMap().empty()) {
+          storage_plan_ptr->BuildInvertedIndices();
+        }
       }
       if (config.enable_debug_print) {
         storage_plan_ptr->PrintSummary();

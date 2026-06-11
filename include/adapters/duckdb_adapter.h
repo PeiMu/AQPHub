@@ -50,9 +50,11 @@
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/execution/aqp_jit.hpp"
 #include "jit/ir_to_llvm.h"
+#include "qjit/query_jit_executor.h"
 #endif
 
 namespace duckdb { class PhysicalHashJoin; }
+namespace middleware { namespace storage { class StoragePlan; } }
 
 #define IN_MEM_TMP_TABLE true
 
@@ -82,14 +84,30 @@ struct StoredTempResult {
   bool is_placeholder = false;
 };
 
+// Metadata for temps served directly from the in-memory qjit::QjitTable via
+// the scan_qjit_temp table function (no CDC copy). Holds the binder-facing
+// fields a StoredTempResult would have carried; the row data itself lives in
+// qjit_temps_. Per-column BaseStatistics are deliberately absent: the CDC
+// path computes them but never wires TableFunction::statistics, so they
+// never reach the optimizer there either.
+struct QjitTempMeta {
+  std::vector<std::string> column_names;
+  duckdb::vector<duckdb::LogicalType> types;
+  bool has_override_cardinality = false;
+  uint64_t override_cardinality = 0;
+};
+
 // ReplacementScanData subclass: holds pointer to temp_collections_ map
 struct TempCollectionScanData : public duckdb::ReplacementScanData {
   TempCollectionScanData(
       std::unordered_map<std::string, StoredTempResult> *collections,
-      std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps = nullptr)
-      : temp_collections(collections), kernel_temps(kernel_temps) {}
+      std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps = nullptr,
+      std::unordered_map<std::string, QjitTempMeta> *qjit_meta = nullptr)
+      : temp_collections(collections), kernel_temps(kernel_temps),
+        qjit_meta(qjit_meta) {}
   std::unordered_map<std::string, StoredTempResult> *temp_collections;
   std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps;
+  std::unordered_map<std::string, QjitTempMeta> *qjit_meta;
 };
 
 // TableFunctionInfo subclass: holds pointer to temp_collections_ map
@@ -272,6 +290,23 @@ public:
   // In-memory JIT object cache across repeats (--jit-cache, default off).
   void SetJITCache(bool enable) { jit_cache_ = enable; }
 
+  // Query-jit (--jit-level=query): lingo-db-style runtime. Set separately
+  // from SetJITFlags because the splitter masks jit_flags with
+  // AQP_JIT_LEVEL_MASK, which deliberately excludes AQP_JIT_QUERY_JIT.
+  void SetQueryJit(bool enabled, int threads, int morsel_size) {
+    query_jit_ = enabled;
+    query_jit_threads_ = threads;
+    query_jit_morsel_ = morsel_size;
+  }
+  bool GetQueryJit() const { return query_jit_; }
+
+  // Phase 2: query-jit reads base tables through the FlatTable storage plan
+  // (same scan layer as kernel-path). Not owned; must outlive the adapter's
+  // query execution (it does: main owns it for the process lifetime).
+  void SetQueryJitStoragePlan(const middleware::storage::StoragePlan *plan) {
+    qjit_storage_plan_ = plan;
+  }
+
   // Phase 6: ROF probe-side look-ahead distances. 0 disables that level.
   void SetJITProbePrefetchDistances(int entry_dist, int row_dist) {
     jit_prefetch_entry_distance_ = entry_dist;
@@ -308,6 +343,57 @@ public:
                                const duckdb::vector<duckdb::LogicalType> &types,
                                const std::vector<std::string> &col_names,
                                duckdb::idx_t est_card);
+
+  // Result of TryCompileQueryJit / SpeculativeQueryJitCompile: entry fn +
+  // per-step resolved source views + hash-table/aggregate plan metadata +
+  // result table layout. The fn is valid until the compiling
+  // IrToLlvmCompiler's next ResetModules; src views point into FlatTables /
+  // QjitTables that outlive the execution.
+  struct QjitCompiled {
+    void *fn = nullptr; // QjitQueryFn
+    std::vector<qjit::QjitResolvedSource> srcs;
+    std::vector<uint32_t> ht_tuple_sizes;
+    std::vector<uint32_t> ht_key0_offsets; // = prefix_bytes (key0 row offset)
+    std::vector<qjit::QjitAggCellDesc> agg_descs;
+    std::vector<int> agg_output_cells;
+    std::vector<qjit::QjitTable::ColumnDesc> out_descs;
+  };
+
+  // Speculative query-jit compile payload: built on the bg pool, consumed on
+  // the main thread at HIT time. `compiled->srcs` stays UNRESOLVED until the
+  // hit — the consumed temp doesn't exist when the bg task runs. `ir` owns
+  // the AQPExprs the plan's raw filter pointers reference (keepalive).
+  struct QjitSpecCompiled {
+    qjit::QjitQueryPlan plan;
+    std::unique_ptr<ir_sql_converter::AQPStmt> ir;
+    std::unique_ptr<QjitCompiled> compiled;
+    duckdb::vector<duckdb::LogicalType> out_types;
+    duckdb::vector<duckdb::string> out_names;
+    duckdb::idx_t est_card = 0;
+  };
+
+  // Bg-thread mirror of PrepareWithQueryJitAnalysis + TryCompileQueryJit on
+  // a speculative connection with bg-local planning state: parse → optimize
+  // → IR → PrepareFromPlan → AnnotateBuildSides → AnalyzeQueryJit →
+  // BuildExecutionSteps → output cross-check → CompileQuerySteps on
+  // spec_comp. nullptr on any reject (the inline path would reject the same
+  // sub-query identically, so learning the miss is correct). Source
+  // resolution is deferred to the HIT (main thread, temps exist by then).
+  std::unique_ptr<QjitSpecCompiled>
+  SpeculativeQueryJitCompile(const std::string &sql, const std::string &label,
+                             duckdb::Connection &spec_conn,
+                             aqp_jit::IrToLlvmCompiler *spec_comp);
+
+  // Hand a bg-compiled payload to the next ExecuteSQLandCreateTempTable call
+  // (main thread, HIT only).
+  void SetQjitSpecHit(std::unique_ptr<QjitSpecCompiled> hit) {
+    qjit_spec_hit_ = std::move(hit);
+  }
+
+  // Register the qjit_* runtime symbols into a compiler. NOT idempotent
+  // (duplicate absoluteSymbols defines error) — call once per compiler
+  // lifetime; the defines survive ResetModules.
+  void RegisterQjitRuntimeSymbols(aqp_jit::IrToLlvmCompiler *comp);
 
   // Immutable snapshot of (table index -> temp collection) taken on the main
   // thread, so a bg compile thread can build join bloom filters without
@@ -468,6 +554,93 @@ private:
   // Speculative-compile kickoff hook (set by IRQuerySplitter when --spec-jit).
   PostPrepareHook post_prepare_hook_;
 
+  // Query-jit state (--jit-level=query)
+  bool query_jit_ = false;
+  int query_jit_threads_ = 0;
+  int query_jit_morsel_ = 20000;
+  const middleware::storage::StoragePlan *qjit_storage_plan_ = nullptr;
+  // Lazy: worker threads only spawn on the first compiled sub-query.
+  std::unique_ptr<qjit::QjitExecutor> qjit_executor_;
+  // qjit_* runtime symbols are registered once per jit_compiler_ lifetime
+  // (absoluteSymbols defines survive ResetModules).
+  bool qjit_syms_registered_ = false;
+  // In-memory qjit results keyed by temp-table name (kept from Phase 2 on;
+  // Phase 4 serves ChunkNode scans from here). Lifecycle mirrors
+  // temp_collections_: cleared in CleanUp/ResetQueryState/DropTempTable.
+  std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>>
+      qjit_temps_;
+
+  // Output cross-check against the prepared statement (the result
+  // authority); fills compiled.out_descs + agg metadata. Shared by the
+  // inline (TryCompileQueryJit) and speculative compile paths.
+  bool BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
+                            duckdb::PreparedStatement &prepared,
+                            QjitCompiled &compiled, std::string &reason);
+
+  // Resolve per-step sources (FlatTables / qjit temps). Main thread only —
+  // consumed temps must already be stored. Creates qjit_executor_ lazily.
+  bool ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+                          QjitCompiled &compiled, std::string &reason);
+
+  // Bg-compiled spec payload awaiting the next ExecuteSQLandCreateTempTable
+  // call (set via SetQjitSpecHit on a spec HIT).
+  std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
+
+  // Compile attempt for an analysis-accepted sub-query: BuildExecutionSteps
+  // (strict whitelist; joins + ungrouped aggregates included), storage-plan
+  // source resolution per step, and the output cross-check against
+  // `prepared` (the result authority). Every failure traces
+  // [AQP-QJIT] fallback:<reason> and returns nullptr (interpreter runs).
+  std::unique_ptr<QjitCompiled>
+  TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
+                     const qjit::QjitAnalysisResult &analysis,
+                     duckdb::PreparedStatement &prepared,
+                     const std::string &label);
+
+  // Temp-table step source: qjit_temps_ entry, or on-demand conversion of
+  // the fallback-produced CDC (cached back into qjit_temps_). nullptr +
+  // reason when the temp is missing, a speculative placeholder, or has an
+  // unsupported column type.
+  const qjit::QjitTable *GetOrLoadQjitTemp(const std::string &name,
+                                           std::string &reason);
+
+  // CDC -> QjitTable (INTEGER/BIGINT/VARCHAR; deep string copies into the
+  // table arena). Single-threaded append (runs once per fallback temp).
+  std::unique_ptr<qjit::QjitTable>
+  CollectionToQjitTable(const StoredTempResult &stored, std::string &reason);
+
+  // Convert a finalized QjitTable into a ColumnDataCollection with the
+  // prepared statement's types (INT32/INT64/VARCHAR only — enforced at
+  // compile gating). Chunked appends, deep string copies (DuckDB owns the
+  // result).
+  duckdb::unique_ptr<duckdb::ColumnDataCollection>
+  QjitTableToCollection(const qjit::QjitTable &table,
+                        const duckdb::vector<duckdb::LogicalType> &types);
+
+  // Annotate IR JoinNodes with the build side chosen by DuckDB's physical
+  // planner (SimplestJoin::build_child). Walks the physical plan, matches
+  // each PhysicalHashJoin to an IR JoinNode via join-condition attrs.
+  void AnnotateBuildSides(duckdb::PhysicalOperator &op,
+                          ir_sql_converter::AQPStmt &ir);
+
+  // Query-jit prepare result: the prepared statement (always usable as the
+  // interpreter fallback), plus — when analysis succeeded — the fresh-binder
+  // IR (build sides annotated) and the analysis verdict for the compile
+  // attempt. The IR owns every AQPExpr the compiled step references, so it
+  // must outlive TryCompileQueryJit (codegen only; not execution).
+  struct QueryJitPrep {
+    std::unique_ptr<duckdb::PreparedStatement> prepared;
+    std::unique_ptr<ir_sql_converter::AQPStmt> ir;
+    qjit::QjitAnalysisResult analysis;
+  };
+
+  // Query-jit hook: parse+optimize+IR+prepare the sub-query, annotate build
+  // sides, run AnalyzeQueryJit ([AQP-QJIT] traces). On any failure `ir` is
+  // null / `analysis.accepted` false and `prepared` falls back to a plain
+  // Prepare so the interpreter still runs the sub-query.
+  QueryJitPrep PrepareWithQueryJitAnalysis(const std::string &sql,
+                                           const std::string &label);
+
   // Lazily create and configure the JIT compiler with all flags.
   void EnsureJITCompiler();
 
@@ -536,6 +709,12 @@ private:
   // Replacement scan: in-memory temp table storage
   std::unordered_map<std::string, StoredTempResult> temp_collections_;
 
+  // Temps served by scan_qjit_temp (row data in qjit_temps_). Disjoint from
+  // temp_collections_ by construction: a temp is stored in exactly one of
+  // the two (qjit-compiled result without a speculative placeholder ⇒ here;
+  // everything else ⇒ CDC). Always empty without HAVE_LLVM.
+  std::unordered_map<std::string, QjitTempMeta> qjit_temp_meta_;
+
   // Kernel temp tables (CSR executor results, owned by IRQuerySplitter)
   std::unordered_map<std::string, const storage::FlatTable *>
       kernel_temp_tables_;
@@ -558,6 +737,27 @@ private:
   static duckdb::unique_ptr<duckdb::NodeStatistics>
   KernelTempCardinality(duckdb::ClientContext &context,
                         const duckdb::FunctionData *bind_data);
+
+#ifdef HAVE_LLVM
+  // Table function callbacks for qjit temp tables (scan_qjit_temp, static)
+  static duckdb::unique_ptr<duckdb::FunctionData>
+  QjitTempBind(duckdb::ClientContext &context,
+               duckdb::TableFunctionBindInput &input,
+               duckdb::vector<duckdb::LogicalType> &return_types,
+               duckdb::vector<duckdb::string> &names);
+
+  static duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
+  QjitTempInitGlobal(duckdb::ClientContext &context,
+                     duckdb::TableFunctionInitInput &input);
+
+  static void QjitTempScanFunc(duckdb::ClientContext &context,
+                               duckdb::TableFunctionInput &data,
+                               duckdb::DataChunk &output);
+
+  static duckdb::unique_ptr<duckdb::NodeStatistics>
+  QjitTempCardinality(duckdb::ClientContext &context,
+                      const duckdb::FunctionData *bind_data);
+#endif
 #endif
 };
 } // namespace middleware

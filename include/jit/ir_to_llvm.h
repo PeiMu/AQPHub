@@ -3,6 +3,10 @@
 #include "jit/aqp_jit_abi.h"
 #include "simplest_ir.h"
 
+namespace qjit {
+struct QjitQueryPlan;
+} // namespace qjit
+
 namespace middleware { namespace storage {
 struct PipelineKernelPlan;
 }} // namespace middleware::storage
@@ -86,6 +90,7 @@ struct ProbeStageInfo {
   const ir_sql_converter::AQPStmt *join_ir = nullptr;
   bool eligible = false;
 };
+
 
 // Aggregate JIT disabled: JOB has no aggregate-heavy queries (only MIN on
 // VARCHAR).  Saves compilation time.  Re-enable with -DDISABLE_AGG_JIT=0.
@@ -299,6 +304,30 @@ public:
    * is AQPMultiProbeState*. Returns nullptr on failure.
    */
   void *CompileMultiProbeChain(const std::vector<ProbeStageInfo> &stages);
+
+  /**
+   * Query-jit (--jit-level=query): compile a whole sub-query plan
+   * (qjit::BuildExecutionSteps) into ONE module with ONE entry function
+   * (QjitQueryFn ABI, query_jit_abi.h):
+   *   entry:  i64 fn(QjitQueryContext *ctx) — per step k:
+   *           qjit_parallel_for over sources[k].nrows with the outlined
+   *           morsel body, then qjit_ht_finalize for HT-build sinks; ret 0.
+   *   morsel (one per step): scan loop with strict-NULL-guarded filters,
+   *           chained-HT probe loops (multi-match backtracking through the
+   *           advance block), and the sink: result appends
+   *           (qjit_table_append_*), HT-row writes (qjit_ht_append), or
+   *           per-worker aggregate updates (qjit_agg_update_*).
+   * Caller must have registered the qjit_* runtime symbols via
+   * RegisterRuntimeSymbol first. Returns the entry fn or nullptr.
+   */
+  void *CompileQuerySteps(const qjit::QjitQueryPlan &plan);
+
+  /**
+   * Register one extern "C" runtime symbol (absoluteSymbols) so compiled
+   * modules can call it. Idempotent: re-registering an existing name is a
+   * no-op returning true. Survives ResetModules (no tracker).
+   */
+  bool RegisterRuntimeSymbol(const char *name, void *addr);
 
   // --- Isolated compilation for background threads ---
   // Create an isolated tracker. Modules compiled with this tracker are

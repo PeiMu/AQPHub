@@ -98,6 +98,53 @@ int aqp_in_set_str(const char *str, int32_t slen,
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Hash-directory IN-set probes (large sets).
+// The directory is built at CODEGEN time with these same hash functions
+// (ir_to_llvm.cpp calls them when laying out the constant arrays), so the
+// mixers below are part of the codegen<->runtime contract.
+// Layout: values are bucket-ordered; dir has (mask+2) prefix-sum offsets,
+// bucket b spans [dir[b], dir[b+1]).
+// ---------------------------------------------------------------------------
+
+uint64_t aqp_in_hash_mix64(uint64_t v) {
+    v *= 0x9E3779B97F4A7C15ull;
+    v ^= v >> 32;
+    return v;
+}
+
+int aqp_in_hash_i32(int32_t val, const int32_t *vals, const int32_t *dir,
+                    int32_t mask) {
+    uint64_t b = aqp_in_hash_mix64((uint64_t)(uint32_t)val) &
+                 (uint64_t)(uint32_t)mask;
+    for (int32_t i = dir[b]; i < dir[b + 1]; i++)
+        if (vals[i] == val) return 1;
+    return 0;
+}
+
+int aqp_in_hash_i64(int64_t val, const int64_t *vals, const int32_t *dir,
+                    int32_t mask) {
+    uint64_t b = aqp_in_hash_mix64((uint64_t)val) & (uint64_t)(uint32_t)mask;
+    for (int32_t i = dir[b]; i < dir[b + 1]; i++)
+        if (vals[i] == val) return 1;
+    return 0;
+}
+
+// String IN-set bucketed by LENGTH (entries ordered by min(len, cap); dir is
+// the cap+2 prefix-sum directory). The common no-match case rejects with two
+// loads and never reads the probe string's bytes — hashing the bytes (FNV)
+// was measured 2.3x SLOWER than even a linear scan on long probe columns,
+// because the linear scan also rejects on length alone.
+int aqp_in_len_str(const char *str, int32_t slen, const char **ptrs,
+                   const int32_t *lens, const int32_t *dir, int32_t cap) {
+    int32_t b = slen < cap ? slen : cap;
+    for (int32_t i = dir[b]; i < dir[b + 1]; i++) {
+        if (lens[i] == slen && memcmp(ptrs[i], str, (size_t)slen) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 // Exact VARCHAR equality: returns 1 iff lengths are equal AND bytes match.
 // Used for SQL '=' and '<>' on string columns (as opposed to aqp_like_match
 // which treats '%' and '_' as wildcards and is only correct for LIKE).

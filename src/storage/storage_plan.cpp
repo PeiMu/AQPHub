@@ -645,6 +645,12 @@ static std::string ReadStr(FILE *f) {
   return s;
 }
 
+static void SkipStr(FILE *f) {
+  uint32_t len;
+  if (fread(&len, 4, 1, f) != 1) return;
+  fseek(f, static_cast<long>(len), SEEK_CUR);
+}
+
 void StoragePlan::SaveToFile(const std::string &path) const {
   auto start = std::chrono::high_resolution_clock::now();
   FILE *f = fopen(path.c_str(), "wb");
@@ -738,7 +744,7 @@ void StoragePlan::SaveToFile(const std::string &path) const {
             << std::endl;
 }
 
-bool StoragePlan::LoadFromFile(const std::string &path) {
+bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
   auto start = std::chrono::high_resolution_clock::now();
   FILE *f = fopen(path.c_str(), "rb");
   if (!f) return false;
@@ -823,6 +829,18 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
   }
 
   for (uint32_t i = 0; i < num_csrs; i++) {
+    if (skip_indexes) {
+      SkipStr(f); // fk_table
+      SkipStr(f); // fk_column
+      SkipStr(f); // pk_table
+      SkipStr(f); // pk_column
+      uint64_t row_ptr_size = 0, col_idx_size = 0;
+      fread(&row_ptr_size, 8, 1, f);
+      fseek(f, static_cast<long>(row_ptr_size * sizeof(uint64_t)), SEEK_CUR);
+      fread(&col_idx_size, 8, 1, f);
+      fseek(f, static_cast<long>(col_idx_size * sizeof(uint32_t)), SEEK_CUR);
+      continue;
+    }
     CSRIndex csr;
     csr.fk_table = ReadStr(f);
     csr.fk_column = ReadStr(f);
@@ -845,6 +863,14 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
     uint32_t num_sorted;
     if (fread(&num_sorted, 4, 1, f) == 1) {
       for (uint32_t i = 0; i < num_sorted; i++) {
+        if (skip_indexes) {
+          SkipStr(f); // table_name
+          SkipStr(f); // column_name
+          uint64_t perm_count = 0;
+          fread(&perm_count, 8, 1, f);
+          fseek(f, static_cast<long>(perm_count * sizeof(uint32_t)), SEEK_CUR);
+          continue;
+        }
         SortedIndex si;
         si.table_name = ReadStr(f);
         si.column_name = ReadStr(f);
@@ -864,6 +890,20 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
     uint32_t num_inverted;
     if (fread(&num_inverted, 4, 1, f) == 1) {
       for (uint32_t i = 0; i < num_inverted; i++) {
+        if (skip_indexes) {
+          SkipStr(f); // dim_table
+          SkipStr(f); // bridge_table
+          SkipStr(f); // bridge_fk_col
+          SkipStr(f); // target_col
+          SkipStr(f); // target_table
+          uint64_t row_ptr_size = 0, target_vals_size = 0;
+          fread(&row_ptr_size, 8, 1, f);
+          fseek(f, static_cast<long>(row_ptr_size * sizeof(uint64_t)), SEEK_CUR);
+          fread(&target_vals_size, 8, 1, f);
+          fseek(f, static_cast<long>(target_vals_size * sizeof(int32_t)),
+                SEEK_CUR);
+          continue;
+        }
         InvertedIndex inv;
         inv.dim_table = ReadStr(f);
         inv.bridge_table = ReadStr(f);
@@ -893,7 +933,9 @@ bool StoragePlan::LoadFromFile(const std::string &path) {
             << " ms (" << tables_.size() << " tables, " << csr_indexes_.size()
             << " CSR indexes, " << sorted_indices_.size() << " sorted indices, "
             << inverted_indices_.size() << " inverted indices, "
-            << (GetMemoryUsage() / (1024 * 1024)) << " MB)" << std::endl;
+            << (GetMemoryUsage() / (1024 * 1024)) << " MB"
+            << (skip_indexes ? ", index sections skipped" : "") << ")"
+            << std::endl;
 
   return true;
 }

@@ -34,9 +34,11 @@ flag_suffix=""
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
 [[ "$spec_jit"       == "off" ]] && flag_suffix+="_nospecjit"
 
-# Storage plan flags (enabled when JIT is active)
+# Storage plan flags. Only query-jit consumes the storage plan (FlatTable
+# scan layer); expr/operator/pipeline run entirely inside DuckDB and never
+# read it (all splitter uses are gated on kernel_path != NONE).
 storage_flags=""
-if [[ "$jit_level" != "none" ]]; then
+if [[ "$jit_level" == "query" ]]; then
     storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
 fi
 

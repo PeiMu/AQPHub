@@ -145,3 +145,22 @@ See `lingo-db-plan.md` for the full implementation plan covering:
 | `AQP_middleware/src/jit/ir_to_llvm.cpp` | 5810-5824 | skip_hash_cmp codegen: `do_skip_salt` decision |
 | `AQP_middleware/src/jit/ir_to_llvm.cpp` | 6214-6270 | ROF two-stage prelude (batch_probe) |
 | `AQP_middleware/src/jit/ir_to_llvm.cpp` | 6299-6362 | Prefetch: stage-2 consumer-side look-ahead (requires batch_probe) |
+
+## OutColDesc encoding (HT output-column reference)
+
+How `rhs_output_layout_idxs` (built at duckdb_adapter.cpp:3451-3548,
+consumed by the fusion codegen) index into the hash-table row layout
+`[key₀..keyₙ, payload₀..payloadₘ]`:
+
+- `layout_idx < num_keys` → key column, read at `data_offsets[layout_idx]`
+- `layout_idx >= num_keys` → payload column, read at
+  `data_offsets[num_keys + payload_row_indices[layout_idx - num_keys]]`
+  (`payload_row_indices` exists because payload pruning can drop payload
+  slots; it maps the logical payload position to the surviving row slot)
+
+HT rows start with a per-column validity byte prefix when
+`AQPJoinHTView.has_row_validity` is set (DuckDB TupleDataLayout
+convention: byte `c/8`, bit `1<<(c%8)`, 1 = valid). `data_offsets` already
+account for the prefix. NULL keys never match (key validity is ANDed into
+key equality); NULL payloads have the bit cleared, fixed-size slots zero,
+varchar copies redirected to a shared zero global.

@@ -211,6 +211,12 @@ private:
     std::unique_ptr<duckdb::PreparedStatement> spec_prepared;
     // Speculative IR owned here so bg thread can read it safely.
     std::unique_ptr<ir_sql_converter::AQPStmt> spec_ir;
+    // Phase B relaunch instead BORROWS the next iteration's precomputed
+    // extraction IR. The owning extraction is destroyed at the end of the
+    // iteration it drives, so ExecuteOneIteration must WaitSpecsBorrowingIR
+    // on it first (kernel-path iterations never consult the spec, and a
+    // MISS retires it to zombie_specs_ without waiting).
+    const ir_sql_converter::AQPStmt *borrowed_ir = nullptr;
     // Bloom filters built on the main thread at launch (same set the inline
     // path would build); registered into the spec plan by the bg task.
     std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
@@ -219,6 +225,9 @@ private:
     // Snapshot of temp-table collections taken on the main thread at launch
     // so the bg RegisterJITImpl can build join bloom filters race-free.
     DuckDBAdapter::TempCollectionSnapshot temp_snapshot;
+    // Query-jit spec payload (compiled plan + metadata, sources unresolved).
+    // Null on the pipeline-jit spec path and when the bg compile rejected.
+    std::unique_ptr<DuckDBAdapter::QjitSpecCompiled> qjit;
   };
   std::unique_ptr<ThreadPool> jit_compile_pool_;
   std::unique_ptr<SpeculativeCompilation> pending_spec_;
@@ -230,6 +239,9 @@ private:
   // Move pending_spec_ into zombie_specs_ without blocking, then reap any
   // zombies whose futures are ready.
   void RetirePendingSpec();
+  // Blocking: wait for any pending/zombie bg compile that borrowed `ir`
+  // (Phase B relaunch) before the IR's owning extraction is destroyed.
+  void WaitSpecsBorrowingIR(const ir_sql_converter::AQPStmt *ir);
   // Blocking: wait for pending + zombies (end of query / destructor).
   void DrainSpecs();
   // Long-lived compilers for speculative JIT — reused across iterations to

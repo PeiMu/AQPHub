@@ -218,7 +218,7 @@ These flags control individual pipeline-level optimizations. All default to **en
 | `--jit-payload-prune` / `--no-jit-payload-prune` | Hash build payload pruning. Only copies columns referenced downstream into the hash table payload instead of all input columns. Reduces hash table memory footprint. |
 | `--jit-prefetch` / `--jit-prefetch=<distance>` / `--no-jit-prefetch` | Software prefetching for hash table access. Uses `llvm.prefetch` intrinsic to prefetch hash table slots ahead of the probe loop. Default distance is 8. |
 | `--jit-batch-probe` / `--no-jit-batch-probe` | Batch/vectorized hash probe. Two-phase probe: Phase 1 computes all hashes and prefetches slots; Phase 2 probes with cache-hot slots. |
-| `--jit-cache` / `--jit-cache=<path>` / `--no-jit-cache` | Cross-process compiled binary cache. Caches compiled ELF objects to disk so subsequent runs skip LLVM compilation. Default path: `~/.cache/aqp_jit/`. |
+| `--jit-cache` / `--no-jit-cache` | In-memory compiled-object cache (debug flag, default **off**). Process lifetime only — never persists to disk, never reuses across runs. Within one process, byte-identical compile content hits the cache: with `--benchmark --repeat=N` that covers repeats 2..N of each query AND any cross-query/sub-query duplicates; with `--repeat=1` only the (rare) cross-query/sub-query duplicates can hit. Keep it off for final measurements so every repeat pays real compile time. |
 
 #### Example
 

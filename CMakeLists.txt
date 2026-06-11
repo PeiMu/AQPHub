@@ -3,6 +3,11 @@ project(AQP_middleware)
 
 set(CMAKE_CXX_STANDARD 14)
 
+# Load the full zstd CONFIG package before LLVM: LLVM's Findzstd defines only
+# zstd::libzstd_shared/_static, which makes Arrow's later zstdTargets.cmake
+# include fail with "some (but not all) targets already defined".
+find_package(zstd CONFIG QUIET)
+
 # ---------------------------------------------------------------------------
 # LLVM 20 (shared with lingo-db and JIT)
 # ---------------------------------------------------------------------------
@@ -62,6 +67,22 @@ target_include_directories(split_lib PUBLIC
 # Utility library (shared across adapters — compiled once to avoid duplicate symbols)
 add_library(util_lib STATIC src/util/util.cpp)
 target_include_directories(util_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Query-JIT library (--jit-level=query): IR analysis, runtime, scheduler.
+# Pure C++ over the IR — no DuckDB/LLVM dependency.
+add_library(qjit_lib STATIC
+        src/qjit/query_jit_steps.cpp
+        src/qjit/query_jit_runtime.cpp
+        src/qjit/query_jit_scheduler.cpp
+        src/qjit/query_jit_executor.cpp
+)
+target_include_directories(qjit_lib PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/IR_SQL_Converter/inc
+)
+# QjitWorkerPool bumps middleware::g_bg_active_threads (thread_pool.cpp,
+# owned by split_lib) so OpenMP paths throttle while qjit workers run.
+target_link_libraries(qjit_lib PUBLIC split_lib)
 
 # Storage plan library (flat column arrays, CSR indexes)
 # Built conditionally with DuckDB below.
@@ -142,7 +163,7 @@ if (EXISTS ${DUCKDB_ROOT})
             message(STATUS "kernel_lib OpenMP: ENABLED")
         endif()
 
-        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib kernel_lib util_lib)
+        target_link_libraries(duckdb_adapter PUBLIC ${DUCKDB_LIB} split_lib storage_lib kernel_lib util_lib qjit_lib)
         if (HAVE_LLVM)
             target_link_libraries(duckdb_adapter PUBLIC aqp_jit_lib)
             target_compile_definitions(duckdb_adapter PUBLIC HAVE_LLVM)
@@ -294,6 +315,18 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
                 ${LINGODB_BUILD}/libruntime_funcs_ptr.a
                 ${LINGODB_BUILD}/vendored/mimalloc/libmimalloc.a
         )
+
+        # Newer lingo-db builds include the tpde baseline backend in
+        # librunner.a; link its vendored archives when present.
+        foreach (tpde_lib
+                ${LINGODB_BUILD}/vendored/tpde/tpde/libtpde.a
+                ${LINGODB_BUILD}/vendored/tpde/tpde/deps/spdlog/libspdlog.a
+                ${LINGODB_BUILD}/vendored/tpde/tpde/deps/fadec/libfadec.a
+                ${LINGODB_BUILD}/vendored/tpde/tpde/deps/disarm/libdisarm64.a)
+            if (EXISTS ${tpde_lib})
+                list(APPEND LINGODB_LIBS ${tpde_lib})
+            endif ()
+        endforeach ()
 
         # Get MLIR and LLVM libraries
         get_property(MLIR_DIALECT_LIBS GLOBAL PROPERTY MLIR_DIALECT_LIBS)
@@ -463,6 +496,14 @@ if (EXISTS ${IR_CONVERTER_ROOT}/CMakeLists.txt)
         set_property(TARGET test_storage PROPERTY CXX_STANDARD 17)
         add_test(NAME StorageTests COMMAND test_storage)
         message(STATUS "test_storage: ENABLED (gtest)")
+        # qjit runtime/scheduler unit tests (Phase 1 gate). split_lib supplies
+        # middleware::g_bg_active_threads (thread_pool.cpp).
+        add_executable(test_qjit unit_test/test_qjit.cpp)
+        target_link_libraries(test_qjit PRIVATE
+            qjit_lib split_lib GTest::gtest_main)
+        set_property(TARGET test_qjit PROPERTY CXX_STANDARD 17)
+        add_test(NAME QjitTests COMMAND test_qjit)
+        message(STATUS "test_qjit: ENABLED (gtest)")
     elseif (NOT GTest_FOUND)
         message(STATUS "gtest not found — unit tests disabled")
     endif ()

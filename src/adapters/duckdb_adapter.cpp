@@ -4,6 +4,8 @@
 
 #include "adapters/duckdb_adapter.h"
 
+#include <cctype>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -31,7 +33,9 @@
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "jit/aqp_jit_hashtable.h"
+#include "qjit/query_jit_steps.h"
 #include "simplest_ir.h"
+#include "storage/storage_plan.h"
 #include "duckdb/common/types/hash.hpp"
 
 // libpg_query's pg_functions.hpp does `#define fprintf(...)`, silently
@@ -140,6 +144,45 @@ struct KernelTempScanInfo : public duckdb::TableFunctionInfo {
   std::unordered_map<std::string, const middleware::storage::FlatTable *> *kernel_temps;
 };
 
+#ifdef HAVE_LLVM
+// Bind data for qjit temp table scan (scan_qjit_temp)
+struct QjitTempFunctionData : public duckdb::FunctionData {
+  const qjit::QjitTable *table = nullptr;
+  std::string table_name;
+  bool has_override_cardinality = false;
+  uint64_t override_cardinality = 0;
+
+  duckdb::unique_ptr<duckdb::FunctionData> Copy() const override {
+    auto result = duckdb::make_uniq<QjitTempFunctionData>();
+    result->table = table;
+    result->table_name = table_name;
+    result->has_override_cardinality = has_override_cardinality;
+    result->override_cardinality = override_cardinality;
+    return std::move(result);
+  }
+
+  bool Equals(const duckdb::FunctionData &other_p) const override {
+    auto &other = other_p.Cast<QjitTempFunctionData>();
+    return table == other.table;
+  }
+};
+
+struct QjitTempGlobalState : public duckdb::GlobalTableFunctionState {
+  uint64_t current_row = 0;
+  duckdb::vector<duckdb::column_t> column_ids;
+};
+
+// TableFunctionInfo for qjit temp tables
+struct QjitTempScanInfo : public duckdb::TableFunctionInfo {
+  QjitTempScanInfo(
+      std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>> *tables,
+      std::unordered_map<std::string, middleware::QjitTempMeta> *meta)
+      : qjit_temps(tables), qjit_meta(meta) {}
+  std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>> *qjit_temps;
+  std::unordered_map<std::string, middleware::QjitTempMeta> *qjit_meta;
+};
+#endif
+
 } // anonymous namespace
 #endif
 
@@ -186,6 +229,21 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
   duckdb::CreateTableFunctionInfo kernel_info(kernel_func);
   catalog.CreateTableFunction(*context, kernel_info);
 
+#ifdef HAVE_LLVM
+  // Register the qjit temp table function (serves query-jit results
+  // directly from the in-memory QjitTable — no CDC copy)
+  duckdb::TableFunction qjit_func(
+      "scan_qjit_temp", {duckdb::LogicalType::VARCHAR}, QjitTempScanFunc,
+      QjitTempBind, QjitTempInitGlobal);
+  qjit_func.cardinality = QjitTempCardinality;
+  qjit_func.projection_pushdown = true;
+  qjit_func.function_info = duckdb::make_shared_ptr<QjitTempScanInfo>(
+      &qjit_temps_, &qjit_temp_meta_);
+
+  duckdb::CreateTableFunctionInfo qjit_info(qjit_func);
+  catalog.CreateTableFunction(*context, qjit_info);
+#endif
+
   if (context->transaction.IsAutoCommit()) {
     context->transaction.Commit();
   }
@@ -193,7 +251,7 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
   // Register the replacement scan
   auto &db_config = duckdb::DBConfig::GetConfig(*context);
   auto scan_data = duckdb::make_uniq<TempCollectionScanData>(
-      &temp_collections_, &kernel_temp_tables_);
+      &temp_collections_, &kernel_temp_tables_, &qjit_temp_meta_);
   db_config.replacement_scans.emplace_back(TempCollectionReplacementScan,
                                            std::move(scan_data));
 }
@@ -316,6 +374,20 @@ DuckDBAdapter::TempCollectionReplacementScan(
     return std::move(table_ref);
   }
 
+  // Check qjit temp tables (the map is only populated under HAVE_LLVM;
+  // scan_qjit_temp is registered iff entries can exist)
+  if (scan_data.qjit_meta &&
+      scan_data.qjit_meta->find(table_name) != scan_data.qjit_meta->end()) {
+    auto table_ref = duckdb::make_uniq<duckdb::TableFunctionRef>();
+    duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
+    children.push_back(duckdb::make_uniq<duckdb::ConstantExpression>(
+        duckdb::Value(table_name)));
+    table_ref->function = duckdb::make_uniq<duckdb::FunctionExpression>(
+        "scan_qjit_temp", std::move(children));
+    table_ref->alias = table_name;
+    return std::move(table_ref);
+  }
+
   return nullptr;
 }
 
@@ -407,6 +479,126 @@ DuckDBAdapter::KernelTempCardinality(duckdb::ClientContext &context,
   auto card = data.flat_table->row_count;
   return duckdb::make_uniq<duckdb::NodeStatistics>(card, card);
 }
+
+#ifdef HAVE_LLVM
+// Qjit temp table callbacks (scan_qjit_temp)
+duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::QjitTempBind(
+    duckdb::ClientContext &context, duckdb::TableFunctionBindInput &input,
+    duckdb::vector<duckdb::LogicalType> &return_types,
+    duckdb::vector<duckdb::string> &names) {
+
+  auto &info = input.info->Cast<QjitTempScanInfo>();
+  auto table_name = input.inputs[0].GetValue<duckdb::string>();
+
+  auto mit = info.qjit_meta->find(table_name);
+  auto tit = info.qjit_temps->find(table_name);
+  if (mit == info.qjit_meta->end() || tit == info.qjit_temps->end()) {
+    throw duckdb::BinderException("Qjit temp table '%s' not found",
+                                  table_name);
+  }
+
+  auto &meta = mit->second;
+  return_types = meta.types;
+  for (auto &col_name : meta.column_names) {
+    names.push_back(col_name);
+  }
+
+  auto result = duckdb::make_uniq<QjitTempFunctionData>();
+  result->table = tit->second.get();
+  result->table_name = table_name;
+  result->has_override_cardinality = meta.has_override_cardinality;
+  result->override_cardinality = meta.override_cardinality;
+  return std::move(result);
+}
+
+duckdb::unique_ptr<duckdb::GlobalTableFunctionState>
+DuckDBAdapter::QjitTempInitGlobal(duckdb::ClientContext &context,
+                                  duckdb::TableFunctionInitInput &input) {
+  auto state = duckdb::make_uniq<QjitTempGlobalState>();
+  state->column_ids = input.column_ids;
+  return std::move(state);
+}
+
+void DuckDBAdapter::QjitTempScanFunc(duckdb::ClientContext &context,
+                                     duckdb::TableFunctionInput &data,
+                                     duckdb::DataChunk &output) {
+  auto &bind_data = data.bind_data->Cast<QjitTempFunctionData>();
+  auto &state = data.global_state->Cast<QjitTempGlobalState>();
+  const auto *t = bind_data.table;
+
+  uint64_t remaining = t->NumRows() - state.current_row;
+  if (remaining == 0) {
+    output.SetCardinality(0);
+    return;
+  }
+
+  uint64_t count = std::min(remaining, (uint64_t)STANDARD_VECTOR_SIZE);
+
+  for (duckdb::idx_t out_idx = 0; out_idx < state.column_ids.size();
+       out_idx++) {
+    auto col_idx = state.column_ids[out_idx];
+    if (col_idx == duckdb::COLUMN_IDENTIFIER_ROW_ID)
+      continue;
+
+    auto &vec = output.data[out_idx];
+    switch (t->Col(col_idx).dtype) {
+    case AQP_DTYPE_INT32: {
+      auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
+      const auto *src =
+          static_cast<const int32_t *>(t->Data(col_idx)) + state.current_row;
+      std::memcpy(dst, src, count * sizeof(int32_t));
+      break;
+    }
+    case AQP_DTYPE_INT64: {
+      auto *dst = duckdb::FlatVector::GetData<int64_t>(vec);
+      const auto *src =
+          static_cast<const int64_t *>(t->Data(col_idx)) + state.current_row;
+      std::memcpy(dst, src, count * sizeof(int64_t));
+      break;
+    }
+    case AQP_DTYPE_VARCHAR: {
+      // QjitString is bit-compatible with duckdb::string_t; long strings
+      // point into the QjitTable arena, which outlives the scan (temps are
+      // cleared only at per-query reset) — zero-copy views, no AddString.
+      static_assert(sizeof(QjitString) == sizeof(duckdb::string_t),
+                    "QjitString must be bit-compatible with string_t");
+      auto *dst = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+      const auto *src = static_cast<const QjitString *>(t->Data(col_idx)) +
+                        state.current_row;
+      std::memcpy(dst, src, count * sizeof(duckdb::string_t));
+      break;
+    }
+    default:
+      throw duckdb::InternalException("scan_qjit_temp: unsupported dtype");
+    }
+
+    const uint64_t *vmask = t->Validity(col_idx);
+    if (vmask) {
+      auto &validity = duckdb::FlatVector::Validity(vec);
+      for (uint64_t r = 0; r < count; r++) {
+        if (!qjit::RowValid(vmask, state.current_row + r))
+          validity.SetInvalid(r);
+      }
+    }
+  }
+
+  output.SetCardinality(count);
+  state.current_row += count;
+}
+
+duckdb::unique_ptr<duckdb::NodeStatistics>
+DuckDBAdapter::QjitTempCardinality(duckdb::ClientContext &context,
+                                   const duckdb::FunctionData *bind_data) {
+  auto &data = bind_data->Cast<QjitTempFunctionData>();
+  duckdb::idx_t cardinality;
+  if (data.has_override_cardinality) {
+    cardinality = data.override_cardinality;
+  } else {
+    cardinality = data.table->NumRows();
+  }
+  return duckdb::make_uniq<duckdb::NodeStatistics>(cardinality, cardinality);
+}
+#endif
 
 void DuckDBAdapter::RegisterKernelTemp(const std::string &name,
                                        const storage::FlatTable *table) {
@@ -669,7 +861,8 @@ static void RebuildTempTableIndices(
     duckdb::LogicalOperator *op,
     std::unordered_map<unsigned int, std::string> &intermediate_table_map,
     std::unordered_map<unsigned int, std::vector<std::string>> &chunk_col_names,
-    const std::unordered_map<std::string, StoredTempResult> &temp_collections) {
+    const std::unordered_map<std::string, StoredTempResult> &temp_collections,
+    const std::unordered_map<std::string, QjitTempMeta> &qjit_temp_meta) {
   if (!op)
     return;
   if (op->type == duckdb::LogicalOperatorType::LOGICAL_GET) {
@@ -682,11 +875,19 @@ static void RebuildTempTableIndices(
         intermediate_table_map[get_op.table_index] = temp_name;
         chunk_col_names[get_op.table_index] = it->second.column_names;
       }
+    } else if (get_op.function.name == "scan_qjit_temp" &&
+               !get_op.parameters.empty()) {
+      auto temp_name = get_op.parameters[0].GetValue<std::string>();
+      auto it = qjit_temp_meta.find(temp_name);
+      if (it != qjit_temp_meta.end()) {
+        intermediate_table_map[get_op.table_index] = temp_name;
+        chunk_col_names[get_op.table_index] = it->second.column_names;
+      }
     }
   }
   for (auto &child : op->children)
     RebuildTempTableIndices(child.get(), intermediate_table_map,
-                            chunk_col_names, temp_collections);
+                            chunk_col_names, temp_collections, qjit_temp_meta);
 }
 
 std::unique_ptr<ir_sql_converter::AQPStmt>
@@ -728,7 +929,8 @@ DuckDBAdapter::ReOptimizeIR(std::unique_ptr<ir_sql_converter::AQPStmt> ir) {
     intermediate_table_map.clear();
     chunk_col_names_.clear();
     RebuildTempTableIndices(plan.get(), intermediate_table_map,
-                            chunk_col_names_, temp_collections_);
+                            chunk_col_names_, temp_collections_,
+                            qjit_temp_meta_);
   }
 
   // Convert re-optimized plan back to IR
@@ -815,6 +1017,30 @@ std::unique_ptr<ir_sql_converter::AQPStmt> DuckDBAdapter::ConvertPlanToIR() {
   return std::move(ir);
 }
 
+#ifdef HAVE_LLVM
+namespace {
+// Query-jit only analyzes SELECT statements. Non-SELECT SQL reaching
+// ExecuteSQL (e.g. the FK splitters' per-table ANALYZE, or multi-statement
+// combined SQL) must take the legacy path unchanged — ParseSQL would throw
+// and the timing-column layout must match the baseline interpreter run.
+bool IsSelectStatement(const std::string &sql) {
+  size_t i = sql.find_first_not_of(" \t\r\n");
+  if (i == std::string::npos)
+    return false;
+  auto starts_with = [&](const char *kw) {
+    size_t n = std::strlen(kw);
+    if (sql.size() - i < n)
+      return false;
+    for (size_t k = 0; k < n; k++)
+      if (std::toupper(static_cast<unsigned char>(sql[i + k])) != kw[k])
+        return false;
+    return true;
+  };
+  return starts_with("SELECT") || starts_with("WITH");
+}
+} // namespace
+#endif
+
 QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   QueryResult result;
 
@@ -829,6 +1055,109 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
   // --jit-level=expr), build the IR pipeline: parse -> filter optimize ->
   // convert to IR.
   auto timer = chrono_tic();
+
+  // Query-jit (--jit-level=query): analyze the sub-query IR, compile it if
+  // it is inside the v1 coverage (scan/filter/project, inner hash joins,
+  // ungrouped MIN/MAX/COUNT aggregates), execute the compiled entry over
+  // the qjit runtime; otherwise the interpreter runs the prepared statement
+  // from the analysis pass. Mutually exclusive with the other JIT levels
+  // (enforced in ParamConfig), so jit_pending_ir_ is never set here.
+  if (query_jit_ && IsSelectStatement(sql)) {
+    auto prep = PrepareWithQueryJitAnalysis(sql, "result");
+    auto prepared = std::move(prep.prepared);
+    std::unique_ptr<QjitCompiled> compiled;
+    if (prepared && !prepared->HasError() && prep.ir)
+      compiled = TryCompileQueryJit(*prep.ir, prep.analysis, *prepared,
+                                    "result");
+    if (enable_timing_) {
+      // jit_compile column: analysis + prepare + (Phase 2) codegen time.
+      auto analyze_us =
+          chrono_toc(&timer, "ExecuteSQL::qjit analyze time\n", false);
+      WriteJitTimingColumn(analyze_us);
+    }
+    if (prepared->HasError())
+      throw std::runtime_error("Query failed: " + prepared->GetError());
+    if (compiled) {
+      qjit::QjitTable qtable(compiled->out_descs,
+                             qjit_executor_->NumWorkers());
+      int64_t rows = qjit_executor_->Run(
+          reinterpret_cast<QjitQueryFn>(compiled->fn), compiled->srcs,
+          compiled->ht_tuple_sizes, compiled->agg_descs,
+          compiled->agg_output_cells, qtable, compiled->ht_key0_offsets);
+      if (rows >= 0) {
+        if (enable_timing_) {
+          auto run_us =
+              chrono_toc(&timer, "ExecuteSQL::qjit run time\n", false);
+          WriteJitTimingColumn(run_us);
+        }
+#ifndef NDEBUG
+        fprintf(stderr, "[AQP-QJIT] exec label=result rows=%lld\n",
+                (long long)rows);
+#endif
+        result.num_columns = qtable.NumCols();
+        for (size_t i = 0; i < qtable.NumCols(); i++)
+          result.column_names.push_back(qtable.Col(i).name);
+        result.num_rows = 0;
+        for (uint64_t r = 0; r < (uint64_t)rows; r++) {
+          std::vector<std::string> row_data;
+          row_data.reserve(result.num_columns);
+          for (size_t col = 0; col < result.num_columns; col++) {
+            // Match duckdb::Value::ToString: NULL prints "NULL", INTEGER/
+            // BIGINT print the decimal digits, VARCHAR prints the raw bytes.
+            if (!qtable.ValueValid(col, r)) {
+              row_data.emplace_back("NULL");
+            } else if (qtable.Col(col).dtype == AQP_DTYPE_INT32) {
+              row_data.push_back(std::to_string(qtable.GetI32(col, r)));
+            } else if (qtable.Col(col).dtype == AQP_DTYPE_INT64) {
+              row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+            } else {
+              QjitString s = qtable.GetStr(col, r);
+              row_data.emplace_back(qjit::StringData(s), qjit::StringLen(s));
+            }
+          }
+          result.rows.push_back(std::move(row_data));
+          result.num_rows++;
+        }
+        return result;
+      }
+      // Entry returned an error code: fall through to the interpreter (the
+      // result table is discarded; nothing was emitted).
+      fprintf(stderr, "[AQP-QJIT] fallback:run-error(rc=%lld) label=result\n",
+              (long long)rows);
+    }
+    // Drop any stale JIT context from previous sub-plan iterations.
+    GetClientContext()->aqp_jit_context.reset();
+    if (prepared->data && prepared->data->physical_plan)
+      InjectTempTableJoinStats(prepared->data->physical_plan->Root());
+    duckdb::vector<duckdb::Value> bound;
+    auto duckdb_result = prepared->Execute(bound, false);
+    if (enable_timing_) {
+      auto run_us =
+          chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
+      WriteJitTimingColumn(run_us);
+    }
+    if (duckdb_result->HasError())
+      throw std::runtime_error("Query failed: " + duckdb_result->GetError());
+    result.num_columns = duckdb_result->ColumnCount();
+    for (size_t i = 0; i < result.num_columns; i++)
+      result.column_names.push_back(duckdb_result->ColumnName(i));
+    result.num_rows = 0;
+    while (true) {
+      auto chunk = duckdb_result->Fetch();
+      if (!chunk || 0 == chunk->size())
+        break;
+      for (size_t row = 0; row < chunk->size(); row++) {
+        std::vector<std::string> row_data;
+        row_data.reserve(result.num_columns);
+        for (size_t col = 0; col < result.num_columns; col++)
+          row_data.push_back(chunk->GetValue(col, row).ToString());
+        result.rows.push_back(std::move(row_data));
+        result.num_rows++;
+      }
+    }
+    return result;
+  }
+
   bool jit_active = false;
   if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
     jit_active = true;
@@ -1014,7 +1343,50 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
   std::unique_ptr<duckdb::PreparedStatement> prepared;
 #ifdef HAVE_LLVM
-  if (jit_pending_plan_) {
+  std::unique_ptr<QjitCompiled> qjit_compiled;
+  // Keepalive for a spec-jit HIT: holds the plan + IR the compiled fn's
+  // metadata points into, plus the result types/names (no Prepare happens
+  // on the main connection in that case).
+  std::unique_ptr<QjitSpecCompiled> qjit_spec;
+  if (query_jit_) {
+    if (qjit_spec_hit_) {
+      // Spec-jit HIT: the bg pool already compiled this sub-query on a spec
+      // compiler. Resolve sources now (the consumed temp exists only since
+      // the previous store) and skip Prepare entirely — the compiled fn
+      // owns the result. Resolve failure falls through to the inline path
+      // (same as a MISS).
+      qjit_spec = std::move(qjit_spec_hit_);
+      std::string reason;
+      if (ResolveQjitSources(qjit_spec->plan, *qjit_spec->compiled, reason)) {
+        qjit_compiled = std::move(qjit_spec->compiled);
+#ifndef NDEBUG
+        fprintf(stderr, "[AQP-QJIT] spec-hit label=%s\n",
+                temp_table_name.c_str());
+#endif
+      } else {
+        fprintf(stderr, "[AQP-QJIT] spec-hit-resolve-failed:%s label=%s\n",
+                reason.c_str(), temp_table_name.c_str());
+        qjit_spec.reset();
+      }
+    }
+    if (!qjit_compiled) {
+      // Query-jit: analyze + compile; execution below branches on
+      // qjit_compiled. The interpreter path is unchanged and uses the same
+      // prepared statement.
+      auto prep = PrepareWithQueryJitAnalysis(sql, temp_table_name);
+      prepared = std::move(prep.prepared);
+      if (prepared && !prepared->HasError() && prep.ir)
+        qjit_compiled = TryCompileQueryJit(*prep.ir, prep.analysis, *prepared,
+                                           temp_table_name);
+    }
+    if (enable_timing_) {
+      // jit_compile column: analysis + prepare + codegen time (≈0 on a spec
+      // HIT — the compile happened on the bg pool).
+      auto analyze_us = chrono_toc(
+          &timer, "ExecuteSQLandCreateTempTable::qjit analyze time\n", false);
+      WriteJitTimingColumn(analyze_us);
+    }
+  } else if (jit_pending_plan_) {
     jit_pending_plan_->ResolveOperatorTypes();
     auto plan_types = jit_pending_plan_->types;
     duckdb::vector<duckdb::string> plan_names;
@@ -1027,14 +1399,17 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   {
     prepared = conn->Prepare(sql);
   }
-  if (prepared->HasError()) {
+  // prepared is null only on a query-jit spec HIT (no main-connection
+  // Prepare; the compiled fn owns the result).
+  if (prepared && prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
                              prepared->GetError());
   }
 
 #ifdef HAVE_LLVM
   // JIT: compile filters from the pending IR and register before execution.
-  if (jit_pending_ir_ && prepared->data && prepared->data->physical_plan) {
+  if (jit_pending_ir_ && prepared && prepared->data &&
+      prepared->data->physical_plan) {
     jit_active = true;
     // Reset JIT context (stale function pointers would crash if dispatched).
     // Keep jit_compiler_ alive — reusing LLJIT avoids re-init overhead.
@@ -1103,7 +1478,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     }
   }
   // Register pending bloom filters (independent of JIT).
-  if (!pending_bloom_filters_.empty() && prepared->data &&
+  if (!pending_bloom_filters_.empty() && prepared && prepared->data &&
       prepared->data->physical_plan) {
     auto *ctx3 = GetClientContext();
     if (!ctx3->aqp_jit_context) {
@@ -1117,7 +1492,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
   // Inject temp table column stats into PhysicalHashJoin nodes to enable
   // perfect hash join (direct array lookup instead of hash table).
-  if (prepared->data && prepared->data->physical_plan) {
+  if (prepared && prepared->data && prepared->data->physical_plan) {
     InjectTempTableJoinStats(prepared->data->physical_plan->Root());
   }
 
@@ -1128,8 +1503,17 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   intermediate_table_map[data_chunk_index] = temp_table_name;
   temp_table_index_ = data_chunk_index;
 
+#ifdef HAVE_LLVM
+  // Spec HIT: no main-connection prepared statement — the payload carries
+  // the spec Prepare's types/names (cross-checked against the compiled plan
+  // by BuildQjitOutputDescs in the bg task).
+  temp_table_types = qjit_spec ? qjit_spec->out_types : prepared->GetTypes();
+  const auto &result_names =
+      qjit_spec ? qjit_spec->out_names : prepared->GetNames();
+#else
   temp_table_types = prepared->GetTypes();
   auto &result_names = prepared->GetNames();
+#endif
   duckdb::case_insensitive_set_t used_column_names;
   std::vector<std::string> column_names;
   for (duckdb::idx_t i = 0; i < temp_table_types.size(); i++) {
@@ -1155,26 +1539,96 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #ifdef HAVE_LLVM
   if (post_prepare_hook_) {
     duckdb::idx_t est_card = 0;
-    if (prepared->data && prepared->data->physical_plan)
+    if (prepared && prepared->data && prepared->data->physical_plan)
       est_card = prepared->data->physical_plan->Root().estimated_cardinality;
+    else if (qjit_spec)
+      est_card = qjit_spec->est_card;
     post_prepare_hook_(temp_table_name, data_chunk_index, temp_table_types,
                        column_names, est_card, /*post_execute=*/false);
   }
 #endif
 
-  duckdb::vector<duckdb::Value> bound_values;
-  auto subquery_result = prepared->ExecuteRow(bound_values, false);
+  duckdb::unique_ptr<duckdb::ColumnDataCollection> subquery_result;
+#ifdef HAVE_LLVM
+  // §5.7: qjit results are served to later sub-queries straight from the
+  // QjitTable via scan_qjit_temp — no CDC copy. Exception: a speculative
+  // placeholder's bind data holds a raw pointer to the placeholder
+  // collection, so that path keeps the CDC write-back (Combine below).
+  bool qjit_stored = false;
+  int64_t qjit_rows = 0;
+  if (qjit_compiled) {
+    auto qtable = std::make_unique<qjit::QjitTable>(
+        qjit_compiled->out_descs, qjit_executor_->NumWorkers());
+    int64_t rows =
+        qjit_executor_->Run(reinterpret_cast<QjitQueryFn>(qjit_compiled->fn),
+                            qjit_compiled->srcs, qjit_compiled->ht_tuple_sizes,
+                            qjit_compiled->agg_descs,
+                            qjit_compiled->agg_output_cells, *qtable,
+                            qjit_compiled->ht_key0_offsets);
+    if (rows >= 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "[AQP-QJIT] exec label=%s rows=%lld\n",
+              temp_table_name.c_str(), (long long)rows);
+#endif
+      auto pit = temp_collections_.find(temp_table_name);
+      bool has_placeholder =
+          pit != temp_collections_.end() && pit->second.is_placeholder;
+      if (has_placeholder) {
+        // temp_table_types == prepared types (or the spec payload's types on
+        // a HIT, where prepared is null).
+        subquery_result = QjitTableToCollection(*qtable, temp_table_types);
+      } else {
+        qjit_stored = true;
+        qjit_rows = rows;
+      }
+      qjit_temps_[temp_table_name] = std::move(qtable);
+    } else {
+      fprintf(stderr, "[AQP-QJIT] fallback:run-error(rc=%lld) label=%s\n",
+              (long long)rows, temp_table_name.c_str());
+    }
+  }
+  if (!subquery_result && !qjit_stored)
+#else
+  if (!subquery_result)
+#endif
+  {
+#ifdef HAVE_LLVM
+    // Spec-HIT run error: no prepared statement exists — create the
+    // interpreter fallback now.
+    if (!prepared) {
+      prepared = conn->Prepare(sql);
+      if (prepared->HasError())
+        throw std::runtime_error("[DuckDB] Prepare failed: " +
+                                 prepared->GetError());
+    }
+#endif
+    duckdb::vector<duckdb::Value> bound_values;
+    subquery_result = prepared->ExecuteRow(bound_values, false);
+  }
   if (enable_timing_) {
     auto run_us = chrono_toc(
         &timer, "ExecuteSQLandCreateTempTable::Execute sub-SQL time\n", false);
     WriteJitTimingColumn(run_us);
   }
 
-  int64_t chunk_size = subquery_result->Count();
-  temp_table_types = subquery_result->Types();
+  int64_t chunk_size;
+#ifdef HAVE_LLVM
+  if (qjit_stored) {
+    // temp_table_types already holds prepared->GetTypes() (set above); the
+    // compile gate cross-checked the QjitTable layout against it.
+    chunk_size = qjit_rows;
+  } else
+#endif
+  {
+    chunk_size = subquery_result->Count();
+    temp_table_types = subquery_result->Types();
+  }
 
   // Compute per-column statistics before moving the collection
   std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats;
+#ifdef HAVE_LLVM
+  if (!qjit_stored)
+#endif
   {
     auto &types = subquery_result->Types();
     col_stats.resize(types.size());
@@ -1240,24 +1694,36 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     (void)has_rows;
   }
 
-  // Store the ColumnDataCollection in temp_collections_ (zero-copy).
-  // If a speculative placeholder was registered for this temp, Combine the
+  // Store the result. qjit-stored temps keep only binder metadata here
+  // (scan_qjit_temp reads rows from qjit_temps_); everything else stores
+  // the ColumnDataCollection in temp_collections_ (zero-copy). If a
+  // speculative placeholder was registered for this temp, Combine the
   // result into it: a speculative Prepare's bind data holds a raw pointer to
   // the placeholder collection, so the object must survive.
-  auto existing_it = temp_collections_.find(temp_table_name);
-  if (existing_it != temp_collections_.end() &&
-      existing_it->second.is_placeholder) {
-    existing_it->second.collection->Combine(*subquery_result);
-    existing_it->second.column_names = std::move(column_names);
-    existing_it->second.column_stats = std::move(col_stats);
-    existing_it->second.has_override_cardinality = false;
-    existing_it->second.is_placeholder = false;
-  } else {
-    StoredTempResult stored;
-    stored.collection = std::move(subquery_result);
-    stored.column_names = std::move(column_names);
-    stored.column_stats = std::move(col_stats);
-    temp_collections_[temp_table_name] = std::move(stored);
+#ifdef HAVE_LLVM
+  if (qjit_stored) {
+    QjitTempMeta meta;
+    meta.column_names = std::move(column_names);
+    meta.types = temp_table_types;
+    qjit_temp_meta_[temp_table_name] = std::move(meta);
+  } else
+#endif
+  {
+    auto existing_it = temp_collections_.find(temp_table_name);
+    if (existing_it != temp_collections_.end() &&
+        existing_it->second.is_placeholder) {
+      existing_it->second.collection->Combine(*subquery_result);
+      existing_it->second.column_names = std::move(column_names);
+      existing_it->second.column_stats = std::move(col_stats);
+      existing_it->second.has_override_cardinality = false;
+      existing_it->second.is_placeholder = false;
+    } else {
+      StoredTempResult stored;
+      stored.collection = std::move(subquery_result);
+      stored.column_names = std::move(column_names);
+      stored.column_stats = std::move(col_stats);
+      temp_collections_[temp_table_name] = std::move(stored);
+    }
   }
 
   temp_table_card_.emplace(temp_table_name, chunk_size);
@@ -1268,9 +1734,11 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   // can keep the post-Prepare compile (estimate was close) or relaunch with
   // an accurately-planned speculative Prepare.
   if (post_prepare_hook_) {
+    const auto &stored_names =
+        qjit_stored ? qjit_temp_meta_[temp_table_name].column_names
+                    : temp_collections_[temp_table_name].column_names;
     post_prepare_hook_(temp_table_name, data_chunk_index, temp_table_types,
-                       temp_collections_[temp_table_name].column_names,
-                       static_cast<duckdb::idx_t>(chunk_size),
+                       stored_names, static_cast<duckdb::idx_t>(chunk_size),
                        /*post_execute=*/true);
   }
 #endif
@@ -1448,6 +1916,10 @@ void DuckDBAdapter::RegisterPlaceholderTemp(
     const std::vector<std::string> &col_names, duckdb::idx_t est_card) {
   if (temp_collections_.count(temp_table_name) > 0)
     return; // already registered (real result or earlier placeholder)
+  if (qjit_temp_meta_.count(temp_table_name) > 0)
+    return; // real qjit-stored temp exists — an empty placeholder would
+            // shadow it in the replacement scan (temp_collections_ is
+            // checked first) and interpreter consumers would read 0 rows
   StoredTempResult stored;
   stored.collection =
       duckdb::make_uniq<duckdb::ColumnDataCollection>(*conn->context, types);
@@ -1572,10 +2044,15 @@ void DuckDBAdapter::CreateTempTable(const std::string &table_name,
 #if IN_MEM_TMP_TABLE
 void DuckDBAdapter::DropTempTable(const std::string &table_name) {
   temp_collections_.erase(table_name);
+  qjit_temp_meta_.erase(table_name);
+#ifdef HAVE_LLVM
+  qjit_temps_.erase(table_name);
+#endif
 }
 
 bool DuckDBAdapter::TempTableExists(const std::string &table_name) {
-  return temp_collections_.count(table_name) > 0;
+  return temp_collections_.count(table_name) > 0 ||
+         qjit_temp_meta_.count(table_name) > 0;
 }
 #else
 void DuckDBAdapter::DropTempTable(const std::string &chunk_name) {
@@ -1610,6 +2087,11 @@ void DuckDBAdapter::SetTempTableCardinality(const std::string &temp_table_name,
   if (it != temp_collections_.end()) {
     it->second.has_override_cardinality = true;
     it->second.override_cardinality = cardinality;
+  }
+  auto qit = qjit_temp_meta_.find(temp_table_name);
+  if (qit != qjit_temp_meta_.end()) {
+    qit->second.has_override_cardinality = true;
+    qit->second.override_cardinality = cardinality;
   }
 
   // Update temp_table_card_ for consistency
@@ -1679,6 +2161,35 @@ std::unordered_map<size_t, std::pair<int64_t, int64_t>>
 DuckDBAdapter::GetTempTableMinMax(const std::string &temp_table_name) {
   std::unordered_map<size_t, std::pair<int64_t, int64_t>> result;
 #if IN_MEM_TMP_TABLE
+#ifdef HAVE_LLVM
+  // qjit-stored temps (§5.7) have no CDC; compute from the QjitTable.
+  if (!temp_collections_.count(temp_table_name)) {
+    auto qit = qjit_temps_.find(temp_table_name);
+    if (qit != qjit_temps_.end()) {
+      const qjit::QjitTable &t = *qit->second;
+      for (size_t col_idx = 0; col_idx < t.NumCols(); col_idx++) {
+        const int32_t dt = t.Col(col_idx).dtype;
+        if (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_INT64)
+          continue;
+        int64_t min_val = std::numeric_limits<int64_t>::max();
+        int64_t max_val = std::numeric_limits<int64_t>::min();
+        bool found = false;
+        for (uint64_t r = 0; r < t.NumRows(); r++) {
+          if (!t.ValueValid(col_idx, r))
+            continue;
+          int64_t v = dt == AQP_DTYPE_INT32 ? t.GetI32(col_idx, r)
+                                            : t.GetI64(col_idx, r);
+          if (v < min_val) min_val = v;
+          if (v > max_val) max_val = v;
+          found = true;
+        }
+        if (found)
+          result[col_idx] = {min_val, max_val};
+      }
+      return result;
+    }
+  }
+#endif
   auto it = temp_collections_.find(temp_table_name);
   if (it == temp_collections_.end() || !it->second.collection)
     return result;
@@ -1813,6 +2324,57 @@ DuckDBAdapter::GetBaseTableCardinality(const std::string &table_name) {
   return 0;
 }
 
+#ifdef HAVE_LLVM
+// Bloom filter over a qjit-stored temp (§5.7: no CDC to scan). Same sizing
+// and bit-insert scheme as the ColumnDataCollection variant below.
+static DuckDBAdapter::BloomFilterInfo
+BuildBloomFilterFromQjitTable(const qjit::QjitTable &table, size_t col_idx) {
+  DuckDBAdapter::BloomFilterInfo info;
+  if (col_idx >= table.NumCols())
+    return info;
+  const int32_t dt = table.Col(col_idx).dtype;
+  if (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_INT64)
+    return info;
+
+  uint64_t temp_card = table.NumRows();
+
+  constexpr uint64_t kMinBits = 512;
+  constexpr uint64_t kBitsPerKey = 12;
+  constexpr uint64_t kMaxSectors = (1ULL << 26);
+  uint64_t min_bits = std::max(kMinBits, temp_card * kBitsPerKey);
+  uint64_t num_sectors = 1;
+  while (num_sectors < (min_bits >> 6)) num_sectors <<= 1;
+  if (num_sectors > kMaxSectors) num_sectors = kMaxSectors;
+
+  info.bf_data.resize(num_sectors, 0);
+  info.bitmask = num_sectors - 1;
+
+  constexpr uint64_t kShiftMask = 0x3F3F3F3F3F3F3F3F;
+  constexpr int kNBits = 4;
+
+  auto insert_one = [&](uint64_t hash) {
+    uint64_t offset = hash & info.bitmask;
+    uint64_t shifts = hash & kShiftMask;
+    auto shifts_8 = reinterpret_cast<const uint8_t *>(&shifts);
+    uint64_t mask = 0;
+    for (int i = 8 - kNBits; i < 8; i++) {
+      mask |= (1ULL << shifts_8[i]);
+    }
+    info.bf_data[offset] |= mask;
+  };
+
+  for (uint64_t r = 0; r < table.NumRows(); r++) {
+    if (!table.ValueValid(col_idx, r))
+      continue;
+    if (dt == AQP_DTYPE_INT32)
+      insert_one(duckdb::Hash<int32_t>(table.GetI32(col_idx, r)));
+    else
+      insert_one(duckdb::Hash<int64_t>(table.GetI64(col_idx, r)));
+  }
+  return info;
+}
+#endif
+
 DuckDBAdapter::BloomFilterInfo
 DuckDBAdapter::BuildBloomFilter(const std::string &temp_table_name,
                                 size_t col_idx,
@@ -1820,6 +2382,13 @@ DuckDBAdapter::BuildBloomFilter(const std::string &temp_table_name,
   BloomFilterInfo info;
   (void)temp_card;
 #if IN_MEM_TMP_TABLE
+#ifdef HAVE_LLVM
+  if (!temp_collections_.count(temp_table_name)) {
+    auto qit = qjit_temps_.find(temp_table_name);
+    if (qit != qjit_temps_.end())
+      return BuildBloomFilterFromQjitTable(*qit->second, col_idx);
+  }
+#endif
   auto it = temp_collections_.find(temp_table_name);
   if (it == temp_collections_.end() || !it->second.collection)
     return info;
@@ -1990,6 +2559,11 @@ DuckDBAdapter::GetEstimatedCost(const std::string &sql) {
 void DuckDBAdapter::CleanUp() {
 #if IN_MEM_TMP_TABLE
   temp_collections_.clear();
+  qjit_temp_meta_.clear();
+#endif
+#ifdef HAVE_LLVM
+  qjit_temps_.clear();
+  qjit_spec_hit_.reset();
 #endif
   plan.reset();
   planner.reset();
@@ -2003,6 +2577,11 @@ void DuckDBAdapter::CleanUp() {
 void DuckDBAdapter::ResetQueryState() {
 #if IN_MEM_TMP_TABLE
   temp_collections_.clear();
+  qjit_temp_meta_.clear();
+#endif
+#ifdef HAVE_LLVM
+  qjit_temps_.clear();
+  qjit_spec_hit_.reset();
 #endif
   kernel_temp_tables_.clear();
   plan.reset();
@@ -2161,6 +2740,701 @@ FindBuildSideColumnDataScan(duckdb::PhysicalOperator &op) {
     if (auto *s = FindBuildSideColumnDataScan(child.get()))
       return s;
   return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Query-jit (--jit-level=query): build-side annotation + Phase 0 analysis.
+// ---------------------------------------------------------------------------
+
+// Collect logical_table_index of every PhysicalTableScan in a subtree.
+static void CollectPhysScanIndices(duckdb::PhysicalOperator &op,
+                                   std::unordered_set<unsigned int> &out) {
+  if (op.type == duckdb::PhysicalOperatorType::TABLE_SCAN) {
+    auto &scan = op.Cast<duckdb::PhysicalTableScan>();
+    out.insert(static_cast<unsigned int>(scan.logical_table_index));
+  }
+  for (auto &child : op.children)
+    CollectPhysScanIndices(child.get(), out);
+}
+
+// Collect table_index of every ScanNode/ChunkNode in an IR subtree.
+static void CollectIRSourceIndices(const ir_sql_converter::AQPStmt *ir,
+                                   std::unordered_set<unsigned int> &out) {
+  if (!ir)
+    return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode)
+    out.insert(
+        static_cast<const ir_sql_converter::SimplestScan *>(ir)->GetTableIndex());
+  else if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ChunkNode)
+    out.insert(
+        static_cast<const ir_sql_converter::SimplestChunk *>(ir)->GetTableIndex());
+  for (const auto &child : ir->children)
+    CollectIRSourceIndices(child.get(), out);
+}
+
+// Collect mutable JoinNodes in DFS order.
+static void
+CollectIRJoinNodes(ir_sql_converter::AQPStmt *ir,
+                   std::vector<ir_sql_converter::SimplestJoin *> &out) {
+  if (!ir)
+    return;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode)
+    out.push_back(static_cast<ir_sql_converter::SimplestJoin *>(ir));
+  for (auto &child : ir->children)
+    CollectIRJoinNodes(child.get(), out);
+}
+
+namespace {
+
+bool PlanContainsOpType(const duckdb::LogicalOperator &op,
+                        duckdb::LogicalOperatorType type) {
+  if (op.type == type)
+    return true;
+  for (auto &child : op.children)
+    if (PlanContainsOpType(*child, type))
+      return true;
+  return false;
+}
+
+// Collect IR source indices, keeping only those present in `universe` (the
+// physical TABLE_SCAN indices). IR sources outside the universe — e.g. the
+// ColumnDataGet chunk an IN-list rewrite joins against, which is a
+// COLUMN_DATA_SCAN without a table index physically — are stripped so the
+// set comparison still works.
+void CollectIRSourceIndicesFiltered(
+    const ir_sql_converter::AQPStmt *ir,
+    const std::unordered_set<unsigned int> &universe,
+    std::unordered_set<unsigned int> &out) {
+  std::unordered_set<unsigned int> raw;
+  CollectIRSourceIndices(ir, raw);
+  for (auto v : raw)
+    if (universe.count(v))
+      out.insert(v);
+}
+
+void AnnotateBuildSidesRec(duckdb::PhysicalOperator &op,
+                           ir_sql_converter::AQPStmt &ir,
+                           const std::unordered_set<unsigned int> &universe) {
+  for (auto &child : op.children)
+    AnnotateBuildSidesRec(child.get(), ir, universe);
+  if (op.type != duckdb::PhysicalOperatorType::HASH_JOIN ||
+      op.children.size() != 2)
+    return;
+
+  std::unordered_set<unsigned int> probe_set, build_set;
+  CollectPhysScanIndices(op.children[0].get(), probe_set);
+  CollectPhysScanIndices(op.children[1].get(), build_set);
+  // Joins against table-index-less sources (e.g. IN-list chunks) cannot be
+  // matched by table-index sets; they stay unannotated.
+  if (probe_set.empty() || build_set.empty())
+    return;
+
+  std::vector<ir_sql_converter::SimplestJoin *> joins;
+  CollectIRJoinNodes(&ir, joins);
+  for (auto *join : joins) {
+    if (join->GetBuildChild() != -1 || join->children.size() != 2)
+      continue;
+    std::unordered_set<unsigned int> c0_set, c1_set;
+    CollectIRSourceIndicesFiltered(join->children[0].get(), universe, c0_set);
+    CollectIRSourceIndicesFiltered(join->children[1].get(), universe, c1_set);
+    if (c0_set.empty() || c1_set.empty())
+      continue;
+    if (c0_set == probe_set && c1_set == build_set) {
+      join->SetBuildChild(1); // physical kept logical orientation
+      return;
+    }
+    if (c0_set == build_set && c1_set == probe_set) {
+      join->SetBuildChild(0); // physical planner flipped the sides
+      return;
+    }
+  }
+#ifndef NDEBUG
+  auto dump_set = [](const std::unordered_set<unsigned int> &s) {
+    std::string r = "{";
+    for (auto v : s)
+      r += std::to_string(v) + ",";
+    r += "}";
+    return r;
+  };
+  std::cerr << "[AQP-QJIT] AnnotateBuildSides: no IR JoinNode matched a "
+               "physical HASH_JOIN probe="
+            << dump_set(probe_set) << " build=" << dump_set(build_set) << "\n";
+  for (auto *join : joins) {
+    std::unordered_set<unsigned int> c0_set, c1_set;
+    if (join->children.size() == 2) {
+      CollectIRSourceIndices(join->children[0].get(), c0_set);
+      CollectIRSourceIndices(join->children[1].get(), c1_set);
+    }
+    std::cerr << "[AQP-QJIT]   IR join build_child=" << join->GetBuildChild()
+              << " c0=" << dump_set(c0_set) << " c1=" << dump_set(c1_set)
+              << "\n";
+  }
+#endif
+}
+
+} // namespace
+
+// Annotate each IR JoinNode with the build side chosen by DuckDB's physical
+// planner. Requires FRESH IR: the IR and the physical plan must come from
+// the same optimized logical plan (one binder), so each physical HASH_JOIN
+// corresponds to exactly one IR JoinNode with identical table-index sets
+// under its children — only the build/probe orientation can differ.
+// Unmatched joins keep build_child = -1 (analysis then rejects).
+void DuckDBAdapter::AnnotateBuildSides(duckdb::PhysicalOperator &op,
+                                       ir_sql_converter::AQPStmt &ir) {
+  std::unordered_set<unsigned int> universe;
+  CollectPhysScanIndices(op, universe);
+  AnnotateBuildSidesRec(op, ir, universe);
+}
+
+DuckDBAdapter::QueryJitPrep
+DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
+                                           const std::string &label) {
+  QueryJitPrep prep;
+  // Save the adapter's planning state. The splitter owns planner/plan across
+  // sub-queries (GenerateTableIndex must keep drawing from the ORIGINAL
+  // binder's number space), and intermediate_table_map / chunk_col_names_
+  // describe the original binder's indices. The fresh parse below uses its
+  // own binder whose indices restart at 0, so all its effects on these
+  // members must stay local to this function.
+  auto saved_planner = std::move(planner);
+  auto saved_plan = std::move(plan);
+  auto saved_map = intermediate_table_map;
+  auto saved_chunk_names = chunk_col_names_;
+
+  std::unique_ptr<duckdb::PreparedStatement> prepared;
+  const char *stage = "parse";
+  try {
+    ParseSQL(sql);
+    stage = "optimize";
+    Optimize();
+    // Fresh binder ⇒ temp-table scans got fresh indices; rebuild the maps
+    // (restored below) so ConvertPlanToIR resolves ChunkNodes.
+    intermediate_table_map.clear();
+    chunk_col_names_.clear();
+    stage = "rebuild-temp-indices";
+    RebuildTempTableIndices(plan.get(), intermediate_table_map,
+                            chunk_col_names_, temp_collections_,
+                            qjit_temp_meta_);
+    // ConvertPlanToIR prints "Do not support yet" (and D_ASSERTs) on plans
+    // the converter can't represent — the only kind seen on JOB is
+    // EMPTY_RESULT (optimizer proved a sub-query empty). Reject before
+    // conversion to keep stdout identical to the baseline run.
+    bool plan_empty_result =
+        PlanContainsOpType(*plan, duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT);
+    std::unique_ptr<ir_sql_converter::AQPStmt> ir;
+    if (!plan_empty_result) {
+      stage = "convert-ir";
+      ir = ConvertPlanToIR();
+    }
+    stage = "prepare-from-plan";
+    prepared = conn->PrepareFromPlan(TakePlan(), planner->names,
+                                     planner->types);
+    if (prepared && !prepared->HasError() && prepared->data &&
+        prepared->data->physical_plan) {
+      if (ir) {
+        AnnotateBuildSides(prepared->data->physical_plan->Root(), *ir);
+        prep.analysis = qjit::AnalyzeQueryJit(*ir, label);
+        prep.ir = std::move(ir);
+      }
+#ifndef NDEBUG
+      else if (plan_empty_result) {
+        fprintf(stderr, "[AQP-QJIT] reject:plan-empty-result label=%s\n",
+                label.c_str());
+      } else {
+        fprintf(stderr, "[AQP-QJIT] reject:ir-conversion-failed label=%s\n",
+                label.c_str());
+      }
+    } else {
+      fprintf(stderr, "[AQP-QJIT] reject:prepare-failed label=%s\n",
+              label.c_str());
+    }
+#else
+    }
+#endif
+  } catch (std::exception &e) {
+    fprintf(stderr, "[AQP-QJIT] reject:exception(stage=%s: %s) label=%s\n",
+            stage, e.what(), label.c_str());
+    prepared.reset();
+  }
+
+  planner = std::move(saved_planner);
+  plan = std::move(saved_plan);
+  intermediate_table_map = std::move(saved_map);
+  chunk_col_names_ = std::move(saved_chunk_names);
+
+  // The analysis path failed before producing a usable prepared statement:
+  // fall back to a plain Prepare so the interpreter still runs the sub-query.
+  if (!prepared || prepared->HasError()) {
+    prepared = conn->Prepare(sql);
+    // This prepared statement was NOT the one the IR was annotated/analyzed
+    // against — never compile from it.
+    prep.ir.reset();
+    prep.analysis = qjit::QjitAnalysisResult{};
+  }
+  prep.prepared = std::move(prepared);
+  return prep;
+}
+
+bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
+                                         duckdb::PreparedStatement &prepared,
+                                         QjitCompiled &compiled,
+                                         std::string &reason) {
+  const qjit::QjitStep &last = plan.steps.back();
+
+  // Output cross-check against the prepared statement — under query-jit the
+  // compiled code OWNS the result, so shape/type disagreement with DuckDB's
+  // binding is fatal and must fall back.
+  const auto &types = prepared.GetTypes();
+  const auto &names = prepared.GetNames();
+  auto out_name = [&](size_t i) {
+    return (i < names.size() && !names[i].empty()) ? names[i]
+                                                   : "col_" + std::to_string(i);
+  };
+  if (plan.has_agg) {
+    if (types.size() != plan.agg_output_cells.size()) {
+      reason = "output:count-mismatch";
+      return false;
+    }
+    for (size_t i = 0; i < types.size(); i++) {
+      const qjit::QjitAggCellPlan &cell =
+          last.agg_cells[(size_t)plan.agg_output_cells[i]];
+      int32_t dt;
+      if (cell.fn == qjit::QjitAggFn::Count ||
+          cell.fn == qjit::QjitAggFn::CountStar) {
+        if (types[i].id() != duckdb::LogicalTypeId::BIGINT) {
+          reason = "output:agg-type";
+          return false;
+        }
+        dt = AQP_DTYPE_INT64;
+      } else if (cell.arg.dtype == AQP_DTYPE_INT32) {
+        // MIN/MAX(INTEGER) keeps INTEGER. SUM(INTEGER) is HUGEINT in
+        // DuckDB and rejects here (v1).
+        if (types[i].id() != duckdb::LogicalTypeId::INTEGER) {
+          reason = "output:agg-type";
+          return false;
+        }
+        dt = AQP_DTYPE_INT32;
+      } else if (cell.arg.dtype == AQP_DTYPE_VARCHAR) {
+        if (types[i].id() != duckdb::LogicalTypeId::VARCHAR) {
+          reason = "output:agg-type";
+          return false;
+        }
+        dt = AQP_DTYPE_VARCHAR;
+      } else {
+        reason = "output:agg-type";
+        return false;
+      }
+      compiled.out_descs.push_back({dt, out_name(i)});
+    }
+    compiled.agg_output_cells = plan.agg_output_cells;
+    compiled.agg_descs.reserve(last.agg_cells.size());
+    for (const auto &cell : last.agg_cells) {
+      qjit::QjitAggDType adt =
+          (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+              ? qjit::QjitAggDType::Str
+              : qjit::QjitAggDType::I64;
+      compiled.agg_descs.push_back({cell.fn, adt});
+    }
+  } else {
+    if (types.size() != last.outputs.size()) {
+      reason = "output:count-mismatch";
+      return false;
+    }
+    for (size_t i = 0; i < types.size(); i++) {
+      int32_t dt = last.outputs[i].dtype;
+      if ((dt == AQP_DTYPE_INT32 &&
+           types[i].id() != duckdb::LogicalTypeId::INTEGER) ||
+          (dt == AQP_DTYPE_VARCHAR &&
+           types[i].id() != duckdb::LogicalTypeId::VARCHAR) ||
+          (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_VARCHAR)) {
+        reason = "output:type-mismatch";
+        return false;
+      }
+      compiled.out_descs.push_back({dt, out_name(i)});
+    }
+  }
+  return true;
+}
+
+bool DuckDBAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+                                       QjitCompiled &compiled,
+                                       std::string &reason) {
+  if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded()) {
+    reason = "no-storage-plan";
+    return false;
+  }
+  if (!qjit_executor_)
+    qjit_executor_ = std::make_unique<qjit::QjitExecutor>(
+        query_jit_threads_,
+        query_jit_morsel_ > 0 ? (uint64_t)query_jit_morsel_ : 0);
+  compiled.srcs.resize(plan.steps.size());
+  for (size_t k = 0; k < plan.steps.size(); k++) {
+    const qjit::QjitStep &st = plan.steps[k];
+    if (st.source_is_temp) {
+      const qjit::QjitTable *tmp = GetOrLoadQjitTemp(st.source_table, reason);
+      if (!tmp)
+        return false;
+      if (!qjit_executor_->ResolveTempSource(*tmp, st.cols, compiled.srcs[k],
+                                             reason))
+        return false;
+      continue;
+    }
+    const auto *flat = qjit_storage_plan_->GetTable(st.source_table);
+    if (!flat) {
+      reason = "source:table-missing:" + st.source_table;
+      return false;
+    }
+    if (!qjit_executor_->ResolveSource(*flat, st.cols, compiled.srcs[k],
+                                       reason, st.block_skip_col))
+      return false;
+  }
+  return true;
+}
+
+void DuckDBAdapter::RegisterQjitRuntimeSymbols(
+    aqp_jit::IrToLlvmCompiler *comp) {
+  comp->RegisterRuntimeSymbol("qjit_parallel_for", (void *)&qjit_parallel_for);
+  comp->RegisterRuntimeSymbol("qjit_buffer_grow", (void *)&qjit_buffer_grow);
+  comp->RegisterRuntimeSymbol("qjit_ht_append", (void *)&qjit_ht_append);
+  comp->RegisterRuntimeSymbol("qjit_ht_finalize", (void *)&qjit_ht_finalize);
+  comp->RegisterRuntimeSymbol("qjit_str_arena_copy",
+                              (void *)&qjit_str_arena_copy);
+  comp->RegisterRuntimeSymbol("qjit_table_append_i32",
+                              (void *)&qjit_table_append_i32);
+  comp->RegisterRuntimeSymbol("qjit_table_append_i64",
+                              (void *)&qjit_table_append_i64);
+  comp->RegisterRuntimeSymbol("qjit_table_append_str",
+                              (void *)&qjit_table_append_str);
+  comp->RegisterRuntimeSymbol("qjit_table_append_null",
+                              (void *)&qjit_table_append_null);
+  comp->RegisterRuntimeSymbol("qjit_table_finish_row",
+                              (void *)&qjit_table_finish_row);
+  comp->RegisterRuntimeSymbol("qjit_ht_dir", (void *)&qjit_ht_dir);
+  comp->RegisterRuntimeSymbol("qjit_ht_mask", (void *)&qjit_ht_mask);
+  comp->RegisterRuntimeSymbol("qjit_ht_key0_min", (void *)&qjit_ht_key0_min);
+  comp->RegisterRuntimeSymbol("qjit_ht_key0_max", (void *)&qjit_ht_key0_max);
+  comp->RegisterRuntimeSymbol("qjit_ht_entries", (void *)&qjit_ht_entries);
+  comp->RegisterRuntimeSymbol("qjit_agg_update_i64",
+                              (void *)&qjit_agg_update_i64);
+  comp->RegisterRuntimeSymbol("qjit_agg_update_str",
+                              (void *)&qjit_agg_update_str);
+  comp->RegisterRuntimeSymbol("qjit_agg_update_count",
+                              (void *)&qjit_agg_update_count);
+}
+
+std::unique_ptr<DuckDBAdapter::QjitCompiled>
+DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
+                                  const qjit::QjitAnalysisResult &analysis,
+                                  duckdb::PreparedStatement &prepared,
+                                  const std::string &label) {
+  auto fallback = [&](const std::string &reason)
+      -> std::unique_ptr<QjitCompiled> {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-QJIT] fallback:%s label=%s\n", reason.c_str(),
+            label.c_str());
+#else
+    (void)reason;
+#endif
+    return nullptr;
+  };
+
+  if (!analysis.accepted)
+    return nullptr; // AnalyzeQueryJit already traced the reject reason
+  if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
+    return fallback("no-storage-plan");
+
+  qjit::QjitQueryPlan plan;
+  std::string reason;
+  if (!qjit::BuildExecutionSteps(ir, plan, reason))
+    return fallback(reason);
+
+  auto compiled = std::make_unique<QjitCompiled>();
+  if (!BuildQjitOutputDescs(plan, prepared, *compiled, reason))
+    return fallback(reason);
+
+  if (!ResolveQjitSources(plan, *compiled, reason))
+    return fallback(reason);
+
+  compiled->ht_tuple_sizes.reserve(plan.hts.size());
+  compiled->ht_key0_offsets.reserve(plan.hts.size());
+  for (const auto &ht : plan.hts) {
+    compiled->ht_tuple_sizes.push_back(ht.tuple_size);
+    compiled->ht_key0_offsets.push_back(ht.prefix_bytes); // key 0 lives first
+  }
+
+  EnsureJITCompiler();
+  if (!jit_compiler_)
+    return fallback("no-jit-compiler");
+  if (!qjit_syms_registered_) {
+    RegisterQjitRuntimeSymbols(jit_compiler_.get());
+    qjit_syms_registered_ = true;
+  }
+  // Drop the previous sub-query's compiled module. Safe: Run() blocks until
+  // the pool is quiescent, so no compiled code is in flight here, and
+  // query-jit is mutually exclusive with the other JIT levels (no
+  // aqp_jit_context pointers reference these modules).
+  jit_compiler_->ResetModules();
+
+  compiled->fn = jit_compiler_->CompileQuerySteps(plan);
+  if (!compiled->fn)
+    return fallback("compile-failed");
+  return compiled;
+}
+
+std::unique_ptr<DuckDBAdapter::QjitSpecCompiled>
+DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
+                                          const std::string &label,
+                                          duckdb::Connection &spec_conn,
+                                          aqp_jit::IrToLlvmCompiler *spec_comp) {
+  auto reject = [&](const std::string &reason)
+      -> std::unique_ptr<QjitSpecCompiled> {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-QJIT] spec-reject:%s label=%s\n", reason.c_str(),
+            label.c_str());
+#else
+    (void)reason;
+#endif
+    return nullptr;
+  };
+  if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
+    return reject("no-storage-plan");
+
+  auto *spec_ctx = spec_conn.context.get();
+  try {
+    // Parse + plan + optimize with bg-local state (mirrors ParseSQL/Optimize;
+    // the adapter's planner/plan members belong to the main thread). The spec
+    // connection's ClientConfig has the same compile-time
+    // enable_dbshaker_query_split default as the main connection, so the
+    // optimizer behaves identically — plan parity by construction.
+    std::unique_ptr<duckdb::Planner> local_planner;
+    duckdb::unique_ptr<duckdb::LogicalOperator> local_plan;
+    bool auto_commit = spec_ctx->transaction.IsAutoCommit();
+    if (auto_commit)
+      spec_ctx->transaction.BeginTransaction();
+    try {
+      duckdb::Parser parser(spec_ctx->GetParserOptions());
+      parser.ParseQuery(sql);
+      if (parser.statements.empty() ||
+          parser.statements[0]->type !=
+              duckdb::StatementType::SELECT_STATEMENT)
+        throw std::runtime_error("not a single SELECT statement");
+      local_planner = std::make_unique<duckdb::Planner>(*spec_ctx);
+      local_planner->CreatePlan(std::move(parser.statements[0]));
+      local_plan = std::move(local_planner->plan);
+      if (!local_plan)
+        throw std::runtime_error("failed to create logical plan");
+      if (local_plan->RequireOptimizer()) {
+        duckdb::Optimizer optimizer(*local_planner->binder, *spec_ctx);
+        local_plan = optimizer.Optimize(std::move(local_plan));
+      }
+    } catch (...) {
+      if (auto_commit)
+        spec_ctx->transaction.Commit();
+      throw;
+    }
+    if (auto_commit)
+      spec_ctx->transaction.Commit();
+
+    if (PlanContainsOpType(*local_plan,
+                           duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT))
+      return reject("plan-empty-result");
+
+    // Fresh binder ⇒ fresh temp-scan indices; bg-local maps so the converter
+    // can resolve ChunkNodes. This reads the live temp maps — the same
+    // discipline as the spec Prepare's replacement-scan binding: launches
+    // are post-execute, so every consumed temp is already stored, and a
+    // placeholder Combine mutates entry fields, not the map shape.
+    std::unordered_map<unsigned int, std::string> local_map;
+    std::unordered_map<unsigned int, std::vector<std::string>> local_names;
+    RebuildTempTableIndices(local_plan.get(), local_map, local_names,
+                            temp_collections_, qjit_temp_meta_);
+
+    auto ir = ir_sql_converter::ConvertDuckDBPlanToIR(
+        *local_planner->binder, *spec_ctx, local_plan.get(), local_map, false,
+        &local_names);
+    if (!ir)
+      return reject("ir-conversion-failed");
+
+    auto prepared = spec_conn.PrepareFromPlan(
+        std::move(local_plan), local_planner->names, local_planner->types);
+    if (!prepared || prepared->HasError() || !prepared->data ||
+        !prepared->data->physical_plan)
+      return reject("prepare-failed");
+
+    AnnotateBuildSides(prepared->data->physical_plan->Root(), *ir);
+    auto analysis = qjit::AnalyzeQueryJit(*ir, label);
+    if (!analysis.accepted)
+      return nullptr; // AnalyzeQueryJit already traced the reject reason
+
+    auto payload = std::make_unique<QjitSpecCompiled>();
+    std::string reason;
+    if (!qjit::BuildExecutionSteps(*ir, payload->plan, reason))
+      return reject(reason);
+    payload->compiled = std::make_unique<QjitCompiled>();
+    if (!BuildQjitOutputDescs(payload->plan, *prepared, *payload->compiled,
+                              reason))
+      return reject(reason);
+    payload->compiled->ht_tuple_sizes.reserve(payload->plan.hts.size());
+    payload->compiled->ht_key0_offsets.reserve(payload->plan.hts.size());
+    for (const auto &ht : payload->plan.hts) {
+      payload->compiled->ht_tuple_sizes.push_back(ht.tuple_size);
+      payload->compiled->ht_key0_offsets.push_back(ht.prefix_bytes);
+    }
+
+    // The caller (bg task) ran spec_comp->ResetModules() and the qjit
+    // runtime symbols were registered at spec-compiler creation.
+    payload->compiled->fn = spec_comp->CompileQuerySteps(payload->plan);
+    if (!payload->compiled->fn)
+      return reject("compile-failed");
+
+    payload->ir = std::move(ir);
+    payload->out_types = prepared->GetTypes();
+    payload->out_names = prepared->GetNames();
+    payload->est_card =
+        prepared->data->physical_plan->Root().estimated_cardinality;
+    return payload;
+  } catch (std::exception &e) {
+    return reject(std::string("exception:") + e.what());
+  }
+}
+
+const qjit::QjitTable *
+DuckDBAdapter::GetOrLoadQjitTemp(const std::string &name,
+                                 std::string &reason) {
+  auto it = qjit_temps_.find(name);
+  if (it != qjit_temps_.end())
+    return it->second.get();
+  auto tc = temp_collections_.find(name);
+  if (tc == temp_collections_.end() || !tc->second.collection) {
+    reason = "source:tmp-missing:" + name;
+    return nullptr;
+  }
+  // Speculative placeholders are Combine()d in-place later — not final.
+  if (tc->second.is_placeholder) {
+    reason = "source:tmp-placeholder:" + name;
+    return nullptr;
+  }
+  auto table = CollectionToQjitTable(tc->second, reason);
+  if (!table)
+    return nullptr;
+  const qjit::QjitTable *raw = table.get();
+  qjit_temps_[name] = std::move(table);
+  return raw;
+}
+
+std::unique_ptr<qjit::QjitTable>
+DuckDBAdapter::CollectionToQjitTable(const StoredTempResult &stored,
+                                     std::string &reason) {
+  auto &collection = *stored.collection;
+  const auto &types = collection.Types();
+  std::vector<qjit::QjitTable::ColumnDesc> descs;
+  descs.reserve(types.size());
+  for (size_t i = 0; i < types.size(); i++) {
+    int32_t dt;
+    switch (types[i].id()) {
+    case duckdb::LogicalTypeId::INTEGER:
+      dt = AQP_DTYPE_INT32;
+      break;
+    case duckdb::LogicalTypeId::BIGINT:
+      dt = AQP_DTYPE_INT64;
+      break;
+    case duckdb::LogicalTypeId::VARCHAR:
+      dt = AQP_DTYPE_VARCHAR;
+      break;
+    default:
+      reason = "source:tmp-cdc-dtype";
+      return nullptr;
+    }
+    std::string name = i < stored.column_names.size()
+                           ? stored.column_names[i]
+                           : "col_" + std::to_string(i);
+    descs.push_back({dt, std::move(name)});
+  }
+
+  auto table = std::make_unique<qjit::QjitTable>(std::move(descs), 1);
+  for (auto &chunk : collection.Chunks()) {
+    const duckdb::idx_t n = chunk.size();
+    for (duckdb::idx_t r = 0; r < n; r++) {
+      for (duckdb::idx_t c = 0; c < chunk.ColumnCount(); c++) {
+        auto &vec = chunk.data[c];
+        if (!duckdb::FlatVector::Validity(vec).RowIsValid(r)) {
+          table->AppendNull(0, c);
+          continue;
+        }
+        switch (table->Col(c).dtype) {
+        case AQP_DTYPE_INT32:
+          table->AppendI32(0, c,
+                           duckdb::FlatVector::GetData<int32_t>(vec)[r]);
+          break;
+        case AQP_DTYPE_INT64:
+          table->AppendI64(0, c,
+                           duckdb::FlatVector::GetData<int64_t>(vec)[r]);
+          break;
+        default: { // AQP_DTYPE_VARCHAR
+          const duckdb::string_t &s =
+              duckdb::FlatVector::GetData<duckdb::string_t>(vec)[r];
+          table->AppendStr(
+              0, c,
+              qjit::MakeString(s.GetData(), (uint32_t)s.GetSize()));
+          break;
+        }
+        }
+      }
+      table->FinishRow(0);
+    }
+  }
+  table->Finalize();
+  return table;
+}
+
+duckdb::unique_ptr<duckdb::ColumnDataCollection>
+DuckDBAdapter::QjitTableToCollection(
+    const qjit::QjitTable &table,
+    const duckdb::vector<duckdb::LogicalType> &types) {
+  auto collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(
+      *GetClientContext(), types);
+  duckdb::DataChunk chunk;
+  chunk.Initialize(*GetClientContext(), types);
+  const uint64_t nrows = table.NumRows();
+  for (uint64_t base = 0; base < nrows; base += STANDARD_VECTOR_SIZE) {
+    const uint64_t n =
+        std::min<uint64_t>(STANDARD_VECTOR_SIZE, nrows - base);
+    chunk.Reset();
+    for (size_t col = 0; col < table.NumCols(); col++) {
+      auto &vec = chunk.data[col];
+      auto &validity = duckdb::FlatVector::Validity(vec);
+      if (table.Col(col).dtype == AQP_DTYPE_INT32) {
+        auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
+        const auto *src = static_cast<const int32_t *>(table.Data(col));
+        std::memcpy(dst, src + base, n * sizeof(int32_t));
+        for (uint64_t r = 0; r < n; r++)
+          if (!table.ValueValid(col, base + r))
+            validity.SetInvalid(r);
+      } else if (table.Col(col).dtype == AQP_DTYPE_INT64) { // COUNT outputs
+        auto *dst = duckdb::FlatVector::GetData<int64_t>(vec);
+        const auto *src = static_cast<const int64_t *>(table.Data(col));
+        std::memcpy(dst, src + base, n * sizeof(int64_t));
+        for (uint64_t r = 0; r < n; r++)
+          if (!table.ValueValid(col, base + r))
+            validity.SetInvalid(r);
+      } else { // AQP_DTYPE_VARCHAR (gated at compile)
+        auto *dst = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+        for (uint64_t r = 0; r < n; r++) {
+          if (!table.ValueValid(col, base + r)) {
+            validity.SetInvalid(r);
+            continue;
+          }
+          QjitString s = table.GetStr(col, base + r);
+          dst[r] = duckdb::StringVector::AddString(
+              vec, qjit::StringData(s), qjit::StringLen(s));
+        }
+      }
+    }
+    chunk.SetCardinality(n);
+    collection->Append(chunk);
+  }
+  return collection;
 }
 
 // Find a ScanNode with the given table_index in an IR subtree.

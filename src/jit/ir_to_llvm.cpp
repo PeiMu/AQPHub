@@ -13,6 +13,7 @@
 
 #include "jit/ir_to_llvm.h"
 #include "jit/aqp_jit_abi.h"
+#include "qjit/query_jit_steps.h"
 
 // LLVM headers — only included in this TU
 #include <llvm/ExecutionEngine/JITSymbol.h>
@@ -82,6 +83,15 @@ int aqp_in_set_i32(int32_t val, const int32_t *values, int32_t n);
 int aqp_in_set_i64(int64_t val, const int64_t *values, int32_t n);
 int aqp_in_set_str(const char *str, int32_t slen, const char **ptrs,
                    const int32_t *lens, int32_t n);
+// Directory-bucketed IN-set (large sets); aqp_in_hash_mix64 is also used at
+// codegen time to lay out the bucket-ordered constant arrays.
+uint64_t aqp_in_hash_mix64(uint64_t v);
+int aqp_in_hash_i32(int32_t val, const int32_t *vals, const int32_t *dir,
+                    int32_t mask);
+int aqp_in_hash_i64(int64_t val, const int64_t *vals, const int32_t *dir,
+                    int32_t mask);
+int aqp_in_len_str(const char *str, int32_t slen, const char **ptrs,
+                   const int32_t *lens, const int32_t *dir, int32_t cap);
 // Hash table (aqp_jit_hashtable.cpp)
 struct AQPHashTable;
 AQPHashTable *aqp_ht_create(uint32_t key_width, uint32_t payload_width,
@@ -112,6 +122,7 @@ void aqp_copy_string(void *dst_data, void *src_data,
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -355,13 +366,25 @@ struct IrToLlvmCompiler::Impl {
   bool has_avx512f = false;
   bool has_sse42 = false;
 
-  // In-memory object cache (benchmark mode only).
+  // In-memory object cache (debug flag --jit-cache, default OFF).
   // Stores compiled object code bytes keyed by content hash so that
   // identical IR across queries can skip LLVM compilation. The object
   // bytes survive ResetModules() and are re-loaded via addObjectFile.
+  // PROCESS-GLOBAL: the main compiler and the rotating spec-jit background
+  // compilers are distinct IrToLlvmCompiler instances; identical content
+  // must hit across all of them. Entries are write-once (emplace, never
+  // overwritten), so a reference obtained under the lock stays valid after
+  // unlock (node-based map: rehash never invalidates references).
   bool cache_enabled = false;
-  std::unordered_map<std::string, std::string> obj_cache;
   std::string pending_cache_key;
+  static std::mutex &ObjCacheMu() {
+    static std::mutex mu;
+    return mu;
+  }
+  static std::unordered_map<std::string, std::string> &ObjCache() {
+    static std::unordered_map<std::string, std::string> cache;
+    return cache;
+  }
 
   static std::string ComputeCacheKey(const std::string &content) {
     uint64_t h = 14695981039346656037ULL;
@@ -377,12 +400,30 @@ struct IrToLlvmCompiler::Impl {
   void *TryCacheLoad(const std::string &key, const std::string &fn_name) {
     if (!cache_enabled || key.empty())
       return nullptr;
-    auto it = obj_cache.find(key);
-    if (it == obj_cache.end())
+    const std::string *bytes = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(ObjCacheMu());
+      auto it = ObjCache().find(key);
+      if (it != ObjCache().end())
+        bytes = &it->second;
+    }
+    if (!bytes)
       return nullptr;
 
+    // Same content already materialized in this generation (e.g. two
+    // identical fusion pipelines in one query): reuse the live symbol — a
+    // second addObjectFile of the same name would be a duplicate definition.
+    if (auto existing = jit->lookup(fn_name)) {
+#ifndef NDEBUG
+      std::cerr << "[AQP-JIT] cache HIT (live): " << fn_name << "\n";
+#endif
+      return AQP_JIT_GET_ADDR(existing);
+    } else {
+      consumeError(existing.takeError());
+    }
+
     auto buf = MemoryBuffer::getMemBufferCopy(
-        StringRef(it->second.data(), it->second.size()));
+        StringRef(bytes->data(), bytes->size()));
     if (auto e = jit->addObjectFile(current_tracker, std::move(buf))) {
       logAllUnhandledErrors(std::move(e), errs());
       return nullptr;
@@ -407,8 +448,10 @@ struct IrToLlvmCompiler::Impl {
         [this](std::unique_ptr<MemoryBuffer> obj)
             -> Expected<std::unique_ptr<MemoryBuffer>> {
           if (!pending_cache_key.empty()) {
-            obj_cache[pending_cache_key] =
-                std::string(obj->getBufferStart(), obj->getBufferSize());
+            std::lock_guard<std::mutex> lk(ObjCacheMu());
+            ObjCache().emplace(
+                pending_cache_key,
+                std::string(obj->getBufferStart(), obj->getBufferSize()));
             pending_cache_key.clear();
           }
           return std::move(obj);
@@ -476,6 +519,9 @@ struct IrToLlvmCompiler::Impl {
         {es.intern("aqp_in_set_i32"), AQP_JIT_SYM(::aqp_in_set_i32)},
         {es.intern("aqp_in_set_i64"), AQP_JIT_SYM(::aqp_in_set_i64)},
         {es.intern("aqp_in_set_str"), AQP_JIT_SYM(::aqp_in_set_str)},
+        {es.intern("aqp_in_hash_i32"), AQP_JIT_SYM(::aqp_in_hash_i32)},
+        {es.intern("aqp_in_hash_i64"), AQP_JIT_SYM(::aqp_in_hash_i64)},
+        {es.intern("aqp_in_len_str"), AQP_JIT_SYM(::aqp_in_len_str)},
         {es.intern("aqp_ht_create"), AQP_JIT_SYM(::aqp_ht_create)},
         {es.intern("aqp_ht_destroy"), AQP_JIT_SYM(::aqp_ht_destroy)},
         {es.intern("aqp_ht_insert"), AQP_JIT_SYM(::aqp_ht_insert)},
@@ -566,6 +612,13 @@ struct CompileCtx {
   // Column data and validity pointers (loaded once before loop)
   std::vector<Value *> col_data;     // one void* per column
   std::vector<Value *> col_validity; // one i64* per column (may be null ptr)
+
+  // Query-jit strict mode: wrap NULL-unguarded leaf predicates (integer
+  // VarConst, all IN) so a NULL row value compares false instead of reading
+  // garbage. Only correct in monotone AND/OR trees (BuildExecutionSteps rejects
+  // NOT). Default off: pipeline-jit relies on DuckDB re-checking, and the
+  // extra branch would cost it for no correctness gain.
+  bool strict_null_guard = false;
 
   CompileCtx(LLVMContext &ctx, Module &m, const std::vector<ColSchema> &s,
              Value *chunk, Value *sel)
@@ -668,6 +721,43 @@ static Value *EmitValidityCheck(CompileCtx &cc, Value *validity_ptr) {
   Value *shifted = cc.b.CreateLShr(word, bit_idx, "shifted");
   Value *bit = cc.b.CreateAnd(shifted, cc.c64(1), "bit");
   return cc.b.CreateICmpNE(bit, cc.c64(0), "valid");
+}
+
+// Strict NULL guard around a leaf predicate (cc.strict_null_guard): if the
+// guarded column's value is NULL for this row, yield false WITHOUT executing
+// `body` (whose data slot is undefined for NULL rows). Runtime branch on the
+// validity pointer (nullptr = all valid), same shape as EmitVarConst's
+// internal VARCHAR guard:
+//   pre:  has_valvec ? chk : cmp
+//   chk:  valid ? cmp : after        (false reaches the phi from chk_end)
+//   cmp:  res = body()  -> after
+//   after: phi(false from chk_end, res from cmp_end)
+template <typename BodyFn>
+static Value *EmitNullGuardedLeaf(CompileCtx &cc, int col_idx, BodyFn body) {
+  Value *validity = (col_idx >= 0 && col_idx < (int)cc.col_validity.size())
+                        ? cc.col_validity[col_idx]
+                        : nullptr;
+  if (!validity)
+    return body();
+  Function *fn = cc.b.GetInsertBlock()->getParent();
+  BasicBlock *bb_chk = BasicBlock::Create(cc.llctx, "ng_chk", fn);
+  BasicBlock *bb_cmp = BasicBlock::Create(cc.llctx, "ng_cmp", fn);
+  BasicBlock *bb_after = BasicBlock::Create(cc.llctx, "ng_after", fn);
+  Value *has_valvec = cc.b.CreateIsNotNull(validity, "ng_has_valvec");
+  cc.b.CreateCondBr(has_valvec, bb_chk, bb_cmp);
+  cc.b.SetInsertPoint(bb_chk);
+  Value *valid = EmitValidityCheck(cc, validity);
+  BasicBlock *chk_end = cc.b.GetInsertBlock();
+  cc.b.CreateCondBr(valid, bb_cmp, bb_after);
+  cc.b.SetInsertPoint(bb_cmp);
+  Value *res = body();
+  BasicBlock *cmp_end = cc.b.GetInsertBlock();
+  cc.b.CreateBr(bb_after);
+  cc.b.SetInsertPoint(bb_after);
+  PHINode *phi = cc.b.CreatePHI(Type::getInt1Ty(cc.llctx), 2, "ng_res");
+  phi->addIncoming(ConstantInt::getFalse(cc.llctx), chk_end);
+  phi->addIncoming(res, cmp_end);
+  return phi;
 }
 
 // Load an INT32 value from a flat column array at row index row_idx
@@ -1451,6 +1541,43 @@ static Value *EmitLogical(CompileCtx &cc, const SimplestLogicalExpr *expr) {
   return phi;
 }
 
+// Build the bucket layout for a hash-directory IN-set: perm is the
+// bucket-ordered permutation of value indexes, dir the (mask+2) prefix-sum
+// offsets. Uses the same aqp_in_hash_* mixers the runtime probe uses.
+static void BuildInHashDir(const std::vector<uint64_t> &hashes,
+                           std::vector<int> &perm, std::vector<int32_t> &dir,
+                           int32_t &mask) {
+  size_t n = hashes.size();
+  uint32_t d = 1;
+  while (d < 2 * n)
+    d <<= 1;
+  mask = (int32_t)(d - 1);
+  std::vector<std::vector<int>> buckets(d);
+  for (size_t i = 0; i < n; i++)
+    buckets[hashes[i] & (uint64_t)mask].push_back((int)i);
+  perm.clear();
+  perm.reserve(n);
+  dir.assign(d + 1, 0);
+  for (uint32_t b = 0; b < d; b++) {
+    dir[b] = (int32_t)perm.size();
+    for (int idx : buckets[b])
+      perm.push_back(idx);
+  }
+  dir[d] = (int32_t)perm.size();
+}
+
+static GlobalVariable *EmitI32ArrayGlobal(CompileCtx &cc,
+                                          const std::vector<int32_t> &vals,
+                                          const char *name) {
+  std::vector<Constant *> consts;
+  consts.reserve(vals.size());
+  for (int32_t v : vals)
+    consts.push_back(cc.c32(v));
+  ArrayType *ty = ArrayType::get(cc.i32(), consts.size());
+  return new GlobalVariable(cc.mod, ty, true, GlobalValue::PrivateLinkage,
+                            ConstantArray::get(ty, consts), name);
+}
+
 // Emit IN expression: col IN (v1, v2, ...)
 static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
   int col_idx = cc.FindColIdx(*expr->attr);
@@ -1487,24 +1614,37 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
       }
       return expr->negated ? cc.b.CreateNot(any) : any;
     } else {
-      // Call aqp_in_set_i32 with a global constant array
-      std::vector<Constant *> consts;
+      // Large INT32 IN-set: bucket-ordered constant array + hash directory,
+      // probed by aqp_in_hash_i32 (O(1) per row vs the old linear scan).
+      std::vector<int32_t> raw;
+      std::vector<uint64_t> hashes;
       for (const auto &v : vals) {
         int32_t iv = (int32_t)v->GetIntValue();
-        consts.push_back(cc.c32(iv));
+        raw.push_back(iv);
+        hashes.push_back(::aqp_in_hash_mix64((uint64_t)(uint32_t)iv));
       }
-      ArrayType *arr_ty = ArrayType::get(cc.i32(), consts.size());
-      Constant *arr_init = ConstantArray::get(arr_ty, consts);
-      GlobalVariable *gv =
-          new GlobalVariable(cc.mod, arr_ty, true, GlobalValue::PrivateLinkage,
-                             arr_init, "in_vals");
-      Value *arr_ptr = cc.b.CreateBitCast(gv, PointerType::getUnqual(cc.i32()));
+      std::vector<int> perm;
+      std::vector<int32_t> dir;
+      int32_t mask = 0;
+      BuildInHashDir(hashes, perm, dir, mask);
+      std::vector<int32_t> ordered;
+      ordered.reserve(raw.size());
+      for (int idx : perm)
+        ordered.push_back(raw[idx]);
+      GlobalVariable *vals_gv = EmitI32ArrayGlobal(cc, ordered, "in_vals");
+      GlobalVariable *dir_gv = EmitI32ArrayGlobal(cc, dir, "in_dir");
+      Value *vals_ptr =
+          cc.b.CreateBitCast(vals_gv, PointerType::getUnqual(cc.i32()));
+      Value *dir_ptr =
+          cc.b.CreateBitCast(dir_gv, PointerType::getUnqual(cc.i32()));
       FunctionType *ft = FunctionType::get(
-          cc.i32(), {cc.i32(), PointerType::getUnqual(cc.i32()), cc.i32()},
+          cc.i32(),
+          {cc.i32(), PointerType::getUnqual(cc.i32()),
+           PointerType::getUnqual(cc.i32()), cc.i32()},
           false);
-      FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_in_set_i32", ft);
-      Value *result = cc.b.CreateCall(
-          callee, {lhs, arr_ptr, cc.c32((int32_t)consts.size())});
+      FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_in_hash_i32", ft);
+      Value *result =
+          cc.b.CreateCall(callee, {lhs, vals_ptr, dir_ptr, cc.c32(mask)});
       Value *match = cc.b.CreateICmpNE(result, cc.c32(0));
       return expr->negated ? cc.b.CreateNot(match) : match;
     }
@@ -1521,22 +1661,38 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
       }
       return expr->negated ? cc.b.CreateNot(any) : any;
     }
-    // Large INT64 IN-set: call aqp_in_set_i64 runtime helper
+    // Large INT64 IN-set: hash directory, probed by aqp_in_hash_i64
+    std::vector<int64_t> raw;
+    std::vector<uint64_t> hashes;
+    for (const auto &v : vals) {
+      int64_t iv = (int64_t)v->GetIntValue();
+      raw.push_back(iv);
+      hashes.push_back(::aqp_in_hash_mix64((uint64_t)iv));
+    }
+    std::vector<int> perm;
+    std::vector<int32_t> dir;
+    int32_t mask = 0;
+    BuildInHashDir(hashes, perm, dir, mask);
     std::vector<Constant *> consts;
-    for (const auto &v : vals)
-      consts.push_back(cc.c64((int64_t)v->GetIntValue()));
+    consts.reserve(raw.size());
+    for (int idx : perm)
+      consts.push_back(cc.c64(raw[idx]));
     ArrayType *arr_ty = ArrayType::get(cc.i64(), consts.size());
-    Constant *arr_init = ConstantArray::get(arr_ty, consts);
-    GlobalVariable *gv =
-        new GlobalVariable(cc.mod, arr_ty, true, GlobalValue::PrivateLinkage,
-                           arr_init, "in_vals_i64");
+    GlobalVariable *gv = new GlobalVariable(
+        cc.mod, arr_ty, true, GlobalValue::PrivateLinkage,
+        ConstantArray::get(arr_ty, consts), "in_vals_i64");
+    GlobalVariable *dir_gv = EmitI32ArrayGlobal(cc, dir, "in_dir_i64");
     Value *arr_ptr = cc.b.CreateBitCast(gv, PointerType::getUnqual(cc.i64()));
+    Value *dir_ptr =
+        cc.b.CreateBitCast(dir_gv, PointerType::getUnqual(cc.i32()));
     FunctionType *ft = FunctionType::get(
-        cc.i32(), {cc.i64(), PointerType::getUnqual(cc.i64()), cc.i32()},
+        cc.i32(),
+        {cc.i64(), PointerType::getUnqual(cc.i64()),
+         PointerType::getUnqual(cc.i32()), cc.i32()},
         false);
-    FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_in_set_i64", ft);
+    FunctionCallee callee = cc.mod.getOrInsertFunction("aqp_in_hash_i64", ft);
     Value *result =
-        cc.b.CreateCall(callee, {lhs, arr_ptr, cc.c32((int32_t)consts.size())});
+        cc.b.CreateCall(callee, {lhs, arr_ptr, dir_ptr, cc.c32(mask)});
     Value *match = cc.b.CreateICmpNE(result, cc.c32(0));
     return expr->negated ? cc.b.CreateNot(match) : match;
   }
@@ -1588,7 +1744,12 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
               GlobalValue::PrivateLinkage, str_const,
               "in_str_val" + std::to_string(i));
           Value *str_ptr = cc.b.CreateBitCast(str_gv, cc.i8p());
-          Value *cmp_len = cc.b.CreateSExt(cc.c32(s_len), cc.i64());
+          // memcmp length 0 when len differs: the column string may be
+          // shorter than the pattern, and this And is non-short-circuit —
+          // an unconditional pattern-length memcmp could overread the
+          // column bytes. Result is ANDed with the false len_eq anyway.
+          Value *cmp_len =
+              cc.b.CreateSelect(len_eq, cc.c64((int64_t)s_len), cc.c64(0));
           Value *mcr =
               cc.b.CreateCall(memcmp_fn, {char_ptr, str_ptr, cmp_len});
           Value *bytes_eq = cc.b.CreateICmpEQ(mcr, cc.c32(0));
@@ -1599,10 +1760,26 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
       return expr->negated ? cc.b.CreateNot(any) : any;
     }
 
-    // Large VARCHAR IN-set: call aqp_in_set_str runtime helper
+    // Large VARCHAR IN-set: LENGTH-bucketed directory over bucket-ordered
+    // (ptr, len) arrays, probed by aqp_in_len_str. Rejecting on length needs
+    // two directory loads and never touches the probe string's bytes.
+    constexpr int32_t kLenCap = 64; // lengths >= cap share the last bucket
+    std::vector<std::vector<int>> buckets(kLenCap + 1);
+    for (size_t i = 0; i < vals.size(); ++i) {
+      int32_t l = (int32_t)vals[i]->GetStringValue().size();
+      buckets[l < kLenCap ? l : kLenCap].push_back((int)i);
+    }
+    std::vector<int> perm;
+    std::vector<int32_t> dir(kLenCap + 2, 0);
+    for (int32_t b = 0; b <= kLenCap; b++) {
+      dir[b] = (int32_t)perm.size();
+      for (int idx : buckets[b])
+        perm.push_back(idx);
+    }
+    dir[kLenCap + 1] = (int32_t)perm.size();
     std::vector<Constant *> str_ptrs, str_lens;
-    for (const auto &v : vals) {
-      const std::string &s = v->GetStringValue();
+    for (int idx : perm) {
+      const std::string &s = vals[idx]->GetStringValue();
       Constant *str_const = ConstantDataArray::getString(cc.llctx, s, false);
       GlobalVariable *str_gv =
           new GlobalVariable(cc.mod, str_const->getType(), true,
@@ -1618,19 +1795,23 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
     GlobalVariable *lens_gv = new GlobalVariable(
         cc.mod, len_arr_ty, true, GlobalValue::PrivateLinkage,
         ConstantArray::get(len_arr_ty, str_lens), "in_str_lens");
+    GlobalVariable *dir_gv = EmitI32ArrayGlobal(cc, dir, "in_str_dir");
     FunctionType *ft_str =
         FunctionType::get(cc.i32(),
                           {cc.i8p(), cc.i32(), PointerType::getUnqual(cc.i8p()),
+                           PointerType::getUnqual(cc.i32()),
                            PointerType::getUnqual(cc.i32()), cc.i32()},
                           false);
     FunctionCallee callee =
-        cc.mod.getOrInsertFunction("aqp_in_set_str", ft_str);
+        cc.mod.getOrInsertFunction("aqp_in_len_str", ft_str);
     Value *ptrs_ptr =
         cc.b.CreateBitCast(ptrs_gv, PointerType::getUnqual(cc.i8p()));
     Value *lens_ptr =
         cc.b.CreateBitCast(lens_gv, PointerType::getUnqual(cc.i32()));
-    Value *result = cc.b.CreateCall(callee, {char_ptr, slen, ptrs_ptr, lens_ptr,
-                                             cc.c32((int32_t)vals.size())});
+    Value *dir_ptr =
+        cc.b.CreateBitCast(dir_gv, PointerType::getUnqual(cc.i32()));
+    Value *result = cc.b.CreateCall(
+        callee, {char_ptr, slen, ptrs_ptr, lens_ptr, dir_ptr, cc.c32(kLenCap)});
     Value *match = cc.b.CreateICmpNE(result, cc.c32(0));
     return expr->negated ? cc.b.CreateNot(match) : match;
   }
@@ -1754,15 +1935,34 @@ static Value *EmitExpr(CompileCtx &cc, const AQPExpr *expr) {
     return ConstantInt::getTrue(cc.llctx);
 
   switch (expr->GetNodeType()) {
-  case VarConstComparisonNode:
-    return EmitVarConst(cc,
-                        static_cast<const SimplestVarConstComparison *>(expr));
+  case VarConstComparisonNode: {
+    auto *vc = static_cast<const SimplestVarConstComparison *>(expr);
+    // Integer paths of EmitVarConst have no validity check (pipeline-jit
+    // relies on DuckDB re-filtering). The VARCHAR path has its own internal
+    // guard — wrapping it again would just add a redundant branch.
+    if (cc.strict_null_guard && vc->attr) {
+      int ci = cc.FindColIdx(*vc->attr);
+      if (ci >= 0 && cc.schema[ci].dtype != AQP_DTYPE_VARCHAR)
+        return EmitNullGuardedLeaf(cc, ci,
+                                   [&] { return EmitVarConst(cc, vc); });
+    }
+    return EmitVarConst(cc, vc);
+  }
   case IsNullExprNode:
     return EmitIsNull(cc, static_cast<const SimplestIsNullExpr *>(expr));
   case LogicalExprNode:
     return EmitLogical(cc, static_cast<const SimplestLogicalExpr *>(expr));
-  case InExprNode:
-    return EmitIn(cc, static_cast<const SimplestInExpr *>(expr));
+  case InExprNode: {
+    auto *in = static_cast<const SimplestInExpr *>(expr);
+    // EmitIn has no validity check in any dtype path; NULL NOT IN (...)
+    // would wrongly yield true. Guard all dtypes.
+    if (cc.strict_null_guard && in->attr) {
+      int ci = cc.FindColIdx(*in->attr);
+      if (ci >= 0)
+        return EmitNullGuardedLeaf(cc, ci, [&] { return EmitIn(cc, in); });
+    }
+    return EmitIn(cc, in);
+  }
   case ArithExprNode:
     return EmitArith(cc, static_cast<const SimplestArithExpr *>(expr));
   case CastExprNode:
@@ -4658,6 +4858,103 @@ static std::string BuildCacheContent(const std::string &tag,
   return s;
 }
 
+// ---------------------------------------------------------------------------
+// §5.1 cache-key serializers. Every codegen-relevant input must be
+// represented; runtime identities (hj pointers, eids, row counts — the
+// modules load nrows/offsets from views/ctx at run time) are excluded.
+// ---------------------------------------------------------------------------
+
+template <typename V>
+static void AppendIntVec(std::string &s, const char *tag, const V &v) {
+  s += tag;
+  for (auto x : v) {
+    s += std::to_string((long long)x);
+    s += ",";
+  }
+  s += ";";
+}
+
+static std::string SerializeProbeStages(
+    const std::vector<ProbeStageInfo> &stages) {
+  std::string s;
+  for (const auto &st : stages) {
+    s += "STAGE{";
+    if (st.filter_ir)
+      s += const_cast<ir_sql_converter::AQPStmt *>(st.filter_ir)
+               ->Print(false, 0);
+    s += "||";
+    if (st.join_ir)
+      s += const_cast<ir_sql_converter::AQPStmt *>(st.join_ir)->Print(false, 0);
+    s += "||";
+    s += BuildCacheContent("p", st.probe_schema);
+    s += BuildCacheContent("y", st.payload_schema);
+    AppendIntVec(s, "pri", st.payload_row_indices);
+    AppendIntVec(s, "lo", st.lhs_output_idxs);
+    AppendIntVec(s, "ro", st.rhs_output_layout_idxs);
+    AppendIntVec(s, "ld", st.lhs_output_dtypes);
+    AppendIntVec(s, "rd", st.rhs_output_dtypes);
+    AppendIntVec(s, "lk", st.lhs_key_chunk_idxs);
+    AppendIntVec(s, "kd", st.lhs_key_dtypes);
+    s += st.skip_hash_cmp_eligible ? "E}" : "e}";
+  }
+  return s;
+}
+
+static void AppendQjitLoc(std::string &s, const qjit::QjitValueLoc &loc) {
+  s += "(" + std::to_string(loc.src_col) + "," + std::to_string(loc.ht_id) +
+       "," + std::to_string(loc.layout_col) + "," + std::to_string(loc.dtype) +
+       ")";
+}
+
+static std::string SerializeQjitPlan(const qjit::QjitQueryPlan &plan) {
+  std::string s;
+  for (const auto &st : plan.steps) {
+    s += "S{" + st.source_table + "#" + std::to_string(st.source_table_index) +
+         (st.source_is_temp ? "T" : "B");
+    for (const auto &c : st.cols)
+      s += "|" + std::to_string(c.table_index) + "." +
+           std::to_string(c.column_index) + "." + c.column_name + "." +
+           std::to_string(c.expected_dtype);
+    for (const auto &op : st.ops) {
+      if (op.kind == qjit::QjitStepOp::Filter) {
+        s += ";F:";
+        s += const_cast<ir_sql_converter::AQPExpr *>(op.filter)->Print(false);
+      } else {
+        s += ";P:" + std::to_string(op.ht_id);
+        for (const auto &k : op.keys)
+          AppendQjitLoc(s, k);
+      }
+    }
+    s += ";g" + std::to_string(st.guard_pos);
+    for (const auto &g : st.guards)
+      s += "(" + std::to_string(g.op_index) + (g.membership ? "m" : "r") + ")";
+    s += ";b" + std::to_string(st.block_skip_col);
+    s += ";K" + std::to_string((int)st.sink) + ":" + std::to_string(st.sink_ht);
+    for (const auto &o : st.outputs)
+      AppendQjitLoc(s, o);
+    for (const auto &a : st.agg_cells) {
+      s += ";A" + std::to_string((int)a.fn) + (a.has_arg ? "v" : "x");
+      if (a.has_arg)
+        AppendQjitLoc(s, a.arg);
+    }
+    s += "}";
+  }
+  for (const auto &ht : plan.hts) {
+    s += "H{" + std::to_string(ht.num_keys) + "," +
+         std::to_string(ht.prefix_bytes) + "," + std::to_string(ht.tuple_size);
+    for (const auto &c : ht.cols)
+      s += "|" + std::to_string(c.table_index) + "." +
+           std::to_string(c.column_index) + "." + std::to_string(c.dtype) +
+           "@" + std::to_string(c.offset);
+    s += "}";
+  }
+  s += "G";
+  s += plan.has_agg ? "1" : "0";
+  for (int c : plan.agg_output_cells)
+    s += "," + std::to_string(c);
+  return s;
+}
+
 unsigned IrToLlvmCompiler::GetVecWidth() const {
   return (use_simd_ && impl_) ? impl_->vec_width : 1;
 }
@@ -6012,6 +6309,40 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_filt_hprobe_proj_direct_" + std::to_string(fn_id);
 
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string extra;
+    if (filter_node)
+      extra += const_cast<AQPStmt *>(filter_node)->Print(false, 0);
+    extra += "||";
+    if (join_node)
+      extra += const_cast<AQPStmt *>(join_node)->Print(false, 0);
+    extra += "||";
+    if (proj_node)
+      extra += const_cast<AQPStmt *>(proj_node)->Print(false, 0);
+    extra += "||";
+    extra += BuildCacheContent("pay", payload_schema);
+    AppendIntVec(extra, "pri", payload_row_indices);
+    AppendIntVec(extra, "lo", lhs_output_idxs);
+    AppendIntVec(extra, "ro", rhs_output_layout_idxs);
+    AppendIntVec(extra, "ld", lhs_output_dtypes);
+    AppendIntVec(extra, "rd", rhs_output_dtypes);
+    AppendIntVec(extra, "lk", lhs_key_chunk_idxs);
+    AppendIntVec(extra, "kd", lhs_key_dtypes);
+    std::string opt_tag =
+        std::to_string((int)simd_isa_) + (skip_opt_ ? "n" : "o") +
+        (skip_hash_cmp_ ? "k" : "_") + (batch_probe_ ? "b" : "_") +
+        (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
+        std::to_string(prefetch_entry_distance_) + "." +
+        std::to_string(prefetch_row_distance_);
+    cache_key = Impl::ComputeCacheKey(
+        BuildCacheContent("fprobe:" + opt_tag, probe_schema, extra));
+    fn_name = "aqp_fpp_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
+    if (cached)
+      return cached;
+  }
+
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_filt_hprobe_proj_direct_mod", *ctx);
 
@@ -6701,13 +7032,16 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
 
   OptimiseModule(*mod, skip_opt_);
 
+  impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
+    impl_->pending_cache_key.clear();
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
 
   auto sym = impl_->jit->lookup(fn_name);
+  impl_->pending_cache_key.clear();
   if (!sym) {
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
@@ -6893,6 +7227,22 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
   // --- LLVM IR generation ---
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string fn_name = "aqp_multi_probe_" + std::to_string(N) + "x_" + std::to_string(fn_id);
+
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string opt_tag =
+        std::to_string((int)simd_isa_) + (skip_opt_ ? "n" : "o") +
+        (skip_hash_cmp_ ? "k" : "_") + (batch_probe_ ? "b" : "_") +
+        (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
+        std::to_string(prefetch_entry_distance_) + "." +
+        std::to_string(prefetch_row_distance_);
+    cache_key = Impl::ComputeCacheKey("mprobe:" + opt_tag + "||" +
+                                      SerializeProbeStages(stages));
+    fn_name = "aqp_mpc_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, fn_name);
+    if (cached)
+      return cached;
+  }
 
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_multi_probe_mod", *ctx);
@@ -7619,13 +7969,16 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
 
   OptimiseModule(*mod, skip_opt_);
 
+  impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
+    impl_->pending_cache_key.clear();
     logAllUnhandledErrors(std::move(e), errs());
     return nullptr;
   }
 
   auto sym = impl_->jit->lookup(fn_name);
+  impl_->pending_cache_key.clear();
   if (!sym) {
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
@@ -7652,6 +8005,774 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
   }
 #endif
 
+  return AQP_JIT_GET_ADDR(sym);
+}
+
+// ---------------------------------------------------------------------------
+// Query-jit (--jit-level=query): runtime symbol registration + Phase 2
+// single-step compilation (join-free scan -> filter -> project -> sink).
+// ---------------------------------------------------------------------------
+
+bool IrToLlvmCompiler::RegisterRuntimeSymbol(const char *name, void *addr) {
+  auto &es = impl_->jit->getExecutionSession();
+  auto &jd = impl_->jit->getMainJITDylib();
+  if (auto err = jd.define(absoluteSymbols({{es.intern(name),
+                                             AQP_JIT_SYM(addr)}}))) {
+    // Duplicate definition — the symbol is already registered; that is the
+    // idempotent success case (defines without a tracker are permanent).
+    consumeError(std::move(err));
+  }
+  return true;
+}
+
+void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
+  if (plan.steps.empty())
+    return nullptr;
+
+  uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
+  std::string entry_name = "qjit_query_" + std::to_string(fn_id);
+
+  // §5.1 object cache: the module is row-count independent (nrows /
+  // morsel_size are runtime loads from ctx), so a canonical plan
+  // serialization + codegen flags fully determines the object code.
+  std::string cache_key;
+  if (cache_enabled_ && impl_->cache_enabled) {
+    std::string opt_tag =
+        std::to_string((int)simd_isa_) + (skip_opt_ ? "n" : "o");
+    cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
+                                      SerializeQjitPlan(plan));
+    entry_name = "qjit_query_c" + cache_key.substr(0, 12);
+    void *cached = impl_->TryCacheLoad(cache_key, entry_name);
+    if (cached)
+      return cached;
+  }
+
+  auto ctx = std::make_unique<LLVMContext>();
+  auto mod = std::make_unique<Module>("aqp_qjit_mod", *ctx);
+  auto &C = *ctx;
+
+  // Per-step schemas for the expression codegen (must outlive the per-step
+  // CompileCtx references below).
+  std::vector<std::vector<ColSchema>> schemas(plan.steps.size());
+  for (size_t k = 0; k < plan.steps.size(); k++)
+    for (const auto &c : plan.steps[k].cols)
+      schemas[k].push_back({c.table_index, c.column_index, c.expected_dtype});
+
+  // Types/constants. Literal struct types are uniqued per LLVMContext, so
+  // every per-step CompileCtx sees the same AQPColView/AQPChunkView types.
+  std::vector<ColSchema> entry_schema;
+  CompileCtx ecc(C, *mod, entry_schema, /*chunk=*/nullptr, /*sel=*/nullptr);
+
+  Type *void_ty = Type::getVoidTy(C);
+  Type *i8 = Type::getInt8Ty(C);
+  Type *i8p = ecc.i8p();
+  Type *i8pp = PointerType::getUnqual(i8p);
+  Type *i32 = ecc.i32();
+  Type *i64 = ecc.i64();
+  Type *i64p = PointerType::getUnqual(i64);
+
+  // QjitQueryContext (query_jit_abi.h — FIELD ORDER IS ABI):
+  // 0 pool, 1 sources, 2 num_sources, 3 hash_tables, 4 num_hash_tables,
+  // 5 worker_states, 6 num_workers, 7 morsel_size, 8 result, 9 user.
+  // QjitTableView/QjitColView are bit-identical to AQPChunkViewTy/
+  // AQPColViewTy, so the CompileCtx column helpers work unchanged with
+  // chunk_arg = &ctx->sources[k].
+  StructType *QjitCtxTy = StructType::get(
+      C, {i8p, PointerType::getUnqual(ecc.AQPChunkViewTy), i64, i8p, i64, i8p,
+          i64, i64, i8p, i8p});
+  Type *ctxp = PointerType::getUnqual(QjitCtxTy);
+
+  FunctionCallee append_i32 = mod->getOrInsertFunction(
+      "qjit_table_append_i32",
+      FunctionType::get(void_ty, {i8p, i32, i64, i32}, false));
+  FunctionCallee append_str = mod->getOrInsertFunction(
+      "qjit_table_append_str",
+      FunctionType::get(void_ty, {i8p, i32, i64, i8p}, false));
+  FunctionCallee append_null = mod->getOrInsertFunction(
+      "qjit_table_append_null",
+      FunctionType::get(void_ty, {i8p, i32, i64}, false));
+  FunctionCallee finish_row = mod->getOrInsertFunction(
+      "qjit_table_finish_row", FunctionType::get(void_ty, {i8p, i32}, false));
+  FunctionCallee ht_append = mod->getOrInsertFunction(
+      "qjit_ht_append", FunctionType::get(i8p, {i8p, i32, i64}, false));
+  FunctionCallee ht_dir_fn = mod->getOrInsertFunction(
+      "qjit_ht_dir", FunctionType::get(i8p, {i8p}, false));
+  FunctionCallee ht_mask_fn = mod->getOrInsertFunction(
+      "qjit_ht_mask", FunctionType::get(i64, {i8p}, false));
+  FunctionCallee ht_finalize_fn = mod->getOrInsertFunction(
+      "qjit_ht_finalize", FunctionType::get(void_ty, {i8p, i8p}, false));
+  FunctionCallee ht_key0_min_fn = mod->getOrInsertFunction(
+      "qjit_ht_key0_min", FunctionType::get(i64, {i8p}, false));
+  FunctionCallee ht_key0_max_fn = mod->getOrInsertFunction(
+      "qjit_ht_key0_max", FunctionType::get(i64, {i8p}, false));
+  FunctionCallee ht_entries_fn = mod->getOrInsertFunction(
+      "qjit_ht_entries", FunctionType::get(i64, {i8p}, false));
+  FunctionCallee agg_upd_i64 = mod->getOrInsertFunction(
+      "qjit_agg_update_i64",
+      FunctionType::get(void_ty, {i8p, i64, i64}, false));
+  FunctionCallee agg_upd_str = mod->getOrInsertFunction(
+      "qjit_agg_update_str",
+      FunctionType::get(void_ty, {i8p, i64, i8p}, false));
+  FunctionCallee agg_upd_cnt = mod->getOrInsertFunction(
+      "qjit_agg_update_count", FunctionType::get(void_ty, {i8p, i64}, false));
+
+  FunctionType *morsel_ft =
+      FunctionType::get(void_ty, {ctxp, i64, i64, i32}, false);
+
+  Constant *MURMUR_MUL = ConstantInt::get(i64, 0xd6e8feb86659fd93ULL);
+  Constant *SHIFT32 = ConstantInt::get(i64, 32);
+
+  std::vector<Function *> morsel_fns;
+  morsel_fns.reserve(plan.steps.size());
+
+  // ---- one morsel body per step: void(ctx, begin, end, worker_id) ----
+  for (size_t k = 0; k < plan.steps.size(); k++) {
+    const qjit::QjitStep &st = plan.steps[k];
+    CompileCtx cc(C, *mod, schemas[k], /*chunk=*/nullptr, /*sel=*/nullptr);
+    cc.strict_null_guard = true;
+
+    auto emitMurmur = [&](Value *x) -> Value * {
+      Value *t = cc.b.CreateXor(x, cc.b.CreateLShr(x, SHIFT32));
+      t = cc.b.CreateMul(t, MURMUR_MUL);
+      t = cc.b.CreateXor(t, cc.b.CreateLShr(t, SHIFT32));
+      t = cc.b.CreateMul(t, MURMUR_MUL);
+      t = cc.b.CreateXor(t, cc.b.CreateLShr(t, SHIFT32));
+      return t;
+    };
+    auto emitCombine = [&](Value *a, Value *bv) -> Value * {
+      Value *t = cc.b.CreateXor(a, cc.b.CreateLShr(a, SHIFT32));
+      t = cc.b.CreateMul(t, MURMUR_MUL);
+      return cc.b.CreateXor(t, bv);
+    };
+
+    std::string morsel_name = "qjit_morsel_" + std::to_string(fn_id) + "_" +
+                              std::to_string(k);
+    Function *fn = Function::Create(morsel_ft, Function::InternalLinkage,
+                                    morsel_name, *mod);
+    Value *m_ctx = fn->getArg(0);
+    Value *m_begin = fn->getArg(1);
+    Value *m_end = fn->getArg(2);
+    Value *m_worker = fn->getArg(3);
+
+    BasicBlock *bb_entry = BasicBlock::Create(C, "entry", fn);
+    BasicBlock *bb_head = BasicBlock::Create(C, "loop_head", fn);
+    BasicBlock *bb_body = BasicBlock::Create(C, "body", fn);
+    BasicBlock *bb_next = BasicBlock::Create(C, "next", fn);
+    BasicBlock *bb_exit = BasicBlock::Create(C, "exit", fn);
+
+    // -- entry: source views, runtime handles (once per morsel call) --
+    cc.b.SetInsertPoint(bb_entry);
+    Value *sources = cc.b.CreateLoad(
+        PointerType::getUnqual(cc.AQPChunkViewTy),
+        cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 1), "sources");
+    cc.chunk_arg = cc.b.CreateGEP(cc.AQPChunkViewTy, sources,
+                                  cc.c64((int64_t)k), "src_k");
+    cc.col_data.clear();
+    cc.col_validity.clear();
+    for (unsigned i = 0; i < (unsigned)st.cols.size(); ++i) {
+      cc.col_data.push_back(cc.LoadColData(i));
+      cc.col_validity.push_back(cc.LoadColValidity(i));
+    }
+
+    std::vector<Value *> ht_ptr(plan.hts.size(), nullptr);
+    std::vector<Value *> ht_dirv(plan.hts.size(), nullptr);
+    std::vector<Value *> ht_maskv(plan.hts.size(), nullptr);
+    Value *ht_base = nullptr;
+    auto load_ht_ptr = [&](int id) {
+      if (ht_ptr[id])
+        return;
+      if (!ht_base) {
+        Value *raw = cc.b.CreateLoad(
+            i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 3), "ht_base_raw");
+        ht_base = cc.b.CreateBitCast(raw, i8pp);
+      }
+      ht_ptr[id] = cc.b.CreateLoad(
+          i8p, cc.b.CreateGEP(i8p, ht_base, cc.c64(id)), "ht");
+    };
+    for (const auto &op : st.ops) {
+      if (op.kind != qjit::QjitStepOp::Probe)
+        continue;
+      load_ht_ptr(op.ht_id);
+      // Probed HTs were finalized by the entry fn before this step ran.
+      ht_dirv[op.ht_id] = cc.b.CreateBitCast(
+          cc.b.CreateCall(ht_dir_fn, {ht_ptr[op.ht_id]}), i8pp);
+      ht_maskv[op.ht_id] = cc.b.CreateCall(ht_mask_fn, {ht_ptr[op.ht_id]});
+    }
+
+    // §5.5 A+ guards: loop-invariant build-key range + membership gate.
+    // The membership pre-probe only pays off against small builds (the
+    // walk it adds is wasted when most probe rows match); larger builds
+    // skip it at runtime and rely on the range check alone.
+    constexpr uint64_t kMembershipMaxEntries = 1u << 16;
+    struct GuardVals {
+      Value *lo = nullptr, *hi = nullptr, *member_ok = nullptr;
+    };
+    std::vector<GuardVals> guard_vals(st.guards.size());
+    for (size_t gi = 0; gi < st.guards.size(); ++gi) {
+      const qjit::QjitStep::Guard &g = st.guards[gi];
+      Value *ghp = ht_ptr[st.ops[g.op_index].ht_id];
+      guard_vals[gi].lo = cc.b.CreateCall(ht_key0_min_fn, {ghp}, "g_lo");
+      guard_vals[gi].hi = cc.b.CreateCall(ht_key0_max_fn, {ghp}, "g_hi");
+      if (g.membership)
+        guard_vals[gi].member_ok = cc.b.CreateICmpULE(
+            cc.b.CreateCall(ht_entries_fn, {ghp}),
+            ConstantInt::get(i64, kMembershipMaxEntries), "g_mem_ok");
+    }
+
+    Value *result = nullptr, *agg_state = nullptr, *sink_ht_ptr = nullptr;
+    switch (st.sink) {
+    case qjit::QjitStep::Result:
+      result = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 8), "result");
+      break;
+    case qjit::QjitStep::HtBuild:
+      load_ht_ptr(st.sink_ht);
+      sink_ht_ptr = ht_ptr[st.sink_ht];
+      break;
+    case qjit::QjitStep::Agg: {
+      Value *ws_raw = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 5), "ws_raw");
+      Value *ws = cc.b.CreateBitCast(ws_raw, i8pp);
+      Value *widx = cc.b.CreateZExt(m_worker, i64, "widx");
+      agg_state = cc.b.CreateLoad(i8p, cc.b.CreateGEP(i8p, ws, widx),
+                                  "agg_state");
+      break;
+    }
+    }
+    // §5.5 A+ block skip: per-step block-stats pointer from ctx->user
+    // (executor-provided array of const int32_t* indexed by step; both the
+    // array and the per-step entry may be null).
+    bool use_block_skip = st.block_skip_col >= 0 && !st.guards.empty();
+    Value *stats_ptr = nullptr;
+    if (use_block_skip) {
+      Value *user_raw = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 9), "user_raw");
+      BasicBlock *bb_ust = BasicBlock::Create(C, "user_stats", fn);
+      BasicBlock *bb_ujoin = BasicBlock::Create(C, "user_join", fn);
+      BasicBlock *upre = cc.b.GetInsertBlock();
+      cc.b.CreateCondBr(cc.b.CreateIsNotNull(user_raw, "has_user"), bb_ust,
+                        bb_ujoin);
+      cc.b.SetInsertPoint(bb_ust);
+      Value *stats0 = cc.b.CreateLoad(
+          i8p,
+          cc.b.CreateGEP(i8p, cc.b.CreateBitCast(user_raw, i8pp),
+                         cc.c64((int64_t)k)),
+          "stats_k");
+      cc.b.CreateBr(bb_ujoin);
+      cc.b.SetInsertPoint(bb_ujoin);
+      PHINode *sp = cc.b.CreatePHI(i8p, 2, "stats");
+      sp->addIncoming(ConstantPointerNull::get(cast<PointerType>(i8p)), upre);
+      sp->addIncoming(stats0, bb_ust);
+      stats_ptr = sp;
+    }
+
+    // -- row loop --
+    PHINode *row;
+    if (!use_block_skip) {
+      BasicBlock *entry_tail = cc.b.GetInsertBlock();
+      cc.b.CreateBr(bb_head);
+      cc.b.SetInsertPoint(bb_head);
+      row = cc.b.CreatePHI(i64, 2, "row");
+      row->addIncoming(m_begin, entry_tail);
+      cc.b.CreateCondBr(cc.b.CreateICmpULT(row, m_end), bb_body, bb_exit);
+
+      cc.b.SetInsertPoint(bb_next);
+      Value *row_next = cc.b.CreateAdd(row, cc.c64(1), "row_next");
+      row->addIncoming(row_next, bb_next);
+      cc.b.CreateBr(bb_head);
+    } else {
+      // Two-level loop: outer iterates QJIT_BLOCK_ROWS-aligned blocks and
+      // skips a whole block when its min/max range is disjoint from the
+      // build-key range of guards[0]; inner is the per-row loop.
+      BasicBlock *bb_oh = BasicBlock::Create(C, "blk_head", fn);
+      BasicBlock *bb_obody = BasicBlock::Create(C, "blk_body", fn);
+      BasicBlock *bb_bchk = BasicBlock::Create(C, "blk_chk", fn);
+      BasicBlock *bb_ipre = BasicBlock::Create(C, "blk_enter", fn);
+      BasicBlock *bb_onext = BasicBlock::Create(C, "blk_next", fn);
+      BasicBlock *entry_tail = cc.b.GetInsertBlock();
+      cc.b.CreateBr(bb_oh);
+
+      cc.b.SetInsertPoint(bb_oh);
+      PHINode *cur = cc.b.CreatePHI(i64, 2, "blk_cur");
+      cur->addIncoming(m_begin, entry_tail);
+      cc.b.CreateCondBr(cc.b.CreateICmpULT(cur, m_end), bb_obody, bb_exit);
+
+      cc.b.SetInsertPoint(bb_obody);
+      Value *blk_raw = cc.b.CreateAdd(
+          cc.b.CreateAnd(cur, cc.c64(~(int64_t)(QJIT_BLOCK_ROWS - 1))),
+          cc.c64((int64_t)QJIT_BLOCK_ROWS), "blk_raw");
+      Value *blk_end = cc.b.CreateSelect(
+          cc.b.CreateICmpULT(blk_raw, m_end), blk_raw, m_end, "blk_end");
+      cc.b.CreateCondBr(cc.b.CreateIsNotNull(stats_ptr, "has_stats"),
+                        bb_bchk, bb_ipre);
+
+      cc.b.SetInsertPoint(bb_bchk);
+      Value *stats_i32 =
+          cc.b.CreateBitCast(stats_ptr, PointerType::getUnqual(i32));
+      Value *blk = cc.b.CreateLShr(cur, cc.c64(QJIT_BLOCK_SHIFT), "blk");
+      Value *sidx = cc.b.CreateShl(blk, cc.c64(1), "sidx");
+      Value *bmin = cc.b.CreateSExt(
+          cc.b.CreateLoad(i32, cc.b.CreateGEP(i32, stats_i32, sidx)), i64,
+          "blk_min");
+      Value *bmax = cc.b.CreateSExt(
+          cc.b.CreateLoad(
+              i32,
+              cc.b.CreateGEP(i32, stats_i32,
+                             cc.b.CreateAdd(sidx, cc.c64(1)))),
+          i64, "blk_max");
+      Value *skip = cc.b.CreateOr(
+          cc.b.CreateICmpSLT(bmax, guard_vals[0].lo),
+          cc.b.CreateICmpSGT(bmin, guard_vals[0].hi), "blk_skip");
+      cc.b.CreateCondBr(skip, bb_onext, bb_ipre);
+
+      cc.b.SetInsertPoint(bb_ipre);
+      cc.b.CreateBr(bb_head);
+
+      cc.b.SetInsertPoint(bb_head);
+      row = cc.b.CreatePHI(i64, 2, "row");
+      row->addIncoming(cur, bb_ipre);
+      cc.b.CreateCondBr(cc.b.CreateICmpULT(row, blk_end), bb_body, bb_onext);
+
+      cc.b.SetInsertPoint(bb_next);
+      Value *row_next = cc.b.CreateAdd(row, cc.c64(1), "row_next");
+      row->addIncoming(row_next, bb_next);
+      cc.b.CreateBr(bb_head);
+
+      cc.b.SetInsertPoint(bb_onext);
+      cur->addIncoming(blk_end, bb_onext);
+      cc.b.CreateBr(bb_oh);
+    }
+
+    cc.b.SetInsertPoint(bb_exit);
+    cc.b.CreateRetVoid();
+
+    cc.b.SetInsertPoint(bb_body);
+    cc.row_idx = row;
+
+    // cont = where a finished/failed row iteration goes. After a probe it
+    // becomes that probe's advance block, so the chain walk resumes and
+    // every matching entry produces its own sink row (multi-match).
+    BasicBlock *cont = bb_next;
+    std::vector<Value *> live_row(plan.hts.size(), nullptr);
+
+    // ---- value-location helpers ----
+    auto src_valid_i1 = [&](int src_col) -> Value * {
+      Value *validity = cc.col_validity[src_col];
+      BasicBlock *pre = cc.b.GetInsertBlock();
+      BasicBlock *bb_chk = BasicBlock::Create(C, "sv_chk", fn);
+      BasicBlock *bb_after = BasicBlock::Create(C, "sv_after", fn);
+      cc.b.CreateCondBr(cc.b.CreateIsNotNull(validity, "sv_has"), bb_chk,
+                        bb_after);
+      cc.b.SetInsertPoint(bb_chk);
+      Value *bit = EmitValidityCheck(cc, validity);
+      BasicBlock *chk_end = cc.b.GetInsertBlock();
+      cc.b.CreateBr(bb_after);
+      cc.b.SetInsertPoint(bb_after);
+      PHINode *phi = cc.b.CreatePHI(Type::getInt1Ty(C), 2, "sv");
+      phi->addIncoming(ConstantInt::getTrue(C), pre);
+      phi->addIncoming(bit, chk_end);
+      return phi;
+    };
+    auto ht_valid_i1 = [&](const qjit::QjitValueLoc &loc) -> Value * {
+      const qjit::QjitHtDesc &ht = plan.hts[loc.ht_id];
+      if ((uint32_t)loc.layout_col < ht.num_keys)
+        return (Value *)ConstantInt::getTrue(C); // keys are never NULL
+      Value *bytep = cc.b.CreateGEP(i8, live_row[loc.ht_id],
+                                    cc.c64(loc.layout_col / 8));
+      Value *byte = cc.b.CreateLoad(i8, bytep, "vprefix");
+      Value *bit = cc.b.CreateAnd(
+          byte, ConstantInt::get(i8, 1u << (loc.layout_col % 8)));
+      return cc.b.CreateICmpNE(bit, ConstantInt::get(i8, 0), "ht_valid");
+    };
+    auto loc_valid_i1 = [&](const qjit::QjitValueLoc &loc) -> Value * {
+      return loc.src_col >= 0 ? src_valid_i1(loc.src_col) : ht_valid_i1(loc);
+    };
+    auto loc_value_i32 = [&](const qjit::QjitValueLoc &loc) -> Value * {
+      if (loc.src_col >= 0)
+        return LoadI32(cc, cc.col_data[loc.src_col]);
+      const qjit::QjitHtDesc &ht = plan.hts[loc.ht_id];
+      const qjit::QjitHtCol &hc = ht.cols[loc.layout_col];
+      Value *p = cc.b.CreateGEP(i8, live_row[loc.ht_id], cc.c64(hc.offset));
+      if ((uint32_t)loc.layout_col < ht.num_keys) // key slot reuse: i64
+        return cc.b.CreateTrunc(
+            cc.b.CreateLoad(i64, cc.b.CreateBitCast(p, i64p)), i32);
+      return cc.b.CreateLoad(
+          i32, cc.b.CreateBitCast(p, PointerType::getUnqual(i32)));
+    };
+    auto loc_value_str = [&](const qjit::QjitValueLoc &loc) -> Value * {
+      if (loc.src_col >= 0) {
+        Value *off = cc.b.CreateMul(cc.row_idx, cc.c64(16));
+        return cc.b.CreateGEP(i8, cc.col_data[loc.src_col], off, "str_ptr");
+      }
+      const qjit::QjitHtCol &hc = plan.hts[loc.ht_id].cols[loc.layout_col];
+      return cc.b.CreateGEP(i8, live_row[loc.ht_id], cc.c64(hc.offset),
+                            "ht_str_ptr");
+    };
+    // Join-key gather: NULL key => branch to `cont` (inner-join: NULL never
+    // matches / is never built). Returns the key sign-extended to i64.
+    auto load_key_i64_or_skip = [&](const qjit::QjitValueLoc &loc) -> Value * {
+      Value *valid = loc_valid_i1(loc);
+      if (!isa<ConstantInt>(valid) || !cast<ConstantInt>(valid)->isOne()) {
+        BasicBlock *bb_ok = BasicBlock::Create(C, "key_ok", fn);
+        cc.b.CreateCondBr(valid, bb_ok, cont);
+        cc.b.SetInsertPoint(bb_ok);
+      }
+      if (loc.src_col >= 0)
+        return cc.b.CreateSExt(LoadI32(cc, cc.col_data[loc.src_col]), i64);
+      const qjit::QjitHtDesc &ht = plan.hts[loc.ht_id];
+      const qjit::QjitHtCol &hc = ht.cols[loc.layout_col];
+      Value *p = cc.b.CreateGEP(i8, live_row[loc.ht_id], cc.c64(hc.offset));
+      if ((uint32_t)loc.layout_col < ht.num_keys)
+        return cc.b.CreateLoad(i64, cc.b.CreateBitCast(p, i64p));
+      return cc.b.CreateSExt(
+          cc.b.CreateLoad(i32,
+                          cc.b.CreateBitCast(p, PointerType::getUnqual(i32))),
+          i64);
+    };
+
+    // ---- in-loop ops ----
+    for (size_t oi = 0; oi < st.ops.size(); ++oi) {
+      // §5.5 A+ guards, emitted at guard_pos (after the cheap filters,
+      // before the expensive ones). cont == bb_next here — guards precede
+      // every Probe — so a guard drop skips the whole row, which is
+      // exactly what the guarded probe would do for that row later.
+      if (!st.guards.empty() && (int)oi == st.guard_pos) {
+        for (size_t gi = 0; gi < st.guards.size(); ++gi) {
+          const qjit::QjitStep::Guard &g = st.guards[gi];
+          const qjit::QjitStepOp &gop = st.ops[g.op_index];
+          const qjit::QjitHtDesc &ght = plan.hts[gop.ht_id];
+          // Key 0 range check against the build-side min/max.
+          Value *k0 = load_key_i64_or_skip(gop.keys[0]);
+          Value *in_range = cc.b.CreateAnd(
+              cc.b.CreateICmpSGE(k0, guard_vals[gi].lo),
+              cc.b.CreateICmpSLE(k0, guard_vals[gi].hi), "g_in_range");
+          BasicBlock *bb_gnext = BasicBlock::Create(C, "g_next", fn);
+          if (!g.membership) {
+            cc.b.CreateCondBr(in_range, bb_gnext, cont);
+            cc.b.SetInsertPoint(bb_gnext);
+            continue;
+          }
+          BasicBlock *bb_grange = BasicBlock::Create(C, "g_range_ok", fn);
+          cc.b.CreateCondBr(in_range, bb_grange, cont);
+          cc.b.SetInsertPoint(bb_grange);
+          // Existence pre-probe (runtime-gated on build size). Must mirror
+          // the real probe's match predicate exactly: hash eq + per-key
+          // i64 eq. First match suffices — no multi-match backtracking.
+          std::vector<Value *> kv{k0};
+          for (size_t j = 1; j < gop.keys.size(); ++j)
+            kv.push_back(load_key_i64_or_skip(gop.keys[j]));
+          Value *h = emitMurmur(kv[0]);
+          for (size_t j = 1; j < kv.size(); ++j)
+            h = emitCombine(h, emitMurmur(kv[j]));
+          BasicBlock *bb_mem = BasicBlock::Create(C, "g_mem", fn);
+          cc.b.CreateCondBr(guard_vals[gi].member_ok, bb_mem, bb_gnext);
+          cc.b.SetInsertPoint(bb_mem);
+          Value *slot = cc.b.CreateAnd(h, ht_maskv[gop.ht_id], "g_slot");
+          Value *head = cc.b.CreateLoad(
+              i8p, cc.b.CreateGEP(i8p, ht_dirv[gop.ht_id], slot), "g_head");
+          BasicBlock *bb_from = cc.b.GetInsertBlock();
+          BasicBlock *bb_ghead = BasicBlock::Create(C, "g_phead", fn);
+          BasicBlock *bb_gchk = BasicBlock::Create(C, "g_check", fn);
+          BasicBlock *bb_gadv = BasicBlock::Create(C, "g_adv", fn);
+          cc.b.CreateBr(bb_ghead);
+          cc.b.SetInsertPoint(bb_ghead);
+          PHINode *e = cc.b.CreatePHI(i8p, 2, "g_entry");
+          e->addIncoming(head, bb_from);
+          cc.b.CreateCondBr(cc.b.CreateIsNull(e, "g_chain_end"), cont,
+                            bb_gchk);
+          cc.b.SetInsertPoint(bb_gchk);
+          Value *ehash = cc.b.CreateLoad(
+              i64,
+              cc.b.CreateBitCast(cc.b.CreateGEP(i8, e, cc.c64(8)), i64p),
+              "g_ehash");
+          Value *row_ptr = cc.b.CreateGEP(i8, e, cc.c64(16), "g_row");
+          Value *match = cc.b.CreateICmpEQ(ehash, h, "g_hash_eq");
+          for (size_t j = 0; j < kv.size(); ++j) {
+            Value *kp =
+                cc.b.CreateGEP(i8, row_ptr, cc.c64(ght.cols[j].offset));
+            Value *bk = cc.b.CreateLoad(i64, cc.b.CreateBitCast(kp, i64p),
+                                        "g_bkey");
+            match = cc.b.CreateAnd(match, cc.b.CreateICmpEQ(bk, kv[j]));
+          }
+          cc.b.CreateCondBr(match, bb_gnext, bb_gadv);
+          cc.b.SetInsertPoint(bb_gadv);
+          Value *next_e =
+              cc.b.CreateLoad(i8p, cc.b.CreateBitCast(e, i8pp), "g_next_e");
+          e->addIncoming(next_e, bb_gadv);
+          cc.b.CreateBr(bb_ghead);
+          cc.b.SetInsertPoint(bb_gnext);
+        }
+      }
+      const qjit::QjitStepOp &op = st.ops[oi];
+      if (op.kind == qjit::QjitStepOp::Filter) {
+        BasicBlock *bb_pass = BasicBlock::Create(C, "f_pass", fn);
+        std::vector<const ir_sql_converter::AQPExpr *> one{op.filter};
+        EmitShortCircuitFilter(cc, fn, one, bb_pass, cont);
+        cc.b.SetInsertPoint(bb_pass);
+        continue;
+      }
+
+      // Probe: chained hash-table walk with multi-match backtracking.
+      const qjit::QjitHtDesc &ht = plan.hts[op.ht_id];
+      if (op.keys.size() != ht.num_keys)
+        return nullptr;
+      std::vector<Value *> kv;
+      for (const auto &kl : op.keys)
+        kv.push_back(load_key_i64_or_skip(kl));
+      Value *h = emitMurmur(kv[0]);
+      for (size_t j = 1; j < kv.size(); ++j)
+        h = emitCombine(h, emitMurmur(kv[j]));
+      Value *slot = cc.b.CreateAnd(h, ht_maskv[op.ht_id], "slot");
+      Value *head = cc.b.CreateLoad(
+          i8p, cc.b.CreateGEP(i8p, ht_dirv[op.ht_id], slot), "head");
+      BasicBlock *bb_from = cc.b.GetInsertBlock();
+      BasicBlock *bb_phead = BasicBlock::Create(C, "p_head", fn);
+      BasicBlock *bb_check = BasicBlock::Create(C, "p_check", fn);
+      BasicBlock *bb_adv = BasicBlock::Create(C, "p_adv", fn);
+      BasicBlock *bb_match = BasicBlock::Create(C, "p_match", fn);
+      cc.b.CreateBr(bb_phead);
+
+      cc.b.SetInsertPoint(bb_phead);
+      PHINode *e = cc.b.CreatePHI(i8p, 2, "entry");
+      e->addIncoming(head, bb_from);
+      cc.b.CreateCondBr(cc.b.CreateIsNull(e, "chain_end"), cont, bb_check);
+
+      cc.b.SetInsertPoint(bb_check);
+      // Entry layout: { next @0, hash @8, row @16 } (QjitHashTable::Entry).
+      Value *ehash = cc.b.CreateLoad(
+          i64,
+          cc.b.CreateBitCast(cc.b.CreateGEP(i8, e, cc.c64(8)), i64p),
+          "ehash");
+      Value *row_ptr = cc.b.CreateGEP(i8, e, cc.c64(16), "ht_row");
+      Value *match = cc.b.CreateICmpEQ(ehash, h, "hash_eq");
+      for (size_t j = 0; j < kv.size(); ++j) {
+        Value *kp = cc.b.CreateGEP(i8, row_ptr, cc.c64(ht.cols[j].offset));
+        Value *bk = cc.b.CreateLoad(i64, cc.b.CreateBitCast(kp, i64p),
+                                    "build_key");
+        match = cc.b.CreateAnd(match, cc.b.CreateICmpEQ(bk, kv[j]));
+      }
+      cc.b.CreateCondBr(match, bb_match, bb_adv);
+
+      cc.b.SetInsertPoint(bb_adv);
+      Value *next_e =
+          cc.b.CreateLoad(i8p, cc.b.CreateBitCast(e, i8pp), "next_e");
+      e->addIncoming(next_e, bb_adv);
+      cc.b.CreateBr(bb_phead);
+
+      cc.b.SetInsertPoint(bb_match);
+      live_row[op.ht_id] = row_ptr;
+      cont = bb_adv;
+    }
+
+    // ---- sink ----
+    switch (st.sink) {
+    case qjit::QjitStep::Result: {
+      for (size_t j = 0; j < st.outputs.size(); ++j) {
+        const qjit::QjitValueLoc &loc = st.outputs[j];
+        Value *col_j = cc.c64((int64_t)j);
+        Value *valid = loc_valid_i1(loc);
+        BasicBlock *bb_val = BasicBlock::Create(C, "out_val", fn);
+        BasicBlock *bb_null = BasicBlock::Create(C, "out_null", fn);
+        BasicBlock *bb_join = BasicBlock::Create(C, "out_join", fn);
+        cc.b.CreateCondBr(valid, bb_val, bb_null);
+        cc.b.SetInsertPoint(bb_null);
+        cc.b.CreateCall(append_null, {result, m_worker, col_j});
+        cc.b.CreateBr(bb_join);
+        cc.b.SetInsertPoint(bb_val);
+        if (loc.dtype == AQP_DTYPE_VARCHAR) {
+          cc.b.CreateCall(append_str,
+                          {result, m_worker, col_j, loc_value_str(loc)});
+        } else if (loc.dtype == AQP_DTYPE_INT32) {
+          cc.b.CreateCall(append_i32,
+                          {result, m_worker, col_j, loc_value_i32(loc)});
+        } else {
+          return nullptr; // BuildExecutionSteps only emits INT32/VARCHAR
+        }
+        cc.b.CreateBr(bb_join);
+        cc.b.SetInsertPoint(bb_join);
+      }
+      cc.b.CreateCall(finish_row, {result, m_worker});
+      cc.b.CreateBr(cont);
+      break;
+    }
+
+    case qjit::QjitStep::HtBuild: {
+      const qjit::QjitHtDesc &ht = plan.hts[st.sink_ht];
+      if (st.outputs.size() != ht.cols.size() || ht.num_keys == 0)
+        return nullptr;
+      // Keys first: any NULL key skips the row (inner-join build).
+      std::vector<Value *> kv;
+      for (uint32_t j = 0; j < ht.num_keys; ++j)
+        kv.push_back(load_key_i64_or_skip(st.outputs[j]));
+      Value *h = emitMurmur(kv[0]);
+      for (size_t j = 1; j < kv.size(); ++j)
+        h = emitCombine(h, emitMurmur(kv[j]));
+      Value *rowp =
+          cc.b.CreateCall(ht_append, {sink_ht_ptr, m_worker, h});
+      // Payload validity (branchless: i1 per payload column).
+      std::vector<Value *> vbits(ht.cols.size(), nullptr);
+      for (size_t cx = ht.num_keys; cx < ht.cols.size(); ++cx)
+        vbits[cx] = loc_valid_i1(st.outputs[cx]);
+      // Validity byte prefix (bit c%8 of byte c/8; keys constant-valid).
+      for (uint32_t byte = 0; byte * 8 < (uint32_t)ht.cols.size(); ++byte) {
+        Value *acc = ConstantInt::get(i8, 0);
+        for (uint32_t bi = 0; bi < 8; ++bi) {
+          uint32_t cx = byte * 8 + bi;
+          if (cx >= (uint32_t)ht.cols.size())
+            break;
+          Value *vb = cx < ht.num_keys ? (Value *)ConstantInt::getTrue(C)
+                                       : vbits[cx];
+          acc = cc.b.CreateOr(
+              acc, cc.b.CreateShl(cc.b.CreateZExt(vb, i8),
+                                  ConstantInt::get(i8, bi)));
+        }
+        cc.b.CreateStore(acc, cc.b.CreateGEP(i8, rowp, cc.c64(byte)));
+      }
+      // Keys (i64 slots).
+      for (uint32_t j = 0; j < ht.num_keys; ++j) {
+        Value *kp = cc.b.CreateGEP(i8, rowp, cc.c64(ht.cols[j].offset));
+        cc.b.CreateStore(kv[j], cc.b.CreateBitCast(kp, i64p));
+      }
+      // Payloads. Branchless: loads are always safe (flat arrays / zeroed
+      // slots); invalid INT32 slots are zeroed via select, invalid VARCHAR
+      // slots are zero by construction (executor zeroes NULL source slots;
+      // the invariant propagates through HT-to-HT copies).
+      for (size_t cx = ht.num_keys; cx < ht.cols.size(); ++cx) {
+        const qjit::QjitValueLoc &loc = st.outputs[cx];
+        const qjit::QjitHtCol &hc = ht.cols[cx];
+        Value *dst = cc.b.CreateGEP(i8, rowp, cc.c64(hc.offset));
+        if (hc.dtype == AQP_DTYPE_VARCHAR) {
+          Value *sp = loc_value_str(loc);
+          for (int64_t half = 0; half < 16; half += 8) {
+            Value *w = cc.b.CreateLoad(
+                i64,
+                cc.b.CreateBitCast(cc.b.CreateGEP(i8, sp, cc.c64(half)),
+                                   i64p));
+            cc.b.CreateStore(
+                w, cc.b.CreateBitCast(cc.b.CreateGEP(i8, dst, cc.c64(half)),
+                                      i64p));
+          }
+        } else {
+          Value *v = loc_value_i32(loc);
+          Value *vv = cc.b.CreateSelect(vbits[cx], v, cc.c32(0));
+          cc.b.CreateStore(vv,
+                           cc.b.CreateBitCast(dst, PointerType::getUnqual(i32)));
+        }
+      }
+      cc.b.CreateBr(cont);
+      break;
+    }
+
+    case qjit::QjitStep::Agg: {
+      for (size_t i = 0; i < st.agg_cells.size(); ++i) {
+        const qjit::QjitAggCellPlan &cell = st.agg_cells[i];
+        Value *cell_i = cc.c64((int64_t)i);
+        if (!cell.has_arg) { // CountStar
+          cc.b.CreateCall(agg_upd_cnt, {agg_state, cell_i});
+          continue;
+        }
+        Value *valid = loc_valid_i1(cell.arg);
+        BasicBlock *bb_do = BasicBlock::Create(C, "agg_do", fn);
+        BasicBlock *bb_skip = BasicBlock::Create(C, "agg_skip", fn);
+        cc.b.CreateCondBr(valid, bb_do, bb_skip);
+        cc.b.SetInsertPoint(bb_do);
+        if (cell.fn == qjit::QjitAggFn::Count) {
+          cc.b.CreateCall(agg_upd_cnt, {agg_state, cell_i});
+        } else if (cell.arg.dtype == AQP_DTYPE_VARCHAR) {
+          cc.b.CreateCall(agg_upd_str,
+                          {agg_state, cell_i, loc_value_str(cell.arg)});
+        } else {
+          cc.b.CreateCall(
+              agg_upd_i64,
+              {agg_state, cell_i,
+               cc.b.CreateSExt(loc_value_i32(cell.arg), i64)});
+        }
+        cc.b.CreateBr(bb_skip);
+        cc.b.SetInsertPoint(bb_skip);
+      }
+      cc.b.CreateBr(cont);
+      break;
+    }
+    }
+
+    SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
+    morsel_fns.push_back(fn);
+  }
+
+  // ---- entry: i64(ctx) — parallel_for per step + ht_finalize after builds --
+  FunctionType *entry_ft = FunctionType::get(i64, {ctxp}, false);
+  Function *entry_fn = Function::Create(entry_ft, Function::ExternalLinkage,
+                                        entry_name, *mod);
+  Value *e_ctx = entry_fn->getArg(0);
+  BasicBlock *e_bb = BasicBlock::Create(C, "entry", entry_fn);
+  ecc.b.SetInsertPoint(e_bb);
+  Value *e_srcs = ecc.b.CreateLoad(PointerType::getUnqual(ecc.AQPChunkViewTy),
+                                   ecc.b.CreateStructGEP(QjitCtxTy, e_ctx, 1),
+                                   "sources");
+  Value *morsel = ecc.b.CreateLoad(
+      i64, ecc.b.CreateStructGEP(QjitCtxTy, e_ctx, 7), "morsel");
+  FunctionCallee pfor = mod->getOrInsertFunction(
+      "qjit_parallel_for",
+      FunctionType::get(void_ty,
+                        {ctxp, i64, i64, PointerType::getUnqual(morsel_ft)},
+                        false));
+  Value *e_ht_base = nullptr;
+  for (size_t k = 0; k < plan.steps.size(); k++) {
+    Value *src_k = ecc.b.CreateGEP(ecc.AQPChunkViewTy, e_srcs,
+                                   ecc.c64((int64_t)k));
+    Value *nrows = ecc.b.CreateLoad(
+        i64, ecc.b.CreateStructGEP(ecc.AQPChunkViewTy, src_k, 1), "nrows");
+    ecc.b.CreateCall(pfor, {e_ctx, nrows, morsel, morsel_fns[k]});
+    if (plan.steps[k].sink == qjit::QjitStep::HtBuild) {
+      if (!e_ht_base) {
+        Value *raw = ecc.b.CreateLoad(
+            i8p, ecc.b.CreateStructGEP(QjitCtxTy, e_ctx, 3), "ht_base_raw");
+        e_ht_base = ecc.b.CreateBitCast(raw, i8pp);
+      }
+      Value *htv = ecc.b.CreateLoad(
+          i8p,
+          ecc.b.CreateGEP(i8p, e_ht_base, ecc.c64(plan.steps[k].sink_ht)),
+          "ht");
+      ecc.b.CreateCall(ht_finalize_fn,
+                       {ecc.b.CreateBitCast(e_ctx, i8p), htv});
+    }
+  }
+  ecc.b.CreateRet(ecc.c64(0));
+
+  SetTargetAttrs(entry_fn, impl_->host_cpu, impl_->feature_str);
+
+  std::string err;
+  raw_string_ostream es(err);
+  bool bad = verifyFunction(*entry_fn, &es);
+  for (Function *fn : morsel_fns)
+    bad |= verifyFunction(*fn, &es);
+  if (bad) {
+#ifndef NDEBUG
+    std::cerr << "[AQP-QJIT] LLVM verify failed: " << err << "\n";
+    for (Function *fn : morsel_fns)
+      fn->print(errs());
+    entry_fn->print(errs());
+#endif
+    return nullptr;
+  }
+
+  OptimiseModule(*mod, skip_opt_);
+
+  impl_->pending_cache_key = cache_key;
+  auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
+  if (auto e = impl_->jit->addIRModule(impl_->current_tracker,
+                                       std::move(tsm))) {
+    impl_->pending_cache_key.clear();
+    logAllUnhandledErrors(std::move(e), errs());
+    return nullptr;
+  }
+
+  auto sym = impl_->jit->lookup(entry_name);
+  impl_->pending_cache_key.clear();
+  if (!sym) {
+    logAllUnhandledErrors(sym.takeError(), errs());
+    return nullptr;
+  }
   return AQP_JIT_GET_ADDR(sym);
 }
 
