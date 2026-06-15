@@ -65,6 +65,11 @@ struct ParamConfig {
   bool in_memory = false;     // --in-memory: use :memory: + CSV loading
   std::string csv_dir;        // --csv-dir=<path>: CSV file directory
 
+  // LingoDB execution mode: SPEED (LLVM-optimized JIT), BASELINE (TPDE,
+  // verified) or BASELINE_SPEED (TPDE, no verification).
+  // Set via: --lingodb-mode=speed|baseline|baseline-speed
+  std::string lingodb_mode = "SPEED";
+
   // Storage plan: load flat column arrays + CSR indexes at startup
   bool enable_storage_plan = false;
   std::string storage_cache_path; // --storage-cache=<path>: binary cache file

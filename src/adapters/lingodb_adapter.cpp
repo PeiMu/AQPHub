@@ -1,4 +1,5 @@
 #include "adapters/lingodb_adapter.h"
+#include "util/util.h"
 
 #include <fstream>
 #include <iomanip>
@@ -186,10 +187,22 @@ std::unique_ptr<ir_sql_converter::AQPStmt> LingoDBAdapter::ConvertPlanToIR() {
                                                           subquery_index);
 }
 
+void LingoDBAdapter::SetExecutionMode(const std::string &mode) {
+  if (mode == "SPEED") {
+    exec_mode_ = lingodb::execution::ExecutionMode::SPEED;
+  } else if (mode == "BASELINE") {
+    exec_mode_ = lingodb::execution::ExecutionMode::BASELINE;
+  } else if (mode == "BASELINE_SPEED") {
+    exec_mode_ = lingodb::execution::ExecutionMode::BASELINE_SPEED;
+  } else {
+    throw std::runtime_error("[LingoDB] Unknown execution mode: " + mode +
+                             " (valid: SPEED, BASELINE, BASELINE_SPEED)");
+  }
+}
+
 QueryResult LingoDBAdapter::ExecuteSingleSQL(const std::string &sql) {
-  auto exec_mode = lingodb::execution::ExecutionMode::SPEED;
   auto config =
-      lingodb::execution::createQueryExecutionConfig(exec_mode, true);
+      lingodb::execution::createQueryExecutionConfig(exec_mode_, true);
 
   std::shared_ptr<arrow::Table> result_table;
   config->resultProcessor =
@@ -221,7 +234,21 @@ QueryResult LingoDBAdapter::ExecuteSingleSQL(const std::string &sql) {
 }
 
 QueryResult LingoDBAdapter::ExecuteSQL(const std::string &sql) {
-  return ExecuteSingleSQL(sql);
+  std::chrono::high_resolution_clock::time_point timer;
+  if (enable_timing_)
+    timer = chrono_tic();
+
+  auto result = ExecuteSingleSQL(sql);
+
+  if (enable_timing_) {
+    auto exe_time = chrono_toc(&timer, "Execute SQL time is\n", false);
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3) << (exe_time / 1000.0)
+             << ", ";
+    log_file.close();
+  }
+  return result;
 }
 
 void LingoDBAdapter::CreateTempTableFromArrow(
@@ -250,10 +277,12 @@ void LingoDBAdapter::CreateTempTableFromArrow(
 void LingoDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
     bool update_temp_card) {
+  std::chrono::high_resolution_clock::time_point timer;
+  if (enable_timing_)
+    timer = chrono_tic();
 
-  auto exec_mode = lingodb::execution::ExecutionMode::SPEED;
   auto config =
-      lingodb::execution::createQueryExecutionConfig(exec_mode, true);
+      lingodb::execution::createQueryExecutionConfig(exec_mode_, true);
 
   std::shared_ptr<arrow::Table> result_table;
   config->resultProcessor =
@@ -279,6 +308,16 @@ void LingoDBAdapter::ExecuteSQLandCreateTempTable(
       std::make_unique<lingodb::execution::QueryExecutionTask>(
           std::move(executer)));
 
+  if (enable_timing_) {
+    auto execute_sub_sql_time =
+        chrono_toc(&timer, "Execute sub-SQL time is\n", false);
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (execute_sub_sql_time / 1000.0) << ", ";
+    log_file.close();
+  }
+
   if (enable_timing_ && timing_collector) {
     WriteLingoDBTimingRow(timing_collector->getTiming());
   }
@@ -289,6 +328,16 @@ void LingoDBAdapter::ExecuteSQLandCreateTempTable(
   }
 
   CreateTempTableFromArrow(temp_table_name, result_table);
+
+  if (enable_timing_) {
+    auto extra_materialize_time =
+        chrono_toc(&timer, "Extra materialize time is\n", false);
+    std::ofstream log_file;
+    log_file.open("time_log.csv", std::ios_base::app);
+    log_file << std::fixed << std::setprecision(3)
+             << (extra_materialize_time / 1000.0) << ", ";
+    log_file.close();
+  }
 
 #ifndef NDEBUG
   std::cout << "[LingoDB] Created temp table: " << temp_table_name

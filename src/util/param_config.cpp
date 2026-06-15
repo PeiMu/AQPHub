@@ -238,6 +238,19 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.storage_cache_path = arg.substr(16);
     } else if (arg == "--in-memory") {
       config.in_memory = true;
+    } else if (arg.find("--lingodb-mode=") == 0) {
+      std::string mode = to_lower(arg.substr(15));
+      if (mode == "speed") {
+        config.lingodb_mode = "SPEED";
+      } else if (mode == "baseline") {
+        config.lingodb_mode = "BASELINE";
+      } else if (mode == "baseline-speed" || mode == "baseline_speed") {
+        config.lingodb_mode = "BASELINE_SPEED";
+      } else {
+        throw std::runtime_error(
+            "Unknown lingodb mode: " + arg.substr(15) +
+            " (valid: speed, baseline, baseline-speed)");
+      }
     } else if (arg.find("--csv-dir=") == 0) {
       config.csv_dir = arg.substr(10);
     } else if (arg == "--help" || arg == "-h") {
@@ -394,6 +407,9 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --csv-dir=<path>                 CSV directory for --in-memory "
                "(default: derived from --schema)"
+            << std::endl;
+  std::cout << "  --lingodb-mode=<mode>            LingoDB backend: speed "
+               "(LLVM JIT), baseline, baseline-speed (TPDE) (default: speed)"
             << std::endl;
   std::cout << "  --storage-plan                   Load flat column arrays + CSR "
                "indexes at startup (DuckDB only)"

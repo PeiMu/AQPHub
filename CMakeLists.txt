@@ -315,6 +315,15 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
                 ${LINGODB_BUILD}/libruntime_funcs_ptr.a
                 ${LINGODB_BUILD}/vendored/mimalloc/libmimalloc.a
         )
+        # TPDE baseline backend (ENABLE_BASELINE_BACKEND=ON in lingo-db)
+        if (EXISTS ${LINGODB_BUILD}/vendored/tpde/tpde/libtpde.a)
+            list(APPEND LINGODB_LIBS
+                    ${LINGODB_BUILD}/vendored/tpde/tpde/libtpde.a
+                    ${LINGODB_BUILD}/vendored/tpde/tpde/deps/spdlog/libspdlog.a
+                    ${LINGODB_BUILD}/vendored/tpde/tpde/deps/fadec/libfadec.a
+                    ${LINGODB_BUILD}/vendored/tpde/tpde/deps/disarm/libdisarm64.a
+            )
+        endif ()
 
         # Newer lingo-db builds include the tpde baseline backend in
         # librunner.a; link its vendored archives when present.
@@ -352,6 +361,13 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
 
         # Link lingo-db libraries, MLIR, LLVM, Arrow
         set(zstd_DIR "/usr/lib/x86_64-linux-gnu/cmake/zstd" CACHE PATH "" FORCE)
+        # LLVM's Findzstd already defined zstd::libzstd_shared/_static.
+        # zstdTargets.cmake (pulled in by Arrow) errors if only part of its
+        # export set exists, so pre-define the missing zstd::libzstd.
+        if (TARGET zstd::libzstd_shared AND NOT TARGET zstd::libzstd)
+            add_library(zstd::libzstd INTERFACE IMPORTED)
+            target_link_libraries(zstd::libzstd INTERFACE zstd::libzstd_shared)
+        endif ()
         find_package(Arrow REQUIRED)
         set(Boost_USE_STATIC_LIBS ON)
         find_package(Boost 1.83.0 REQUIRED COMPONENTS context)

@@ -11,6 +11,15 @@ skip_hash_cmp=${8:-on}
 jit_cache=${9:-off}
 spec_jit=${10:-on}
 
+# For lingodb, the 3rd arg selects the execution mode (speed | baseline |
+# baseline-speed) instead of the DuckDB jit level.
+lingodb_mode="speed"
+if [[ "$engine" == "lingodb" ]]; then
+    lingodb_mode=${3:-speed}
+    jit_level=none
+    jit_simd=off
+fi
+
 # Build CLI flags from positional args
 jit_extra_flags=""
 [[ "$jit_cache"      == "on"  ]] && jit_extra_flags+=" --jit-cache"
@@ -185,6 +194,7 @@ wait_for_umbra() {
 ########################################
 rm -f "${log_name}"
 rm -f "job_result/${log_name}"
+rm -f lingodb_compile_time.csv
 
 mkdir -p job_result
 shopt -s nullglob
@@ -234,7 +244,7 @@ db_arg="--db=${db_conn}"
 lingodb_flags=""
 if [[ "$engine" == "lingodb" ]]; then
     db_arg="--in-memory"
-    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
+    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv --lingodb-mode=${lingodb_mode}"
 fi
 
 $cmd_prefix ../build_release/aqp_middleware \
@@ -253,4 +263,9 @@ $cmd_prefix ../build_release/aqp_middleware \
   --benchmark \
   "${dir}"
 
-mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"
+if [[ "$engine" == "lingodb" ]]; then
+    mv "${log_name}" job_result/${engine}_${lingodb_mode}_${split}_breakdown_"${log_name}"
+    mv lingodb_compile_time.csv job_result/${engine}_${lingodb_mode}_${split}_compile_time.csv
+else
+    mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"
+fi

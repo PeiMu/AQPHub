@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <lingodb/catalog/Catalog.h>
+#include <lingodb/execution/Execution.h>
 #include <lingodb/runtime/Session.h>
 
 namespace arrow { class Table; }
@@ -43,10 +44,15 @@ public:
   void LoadTablesFromCSV(const std::string &schema_path,
                          const std::string &csv_dir);
 
+  // mode: "SPEED", "BASELINE" or "BASELINE_SPEED" (TPDE backend)
+  void SetExecutionMode(const std::string &mode);
+
 private:
   std::shared_ptr<lingodb::runtime::Session> session_;
   nlohmann::json parse_tree_;
   bool scheduler_started_ = false;
+  lingodb::execution::ExecutionMode exec_mode_ =
+      lingodb::execution::ExecutionMode::SPEED;
 
   QueryResult ExecuteSingleSQL(const std::string &sql);
 

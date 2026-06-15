@@ -119,6 +119,7 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
                 << db_path << std::endl;
     }
     auto adapter = std::make_unique<LingoDBAdapter>(db_path);
+    adapter->SetExecutionMode(config.lingodb_mode);
     if (config.in_memory) {
       adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
     }
