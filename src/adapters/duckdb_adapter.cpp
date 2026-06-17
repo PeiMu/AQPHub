@@ -1311,6 +1311,8 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     // cross-product guard skipped SetJITPendingIR).
     if (enable_timing_ && (jit_flags_ & AQP_JIT_LEVEL_MASK))
       WriteJitTimingColumn(ConsumeSpecWaitUs());
+    else if (enable_timing_ && !query_jit_ && jit_compiler_)
+      WriteJitTimingColumn(0);
 #endif
     // No JIT registration for this statement: drop any stale JIT context
     // from previous sub-plan iterations. EIDs are operator memory addresses
@@ -1503,6 +1505,13 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       // jit_compile column, even when registration was skipped.
       WriteJitTimingColumn(ConsumeSpecWaitUs());
     }
+  } else if (enable_timing_ && !query_jit_ && jit_compiler_) {
+    // Tune-config interp: jit_flags_==0 and query_jit_==false for this
+    // subquery, but the query-level run created jit_compiler_ (other
+    // subqueries use JIT).  Emit a 0 jit_compile column to keep the CSV
+    // rectangular.  Guard on !query_jit_: the query-jit path (line ~1416)
+    // already wrote its own jit_compile column.
+    WriteJitTimingColumn(0);
   }
 #endif
 

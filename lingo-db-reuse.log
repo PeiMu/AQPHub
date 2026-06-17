@@ -1398,4 +1398,58 @@ is historical, not architectural. Phase A peek is node-based-specific
 (PeekNextSubquery, precomputed group queue); Phase B
 (PrecomputeNextExtraction) is splitter-generic. Plan would be Phase-B-only
 for rc (relax NODE_BASED gates at ir_query_splitter.cpp:332/:747/:918).
+
+### CLI rename: --fast-compile → --compile-mode (2026-06-17)
+
+`--fast-compile` renamed to `--compile-mode={llvm,fastisel,tpde}` across all
+C++ code, scripts, and docs. Internal enum `FastCompileBackend` and member
+`fast_jit_compiler_` kept (implementation detail). JSON backward compat:
+ir_query_splitter.cpp reads both `"compile_mode"` and `"fast_compile"` fields
+from tune JSON. Script arg 11 = `compile_mode` (was `fast_compile`); CSV
+filename suffix `_fc<backend>` unchanged. All references to `--fast-compile`
+in this log predate the rename — read as `--compile-mode`.
 But FASTALL-tpde eliminates the compile cost that spec-jit would hide.
+
+### Archived from CLAUDE.md (2026-06-17): completed/dropped Phase 6 items
+
+§6.5 DROPPED (2026-06-17 analysis): All three candidates verified
+negligible for JOB and deleted:
+- ReuseLocalPass + CommonPipelineElimination: zero incidence in JOB with
+  node-based splitting (each subquery builds from different inputs;
+  ResetQueryState clears HT state between subqueries).
+- NOT-NULL validity elimination: branchless validity ≈1 cycle/col/row,
+  <1% of probe loop cost.
+- Cheap hash: <1ns savings per probe at modern multiply throughput;
+  pipeline-jit MUST keep Murmur anyway.
+- FastISel — SHIPPED (--compile-mode=fastisel; §6.6).
+
+§6.8 Tuned-config CSV timing bug — COMPLETE (2026-06-17): When
+ApplyTuneOverride switches a subquery to interp (jit_flags=0,
+query_jit=false), ExecuteSQLandCreateTempTable skipped the jit_compile
+timing column. Fix: added `else if (enable_timing_ && !query_jit_ &&
+jit_compiler_)` catch-all that writes WriteJitTimingColumn(0) at both
+ExecuteSQLandCreateTempTable (line ~1509) and ExecuteSQL (line ~1314).
+The !query_jit_ guard prevents double-writing for query-jit subqueries
+(which already write jit_compile at line ~1416). Re-measured node-based:
+all 113 queries match tpde reference column counts. Tuned performance
+(node-based, 10 warm runs): overhead=0.70s, jit=0.81s, exe=5.22s,
+total=6.73s (vs query_tpde 6.90s — 2.5% e2e win).
+
+§6.9 Cross-subquery runtime feedback analysis (2026-06-17): Verified
+existing cross-subquery information flow covers all actionable cases:
+1. Cardinality override (actual temp card → DuckDB optimizer for i+1)
+2. Min/max range injection (temp column ranges → WHERE predicates on
+   base tables, with selectivity + match-rate guards)
+3. Bloom filters (temp column values → scan-side pre-filter on base
+   tables, gated on card < 100K and match_rate < 25%)
+4. Empty-temp early termination (LIMIT 0)
+5. A+ runtime membership gate (qjit_ht_entries ≤ 65536, checked at
+   runtime in compiled code — no compile-time propagation needed)
+6. Spec-jit cardinality guard (rejects spec compile when actual vs
+   estimated temp card ratio > 2×)
+7. InjectTempTableJoinStats: actual temp min/max → DuckDB PhysicalHashJoin
+   join_stats for perfect hash join eligibility (range < 1M)
+Adaptive skip_hash_cmp: automatic per-join (key types known from IR at
+compile time; all JOB keys are INTEGER). Adaptive jit-level/compile-mode:
+negligible for JOB (85% of subqueries scan base tables; only 2.1% of
+subqueries have temp-sourced probe-side < 1000 rows).
