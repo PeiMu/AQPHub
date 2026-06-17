@@ -123,10 +123,20 @@ struct AggOp {
  *   AQPExprFn fn = compiler.CompileFilter(*filter_node, schema);
  *   // fn is now a native function pointer valid for the lifetime of compiler
  */
+// §6.6 fast-compile backend tier (FASTALL policy). FASTISEL = LLVM
+// CodeGenOptLevel::None + FastISel instruction selection, mid-end passes
+// skipped. TPDE = single-pass TPDE-LLVM backend (falls back to the FASTISEL
+// LLVM path on unsupported IR); requires a build with AQP_HAVE_TPDE.
+// The backend choice changes emitted code, so it is serialized into every
+// §5.1 object-cache key (a process may mix backends across compiler
+// instances, e.g. the planned compensate-jit fast recompile path).
+enum class FastCompileBackend { OFF = 0, FASTISEL = 1, TPDE = 2 };
+
 class IrToLlvmCompiler {
 public:
   explicit IrToLlvmCompiler(bool debug = false,
-                            SimdISA simd = SimdISA::OFF);
+                            SimdISA simd = SimdISA::OFF,
+                            FastCompileBackend fast = FastCompileBackend::OFF);
   ~IrToLlvmCompiler();
 
   // Non-copyable, movable
@@ -384,8 +394,12 @@ public:
   // serialises Reset against dispatch.
   void ResetModules();
 
+  FastCompileBackend GetFastMode() const { return fast_mode_; }
+  SimdISA GetSimdISA() const { return simd_isa_; }
+
 private:
   bool skip_opt_;
+  FastCompileBackend fast_mode_ = FastCompileBackend::OFF;
   SimdISA simd_isa_;
   bool use_simd_; // derived: true if simd_isa_ != OFF
   bool prefetch_ = false;

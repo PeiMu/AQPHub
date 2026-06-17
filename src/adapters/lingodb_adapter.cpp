@@ -190,13 +190,11 @@ std::unique_ptr<ir_sql_converter::AQPStmt> LingoDBAdapter::ConvertPlanToIR() {
 void LingoDBAdapter::SetExecutionMode(const std::string &mode) {
   if (mode == "SPEED") {
     exec_mode_ = lingodb::execution::ExecutionMode::SPEED;
-  } else if (mode == "BASELINE") {
-    exec_mode_ = lingodb::execution::ExecutionMode::BASELINE;
   } else if (mode == "BASELINE_SPEED") {
     exec_mode_ = lingodb::execution::ExecutionMode::BASELINE_SPEED;
   } else {
     throw std::runtime_error("[LingoDB] Unknown execution mode: " + mode +
-                             " (valid: SPEED, BASELINE, BASELINE_SPEED)");
+                             " (valid: SPEED, BASELINE_SPEED)");
   }
 }
 

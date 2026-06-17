@@ -9,13 +9,15 @@ prefetch=${6:-on}
 batch_probe=${7:-on}
 skip_hash_cmp=${8:-on}
 jit_cache=${9:-off}
-spec_jit=${10:-on}
+spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
+compile_mode=${11:-off}   # off | fastisel | tpde (--compile-mode backend; off=llvm)
+tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 
-# For lingodb, the 3rd arg selects the execution mode (speed | baseline |
-# baseline-speed) instead of the DuckDB jit level.
-lingodb_mode="speed"
+# For lingodb, the 3rd arg selects the execution mode (llvm | tpde)
+# instead of the DuckDB jit level.
+lingodb_mode="llvm"
 if [[ "$engine" == "lingodb" ]]; then
-    lingodb_mode=${3:-speed}
+    lingodb_mode=${3:-llvm}
     jit_level=none
     jit_simd=off
 fi
@@ -31,7 +33,9 @@ elif [[ "$prefetch" != "on" ]]; then
 fi
 [[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
 [[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
-[[ "$spec_jit"       == "off" ]] && jit_extra_flags+=" --no-spec-jit"
+[[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
+[[ "$compile_mode"   != "off" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 
 # Query-jit scans base tables through the storage plan; the binary cache file
 # is built on first use if missing (--storage-plan is auto-enabled by the
@@ -48,7 +52,9 @@ flag_suffix=""
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
-[[ "$spec_jit"       == "off" ]] && flag_suffix+="_nospecjit"
+[[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
+[[ "$compile_mode"   != "off" ]] && flag_suffix+="_fc${compile_mode}"
+[[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"

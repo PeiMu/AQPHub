@@ -25,6 +25,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
@@ -78,6 +79,9 @@ public:
   IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config,
                   storage::StoragePlan *storage_plan = nullptr);
   ~IRQuerySplitter();
+
+  // Set query name (without .sql) and load per-subquery tune config if path is set.
+  void SetQueryName(const std::string &name);
 
   // Main entry: Execute query with optional splitting
   QueryResult ExecuteWithSplit(const std::string &sql);
@@ -189,6 +193,26 @@ private:
   // Sub-plan combiner: collected (temp_name, sql) pairs
   std::vector<std::pair<std::string, std::string>> sub_plan_sqls_;
 
+  // Per-subquery tune config: maps sub_idx → tunable flag set.
+  // Loaded from tune JSON for the current query_name_.
+  // Fields with -1 / unset use the global config (no override).
+  struct TuneEntry {
+    std::string config_label;
+    uint32_t jit_flags = 0;
+    bool query_jit = false;
+    int compile_mode = 0;      // 0=llvm, 1=fastisel, 2=tpde
+    bool jit_simd = false;
+    int payload_prune = -1;    // -1=use global, 0=off, 1=on
+    int prefetch = -1;         // -1=use global, 0=off, 1=on
+    int batch_probe = -1;      // -1=use global, 0=off, 1=on
+    int skip_hash_cmp = -1;    // -1=use global, 0=off, 1=on
+  };
+  std::string query_name_;
+  std::unordered_map<int, TuneEntry> tune_entries_;
+  static TuneEntry ParseTuneLabel(const std::string &label);
+  void LoadTuneEntry(int idx, const nlohmann::json &val);
+  void ApplyTuneOverride(int sub_idx);
+
   // Helper: Compute column alias using SQL generator's convention
   std::string ComputeColumnAlias(unsigned int table_idx,
                                  const std::string &col_name) const;
@@ -243,7 +267,10 @@ private:
   // (Phase B relaunch) before the IR's owning extraction is destroyed.
   void WaitSpecsBorrowingIR(const ir_sql_converter::AQPStmt *ir);
   // Blocking: wait for pending + zombies (end of query / destructor).
-  void DrainSpecs();
+  // charge_wait: charge the blocking time to the adapter's next jit_compile
+  // CSV column (end-of-loop drain — otherwise it falls in an untimed gap
+  // before the final query's timer).
+  void DrainSpecs(bool charge_wait = false);
   // Long-lived compilers for speculative JIT — reused across iterations to
   // avoid LLVM LLJIT memory growth from creating/destroying instances.
   // Two instances, used alternately (ping-pong): on a HIT the next bg compile
@@ -256,6 +283,15 @@ private:
   int spec_card_misses_ = 0;
   int spec_not_ready_ = 0;
   int spec_bg_errors_ = 0;
+  // Compensate-jit miss-policy applications this query (trace/summary only).
+  int spec_compensate_fast_ = 0;
+  int spec_compensate_interp_ = 0;
+  // Compensate mode: iteration whose spec launch was skipped (learned miss)
+  // or whose Phase-B validation mispredicted — the check site applies the
+  // miss policy to it even though pending_spec_ is null. One-shot.
+  int spec_learned_miss_iter_ = -1;
+  // Total time this query the main thread blocked on bg-compile futures (µs).
+  long spec_wait_us_ = 0;
   // Key into the cross-repeat miss-history map (the original query SQL).
   std::string spec_history_key_;
 

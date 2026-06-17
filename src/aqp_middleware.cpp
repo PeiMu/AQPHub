@@ -192,6 +192,15 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       // Create IRQuerySplitter with the selected strategy
       IRQuerySplitter splitter(adapter, config, storage_plan);
 
+      // Pass query name for per-subquery tune config lookup
+      {
+        std::string qname = get_filename(sql_file_path);
+        auto dot = qname.rfind('.');
+        if (dot != std::string::npos)
+          qname = qname.substr(0, dot);
+        splitter.SetQueryName(qname);
+      }
+
       // Execute with split
       query_result = splitter.ExecuteWithSplit(sql);
 
@@ -216,6 +225,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
             config.single_col_int_join_mode);
         duckdb_adp->SetBenchmarkMode(config.benchmark_mode);
         duckdb_adp->SetJITCache(config.jit_cache);
+        duckdb_adp->SetCompileMode(config.compile_mode);
         duckdb_adp->SetJITProbePrefetchDistances(
             config.jit_prefetch_entry_distance,
             config.jit_prefetch_row_distance);

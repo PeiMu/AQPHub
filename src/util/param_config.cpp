@@ -212,14 +212,22 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_cache = true;
     } else if (arg == "--no-jit-cache") {
       config.jit_cache = false;
+    } else if (arg == "--compile-mode=fastisel") {
+      config.compile_mode = 1;
+    } else if (arg == "--compile-mode=tpde") {
+      config.compile_mode = 2;
+    } else if (arg == "--compile-mode=llvm" || arg == "--compile-mode=off") {
+      config.compile_mode = 0;
     } else if (arg == "--single-column-int-join-mode") {
       config.single_col_int_join_mode = true;
     } else if (arg == "--no-single-column-int-join-mode") {
       config.single_col_int_join_mode = false;
-    } else if (arg == "--spec-jit") {
-      config.enable_spec_jit = true;
-    } else if (arg == "--no-spec-jit") {
-      config.enable_spec_jit = false;
+    } else if (arg == "--spec-jit=recompile") {
+      config.spec_jit = 1;
+    } else if (arg == "--spec-jit=interpret") {
+      config.spec_jit = 2;
+    } else if (arg == "--spec-jit=off" || arg == "--no-spec-jit") {
+      config.spec_jit = 0;
     } else if (arg.find("--query-jit-threads=") == 0) {
       config.query_jit_threads = std::stoi(arg.substr(20));
       if (config.query_jit_threads < 0)
@@ -236,20 +244,20 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_storage_plan = true;
     } else if (arg.find("--storage-cache=") == 0) {
       config.storage_cache_path = arg.substr(16);
+    } else if (arg.find("--tune-config=") == 0) {
+      config.tune_config_path = arg.substr(14);
     } else if (arg == "--in-memory") {
       config.in_memory = true;
     } else if (arg.find("--lingodb-mode=") == 0) {
       std::string mode = to_lower(arg.substr(15));
-      if (mode == "speed") {
+      if (mode == "llvm") {
         config.lingodb_mode = "SPEED";
-      } else if (mode == "baseline") {
-        config.lingodb_mode = "BASELINE";
-      } else if (mode == "baseline-speed" || mode == "baseline_speed") {
+      } else if (mode == "tpde") {
         config.lingodb_mode = "BASELINE_SPEED";
       } else {
         throw std::runtime_error(
             "Unknown lingodb mode: " + arg.substr(15) +
-            " (valid: speed, baseline, baseline-speed)");
+            " (valid: llvm, tpde)");
       }
     } else if (arg.find("--csv-dir=") == 0) {
       config.csv_dir = arg.substr(10);
@@ -389,8 +397,12 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --jit-cache                      Enable JIT compilation cache "
                "across --repeat runs (default: disabled)"
             << std::endl;
-  std::cout << "  --no-spec-jit                    Disable speculative JIT "
-               "pipelining (default: enabled)"
+  std::cout << "  --compile-mode=llvm|fastisel|tpde JIT backend: llvm (LLVM O2, "
+               "default), fastisel (LLVM O0+FastISel), or tpde (TPDE fast codegen)"
+            << std::endl;
+  std::cout << "  --spec-jit=off|recompile|interpret  Speculative JIT: off = "
+               "disabled (default), recompile = TPDE on miss, interpret = no "
+               "JIT on miss"
             << std::endl;
   std::cout << "  --query-jit-threads=N            Query-jit worker threads "
                "(default 0 = hardware concurrency; 1 = serial debug)"
@@ -408,14 +420,17 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --csv-dir=<path>                 CSV directory for --in-memory "
                "(default: derived from --schema)"
             << std::endl;
-  std::cout << "  --lingodb-mode=<mode>            LingoDB backend: speed "
-               "(LLVM JIT), baseline, baseline-speed (TPDE) (default: speed)"
+  std::cout << "  --lingodb-mode=<mode>            LingoDB backend: llvm "
+               "(LLVM JIT) or tpde (TPDE fast codegen) (default: llvm)"
             << std::endl;
   std::cout << "  --storage-plan                   Load flat column arrays + CSR "
                "indexes at startup (DuckDB only)"
             << std::endl;
   std::cout << "  --storage-cache=<path>           Binary cache file for "
                "--storage-plan (auto-creates if missing)"
+            << std::endl;
+  std::cout << "  --tune-config=<path>             Per-subquery JIT config "
+               "JSON (from tune_per_subquery.py)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

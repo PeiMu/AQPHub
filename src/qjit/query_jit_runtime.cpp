@@ -433,6 +433,15 @@ void QjitTable::Finalize() {
   finalized_ = true;
 }
 
+void QjitTable::ReserveFlat(uint64_t total_rows) {
+  flat_.resize(cols_.size());
+  for (size_t c = 0; c < cols_.size(); c++) {
+    uint32_t sz = ElemSize(c);
+    flat_[c].data.resize(total_rows * sz);
+    flat_[c].validity.assign((total_rows + 63) / 64, ~uint64_t(0));
+  }
+}
+
 int32_t QjitTable::GetI32(size_t col, uint64_t row) const {
   return reinterpret_cast<const int32_t *>(flat_[col].data.data())[row];
 }

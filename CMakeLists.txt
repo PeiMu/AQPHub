@@ -39,6 +39,37 @@ if (LLVM_FOUND)
     set_property(TARGET aqp_jit_lib PROPERTY CXX_STANDARD 17)
     target_compile_definitions(aqp_jit_lib PUBLIC HAVE_LLVM)
     message(STATUS "AQP JIT (LLVM): ENABLED")
+
+    # TPDE fast-compile backend (--fast-compile=tpde). PREBUILT like duckdb:
+    # built separately with clang-20 (g++ 12 lacks <format> needed by
+    # tpde-encodegen), then linked into ONE shared lib whose version script
+    # (tpde_llvm.map) exports only the tpde_llvm:: API — the lingodb
+    # adapter's librunner.a embeds lingo-db's own copy of tpde core
+    # (baseline backend), so the tpde::/COMDAT internals must stay hidden.
+    # Regenerate with:
+    #   CC=clang-20 CXX=clang++-20 cmake -S third_party/tpde \
+    #     -B third_party/tpde_build -DCMAKE_BUILD_TYPE=Release \
+    #     -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DTPDE_INCLUDE_TESTS=OFF \
+    #     -DTPDE_BUILD_DOCS=OFF -DTPDE_LOGGING=OFF \
+    #     -DLLVM_DIR=/usr/lib/llvm-20/lib/cmake/llvm
+    #   cmake --build third_party/tpde_build --target tpde_llvm -j 16
+    #   clang++-20 -shared -o third_party/tpde_build/libtpde_bundle.so \
+    #     -Wl,--whole-archive third_party/tpde_build/tpde-llvm/libtpde_llvm.a \
+    #     -Wl,--no-whole-archive third_party/tpde_build/tpde/libtpde.a \
+    #     third_party/tpde_build/tpde/deps/fadec/libfadec.a \
+    #     third_party/tpde_build/tpde/deps/disarm/libdisarm64.a \
+    #     -Wl,--version-script=third_party/tpde_build/tpde_llvm.map \
+    #     -L/usr/lib/llvm-20/lib -lLLVM -Wl,-rpath,/usr/lib/llvm-20/lib
+    set(AQP_TPDE_BUNDLE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tpde_build/libtpde_bundle.so)
+    if (EXISTS ${AQP_TPDE_BUNDLE})
+        target_include_directories(aqp_jit_lib PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tpde/tpde-llvm/include)
+        target_link_libraries(aqp_jit_lib PUBLIC ${AQP_TPDE_BUNDLE})
+        target_compile_definitions(aqp_jit_lib PRIVATE AQP_HAVE_TPDE)
+        message(STATUS "AQP fast-compile TPDE backend: ENABLED (${AQP_TPDE_BUNDLE})")
+    else ()
+        message(STATUS "AQP fast-compile TPDE backend: disabled (${AQP_TPDE_BUNDLE} not found)")
+    endif ()
 else ()
     set(HAVE_LLVM FALSE)
     message(STATUS "LLVM not found — AQP JIT disabled")
@@ -125,6 +156,7 @@ if (EXISTS ${DUCKDB_ROOT})
         )
 
         # Define HAVE_DUCKDB preprocessor macro for C++ code
+        set_property(TARGET duckdb_adapter PROPERTY CXX_STANDARD 17)
         target_compile_definitions(duckdb_adapter PUBLIC HAVE_DUCKDB)
         target_compile_definitions(split_lib PUBLIC HAVE_DUCKDB)
 

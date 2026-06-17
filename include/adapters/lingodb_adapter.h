@@ -44,7 +44,7 @@ public:
   void LoadTablesFromCSV(const std::string &schema_path,
                          const std::string &csv_dir);
 
-  // mode: "SPEED", "BASELINE" or "BASELINE_SPEED" (TPDE backend)
+  // mode: "SPEED" (LLVM JIT) or "BASELINE_SPEED" (TPDE fast codegen)
   void SetExecutionMode(const std::string &mode);
 
 private:

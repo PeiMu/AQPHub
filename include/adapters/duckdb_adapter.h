@@ -5,7 +5,9 @@
 #pragma once
 
 #include <functional>
+#include <future>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -102,20 +104,24 @@ struct TempCollectionScanData : public duckdb::ReplacementScanData {
   TempCollectionScanData(
       std::unordered_map<std::string, StoredTempResult> *collections,
       std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps = nullptr,
-      std::unordered_map<std::string, QjitTempMeta> *qjit_meta = nullptr)
+      std::unordered_map<std::string, QjitTempMeta> *qjit_meta = nullptr,
+      std::shared_timed_mutex *temp_state_mutex = nullptr)
       : temp_collections(collections), kernel_temps(kernel_temps),
-        qjit_meta(qjit_meta) {}
+        qjit_meta(qjit_meta), temp_state_mutex(temp_state_mutex) {}
   std::unordered_map<std::string, StoredTempResult> *temp_collections;
   std::unordered_map<std::string, const storage::FlatTable *> *kernel_temps;
   std::unordered_map<std::string, QjitTempMeta> *qjit_meta;
+  std::shared_timed_mutex *temp_state_mutex;
 };
 
 // TableFunctionInfo subclass: holds pointer to temp_collections_ map
 struct TempCollectionScanInfo : public duckdb::TableFunctionInfo {
   explicit TempCollectionScanInfo(
-      std::unordered_map<std::string, StoredTempResult> *collections)
-      : temp_collections(collections) {}
+      std::unordered_map<std::string, StoredTempResult> *collections,
+      std::shared_timed_mutex *temp_state_mutex = nullptr)
+      : temp_collections(collections), temp_state_mutex(temp_state_mutex) {}
   std::unordered_map<std::string, StoredTempResult> *temp_collections;
+  std::shared_timed_mutex *temp_state_mutex;
 };
 #endif
 
@@ -290,6 +296,22 @@ public:
   // In-memory JIT object cache across repeats (--jit-cache, default off).
   void SetJITCache(bool enable) { jit_cache_ = enable; }
 
+  // Compile mode (--compile-mode): 0=llvm (full quality), 2=tpde.
+  // Must be set before the first compile — the backend is fixed at
+  // IrToLlvmCompiler construction.
+  void SetCompileMode(int mode) { compile_mode_ = mode; }
+
+  // One-shot spec-jit miss action, armed by the splitter at the spec
+  // check site and consumed by the NEXT ExecuteSQLandCreateTempTable call.
+  // FAST_ONCE: compile this sub-query inline with TPDE — covers query-jit
+  // AND the expr/operator/pipeline RegisterJIT path. SKIP_QJIT_ONCE: skip
+  // the query-jit compile entirely (Prepare + interpreter run; the jit CSV
+  // column still writes, keeping rows rectangular).
+  enum class CompensateMissAction { NONE, FAST_ONCE, SKIP_QJIT_ONCE };
+  void SetCompensateMissAction(CompensateMissAction action) {
+    compensate_miss_action_ = action;
+  }
+
   // Query-jit (--jit-level=query): lingo-db-style runtime. Set separately
   // from SetJITFlags because the splitter masks jit_flags with
   // AQP_JIT_LEVEL_MASK, which deliberately excludes AQP_JIT_QUERY_JIT.
@@ -314,6 +336,15 @@ public:
   }
 
   aqp_jit::IrToLlvmCompiler *GetJitCompiler();
+  // Pre-create JIT compilers for the given (compile_mode, simd_isa) combos
+  // so that EnsureJITCompiler never pays the LLJIT construction cost inline.
+  void PreCreateCompilers(
+      const std::vector<std::pair<int, int>> &backend_simd_pairs);
+  // Launch PreCreateCompilers on a background thread. EnsureJITCompiler
+  // drains the future before checking the cache, so creation overlaps
+  // preprocess + the first (interpreted) sub-query.
+  void PreCreateCompilersAsync(
+      const std::vector<std::pair<int, int>> &backend_simd_pairs);
 
   void ExecuteSpeculativeAndCreateTempTable(
       duckdb::PreparedStatement &prepared, duckdb::Connection &spec_conn,
@@ -390,6 +421,12 @@ public:
     qjit_spec_hit_ = std::move(hit);
   }
 
+  // Spec-jit blocking-wait time charged by the splitter; added to the next
+  // jit_compile CSV column write so the timing CSV stays equal to wall time
+  // (the wait happens between the splitter's gen-sub-SQL toc and this
+  // adapter's timer, an otherwise untimed gap).
+  void AddSpecWaitTime(long us) { spec_wait_extra_us_ += us; }
+
   // Register the qjit_* runtime symbols into a compiler. NOT idempotent
   // (duplicate absoluteSymbols defines error) — call once per compiler
   // lifetime; the defines survive ResetModules.
@@ -425,6 +462,7 @@ public:
   bool GetJitBatchProbe() const { return jit_batch_probe_; }
   bool GetJitSkipHashCmp() const { return jit_skip_hash_cmp_; }
   bool GetJitCache() const { return jit_cache_; }
+  int GetCompileMode() const { return compile_mode_; }
 #endif
 
   // NodeBasedSplitter support
@@ -542,6 +580,26 @@ private:
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
   bool jit_cache_ = false;
+  int compile_mode_ = 0;
+  CompensateMissAction compensate_miss_action_ = CompensateMissAction::NONE;
+  // TPDE compiler for spec-jit miss recompiles. Only created when the main
+  // compiler is NOT already TPDE; otherwise jit_compiler_ is reused.
+  // Lifecycle mirrors jit_compiler_: ResetModules per use, compiled fn
+  // pointers valid until its next reset. Cache-key safe: the backend tag
+  // (F0/F1/F2) is serialized per compiler instance (§5.1).
+  std::unique_ptr<aqp_jit::IrToLlvmCompiler> fast_jit_compiler_;
+  bool fast_qjit_syms_registered_ = false;
+  // Returns the TPDE compiler for miss recompiles (jit_compiler_ when it
+  // is already TPDE).
+  aqp_jit::IrToLlvmCompiler *EnsureFastJitCompiler();
+  // Guards the SHAPE of temp_collections_/qjit_temps_/qjit_temp_meta_ and
+  // placeholder field replacement at store time against concurrent reads
+  // from bg spec-compile threads (replacement scan + bind callbacks +
+  // RebuildTempTableIndices on the spec connection). Main thread is the
+  // only writer (exclusive); bind-path readers take shared locks. Needed
+  // because compensate-mode early launches (and retired-but-running zombie
+  // specs) overlap Execute(i) and the subsequent store.
+  mutable std::shared_timed_mutex temp_state_mutex_;
   // Owned IR built in the no-split JIT path; must outlive jit_pending_ir_.
   std::unique_ptr<ir_sql_converter::AQPStmt> owned_jit_ir_;
   // Pre-built logical plan for PrepareFromPlan (avoids redundant parse+optimize).
@@ -550,6 +608,18 @@ private:
   // Keeps the LLJIT instance alive until after query execution so that
   // compiled function pointers stored in AQPJITContext remain valid.
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
+  // Compiler cache: avoids destroying + recreating LLJIT instances when
+  // per-subquery tuning switches backends between sub-queries (~6 ms per
+  // recreation).  Keyed on (compile_mode << 16 | simd_isa).
+  struct JitCompilerCacheEntry {
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> compiler;
+    bool qjit_syms_registered = false;
+  };
+  std::unordered_map<uint32_t, JitCompilerCacheEntry> jit_compiler_cache_;
+  std::future<void> compiler_precreate_future_;
+  static uint32_t CompilerCacheKey(int fast, int simd) {
+    return (uint32_t(fast) << 16) | uint32_t(simd);
+  }
 
   // Speculative-compile kickoff hook (set by IRQuerySplitter when --spec-jit).
   PostPrepareHook post_prepare_hook_;
@@ -586,16 +656,26 @@ private:
   // call (set via SetQjitSpecHit on a spec HIT).
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
 
+  // Pending spec-jit wait time (µs) to fold into the next jit_compile CSV
+  // column write. See AddSpecWaitTime.
+  long spec_wait_extra_us_ = 0;
+  long ConsumeSpecWaitUs() {
+    long v = spec_wait_extra_us_;
+    spec_wait_extra_us_ = 0;
+    return v;
+  }
+
   // Compile attempt for an analysis-accepted sub-query: BuildExecutionSteps
   // (strict whitelist; joins + ungrouped aggregates included), storage-plan
   // source resolution per step, and the output cross-check against
   // `prepared` (the result authority). Every failure traces
   // [AQP-QJIT] fallback:<reason> and returns nullptr (interpreter runs).
+  // use_fast: compile on the fast tier (compensate=true miss path).
   std::unique_ptr<QjitCompiled>
   TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
                      const qjit::QjitAnalysisResult &analysis,
                      duckdb::PreparedStatement &prepared,
-                     const std::string &label);
+                     const std::string &label, bool use_fast = false);
 
   // Temp-table step source: qjit_temps_ entry, or on-demand conversion of
   // the fallback-produced CDC (cached back into qjit_temps_). nullptr +

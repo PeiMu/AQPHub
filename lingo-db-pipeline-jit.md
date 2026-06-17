@@ -1,5 +1,12 @@
 # LingoDB Analysis & Pipeline-JIT Findings
 
+> **NOTE (2026-06-15):** This file is partially STALE — it predates
+> multi-probe fusion (`CompileMultiProbeChain`, done) and query-jit
+> (`--jit-level=query`, a separate runtime, NOT "the same thing" as
+> pipeline-jit). CLAUDE.md supersedes this file for all open work,
+> current state, and Phase 6 gaps. Kept for the lingo-db architecture
+> analysis and source-code reference table.
+
 ## LingoDB Compilation Architecture
 
 LingoDB uses a 7-stage MLIR-based compilation pipeline:
@@ -53,7 +60,7 @@ The current `CompileFilterProbeProjectFusion` (Level 3 fusion-jit) generates JIT
 | PullGatherUp (late materialization) | `--jit-payload-prune` | Implemented |
 | FoldColumns (eliminate redundant cols) | Implicit in probe codegen | Implemented |
 | SpecializeSubOp (skip hash cmp for int keys) | `--jit-skip-hash-cmp` | Implemented (codegen at `ir_to_llvm.cpp:5810-5824`) |
-| Single-function pipeline compilation | `--jit-level=pipeline` | Single-probe done; multi-probe TODO |
+| Single-function pipeline compilation | `--jit-level=pipeline` | Done (single-probe + multi-probe `CompileMultiProbeChain`) |
 | Software prefetch | `--jit-prefetch` | Implemented (AQP-only, lingo-db doesn't do this) |
 | Batch/ROF probe | `--jit-batch-probe` | Implemented (AQP-only, lingo-db doesn't do this) |
 | LLVM passes (InstCombine, Reassociate, GVN, SimplifyCFG) | Same 4 passes | Identical |
@@ -97,7 +104,7 @@ New JIT level: `--jit-level=pipeline` (`AQP_JIT_PIPELINE_JIT`, bit 6). Implies e
 
 - **DuckDB builds hash tables natively** via `PhysicalHashJoin::Sink()`, then `PopulateAQPJITView()` exposes HT internals (entries, bitmask, layout offsets) via `AQPJoinHTView`. JIT code probes directly.
 - Pipeline-jit compiles the **entire probe chain** as a single function, eliminating per-operator dispatch overhead.
-- Pipeline-jit and query-jit are the same thing (no benefit from query-level over pipeline-level), confirmed by lingo-db which also operates at the pipeline level only.
+- **[STALE]** ~~Pipeline-jit and query-jit are the same thing~~ — query-jit (`--jit-level=query`) is a SEPARATE lingo-db-style runtime with its own morsel-parallel executor; pipeline-jit embeds into DuckDB's executor. See CLAUDE.md "Query-jit status".
 - Pipeline-jit activates probe fusion in the **DuckDB execution path** (not through PipelineKernel). Uses the same `CompileFilterProbeProjectFusion` codegen as kernel-path=pipeline, but extended for multi-probe chains.
 - Extra-jit-flags (`payload_prune`, `prefetch`, `batch_probe`, `skip_hash_cmp`) work under both `--jit-level=pipeline` and `--kernel-path=pipeline`.
 

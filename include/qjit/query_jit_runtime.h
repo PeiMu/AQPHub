@@ -297,6 +297,15 @@ public:
   /* Read-only view for use as a step source (valid after Finalize). */
   void FillView(QjitTableView *view, std::vector<QjitColView> *cols) const;
 
+  /* Build flat columns directly (bypasses partition layer).
+     Caller pre-allocates flat_[col].data and flat_[col].validity,
+     then calls MarkFinalized(nrows). */
+  void ReserveFlat(uint64_t total_rows);
+  uint8_t *FlatData(size_t col) { return flat_[col].data.data(); }
+  uint64_t *FlatValidity(size_t col) { return flat_[col].validity.data(); }
+  QjitStringArena &FlatArena() { return flat_arena_; }
+  void MarkFinalized(uint64_t total_rows) { nrows_ = total_rows; finalized_ = true; }
+
 private:
   struct PartCol {
     QjitBuffer values;          /* fixed-size elems or QjitString      */
@@ -317,6 +326,7 @@ private:
   std::vector<ColumnDesc> cols_;
   std::vector<Partition> partitions_;
   std::vector<FlatCol> flat_;
+  QjitStringArena flat_arena_;
   uint64_t nrows_ = 0;
   bool finalized_ = false;
 };

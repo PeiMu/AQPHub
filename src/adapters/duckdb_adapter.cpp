@@ -176,10 +176,13 @@ struct QjitTempGlobalState : public duckdb::GlobalTableFunctionState {
 struct QjitTempScanInfo : public duckdb::TableFunctionInfo {
   QjitTempScanInfo(
       std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>> *tables,
-      std::unordered_map<std::string, middleware::QjitTempMeta> *meta)
-      : qjit_temps(tables), qjit_meta(meta) {}
+      std::unordered_map<std::string, middleware::QjitTempMeta> *meta,
+      std::shared_timed_mutex *temp_state_mutex)
+      : qjit_temps(tables), qjit_meta(meta),
+        temp_state_mutex(temp_state_mutex) {}
   std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>> *qjit_temps;
   std::unordered_map<std::string, middleware::QjitTempMeta> *qjit_meta;
+  std::shared_timed_mutex *temp_state_mutex;
 };
 #endif
 
@@ -206,8 +209,8 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
       TempCollectionScanFunc, TempCollectionBind, TempCollectionInitGlobal);
   func.cardinality = TempCollectionCardinality;
   func.projection_pushdown = true;
-  func.function_info =
-      duckdb::make_shared_ptr<TempCollectionScanInfo>(&temp_collections_);
+  func.function_info = duckdb::make_shared_ptr<TempCollectionScanInfo>(
+      &temp_collections_, &temp_state_mutex_);
 
   // Register the table functions in the catalog
   duckdb::CreateTableFunctionInfo info(func);
@@ -238,7 +241,7 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
   qjit_func.cardinality = QjitTempCardinality;
   qjit_func.projection_pushdown = true;
   qjit_func.function_info = duckdb::make_shared_ptr<QjitTempScanInfo>(
-      &qjit_temps_, &qjit_temp_meta_);
+      &qjit_temps_, &qjit_temp_meta_, &temp_state_mutex_);
 
   duckdb::CreateTableFunctionInfo qjit_info(qjit_func);
   catalog.CreateTableFunction(*context, qjit_info);
@@ -251,7 +254,8 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
   // Register the replacement scan
   auto &db_config = duckdb::DBConfig::GetConfig(*context);
   auto scan_data = duckdb::make_uniq<TempCollectionScanData>(
-      &temp_collections_, &kernel_temp_tables_, &qjit_temp_meta_);
+      &temp_collections_, &kernel_temp_tables_, &qjit_temp_meta_,
+      &temp_state_mutex_);
   db_config.replacement_scans.emplace_back(TempCollectionReplacementScan,
                                            std::move(scan_data));
 }
@@ -264,6 +268,11 @@ duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::TempCollectionBind(
 
   auto &info = input.info->Cast<TempCollectionScanInfo>();
   auto table_name = input.inputs[0].GetValue<duckdb::string>();
+
+  // See TempCollectionReplacementScan: bg binds vs main-thread store.
+  std::shared_lock<std::shared_timed_mutex> guard;
+  if (info.temp_state_mutex)
+    guard = std::shared_lock<std::shared_timed_mutex>(*info.temp_state_mutex);
 
   auto it = info.temp_collections->find(table_name);
   if (it == info.temp_collections->end()) {
@@ -346,6 +355,13 @@ DuckDBAdapter::TempCollectionReplacementScan(
 
   auto &scan_data = data->Cast<TempCollectionScanData>();
   const auto &table_name = input.table_name;
+
+  // Bg spec-compile threads bind through this scan while the main thread
+  // may insert/replace temp entries (compensate-mode early launches and
+  // zombie specs overlap Execute + store).
+  std::shared_lock<std::shared_timed_mutex> guard;
+  if (scan_data.temp_state_mutex)
+    guard = std::shared_lock<std::shared_timed_mutex>(*scan_data.temp_state_mutex);
 
   // Check temp collections first
   if (scan_data.temp_collections->find(table_name) !=
@@ -489,6 +505,11 @@ duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::QjitTempBind(
 
   auto &info = input.info->Cast<QjitTempScanInfo>();
   auto table_name = input.inputs[0].GetValue<duckdb::string>();
+
+  // See TempCollectionReplacementScan: bg binds vs main-thread store.
+  std::shared_lock<std::shared_timed_mutex> guard;
+  if (info.temp_state_mutex)
+    guard = std::shared_lock<std::shared_timed_mutex>(*info.temp_state_mutex);
 
   auto mit = info.qjit_meta->find(table_name);
   auto tit = info.qjit_temps->find(table_name);
@@ -1070,10 +1091,11 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       compiled = TryCompileQueryJit(*prep.ir, prep.analysis, *prepared,
                                     "result");
     if (enable_timing_) {
-      // jit_compile column: analysis + prepare + (Phase 2) codegen time.
+      // jit_compile column: analysis + prepare + (Phase 2) codegen time,
+      // plus any spec-jit wait charged by the splitter (end-of-loop drain).
       auto analyze_us =
           chrono_toc(&timer, "ExecuteSQL::qjit analyze time\n", false);
-      WriteJitTimingColumn(analyze_us);
+      WriteJitTimingColumn(analyze_us + ConsumeSpecWaitUs());
     }
     if (prepared->HasError())
       throw std::runtime_error("Query failed: " + prepared->GetError());
@@ -1226,9 +1248,10 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
 
       if (enable_timing_) {
         // Record total JIT compile time (includes Prepare + RegisterJIT)
+        // plus any spec-jit wait charged by the splitter.
         auto jit_compile_time =
             chrono_toc(&timer, "ExecuteSQL::jit compile time\n", false);
-        WriteJitTimingColumn(jit_compile_time);
+        WriteJitTimingColumn(jit_compile_time + ConsumeSpecWaitUs());
       }
 #ifndef NDEBUG
       if (ctx->aqp_jit_context) {
@@ -1247,7 +1270,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     } else if (enable_timing_) {
       // Keep the timing CSV rectangular: JIT-level runs always emit the
       // jit_compile column, even when registration was skipped.
-      WriteJitTimingColumn(0);
+      WriteJitTimingColumn(ConsumeSpecWaitUs());
     }
 
     jit_pending_ir_ = nullptr;
@@ -1287,7 +1310,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     // jit_compile column, even when no IR was registered (e.g. the
     // cross-product guard skipped SetJITPendingIR).
     if (enable_timing_ && (jit_flags_ & AQP_JIT_LEVEL_MASK))
-      WriteJitTimingColumn(0);
+      WriteJitTimingColumn(ConsumeSpecWaitUs());
 #endif
     // No JIT registration for this statement: drop any stale JIT context
     // from previous sub-plan iterations. EIDs are operator memory addresses
@@ -1343,6 +1366,11 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   }
   std::unique_ptr<duckdb::PreparedStatement> prepared;
 #ifdef HAVE_LLVM
+  // Spec-jit one-shot miss action, set by the splitter when the spec
+  // for THIS sub-query was unusable: FAST_ONCE = inline TPDE compile,
+  // SKIP_QJIT_ONCE = interpret (Prepare/analysis still run).
+  const CompensateMissAction miss_action = compensate_miss_action_;
+  compensate_miss_action_ = CompensateMissAction::NONE;
   std::unique_ptr<QjitCompiled> qjit_compiled;
   // Keepalive for a spec-jit HIT: holds the plan + IR the compiled fn's
   // metadata points into, plus the result types/names (no Prepare happens
@@ -1370,21 +1398,22 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       }
     }
     if (!qjit_compiled) {
-      // Query-jit: analyze + compile; execution below branches on
-      // qjit_compiled. The interpreter path is unchanged and uses the same
-      // prepared statement.
       auto prep = PrepareWithQueryJitAnalysis(sql, temp_table_name);
       prepared = std::move(prep.prepared);
-      if (prepared && !prepared->HasError() && prep.ir)
-        qjit_compiled = TryCompileQueryJit(*prep.ir, prep.analysis, *prepared,
-                                           temp_table_name);
+      if (prepared && !prepared->HasError() && prep.ir &&
+          miss_action != CompensateMissAction::SKIP_QJIT_ONCE) {
+        qjit_compiled = TryCompileQueryJit(
+            *prep.ir, prep.analysis, *prepared, temp_table_name,
+            /*use_fast=*/miss_action == CompensateMissAction::FAST_ONCE);
+      }
     }
     if (enable_timing_) {
       // jit_compile column: analysis + prepare + codegen time (≈0 on a spec
-      // HIT — the compile happened on the bg pool).
+      // HIT — the compile happened on the bg pool), plus any spec-jit wait
+      // the splitter charged (blocking on a matched-but-unfinished compile).
       auto analyze_us = chrono_toc(
           &timer, "ExecuteSQLandCreateTempTable::qjit analyze time\n", false);
-      WriteJitTimingColumn(analyze_us);
+      WriteJitTimingColumn(analyze_us + ConsumeSpecWaitUs());
     }
   } else if (jit_pending_plan_) {
     jit_pending_plan_->ResolveOperatorTypes();
@@ -1424,7 +1453,16 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #endif
     jit_consumed_ir_filters_.clear();
     jit_consumed_ir_joins_.clear();
-    RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+    if (miss_action == CompensateMissAction::FAST_ONCE) {
+      auto *comp = EnsureFastJitCompiler();
+      if (comp != jit_compiler_.get())
+        comp->ResetModules();
+      RegisterJITImpl(prepared->data->physical_plan->Root(), *jit_pending_ir_,
+                      GetClientContext(), comp, jit_consumed_ir_filters_,
+                      jit_consumed_ir_joins_);
+    } else {
+      RegisterJIT(prepared->data->physical_plan->Root(), *jit_pending_ir_);
+    }
 
     // Ensure JIT context always exists when JIT level is active
     auto *ctx2 = GetClientContext();
@@ -1435,9 +1473,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
     if (enable_timing_) {
       // Record total JIT compile time (includes Prepare + RegisterJIT)
+      // plus any spec-jit wait charged by the splitter.
       auto jit_compile_time = chrono_toc(
           &timer, "ExecuteSQLandCreateTempTable::jit compile time\n", false);
-      WriteJitTimingColumn(jit_compile_time);
+      WriteJitTimingColumn(jit_compile_time + ConsumeSpecWaitUs());
     }
 #ifndef NDEBUG
     if (ctx2->aqp_jit_context) {
@@ -1462,7 +1501,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     if (enable_timing_) {
       // Keep the timing CSV rectangular: JIT-level runs always emit the
       // jit_compile column, even when registration was skipped.
-      WriteJitTimingColumn(0);
+      WriteJitTimingColumn(ConsumeSpecWaitUs());
     }
   }
 #endif
@@ -1581,7 +1620,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
         qjit_stored = true;
         qjit_rows = rows;
       }
-      qjit_temps_[temp_table_name] = std::move(qtable);
+      {
+        std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
+        qjit_temps_[temp_table_name] = std::move(qtable);
+      }
     } else {
       fprintf(stderr, "[AQP-QJIT] fallback:run-error(rc=%lld) label=%s\n",
               (long long)rows, temp_table_name.c_str());
@@ -1705,10 +1747,14 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     QjitTempMeta meta;
     meta.column_names = std::move(column_names);
     meta.types = temp_table_types;
+    std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
     qjit_temp_meta_[temp_table_name] = std::move(meta);
   } else
 #endif
   {
+#ifdef HAVE_LLVM
+    std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
+#endif
     auto existing_it = temp_collections_.find(temp_table_name);
     if (existing_it != temp_collections_.end() &&
         existing_it->second.is_placeholder) {
@@ -1730,9 +1776,9 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 
 #ifdef HAVE_LLVM
   // Post-execute: the actual cardinality is now known and the placeholder
-  // holds the real data + stats. Re-invoke the hook so the speculation layer
-  // can keep the post-Prepare compile (estimate was close) or relaunch with
-  // an accurately-planned speculative Prepare.
+  // holds the real data + stats. Re-invoke the hook — this is the ONLY
+  // invocation that launches the speculative bg compile (the post-Prepare
+  // one above is trace-only).
   if (post_prepare_hook_) {
     const auto &stored_names =
         qjit_stored ? qjit_temp_meta_[temp_table_name].column_names
@@ -1763,7 +1809,9 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
   std::chrono::high_resolution_clock::time_point timer;
   if (enable_timing_) {
     timer = chrono_tic();
-    WriteJitTimingColumn(0);
+    // ≈0 on a ready HIT; non-zero = the splitter's blocking wait on the
+    // matched-but-unfinished bg compile (charged via AddSpecWaitTime).
+    WriteJitTimingColumn(ConsumeSpecWaitUs());
   }
 
   // Inject temp table stats into spec connection's physical plan
@@ -1914,6 +1962,7 @@ void DuckDBAdapter::RegisterPlaceholderTemp(
     const std::string &temp_table_name,
     const duckdb::vector<duckdb::LogicalType> &types,
     const std::vector<std::string> &col_names, duckdb::idx_t est_card) {
+  std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
   if (temp_collections_.count(temp_table_name) > 0)
     return; // already registered (real result or earlier placeholder)
   if (qjit_temp_meta_.count(temp_table_name) > 0)
@@ -2582,6 +2631,7 @@ void DuckDBAdapter::ResetQueryState() {
 #ifdef HAVE_LLVM
   qjit_temps_.clear();
   qjit_spec_hit_.reset();
+  spec_wait_extra_us_ = 0;
 #endif
   kernel_temp_tables_.clear();
   plan.reset();
@@ -3127,7 +3177,7 @@ std::unique_ptr<DuckDBAdapter::QjitCompiled>
 DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
                                   const qjit::QjitAnalysisResult &analysis,
                                   duckdb::PreparedStatement &prepared,
-                                  const std::string &label) {
+                                  const std::string &label, bool use_fast) {
   auto fallback = [&](const std::string &reason)
       -> std::unique_ptr<QjitCompiled> {
 #ifndef NDEBUG
@@ -3163,20 +3213,51 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
     compiled->ht_key0_offsets.push_back(ht.prefix_bytes); // key 0 lives first
   }
 
-  EnsureJITCompiler();
-  if (!jit_compiler_)
-    return fallback("no-jit-compiler");
-  if (!qjit_syms_registered_) {
-    RegisterQjitRuntimeSymbols(jit_compiler_.get());
-    qjit_syms_registered_ = true;
+  // use_fast (spec-jit FAST_ONCE): route through the TPDE compiler.
+  // When compile_mode_ == TPDE this IS jit_compiler_; each compiler
+  // instance has its own qjit-symbol registration guard
+  // (RegisterQjitRuntimeSymbols is not idempotent per compiler).
+  aqp_jit::IrToLlvmCompiler *comp;
+  if (use_fast) {
+    comp = EnsureFastJitCompiler();
+    if (!comp)
+      return fallback("no-jit-compiler");
+    if (comp == jit_compiler_.get()) {
+      if (!qjit_syms_registered_) {
+        RegisterQjitRuntimeSymbols(comp);
+        qjit_syms_registered_ = true;
+      }
+    } else if (!fast_qjit_syms_registered_) {
+      RegisterQjitRuntimeSymbols(comp);
+      fast_qjit_syms_registered_ = true;
+    }
+  } else {
+    EnsureJITCompiler();
+    if (!jit_compiler_)
+      return fallback("no-jit-compiler");
+    comp = jit_compiler_.get();
+    if (!qjit_syms_registered_) {
+      RegisterQjitRuntimeSymbols(comp);
+      qjit_syms_registered_ = true;
+    }
+    comp->ResetModules();
   }
-  // Drop the previous sub-query's compiled module. Safe: Run() blocks until
-  // the pool is quiescent, so no compiled code is in flight here, and
-  // query-jit is mutually exclusive with the other JIT levels (no
-  // aqp_jit_context pointers reference these modules).
-  jit_compiler_->ResetModules();
 
-  compiled->fn = jit_compiler_->CompileQuerySteps(plan);
+  // AQP_QJIT_TIME=1: codegen-only timing (LLVM-IR emission + opt + backend
+  // codegen + lookup), release-visible. Separates the backend-compressible
+  // part of the jit_compile CSV column from analysis/Prepare overhead.
+  static const bool qjit_time_trace = std::getenv("AQP_QJIT_TIME") != nullptr;
+  std::chrono::steady_clock::time_point cg_tic;
+  if (qjit_time_trace)
+    cg_tic = std::chrono::steady_clock::now();
+  compiled->fn = comp->CompileQuerySteps(plan);
+  if (qjit_time_trace) {
+    auto cg_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                     std::chrono::steady_clock::now() - cg_tic)
+                     .count();
+    fprintf(stderr, "[AQP-QJIT-TIME] codegen label=%s us=%lld\n",
+            label.c_str(), static_cast<long long>(cg_us));
+  }
   if (!compiled->fn)
     return fallback("compile-failed");
   return compiled;
@@ -3241,14 +3322,20 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
       return reject("plan-empty-result");
 
     // Fresh binder ⇒ fresh temp-scan indices; bg-local maps so the converter
-    // can resolve ChunkNodes. This reads the live temp maps — the same
-    // discipline as the spec Prepare's replacement-scan binding: launches
-    // are post-execute, so every consumed temp is already stored, and a
-    // placeholder Combine mutates entry fields, not the map shape.
+    // can resolve ChunkNodes. This reads the live temp maps, which the main
+    // thread mutates concurrently under compensate-jit's early launch (and
+    // in legacy mode when this task runs late, queued behind a zombie):
+    // take temp_state_mutex_ shared, same as the replacement-scan binding
+    // above (which already takes it inside TempCollectionBind/QjitTempBind).
+    // RebuildTempTableIndices reads only column_names from the entries; the
+    // exclusive-locked store sites cover the field replacement.
     std::unordered_map<unsigned int, std::string> local_map;
     std::unordered_map<unsigned int, std::vector<std::string>> local_names;
-    RebuildTempTableIndices(local_plan.get(), local_map, local_names,
-                            temp_collections_, qjit_temp_meta_);
+    {
+      std::shared_lock<std::shared_timed_mutex> rguard(temp_state_mutex_);
+      RebuildTempTableIndices(local_plan.get(), local_map, local_names,
+                              temp_collections_, qjit_temp_meta_);
+    }
 
     auto ir = ir_sql_converter::ConvertDuckDBPlanToIR(
         *local_planner->binder, *spec_ctx, local_plan.get(), local_map, false,
@@ -3319,7 +3406,10 @@ DuckDBAdapter::GetOrLoadQjitTemp(const std::string &name,
   if (!table)
     return nullptr;
   const qjit::QjitTable *raw = table.get();
-  qjit_temps_[name] = std::move(table);
+  {
+    std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
+    qjit_temps_[name] = std::move(table);
+  }
   return raw;
 }
 
@@ -3352,39 +3442,58 @@ DuckDBAdapter::CollectionToQjitTable(const StoredTempResult &stored,
     descs.push_back({dt, std::move(name)});
   }
 
+  uint64_t total_rows = 0;
+  for (auto &chunk : collection.Chunks())
+    total_rows += chunk.size();
+
   auto table = std::make_unique<qjit::QjitTable>(std::move(descs), 1);
+  table->ReserveFlat(total_rows);
+
+  uint64_t row_offset = 0;
   for (auto &chunk : collection.Chunks()) {
     const duckdb::idx_t n = chunk.size();
-    for (duckdb::idx_t r = 0; r < n; r++) {
-      for (duckdb::idx_t c = 0; c < chunk.ColumnCount(); c++) {
-        auto &vec = chunk.data[c];
-        if (!duckdb::FlatVector::Validity(vec).RowIsValid(r)) {
-          table->AppendNull(0, c);
-          continue;
+    if (n == 0) continue;
+    for (duckdb::idx_t c = 0; c < chunk.ColumnCount(); c++) {
+      auto &vec = chunk.data[c];
+      uint32_t elem_sz = table->ElemSize(c);
+      uint8_t *dst = table->FlatData(c) + row_offset * elem_sz;
+      auto &mask = duckdb::FlatVector::Validity(vec);
+      switch (table->Col(c).dtype) {
+      case AQP_DTYPE_INT32:
+        std::memcpy(dst, duckdb::FlatVector::GetData<int32_t>(vec),
+                    n * sizeof(int32_t));
+        break;
+      case AQP_DTYPE_INT64:
+        std::memcpy(dst, duckdb::FlatVector::GetData<int64_t>(vec),
+                    n * sizeof(int64_t));
+        break;
+      default: {
+        auto *src = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+        auto *out = reinterpret_cast<QjitString *>(dst);
+        auto &arena = table->FlatArena();
+        for (duckdb::idx_t r = 0; r < n; r++) {
+          if (mask.RowIsValid(r)) {
+            out[r] = arena.Copy(
+                qjit::MakeString(src[r].GetData(), (uint32_t)src[r].GetSize()));
+          } else {
+            std::memset(&out[r], 0, sizeof(QjitString));
+          }
         }
-        switch (table->Col(c).dtype) {
-        case AQP_DTYPE_INT32:
-          table->AppendI32(0, c,
-                           duckdb::FlatVector::GetData<int32_t>(vec)[r]);
-          break;
-        case AQP_DTYPE_INT64:
-          table->AppendI64(0, c,
-                           duckdb::FlatVector::GetData<int64_t>(vec)[r]);
-          break;
-        default: { // AQP_DTYPE_VARCHAR
-          const duckdb::string_t &s =
-              duckdb::FlatVector::GetData<duckdb::string_t>(vec)[r];
-          table->AppendStr(
-              0, c,
-              qjit::MakeString(s.GetData(), (uint32_t)s.GetSize()));
-          break;
-        }
+        break;
+      }
+      }
+      if (!mask.AllValid()) {
+        uint64_t *val = table->FlatValidity(c);
+        const auto *mdata = mask.GetData();
+        for (duckdb::idx_t r = 0; r < n; r++) {
+          if (!mask.RowIsValidUnsafe(r))
+            qjit::SetRowInvalid(val, row_offset + r);
         }
       }
-      table->FinishRow(0);
     }
+    row_offset += n;
   }
-  table->Finalize();
+  table->MarkFinalized(total_rows);
   return table;
 }
 
@@ -3895,9 +4004,34 @@ FilterAllColsAvailable(const ir_sql_converter::AQPStmt *filter_ir,
 }
 
 void DuckDBAdapter::EnsureJITCompiler() {
+  if (compiler_precreate_future_.valid())
+    compiler_precreate_future_.get();
+  auto want_simd = ResolveSimdISA(jit_flags_);
+  auto want_fast = static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
+  if (jit_compiler_ &&
+      (jit_compiler_->GetFastMode() != want_fast ||
+       jit_compiler_->GetSimdISA() != want_simd)) {
+    auto old_key = CompilerCacheKey(
+        static_cast<int>(jit_compiler_->GetFastMode()),
+        static_cast<int>(jit_compiler_->GetSimdISA()));
+    jit_compiler_cache_[old_key] = {std::move(jit_compiler_),
+                                    qjit_syms_registered_};
+    qjit_syms_registered_ = false;
+    fast_jit_compiler_.reset();
+    fast_qjit_syms_registered_ = false;
+  }
   if (!jit_compiler_) {
-    jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        jit_debug_, ResolveSimdISA(jit_flags_));
+    auto new_key = CompilerCacheKey(static_cast<int>(want_fast),
+                                    static_cast<int>(want_simd));
+    auto it = jit_compiler_cache_.find(new_key);
+    if (it != jit_compiler_cache_.end()) {
+      jit_compiler_ = std::move(it->second.compiler);
+      qjit_syms_registered_ = it->second.qjit_syms_registered;
+      jit_compiler_cache_.erase(it);
+    } else {
+      jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+          jit_debug_, want_simd, want_fast);
+    }
   }
   jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
@@ -3908,9 +4042,64 @@ void DuckDBAdapter::EnsureJITCompiler() {
     jit_compiler_->SetCache(true);
 }
 
+void DuckDBAdapter::PreCreateCompilers(
+    const std::vector<std::pair<int, int>> &backend_simd_pairs) {
+  for (auto [fast, simd_int] : backend_simd_pairs) {
+    auto key = CompilerCacheKey(fast, simd_int);
+    if (jit_compiler_cache_.count(key))
+      continue;
+    if (jit_compiler_ &&
+        static_cast<int>(jit_compiler_->GetFastMode()) == fast &&
+        static_cast<int>(jit_compiler_->GetSimdISA()) == simd_int)
+      continue;
+    auto simd = static_cast<aqp_jit::SimdISA>(simd_int);
+    auto fast_be = static_cast<aqp_jit::FastCompileBackend>(fast);
+    auto comp = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        jit_debug_, simd, fast_be);
+    comp->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
+    comp->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
+                                    jit_prefetch_row_distance_);
+    comp->SetBatchProbe(jit_batch_probe_);
+    comp->SetSkipHashCmp(jit_skip_hash_cmp_);
+    if (jit_cache_)
+      comp->SetCache(true);
+    jit_compiler_cache_[key] = {std::move(comp), false};
+  }
+}
+
+void DuckDBAdapter::PreCreateCompilersAsync(
+    const std::vector<std::pair<int, int>> &backend_simd_pairs) {
+  if (compiler_precreate_future_.valid())
+    compiler_precreate_future_.get();
+  compiler_precreate_future_ = std::async(
+      std::launch::async,
+      [this, pairs = backend_simd_pairs] { PreCreateCompilers(pairs); });
+}
+
 aqp_jit::IrToLlvmCompiler *DuckDBAdapter::GetJitCompiler() {
   EnsureJITCompiler();
   return jit_compiler_.get();
+}
+
+aqp_jit::IrToLlvmCompiler *DuckDBAdapter::EnsureFastJitCompiler() {
+  // Miss recompiles always use TPDE (cheapest compiler). When the main
+  // compiler is already TPDE, reuse it — no second compiler needed.
+  const int tpde = static_cast<int>(aqp_jit::FastCompileBackend::TPDE);
+  if (compile_mode_ == tpde)
+    return GetJitCompiler();
+  if (!fast_jit_compiler_) {
+    fast_jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        jit_debug_, ResolveSimdISA(jit_flags_),
+        static_cast<aqp_jit::FastCompileBackend>(tpde));
+  }
+  fast_jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
+  fast_jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
+                                                jit_prefetch_row_distance_);
+  fast_jit_compiler_->SetBatchProbe(jit_batch_probe_);
+  fast_jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
+  if (jit_cache_)
+    fast_jit_compiler_->SetCache(true);
+  return fast_jit_compiler_.get();
 }
 
 void DuckDBAdapter::RegisterJIT(duckdb::PhysicalOperator &op,

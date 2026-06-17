@@ -6,6 +6,8 @@
 #include "kernel/pipeline_kernel.h"
 #include "jit/aqp_jit_abi.h"
 #include <cstdlib>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <set>
 
 #ifdef HAVE_DUCKDB
@@ -132,6 +134,154 @@ IRQuerySplitter::~IRQuerySplitter() {
   bg_pool_.reset();
 }
 
+IRQuerySplitter::TuneEntry
+IRQuerySplitter::ParseTuneLabel(const std::string &label) {
+  TuneEntry e;
+  e.config_label = label;
+  if (label == "interp") {
+    // no JIT
+  } else if (label == "expr") {
+    e.jit_flags = AQP_JIT_EXPR;
+  } else if (label == "expr_simd") {
+    e.jit_flags = AQP_JIT_EXPR;
+    e.jit_simd = true;
+  } else if (label == "operator") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+  } else if (label == "operator_simd") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+    e.jit_simd = true;
+  } else if (label == "pipeline") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
+  } else if (label == "pipeline_simd") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
+    e.jit_simd = true;
+  } else if (label == "query_full") {
+    e.query_jit = true;
+  } else if (label == "query_fastisel") {
+    e.query_jit = true;
+    e.compile_mode = 1;
+  } else if (label == "query_tpde") {
+    e.query_jit = true;
+    e.compile_mode = 2;
+  } else {
+    std::cerr << "[TUNE] unknown config label '" << label
+              << "', treating as interp\n";
+  }
+  return e;
+}
+
+void IRQuerySplitter::LoadTuneEntry(int idx, const nlohmann::json &val) {
+  std::string label = val.value("config", "interp");
+  TuneEntry e = ParseTuneLabel(label);
+  if (val.contains("compile_mode"))
+    e.compile_mode = val["compile_mode"].get<int>();
+  else if (val.contains("fast_compile"))
+    e.compile_mode = val["fast_compile"].get<int>();
+  if (val.contains("simd"))
+    e.jit_simd = val["simd"].get<bool>();
+  if (val.contains("payload_prune"))
+    e.payload_prune = val["payload_prune"].get<bool>() ? 1 : 0;
+  if (val.contains("prefetch"))
+    e.prefetch = val["prefetch"].get<bool>() ? 1 : 0;
+  if (val.contains("batch_probe"))
+    e.batch_probe = val["batch_probe"].get<bool>() ? 1 : 0;
+  if (val.contains("skip_hash_cmp"))
+    e.skip_hash_cmp = val["skip_hash_cmp"].get<bool>() ? 1 : 0;
+  tune_entries_[idx] = e;
+}
+
+void IRQuerySplitter::SetQueryName(const std::string &name) {
+  query_name_ = name;
+  tune_entries_.clear();
+  if (config_.tune_config_path.empty())
+    return;
+
+  static nlohmann::json tune_json;
+  static std::string loaded_path;
+  if (loaded_path != config_.tune_config_path) {
+    std::ifstream f(config_.tune_config_path);
+    if (!f.is_open()) {
+      std::cerr << "[TUNE] cannot open " << config_.tune_config_path << "\n";
+      return;
+    }
+    tune_json = nlohmann::json::parse(f);
+    loaded_path = config_.tune_config_path;
+  }
+
+  auto it = tune_json.find(query_name_);
+  if (it == tune_json.end())
+    return;
+  for (auto &[idx_str, val] : it->items()) {
+    int idx = std::stoi(idx_str);
+    LoadTuneEntry(idx, val);
+  }
+  if (config_.enable_debug_print && !tune_entries_.empty())
+    std::cerr << "[TUNE] " << query_name_ << ": " << tune_entries_.size()
+              << " sub-query overrides loaded\n";
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  if (!tune_entries_.empty() && config_.engine == BackendEngine::DUCKDB) {
+    auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+    if (duck) {
+      std::set<std::pair<int, int>> needed;
+      for (const auto &[idx, te] : tune_entries_) {
+        if (te.jit_flags == 0 && !te.query_jit)
+          continue;
+        int simd = te.jit_simd ? static_cast<int>(aqp_jit::SimdISA::AUTO)
+                               : static_cast<int>(aqp_jit::SimdISA::OFF);
+        needed.emplace(te.compile_mode, simd);
+      }
+      if (!needed.empty())
+        duck->PreCreateCompilersAsync({needed.begin(), needed.end()});
+    }
+  }
+#endif
+}
+
+void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
+  auto it = tune_entries_.find(sub_idx);
+  if (it == tune_entries_.end())
+    return;
+  const auto &te = it->second;
+
+  uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
+  config_.jit_flags = te.jit_flags | simd_bits;
+  if (te.query_jit)
+    config_.jit_flags |= AQP_JIT_QUERY_JIT;
+  config_.compile_mode = te.compile_mode;
+  if (te.payload_prune >= 0)
+    config_.jit_payload_prune = te.payload_prune != 0;
+  if (te.prefetch >= 0)
+    config_.jit_prefetch = te.prefetch != 0;
+  if (te.batch_probe >= 0)
+    config_.jit_batch_probe = te.batch_probe != 0;
+  if (te.skip_hash_cmp >= 0)
+    config_.jit_skip_hash_cmp = te.skip_hash_cmp != 0;
+
+#ifdef HAVE_DUCKDB
+  if (config_.engine == BackendEngine::DUCKDB) {
+    auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+    if (duck) {
+#ifdef HAVE_LLVM
+      duck->SetQueryJit(te.query_jit, config_.query_jit_threads,
+                        config_.query_jit_morsel);
+      duck->SetCompileMode(te.compile_mode);
+      duck->SetJITFlags(config_.jit_flags);
+      duck->SetJITOptFlags(
+          config_.jit_payload_prune, config_.jit_prefetch,
+          config_.jit_prefetch_distance, config_.jit_batch_probe,
+          config_.jit_skip_hash_cmp, config_.single_col_int_join_mode);
+#endif
+    }
+  }
+#endif
+
+  if (config_.enable_debug_print)
+    std::cerr << "[TUNE] iter=" << sub_idx << " config=" << te.config_label
+              << " jit_flags=0x" << std::hex << config_.jit_flags << std::dec
+              << " compile_mode=" << te.compile_mode << "\n";
+}
+
 QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   if (config_.enable_debug_print) {
     std::cout
@@ -160,8 +310,13 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   pending_extract_us_ = 0.0;
   spec_hits_ = 0;
   spec_misses_ = 0;
+  spec_card_misses_ = 0;
   spec_not_ready_ = 0;
   spec_bg_errors_ = 0;
+  spec_compensate_fast_ = 0;
+  spec_compensate_interp_ = 0;
+  spec_learned_miss_iter_ = -1;
+  spec_wait_us_ = 0;
 #endif
 #ifdef HAVE_DUCKDB
   if (config_.engine == BackendEngine::DUCKDB) {
@@ -180,6 +335,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
           config_.jit_prefetch_row_distance);
       duck->SetBenchmarkMode(config_.benchmark_mode);
       duck->SetJITCache(config_.jit_cache);
+      duck->SetCompileMode(config_.compile_mode);
       // Query-jit is plumbed separately: the SetJITFlags sites below mask
       // jit_flags with AQP_JIT_LEVEL_MASK, which excludes AQP_JIT_QUERY_JIT.
       duck->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
@@ -324,11 +480,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   }
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-  // Phase A wiring: the adapter calls this hook after Prepare(i) (result temp
-  // identity known) and before ExecuteRow(i), so the speculative bg compile
-  // for subquery i+1 overlaps the whole execution of subquery i.
-  // Cleared in the destructor (the hook captures `this`).
-  if (config_.enable_spec_jit &&
+  // Phase A wiring: the adapter fires this hook twice per iteration — after
+  // Prepare(i) and again after Execute(i). Legacy spec mode launches the bg
+  // compile for subquery i+1 at the post-execute invocation (post-Prepare is
+  // trace-only); spec-jit launches at post-Prepare so the compile
+  // overlaps Execute(i). Cleared in the destructor (the hook captures
+  // `this`).
+  if (config_.spec_jit != 0 &&
       config_.strategy == SplitStrategy::NODE_BASED &&
       config_.engine == BackendEngine::DUCKDB &&
       (config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_QUERY_JIT))) {
@@ -388,15 +546,24 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   // Wait for any pending/zombie speculative compilations and print summary.
-  DrainSpecs();
+  // The drain blocks on any unconsumed bg compile (e.g. one targeting the
+  // final query, which never consumes specs) — charge that wait to the
+  // final's jit_compile column so the CSV stays equal to wall time.
+  DrainSpecs(/*charge_wait=*/true);
   if ((config_.enable_debug_print || config_.enable_timing) &&
       spec_hits_ + spec_misses_ + spec_card_misses_ + spec_not_ready_ +
-              spec_bg_errors_ > 0) {
+              spec_bg_errors_ + spec_compensate_fast_ +
+              spec_compensate_interp_ > 0) {
     std::cerr << "[AQP-SPECJIT] summary: hits=" << spec_hits_
               << " misses=" << spec_misses_
               << " card_misses=" << spec_card_misses_
               << " not_ready=" << spec_not_ready_
-              << " bg_errors=" << spec_bg_errors_ << "\n";
+              << " bg_errors=" << spec_bg_errors_;
+    if (config_.spec_jit != 0)
+      std::cerr << " compensate_fast=" << spec_compensate_fast_
+                << " compensate_interp=" << spec_compensate_interp_;
+    std::cerr << " wait_ms=" << std::fixed << std::setprecision(3)
+              << (spec_wait_us_ / 1000.0) << "\n";
   }
 #endif
 
@@ -569,6 +736,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         log_final_exe_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     } else {
+      if (!tune_entries_.empty())
+        ApplyTuneOverride(iteration_count_);
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
                   << config_.jit_flags << std::dec << " (";
@@ -588,6 +757,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #ifdef HAVE_LLVM
       {
         uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
+        uint32_t adapter_flags = config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_SIMD_MASK | AQP_JIT_SIMD);
+        bool query_jit_level = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
         if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
           if (config_.enable_debug_print) {
@@ -595,11 +766,9 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                       << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
           }
           if (duck && remaining_ir && !HasCrossProduct(remaining_ir.get()))
-            duck->SetJITPendingIR(remaining_ir.get(), duckdb_flags);
+            duck->SetJITPendingIR(remaining_ir.get(), adapter_flags);
           else if (duck)
-            // JIT skipped: still record the flags so the adapter emits the
-            // jit_compile timing column (keeps the CSV rectangular).
-            duck->SetJITFlags(duckdb_flags);
+            duck->SetJITFlags(adapter_flags);
         }
       }
 #else
@@ -640,17 +809,26 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 // skipping known-miss launches removes the speculation overhead entirely.
 static std::unordered_map<std::string, std::set<int>> g_spec_miss_history;
 
+// backend: FastCompileBackend value for the spec compiler. Always FULL (0) —
+// the bg compile is full quality (LLVM O2), miss recompile uses TPDE via the
+// adapter's EnsureFastJitCompiler.
 static void EnsureSpecCompiler(
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &spec_compiler,
-    DuckDBAdapter *duck, uint32_t jit_flags) {
+    DuckDBAdapter *duck, uint32_t jit_flags, int backend,
+    bool need_qjit_syms) {
+  aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
+  if (jit_flags & AQP_JIT_SIMD_AVX2)
+    simd = aqp_jit::SimdISA::AVX2;
+  else if (jit_flags & AQP_JIT_SIMD_AVX512)
+    simd = aqp_jit::SimdISA::AVX512;
+  auto want_fast = static_cast<aqp_jit::FastCompileBackend>(backend);
+  if (spec_compiler &&
+      (spec_compiler->GetFastMode() != want_fast ||
+       spec_compiler->GetSimdISA() != simd))
+    spec_compiler.reset();
   if (!spec_compiler) {
-    aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
-    if (jit_flags & AQP_JIT_SIMD_AVX2)
-      simd = aqp_jit::SimdISA::AVX2;
-    else if (jit_flags & AQP_JIT_SIMD_AVX512)
-      simd = aqp_jit::SimdISA::AVX512;
-    spec_compiler =
-        std::make_unique<aqp_jit::IrToLlvmCompiler>(duck->GetJitDebug(), simd);
+    spec_compiler = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        duck->GetJitDebug(), simd, want_fast);
     spec_compiler->SetPrefetch(duck->GetJitPrefetch(),
                                duck->GetJitPrefetchDistance());
     spec_compiler->SetProbePrefetchDistances(
@@ -660,16 +838,9 @@ static void EnsureSpecCompiler(
     spec_compiler->SetSkipHashCmp(duck->GetJitSkipHashCmp());
     if (duck->GetJitCache())
       spec_compiler->SetCache(true);
-    // Query-jit bg compiles need the qjit_* runtime symbols. Once per
-    // compiler lifetime (absoluteSymbols defines survive ResetModules;
-    // re-registering would be a duplicate define).
-    if (duck->GetQueryJit())
-      duck->RegisterQjitRuntimeSymbols(spec_compiler.get());
   }
-  // NOTE: ResetModules is NOT called here. It runs at the start of each bg
-  // compile task instead — the 1-worker jit_compile_pool_ serializes tasks,
-  // so it can never race a still-running (zombie) compile or free code that
-  // a speculative HIT is currently executing.
+  if (need_qjit_syms)
+    duck->RegisterQjitRuntimeSymbols(spec_compiler.get());
 }
 
 void IRQuerySplitter::RetirePendingSpec() {
@@ -707,7 +878,8 @@ void IRQuerySplitter::WaitSpecsBorrowingIR(
       z->future.wait();
 }
 
-void IRQuerySplitter::DrainSpecs() {
+void IRQuerySplitter::DrainSpecs(bool charge_wait) {
+  auto drain_start = std::chrono::high_resolution_clock::now();
   if (pending_spec_) {
     // Never consumed by a CheckSpeculativeResult (e.g. the next iteration ran
     // on the kernel path or the query ended) — the launch was wasted; learn
@@ -722,35 +894,75 @@ void IRQuerySplitter::DrainSpecs() {
     if (z->future.valid())
       z->future.wait();
   zombie_specs_.clear();
+  if (charge_wait) {
+    long wait_us = (long)std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::high_resolution_clock::now() - drain_start)
+                       .count();
+    if (wait_us > 0) {
+      spec_wait_us_ += wait_us;
+      if (auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_))
+        duck->AddSpecWaitTime(wait_us);
+    }
+  }
 }
 
-// Phase A: peek-based speculative compile, invoked via the adapter's
-// post-Prepare hook — after Prepare(i), before ExecuteRow(i). Registers a
-// placeholder for the temp table iteration i is about to produce (so the bg
-// Prepare can bind it), injects a matching speculative CHUNK_GET in the peek,
-// then launches bg Prepare + RegisterJIT overlapping the whole Execute(i).
+// Phase A: peek-based speculative compile, invoked via the adapter's hook.
+// The hook fires post-Prepare (trace-only, returns early below) and after
+// Execute(i), where the launch happens: registers a placeholder for the temp
+// iteration i just produced (so the bg Prepare can bind it), injects a
+// matching speculative CHUNK_GET in the peek, then launches bg Prepare +
+// RegisterJIT overlapping only the inter-iteration middleware window.
 void IRQuerySplitter::LaunchSpeculativeCompile(
     const std::string &temp_table_name, duckdb::idx_t chunk_index,
     const duckdb::vector<duckdb::LogicalType> &types,
     const std::vector<std::string> &col_names, duckdb::idx_t est_card,
     bool post_execute) {
-  if (!config_.enable_spec_jit)
+  if (config_.spec_jit == 0)
     return;
 
-  // Compile only at post-execute time, with the ACTUAL cardinality already
-  // in the placeholder. Compiling earlier (at post-Prepare, with the
-  // plan-estimated cardinality) was measured worse: estimates are usually
-  // off by far more than 2x, so that compile is mostly wasted and
-  // queue-delays the accurate one on the 1-worker pool.
-  if (!post_execute)
-    return;
+  // Launch EARLY at post-Prepare so the full-quality bg compile overlaps
+  // Execute(i); assumed_card is the Prepare estimate and the card guard in
+  // CheckSpeculativeResult is the usability filter. A miss never relaunches
+  // — it goes to the inline miss policy instead (recompile=TPDE or
+  // interpret=skip).
+  // Trace est (post-Prepare) and actual (post-execute) cardinality.
+  if (!post_execute) {
+    if (config_.enable_debug_print)
+      std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                << " temp=" << temp_table_name << " prepare_est=" << est_card
+                << "\n";
+  } else {
+    if (config_.enable_debug_print)
+      std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                << " temp=" << temp_table_name << " actual_card=" << est_card
+                << "\n";
+    return; // already launched at post-Prepare
+  }
   if (config_.strategy != SplitStrategy::NODE_BASED)
     return;
   auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
   if (!duck)
     return;
-  uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
-  bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+
+  // Tune look-ahead: the spec compile targets the NEXT iteration (1-based:
+  // iteration_count_ + 1), whose 0-based tune key = iteration_count_. Use
+  // that sub-query's config so the bg-compiled code matches what
+  // ApplyTuneOverride will set on the inline path.
+  int next_tune_key = iteration_count_;  // 0-based key for the next iteration
+  uint32_t spec_jit_flags = config_.jit_flags;
+  int spec_compile_mode = config_.compile_mode;
+  auto tune_it = tune_entries_.find(next_tune_key);
+  if (tune_it != tune_entries_.end()) {
+    const auto &te = tune_it->second;
+    uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
+    spec_jit_flags = te.jit_flags | simd_bits;
+    if (te.query_jit)
+      spec_jit_flags |= AQP_JIT_QUERY_JIT;
+    spec_compile_mode = te.compile_mode;
+  }
+
+  uint32_t duckdb_flags = spec_jit_flags & AQP_JIT_LEVEL_MASK;
+  bool query_jit = (spec_jit_flags & AQP_JIT_QUERY_JIT) != 0;
   if (!duckdb_flags && !query_jit)
     return;
 
@@ -763,6 +975,9 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
         std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
                   << " skipping launch (learned miss for iter "
                   << iteration_count_ + 1 << ")\n";
+      // The skipped iteration still gets the miss policy (recompile/interp)
+      // at its check site — record it (no pending_spec_).
+      spec_learned_miss_iter_ = iteration_count_ + 1;
       return;
     }
   }
@@ -790,23 +1005,16 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   int spec_idx = adapter_->subquery_index;
   std::string spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
 
-  // Apply the same cross-sub-plan optimizations (range predicates + bloom
-  // filters) the inline path will apply to the real SQL, so a HIT is never
-  // inferior to the inline plan. temp_tables_ does not yet contain the
-  // just-stored temp (ExecuteSubIR pushes it after the adapter call returns),
-  // so append a temporary entry for it.
-  temp_tables_.emplace_back(temp_table_name,
-                            static_cast<unsigned int>(chunk_index), est_card);
-  temp_tables_.back().column_names = col_names;
+  // Apply range predicates so a HIT is never inferior to the inline plan.
+  // At early-launch (post-Prepare) temp(i)'s collection is still the empty
+  // placeholder — we DON'T push it to temp_tables_ (bloom/min-max from zero
+  // rows would be wrong). Divergence from the inline SQL is caught by the
+  // SQL match and routed to the miss policy.
   if (query_jit)
-    // Range predicates only: query-jit's own runtime ignores DuckDB bloom
-    // filters, and a HIT executes the compiled fn (there is no prepared
-    // plan to register them into).
     ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/true,
                                    /*build_bloom_filters=*/false);
   else
     ApplyCrossSubPlanOptimizations(spec_sql);
-  temp_tables_.pop_back();
 
   auto spec = std::make_unique<SpeculativeCompilation>();
   if (!query_jit)
@@ -821,11 +1029,29 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
 
   auto *spec_raw = spec.get();
   auto &db_ref = duck->GetDB();
-  uint32_t jit_flags = duck->GetJitFlags();
+
+  // Use the next sub-query's tune config for the spec compiler so the
+  // bg-compiled code matches the flags ApplyTuneOverride will set inline.
+  // Bg spec compile always uses FULL quality (LLVM O2) — compile time is
+  // free (overlaps execute(i)); miss recompile uses TPDE via the adapter.
+  int spec_backend = 0;
 
   auto &compiler_slot = spec_compilers_[spec_compiler_idx_];
   spec_compiler_idx_ ^= 1;
-  EnsureSpecCompiler(compiler_slot, duck, jit_flags);
+  if (compiler_slot) {
+    auto want_fast = static_cast<aqp_jit::FastCompileBackend>(spec_backend);
+    aqp_jit::SimdISA want_simd = aqp_jit::SimdISA::OFF;
+    if (spec_jit_flags & AQP_JIT_SIMD_AVX2) want_simd = aqp_jit::SimdISA::AVX2;
+    else if (spec_jit_flags & AQP_JIT_SIMD_AVX512) want_simd = aqp_jit::SimdISA::AVX512;
+    if (compiler_slot->GetFastMode() != want_fast ||
+        compiler_slot->GetSimdISA() != want_simd) {
+      for (auto &z : zombie_specs_)
+        if (z->future.valid()) z->future.wait();
+      zombie_specs_.clear();
+    }
+  }
+  EnsureSpecCompiler(compiler_slot, duck, spec_jit_flags,
+                     spec_backend, query_jit);
   auto *spec_comp = compiler_slot.get();
 
   if (query_jit) {
@@ -913,15 +1139,31 @@ bool NormalizedSqlEquals(const std::string &a, const std::string &b);
 // the remaining window.
 void IRQuerySplitter::PrecomputeNextExtraction(
     std::unique_ptr<ir_sql_converter::AQPStmt> &remaining_ir) {
-  if (!config_.enable_spec_jit)
+  if (config_.spec_jit == 0)
     return;
   if (config_.strategy != SplitStrategy::NODE_BASED)
     return;
   auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
   if (!duck)
     return;
-  uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
-  bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+
+  // Tune look-ahead: the precomputed extraction targets the NEXT iteration
+  // (1-based: iteration_count_ + 1), whose 0-based tune key = iteration_count_.
+  int next_tune_key = iteration_count_;
+  uint32_t spec_jit_flags = config_.jit_flags;
+  int spec_compile_mode = config_.compile_mode;
+  auto tune_it = tune_entries_.find(next_tune_key);
+  if (tune_it != tune_entries_.end()) {
+    const auto &te = tune_it->second;
+    uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
+    spec_jit_flags = te.jit_flags | simd_bits;
+    if (te.query_jit)
+      spec_jit_flags |= AQP_JIT_QUERY_JIT;
+    spec_compile_mode = te.compile_mode;
+  }
+
+  uint32_t duckdb_flags = spec_jit_flags & AQP_JIT_LEVEL_MASK;
+  bool query_jit = (spec_jit_flags & AQP_JIT_QUERY_JIT) != 0;
   if (!duckdb_flags && !query_jit)
     return;
 
@@ -969,7 +1211,8 @@ void IRQuerySplitter::PrecomputeNextExtraction(
 
   // Keep-on-match: speculative_sql is written on the main thread before
   // submit, so this comparison needs no future wait. The Phase A peek compile
-  // has been running since before Execute(i) — keeping it beats relaunching.
+  // has been running since Execute(i) finished — keeping it beats
+  // relaunching.
   if (pending_spec_ &&
       (pending_spec_->speculative_sql == spec_sql ||
        NormalizedSqlEquals(pending_spec_->speculative_sql, spec_sql))) {
@@ -990,108 +1233,13 @@ void IRQuerySplitter::PrecomputeNextExtraction(
                 << pending_spec_->target_iter << "\n";
   }
 
-  RetirePendingSpec();
-
-  // Relaunch happens: now build the bloom filters the bg task will register
-  // (range preds were already injected above). Query-jit skips them — its
-  // runtime ignores DuckDB bloom filters.
-  std::vector<DuckDBAdapter::BloomFilterInfo> spec_bfs;
-  if (!query_jit) {
-    ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/false,
-                                   /*build_bloom_filters=*/true);
-    spec_bfs = duck->TakePendingBloomFilters();
+  // No Phase-B relaunch — a mispredict routes the next iteration to the
+  // inline miss policy (TPDE recompile or interpret) instead of starting a
+  // second full compile that could not finish in time. One bg launch per iter.
+  if (pending_spec_) {
+    spec_learned_miss_iter_ = pending_spec_->target_iter;
+    RetirePendingSpec();
   }
-
-  auto spec = std::make_unique<SpeculativeCompilation>();
-  spec->bloom_filters = std::move(spec_bfs);
-  spec->speculative_sql = std::move(spec_sql);
-  spec->target_iter = iteration_count_ + 1;
-  spec->temp_snapshot = duck->SnapshotTempCollections();
-  auto *spec_ir_ptr = precomputed_extraction_->GetExecutableIR();
-  // The pipeline-jit bg task below reads this IR but the owning extraction
-  // is destroyed at the end of the iteration it drives; record the borrow so
-  // ExecuteOneIteration can wait before freeing it. (The query-jit bg task
-  // re-converts from its own prepared plan and never touches it.)
-  if (!query_jit)
-    spec->borrowed_ir = spec_ir_ptr;
-
-  auto *spec_raw = spec.get();
-  auto &db_ref = duck->GetDB();
-  uint32_t jit_flags = duck->GetJitFlags();
-
-  auto &compiler_slot = spec_compilers_[spec_compiler_idx_];
-  spec_compiler_idx_ ^= 1;
-  EnsureSpecCompiler(compiler_slot, duck, jit_flags);
-  auto *spec_comp = compiler_slot.get();
-
-  if (query_jit) {
-    // See the Phase A query-jit lambda for the contract (reject ⇒ false ⇒
-    // BG_ERROR + learned miss; sources resolved at HIT time).
-    std::string label = "spec-iter" + std::to_string(iteration_count_ + 1);
-    spec->future = jit_compile_pool_->Submit(
-        [spec_raw, &db_ref, spec_comp, duck, label]() -> bool {
-          try {
-            spec_comp->ResetModules();
-            spec_raw->spec_conn =
-                std::make_unique<duckdb::Connection>(db_ref);
-            spec_raw->qjit = duck->SpeculativeQueryJitCompile(
-                spec_raw->speculative_sql, label, *spec_raw->spec_conn,
-                spec_comp);
-            return spec_raw->qjit != nullptr;
-          } catch (...) {
-            return false;
-          }
-        });
-  } else {
-    spec->future = jit_compile_pool_->Submit(
-        [spec_raw, &db_ref, spec_comp, spec_ir_ptr, duck]() -> bool {
-          try {
-            spec_comp->ResetModules();
-            spec_raw->spec_conn =
-                std::make_unique<duckdb::Connection>(db_ref);
-            spec_raw->spec_prepared =
-                spec_raw->spec_conn->Prepare(spec_raw->speculative_sql);
-            if (spec_raw->spec_prepared->HasError())
-              return false;
-            if (!spec_raw->spec_prepared->data ||
-                !spec_raw->spec_prepared->data->physical_plan)
-              return false;
-
-            auto *spec_ctx = spec_raw->spec_conn->context.get();
-            spec_ctx->aqp_jit_context =
-                duckdb::make_uniq<duckdb::AQPJITContext>();
-
-            std::unordered_set<const ir_sql_converter::AQPStmt *>
-                consumed_filters, consumed_joins;
-            duck->RegisterJITImpl(
-                spec_raw->spec_prepared->data->physical_plan->Root(),
-                *spec_ir_ptr, spec_ctx, spec_comp,
-                consumed_filters, consumed_joins,
-                &spec_raw->temp_snapshot);
-
-            if (!spec_raw->bloom_filters.empty())
-              duck->RegisterBloomFilters(
-                  spec_raw->spec_prepared->data->physical_plan->Root(),
-                  spec_ctx, spec_raw->bloom_filters);
-
-            // Mirror the inline path: it only force-sets AQPJIT_PIPELINE when
-            // RegisterJIT compiled nothing (to keep JIT-gated optimizations
-            // like prefetch active). Unconditionally OR-ing it here would
-            // diverge from inline behavior at expr/operator JIT levels.
-            if (spec_ctx->aqp_jit_context->flags == 0)
-              spec_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
-            return true;
-          } catch (...) {
-            return false;
-          }
-        });
-  }
-
-  pending_spec_ = std::move(spec);
-
-  if (config_.enable_debug_print)
-    std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
-              << " launched real-SplitIR bg compile (Phase B)\n";
 }
 
 namespace {
@@ -1210,13 +1358,76 @@ bool IRQuerySplitter::CheckSpeculativeResult(
     return false;
   }
 
+  // Card guard: the speculative physical plan was frozen at Prepare time
+  // using the temp's cardinality known at launch (compensate mode: the
+  // Prepare ESTIMATE; legacy: the actual). If the actual cardinality
+  // diverges, that plan (join sides, HT sizing, parallelism) may be much
+  // slower than what a fresh Prepare would produce — reject. Returns false
+  // on a CARD_MISS. retire_nonblocking: in compensate mode the guard runs
+  // BEFORE the wait, so the bg compile may still be running and the
+  // SpeculativeCompilation must be zombie-parked, not destroyed.
+  uint64_t hit_est_card = 0, hit_actual_card = 0;
+  auto card_guard_ok = [&](bool retire_nonblocking) -> bool {
+    if (pending_spec_->assumed_temp_name.empty())
+      return true;
+    uint64_t actual_card = 0;
+    bool found = false;
+    for (auto it = temp_tables_.rbegin(); it != temp_tables_.rend(); ++it) {
+      if (it->table_name == pending_spec_->assumed_temp_name) {
+        actual_card = it->cardinality;
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return true;
+    double est = std::max<double>(1.0, (double)pending_spec_->assumed_card);
+    double act = std::max<double>(1.0, (double)actual_card);
+    double ratio = est > act ? est / act : act / est;
+    if (ratio > 2.0) {
+      spec_card_misses_++;
+      g_spec_miss_history[spec_history_key_].insert(
+          pending_spec_->target_iter);
+      if (config_.enable_debug_print)
+        std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                  << " decision=CARD_MISS (est="
+                  << pending_spec_->assumed_card << " actual=" << actual_card
+                  << ")\n";
+      if (retire_nonblocking)
+        RetirePendingSpec();
+      else
+        pending_spec_.reset();
+      return false;
+    }
+    hit_est_card = pending_spec_->assumed_card;
+    hit_actual_card = actual_card;
+    return true;
+  };
+
+  // Usability is decided WITHOUT waiting for completion — the card guard
+  // (actual card is known by now) runs before the wait, so an unusable spec
+  // pays zero wait and goes to the inline miss policy.
+  if (!card_guard_ok(/*retire_nonblocking=*/true))
+    return false;
+
   if (pending_spec_->future.wait_for(std::chrono::seconds(0)) !=
       std::future_status::ready) {
     spec_not_ready_++; // matched but had to wait for the bg compile
+    auto wait_start = std::chrono::high_resolution_clock::now();
+    pending_spec_->future.wait();
+    long wait_us = (long)std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::high_resolution_clock::now() - wait_start)
+                       .count();
+    spec_wait_us_ += wait_us;
+    // Charge the wait to the adapter's next jit_compile CSV column: it
+    // happens after the gen-sub-SQL toc and before the adapter's timer, an
+    // otherwise untimed gap (CSV column sums would undercount wall time).
+    if (auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_))
+      duck->AddSpecWaitTime(wait_us);
     if (config_.enable_debug_print)
       std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
-                << " match, waiting for bg compile\n";
-    pending_spec_->future.wait();
+                << " match, waited " << std::fixed << std::setprecision(3)
+                << (wait_us / 1000.0) << " ms for bg compile\n";
   }
   bool bg_ok = pending_spec_->future.get();
   if (!bg_ok) {
@@ -1227,42 +1438,6 @@ bool IRQuerySplitter::CheckSpeculativeResult(
                 << " decision=BG_ERROR\n";
     pending_spec_.reset();
     return false;
-  }
-
-  // SQL matches, but the speculative physical plan was frozen at Prepare
-  // time using the placeholder temp's ESTIMATED cardinality. If the actual
-  // cardinality diverges, that plan (join sides, HT sizing, parallelism) may
-  // be much slower than what a fresh Prepare would produce — reject.
-  uint64_t hit_est_card = 0, hit_actual_card = 0;
-  if (!pending_spec_->assumed_temp_name.empty()) {
-    uint64_t actual_card = 0;
-    bool found = false;
-    for (auto it = temp_tables_.rbegin(); it != temp_tables_.rend(); ++it) {
-      if (it->table_name == pending_spec_->assumed_temp_name) {
-        actual_card = it->cardinality;
-        found = true;
-        break;
-      }
-    }
-    if (found) {
-      double est = std::max<double>(1.0, (double)pending_spec_->assumed_card);
-      double act = std::max<double>(1.0, (double)actual_card);
-      double ratio = est > act ? est / act : act / est;
-      if (ratio > 2.0) {
-        spec_card_misses_++;
-        g_spec_miss_history[spec_history_key_].insert(
-            pending_spec_->target_iter);
-        if (config_.enable_debug_print)
-          std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
-                    << " decision=CARD_MISS (est="
-                    << pending_spec_->assumed_card << " actual=" << actual_card
-                    << ")\n";
-        pending_spec_.reset();
-        return false;
-      }
-      hit_est_card = pending_spec_->assumed_card;
-      hit_actual_card = actual_card;
-    }
   }
 
   spec_hits_++;
@@ -1660,26 +1835,40 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
     bool spec_hit = false;
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-    // The speculative SQL had the same cross-sub-plan optimizations applied
-    // at launch time, so HIT/MISS is decided on equal terms. Bloom filters
-    // are side-band (not part of the SQL text): the spec plan already
-    // carries its own, so only build them inline after a MISS.
+    // Compensate-jit miss policy: applies to this iteration when its spec
+    // was launched but unusable (MISS/CARD_MISS/BG_ERROR) or was skipped /
+    // invalidated via the learned-miss history (no pending_spec_). Never
+    // fires without a spec launch attempt — none-jit and non-node-based
+    // runs can't reach it (LaunchSpeculativeCompile's gates).
+    bool compensate_miss = false;
+    const bool learned_missed_iter =
+        config_.spec_jit != 0 && spec_learned_miss_iter_ == iteration_count_;
+    if (config_.spec_jit != 0)
+      spec_learned_miss_iter_ = -1; // one-shot
     if (pending_spec_ && config_.engine == BackendEngine::DUCKDB) {
       ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
                                      /*build_bloom_filters=*/false);
       spec_hit = CheckSpeculativeResult(sub_sql, temp_table_name);
-      if (!spec_hit)
+      if (!spec_hit) {
         ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/false,
                                        /*build_bloom_filters=*/true);
+        compensate_miss = true;
+      }
     } else
 #endif
     {
       ApplyCrossSubPlanOptimizations(sub_sql);
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+      compensate_miss =
+          learned_missed_iter && config_.engine == BackendEngine::DUCKDB;
+#endif
     }
 
     // Phase A speculation for the NEXT iteration is launched via the
-    // adapter's post-Prepare hook (inside both execute calls below), after
-    // Prepare and before ExecuteRow — overlapping the whole execution.
+    // adapter's hook inside the execute calls below — legacy mode at
+    // post-execute (actual temp cardinality; overlaps only the
+    // inter-iteration window), compensate mode at post-Prepare (estimated
+    // cardinality; overlaps Execute(i)).
 
     std::chrono::high_resolution_clock::time_point duckdb_exe_start;
     if (config_.enable_tuning)
@@ -1687,8 +1876,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
     if (spec_hit) {
+      if (!tune_entries_.empty())
+        ApplyTuneOverride(iteration_count_ - 1);
       auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-      // Move out of pending_spec_ first: the post-Prepare hook fires inside
+      // Move out of pending_spec_ first: the spec hook fires inside
       // ExecuteSpeculativeAndCreateTempTable and its RetirePendingSpec()
       // would otherwise destroy the prepared statement while it executes.
       auto hit_spec = std::move(pending_spec_);
@@ -1709,21 +1900,45 @@ bool IRQuerySplitter::ExecuteOneIteration(
     } else
 #endif
     {
+      if (!tune_entries_.empty())
+        ApplyTuneOverride(iteration_count_ - 1);
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
       {
         uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
+        uint32_t adapter_flags = config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_SIMD_MASK | AQP_JIT_SIMD);
+        bool query_jit_level = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+        bool comp_fast = compensate_miss && config_.spec_jit == 1;
+        bool comp_interp = compensate_miss && config_.spec_jit == 2;
+        if (compensate_miss && config_.enable_debug_print)
+          std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                    << (comp_fast ? " action=COMPENSATE_FAST\n"
+                                  : " action=COMPENSATE_INTERP\n");
+        if (comp_fast)
+          spec_compensate_fast_++;
+        else if (comp_interp)
+          spec_compensate_interp_++;
         if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
           if (duck) {
             duck->SetTempColRanges({});
-            if (!HasCrossProduct(executable_ir))
-              duck->SetJITPendingIR(executable_ir, duckdb_flags);
-            else
-              // JIT skipped: still record the flags so the adapter emits the
-              // jit_compile timing column (keeps the CSV rectangular).
-              duck->SetJITFlags(duckdb_flags);
+            if (!HasCrossProduct(executable_ir) && !comp_interp) {
+              duck->SetJITPendingIR(executable_ir, adapter_flags);
+              if (comp_fast)
+                duck->SetCompensateMissAction(
+                    DuckDBAdapter::CompensateMissAction::FAST_ONCE);
+            } else {
+              duck->SetJITFlags(adapter_flags);
+            }
           }
+        } else if (query_jit_level && compensate_miss &&
+                   config_.engine == BackendEngine::DUCKDB) {
+          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+          if (duck)
+            duck->SetCompensateMissAction(
+                comp_fast
+                    ? DuckDBAdapter::CompensateMissAction::FAST_ONCE
+                    : DuckDBAdapter::CompensateMissAction::SKIP_QJIT_ONCE);
         }
       }
 #endif

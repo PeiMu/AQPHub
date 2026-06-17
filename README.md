@@ -168,7 +168,7 @@ and we need to specify a duckdb's database path to avoid these bugs
 
 ### JIT
 
-Requires building with LLVM 14 (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL operators from the AQP IR into native machine code using LLVM ORC LLJIT.
+Requires building with LLVM (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL operators from the AQP IR into native machine code using LLVM ORC LLJIT.
 
 #### JIT Level
 
@@ -176,22 +176,33 @@ Requires building with LLVM 14 (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL
 
 | Level | Flag value | Description |
 |-------|-----------|-------------|
-| None | `none` | JIT disabled |
+| None | `none` | JIT disabled (interpreter) |
 | Expression | `expr` | Compile individual filter expressions |
 | Operator | `operator` | Compile whole operators (filter, projection, hash build/probe, aggregate) |
-| Pipeline | `pipeline` | Fuse adjacent operators into single compiled functions (filter+projection, filter+aggregate, filter+hash build, filter+probe+projection) |
-| SQL | `sql` | Compile entire sub-plans / whole queries |
+| Pipeline | `pipeline` | Fuse adjacent operators into single compiled functions (multi-probe chain fusion) |
+| Query | `query` | Compile entire sub-queries (scan→filters/probes/projections→sink in one LLVM module) |
 
-#### JIT Optimization Level
+#### Compile Mode
 
-`--jit-opt=<opt>` selects the LLVM optimization level:
+`--compile-mode=<mode>` selects the JIT backend:
 
 | Flag value | Description |
 |-----------|-------------|
-| `o0` | No optimization |
-| `o1` | Basic optimization (default) |
-| `o2` | Standard optimization |
-| `o3` | Aggressive optimization |
+| `llvm` | Full quality LLVM O2 (default) |
+| `fastisel` | LLVM O0 + FastISel (skips optimization passes, faster compile) |
+| `tpde` | TPDE fast codegen (fastest compile, lower code quality) |
+
+#### Speculative JIT
+
+`--spec-jit=<mode>` controls speculative background compilation (node-based split only):
+
+| Flag value | Description |
+|-----------|-------------|
+| `off` | Disabled (default) |
+| `recompile` | Bg compile during execute(i); on miss, inline recompile with TPDE |
+| `interpret` | Bg compile during execute(i); on miss, skip JIT (interpreter) |
+
+The bg spec compile always uses full quality LLVM O2 (compile time is free — overlaps execution). Miss recompile always uses TPDE regardless of `--compile-mode`.
 
 #### JIT SIMD
 
@@ -208,17 +219,15 @@ Requires building with LLVM 14 (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL
 
 #### Per-Optimization Flags
 
-These flags control individual pipeline-level optimizations. All default to **enabled** when `--jit-level` is `pipeline` or `sql`.
+These flags control individual pipeline/query-level optimizations.
 
 | Flag | Description |
 |------|-------------|
-| `--jit-fusion-build` / `--no-jit-fusion-build` | Filter + HashBuild fusion. Fuses filter evaluation and hash table insertion into a single loop, eliminating the intermediate DataChunk between them. |
-| `--jit-fusion-probe` / `--no-jit-fusion-probe` | Filter + HashProbe + Projection fusion. Fuses filter, hash probe, and projection into a single loop on the probe side, eliminating two intermediate DataChunks. |
-| `--jit-inline-hash` / `--no-jit-inline-hash` | Inline FNV-1a hash computation as LLVM IR instead of calling the `aqp_hash()` C function. Eliminates function call overhead and enables LLVM to keep the hash value in a register. |
-| `--jit-payload-prune` / `--no-jit-payload-prune` | Hash build payload pruning. Only copies columns referenced downstream into the hash table payload instead of all input columns. Reduces hash table memory footprint. |
-| `--jit-prefetch` / `--jit-prefetch=<distance>` / `--no-jit-prefetch` | Software prefetching for hash table access. Uses `llvm.prefetch` intrinsic to prefetch hash table slots ahead of the probe loop. Default distance is 8. |
-| `--jit-batch-probe` / `--no-jit-batch-probe` | Batch/vectorized hash probe. Two-phase probe: Phase 1 computes all hashes and prefetches slots; Phase 2 probes with cache-hot slots. |
-| `--jit-cache` / `--no-jit-cache` | In-memory compiled-object cache (debug flag, default **off**). Process lifetime only — never persists to disk, never reuses across runs. Within one process, byte-identical compile content hits the cache: with `--benchmark --repeat=N` that covers repeats 2..N of each query AND any cross-query/sub-query duplicates; with `--repeat=1` only the (rare) cross-query/sub-query duplicates can hit. Keep it off for final measurements so every repeat pays real compile time. |
+| `--jit-payload-prune` / `--no-jit-payload-prune` | Hash build payload pruning. Only copies columns referenced downstream into the hash table payload. |
+| `--jit-prefetch` / `--jit-prefetch=<distance>` / `--no-jit-prefetch` | Software prefetching for hash table access. Default distance is 8. |
+| `--jit-batch-probe` / `--no-jit-batch-probe` | Batch/vectorized hash probe (ROF two-stage). |
+| `--jit-skip-hash-cmp` / `--no-jit-skip-hash-cmp` | Skip stored-hash comparison for integer keys. |
+| `--jit-cache` / `--no-jit-cache` | In-memory compiled-object cache (debug flag, default **off**). |
 
 #### Example
 
@@ -228,9 +237,9 @@ These flags control individual pipeline-level optimizations. All default to **en
   --db="/home/pei/Project/duckdb/measure/imdb.db" \
   --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
   --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-  --split=none \
-  --jit-level=pipeline --jit-opt=o2 --jit-simd=auto \
-  --no-jit-batch-probe --jit-prefetch=16 --jit-cache \
+  --split=node-based \
+  --jit-level=query --compile-mode=tpde \
+  --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache \
   --no-analyze \
   /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
@@ -368,63 +377,60 @@ umbra-server --address 0.0.0.0 /var/db/dsb_10.db
 Go to directory `measure/`. The scripts accept the following positional arguments:
 
 ```
-$1  engine          duckdb / postgres / umbra / mariadb / opengauss
-$2  split           none / relationship-center / entity-center / min-subquery / node-based
-$3  jit_level       none / expr / operator / pipeline
-$4  jit_simd        off / sse2 / avx / avx2 / avx512 / auto
-$5  payload_prune   on / off                    (default: on)
-$6  prefetch        on / off / <distance>       (default: on, distance=8)
-$7  batch_probe     on / off                    (default: on)
-$8  skip_hash_cmp   on / off                    (default: on)
-$9  cache           off / on / <path>           (default: off)
+$1   engine          duckdb / postgres / umbra / mariadb / opengauss / lingodb
+$2   split           none / relationship-center / node-based
+$3   jit_level       none / expr / operator / pipeline / query  (lingodb: llvm / tpde)
+$4   jit_simd        off / none / auto                          (default: off)
+$5   payload_prune   on / off                                   (default: on)
+$6   prefetch        on / off / <distance>                      (default: on)
+$7   batch_probe     on / off                                   (default: on)
+$8   skip_hash_cmp   on / off                                   (default: on)
+$9   jit_cache       off / on                                   (default: off)
+$10  spec_jit        off / recompile / interpret                (default: off)
+$11  compile_mode    off / fastisel / tpde                       (default: off = llvm)
+$12  tune_config     <path to JSON>                             (default: none)
 ```
 
-Arguments 5-9 are optional and default to all optimizations enabled (cache off).
+Arguments 5-12 are optional.
 
 ### Run a single benchmark pass
 
 ```bash
-bash ./run_job.sh duckdb none sql o2 auto
-```
-
-### Measure performance with hyperfine
-
-```bash
-bash ./measure_job.sh duckdb none sql o2 auto
+bash ./run_job.sh duckdb none pipeline none
 ```
 
 ### Measure performance breakdown (per-query timing)
 
 ```bash
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 auto
+bash ./measure_breakdown_time_job.sh duckdb node-based query none
 ```
 
-### Examples with per-optimization flags
+### Examples with compile mode and spec-jit
 
 ```bash
-# All optimizations enabled (default)
-bash ./measure_job.sh duckdb none sql o2 auto
+# Query-jit with TPDE backend
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on on off off tpde
 
-# Disable fusion-build to isolate its contribution
-bash ./measure_job.sh duckdb none sql o2 auto off
+# Query-jit with spec-jit=recompile (bg=LLVM O2, miss=TPDE)
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on on off recompile tpde
 
-# Disable both fusion optimizations
-bash ./measure_job.sh duckdb none sql o2 auto off off
-
-# Custom prefetch distance of 16
-bash ./measure_job.sh duckdb none sql o2 auto on on on on 16
-
-# Enable disk cache
-bash ./measure_job.sh duckdb none sql o2 auto on on on on on on on
-
-# Disable batch probe only (pass preceding defaults)
-bash ./run_job.sh duckdb none sql o2 auto on on on on on off
-
-# Breakdown timing with batch probe disabled
-bash ./measure_breakdown_time_job.sh duckdb none pipeline o2 auto on on on on on off
+# Per-subquery tuned config
+bash ./measure_breakdown_time_job.sh duckdb node-based query none \
+    on on on on off off off job_result/tuned_per_subquery_node-based.json
 ```
 
-Log filenames encode the active flags, e.g., `aqp_middleware_duckdb_none_pipeline_auto_nopayprune_job.csv`.
+Log filenames encode the active flags, e.g., `duckdb_node-based_query_none_fctpde_breakdown_time_log.csv`.
+
+### Analysis Scripts (measure/*.py)
+
+| Script | Usage | Description |
+|--------|-------|-------------|
+| `tune_per_subquery.py` | `python3 tune_per_subquery.py [split]` | Pick best config per (query, sub-query), write tuned JSON |
+| `show_all_configs.py` | `python3 show_all_configs.py [split]` | Summary table: overhead / jit / exe / total across all configs |
+| `verify_tuned.py` | `python3 verify_tuned.py [split]` | Compare measured vs predicted per-query totals |
+| `verify_tuned_detail.py` | `python3 verify_tuned_detail.py [query] [split]` | Per-sub-query drill-down for one query |
+| `find_top_queries.py` | `python3 find_top_queries.py [path] [--top=N]` | Rank queries by slowest median total |
+| `tune_kernel_threshold.py` | `python3 tune_kernel_threshold.py [dir]` | Kernel-path threshold analysis (PipelineKernel vs DuckDB) |
 
 ### Native engine scripts
 
@@ -442,13 +448,15 @@ bash ./measure_umbra.sh
 bash ./measure_mariadb.sh
 ```
 
-## Kernel Threshold Tuning
+## Tuning
+
+### Kernel Threshold Tuning
 
 The middleware includes a kernel execution path that uses pre-built flat column arrays and CSR indexes to execute sub-queries directly, bypassing the SQL engine's hash join and decompression. For each sub-query, the system decides whether to use the kernel or fall back to the SQL engine (e.g., DuckDB). The decision depends on sub-query features: scan table size, number of joins, number of filters, and number of output columns.
 
 The optimal threshold must be tuned empirically because the kernel and SQL engine have different performance profiles: the kernel excels on filtered scans with CSR joins but may be slower on patterns with many joins or very small tables where DuckDB's vectorized execution has lower overhead.
 
-### How to tune
+#### How to tune
 
 1. Build with storage plan support and run the tuning benchmark:
 
@@ -467,20 +475,110 @@ python3 tune_kernel_threshold.py tuning_data/
 
 This matches kernel vs DuckDB times per sub-query, reports which features predict kernel wins, and recommends a threshold formula.
 
-### When to retune
+#### When to retune
 
 - **New split strategy**: Recommended but not required. The threshold is based on sub-query features (scan_rows, num_joins, etc.), not the strategy itself. A new strategy produces different sub-query patterns that may not be covered by existing tuning data. Add the new strategy to the `STRATEGIES` variable in `tune_kernel_threshold.sh` and rerun.
 - **New engine**: Required if kernel support is extended beyond DuckDB. The kernel competes against the engine's own execution, so a slower engine (e.g., PostgreSQL) shifts the threshold in the kernel's favor. Currently the kernel path is DuckDB-only (`engine == BackendEngine::DUCKDB`).
 - **New hardware**: Recommended. Cache sizes, core counts, and memory bandwidth affect the crossover point.
 - **Schema/data changes**: Recommended if table sizes change significantly.
 
-### CLI flags
+#### CLI flags
 
 | Flag | Description |
 |------|-------------|
 | `--tuning` | Enable per-sub-query feature + timing logging (zero overhead when disabled) |
 | `--no-kernel` | Force SQL engine path for all sub-queries (for collecting baseline comparison data) |
 | `--storage-cache=<path>` | Binary cache file for flat arrays + CSR indexes (avoids rebuilding on each run) |
+
+### Per-Subquery JIT Config Tuning
+
+Different sub-queries within a split query benefit from different JIT configurations. For example, sub-query 0 might run fastest with query-jit + TPDE backend, while sub-query 1 runs fastest with operator-jit. Per-subquery tuning finds the optimal config for each (query, sub-query index) pair.
+
+#### Tunable flags
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| jit level | none (interp), expr, operator, pipeline, query | Which compilation level to use |
+| simd | off, auto | SIMD vectorization for expr/operator/pipeline-jit |
+| compile_mode | llvm (0), fastisel (1), tpde (2) | Compile backend (--compile-mode=llvm, fastisel, or tpde) |
+| payload_prune | on, off | Prune unused payload columns in pipeline-jit |
+| prefetch | on, off | Software prefetch in pipeline-jit probe |
+| batch_probe | on, off | ROF two-stage batch probe in pipeline-jit |
+| skip_hash_cmp | on, off | Skip stored-hash comparison for integer keys |
+
+#### How to tune
+
+1. Collect breakdown CSVs for each candidate config (all with `--spec-jit=off`):
+
+```bash
+cd measure/
+# Each config produces a CSV in job_result/
+bash measure_breakdown_time_job.sh duckdb node-based none none       # interp
+bash measure_breakdown_time_job.sh duckdb node-based expr none  on on on on off off  # expr
+bash measure_breakdown_time_job.sh duckdb node-based expr auto  on on on on off off  # expr_simd
+bash measure_breakdown_time_job.sh duckdb node-based operator none on on on on off off  # operator
+bash measure_breakdown_time_job.sh duckdb node-based operator auto on on on on off off  # operator_simd
+bash measure_breakdown_time_job.sh duckdb node-based pipeline none on on on on off off  # pipeline
+bash measure_breakdown_time_job.sh duckdb node-based pipeline auto on on on on off off  # pipeline_simd
+bash measure_breakdown_time_job.sh duckdb node-based query none on on on on off off  # query_full
+bash measure_breakdown_time_job.sh duckdb node-based query none on on on on off off fastisel  # query_fastisel
+bash measure_breakdown_time_job.sh duckdb node-based query none on on on on off off tpde  # query_tpde
+```
+
+2. Run the tuning script:
+
+```bash
+python3 tune_per_subquery.py [split]
+```
+
+This reads all available breakdown CSVs, picks the config with the lowest jit+execute time for each sub-query, and writes a JSON file to `job_result/tuned_per_subquery_<split>.json`.
+
+3. Measure the tuned config:
+
+```bash
+bash measure_breakdown_time_job.sh duckdb node-based query none \
+    on on on on off off off \
+    job_result/tuned_per_subquery_node-based.json
+```
+
+4. Verify:
+
+```bash
+python3 show_all_configs.py         # compare suite totals across all configs
+python3 verify_tuned.py             # compare measured vs predicted per query
+python3 verify_tuned_detail.py 10a  # per-subquery detail for a specific query
+```
+
+#### JSON format
+
+The tune JSON maps query name → sub-query index → config:
+
+```json
+{
+  "10a": {
+    "0": {"config": "query_tpde", "compile_mode": 2, "total_ms": 3.749},
+    "1": {"config": "query_tpde", "compile_mode": 2, "total_ms": 3.963},
+    "3": {"config": "interp", "total_ms": 0.738},
+    "4": {"config": "operator", "total_ms": 0.914}
+  }
+}
+```
+
+Fields: `config` (required, matched by `ParseTuneLabel`), `total_ms` (predicted time), and optional flag overrides (`compile_mode`, `simd`, `payload_prune`, `prefetch`, `batch_probe`, `skip_hash_cmp`). Absent flags use the global CLI defaults.
+
+#### Adding new configs
+
+To sweep additional flag combinations:
+
+1. Run the measurement with the desired flags (produces a new CSV in `job_result/`).
+2. Add an entry to the `make_configs()` function in `tune_per_subquery.py` with the CSV filename and the flag values.
+3. Re-run `python3 tune_per_subquery.py` to regenerate the JSON.
+
+#### Combining with speculative JIT
+
+The tune config is orthogonal to `--spec-jit`. The tune config determines *what* to compile for each sub-query; spec-jit determines *when* (eagerly in the background during the previous sub-query's execution). Using both together can hide the compile latency of config switches.
+
+When both are active, the speculative compiler automatically looks ahead in the tune config to compile the *next* sub-query with its tuned flags (jit level, backend, SIMD). If the next sub-query is tuned to "interp" (no JIT), the speculative launch is skipped entirely. The main-thread JIT compiler is also recreated on-demand when the tune config switches between backends or SIMD modes.
 
 ## Web Interface
 

@@ -38,6 +38,11 @@
 #endif
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+
+#ifdef AQP_HAVE_TPDE
+#include <llvm/ExecutionEngine/Orc/CompileUtils.h>
+#include <tpde-llvm/LLVMCompiler.hpp>
+#endif
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Scalar/Reassociate.h>
@@ -140,6 +145,39 @@ static std::atomic<uint64_t> s_filter_counter{0};
 using namespace llvm;
 using namespace llvm::orc;
 using namespace ir_sql_converter;
+
+#ifdef AQP_HAVE_TPDE
+namespace {
+// tpde_llvm::ConcurrentOrcCompiler falls back to LLVM SimpleCompiler
+// SILENTLY on unsupported IR; this wrapper does the same but logs each
+// fallback so a --compile-mode=tpde measurement run cannot secretly
+// degrade into an all-LLVM run. The fallback TargetMachine inherits the
+// FastISel-O0 settings set on the JTMB in Impl's constructor.
+class TpdeOrcCompiler : public IRCompileLayer::IRCompiler {
+  JITTargetMachineBuilder jtmb_;
+
+public:
+  explicit TpdeOrcCompiler(JITTargetMachineBuilder jtmb)
+      : IRCompiler({}), jtmb_(std::move(jtmb)) {}
+
+  Expected<std::unique_ptr<MemoryBuffer>> operator()(Module &mod) override {
+    std::vector<uint8_t> buf;
+    auto compiler = tpde_llvm::LLVMCompiler::create(jtmb_.getTargetTriple());
+    if (compiler && compiler->compile_to_elf(mod, buf)) {
+      return MemoryBuffer::getMemBufferCopy(
+          StringRef(reinterpret_cast<const char *>(buf.data()), buf.size()),
+          mod.getModuleIdentifier());
+    }
+    fprintf(stderr, "[AQP-JIT] TPDE rejected module '%s' -> LLVM fallback\n",
+            mod.getModuleIdentifier().c_str());
+    auto tm = jtmb_.createTargetMachine();
+    if (!tm)
+      return tm.takeError();
+    return SimpleCompiler(**tm)(mod);
+  }
+};
+} // namespace
+#endif
 
 namespace aqp_jit {
 
@@ -458,7 +496,7 @@ struct IrToLlvmCompiler::Impl {
         });
   }
 
-  Impl(SimdISA simd_isa) {
+  Impl(SimdISA simd_isa, FastCompileBackend fast = FastCompileBackend::OFF) {
     EnsureLLVMInit();
 
     // Detect CPU features for SIMD
@@ -486,11 +524,31 @@ struct IrToLlvmCompiler::Impl {
     if (jtmb) {
       jtmb->setCPU(host_cpu);
       // Note: feature_str is applied per-function via attributes
+      if (fast != FastCompileBackend::OFF) {
+        // §6.6 fast tier: O0 instruction selection with FastISel (mirrors
+        // lingo-db LLVMBackends.cpp:248-249). For TPDE this configures the
+        // LLVM fallback used when TPDE rejects a module.
+        jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
+        jtmb->getOptions().EnableFastISel = true;
+      }
     }
 
     auto builder = LLJITBuilder();
     if (jtmb)
       builder.setJITTargetMachineBuilder(std::move(*jtmb));
+    if (fast == FastCompileBackend::TPDE) {
+#ifdef AQP_HAVE_TPDE
+      builder.setCompileFunctionCreator(
+          [](JITTargetMachineBuilder JTMB)
+              -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
+            return std::make_unique<TpdeOrcCompiler>(std::move(JTMB));
+          });
+#else
+      throw std::runtime_error(
+          "--compile-mode=tpde requires a build with AQP_HAVE_TPDE "
+          "(see third_party/tpde_build)");
+#endif
+    }
     auto jit_or = builder.create();
     if (!jit_or) {
       std::string msg;
@@ -4775,9 +4833,13 @@ static void OptimiseModule(Module &mod, bool skip) {
 // ---------------------------------------------------------------------------
 // IrToLlvmCompiler public API
 // ---------------------------------------------------------------------------
-IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd)
-    : skip_opt_(debug), simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
-      impl_(std::make_unique<Impl>(simd)) {}
+IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd,
+                                   FastCompileBackend fast)
+    // Fast tier skips the mid-end pipeline entirely (mirrors lingo-db's
+    // cheap backend, LLVMBackends.cpp:823-827).
+    : skip_opt_(debug || fast != FastCompileBackend::OFF), fast_mode_(fast),
+      simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
+      impl_(std::make_unique<Impl>(simd, fast)) {}
 
 IrToLlvmCompiler::~IrToLlvmCompiler() = default;
 
@@ -5175,7 +5237,8 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string expr_text =
         const_cast<AQPStmt &>(filter_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+                          std::to_string((int)fast_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("filter:" + opt_tag, schema, expr_text));
     fn_name = "aqp_expr_c" + cache_key.substr(0, 12);
@@ -5337,7 +5400,8 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string proj_text =
         const_cast<AQPStmt &>(proj_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+                          std::to_string((int)fast_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("proj:" + opt_tag, in_schema, proj_text));
     fn_name = "aqp_proj_c" + cache_key.substr(0, 12);
@@ -5460,7 +5524,8 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string agg_text =
         const_cast<AQPStmt &>(agg_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+                          std::to_string((int)fast_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("agg:" + opt_tag, in_schema, agg_text));
     fn_name = "aqp_agg_c" + cache_key.substr(0, 12);
@@ -5679,7 +5744,8 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
         ? const_cast<AQPStmt *>(filter_node)->Print(false, 0) : "";
     std::string pt = proj_node
         ? const_cast<AQPStmt *>(proj_node)->Print(false, 0) : "";
-    std::string opt_tag = std::to_string((int)simd_isa_);
+    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+                          std::to_string((int)fast_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("pipe:" + opt_tag, in_schema, ft + "||" + pt));
     fn_name = "aqp_pipe_c" + cache_key.substr(0, 12);
@@ -6330,7 +6396,8 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     AppendIntVec(extra, "lk", lhs_key_chunk_idxs);
     AppendIntVec(extra, "kd", lhs_key_dtypes);
     std::string opt_tag =
-        std::to_string((int)simd_isa_) + (skip_opt_ ? "n" : "o") +
+        std::to_string((int)simd_isa_) + "F" +
+        std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") +
         (skip_hash_cmp_ ? "k" : "_") + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
         std::to_string(prefetch_entry_distance_) + "." +
@@ -7231,7 +7298,8 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string opt_tag =
-        std::to_string((int)simd_isa_) + (skip_opt_ ? "n" : "o") +
+        std::to_string((int)simd_isa_) + "F" +
+        std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") +
         (skip_hash_cmp_ ? "k" : "_") + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
         std::to_string(prefetch_entry_distance_) + "." +
@@ -8037,8 +8105,9 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
   // serialization + codegen flags fully determines the object code.
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
-    std::string opt_tag =
-        std::to_string((int)simd_isa_) + (skip_opt_ ? "n" : "o");
+    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+                          std::to_string((int)fast_mode_) +
+                          (skip_opt_ ? "n" : "o");
     cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
                                       SerializeQjitPlan(plan));
     entry_name = "qjit_query_c" + cache_key.substr(0, 12);

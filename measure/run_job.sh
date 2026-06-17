@@ -9,7 +9,18 @@ prefetch=${6:-on}
 batch_probe=${7:-on}
 skip_hash_cmp=${8:-on}
 jit_cache=${9:-off}
-spec_jit=${10:-on}
+spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
+compile_mode=${11:-off}   # off | fastisel | tpde (--compile-mode backend; off=llvm)
+tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
+
+# For lingodb, the 3rd arg selects the execution mode (llvm | tpde)
+# instead of the DuckDB jit level.
+lingodb_mode="llvm"
+if [[ "$engine" == "lingodb" ]]; then
+    lingodb_mode=${3:-llvm}
+    jit_level=none
+    jit_simd=none
+fi
 
 # Build CLI flags from positional args
 jit_extra_flags=""
@@ -22,7 +33,9 @@ elif [[ "$prefetch" != "on" ]]; then
 fi
 [[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
 [[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
-[[ "$spec_jit"       == "off" ]] && jit_extra_flags+=" --no-spec-jit"
+[[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
+[[ "$compile_mode"   != "off" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 
 # Build a short suffix for the log filename
 flag_suffix=""
@@ -32,7 +45,9 @@ flag_suffix=""
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
-[[ "$spec_jit"       == "off" ]] && flag_suffix+="_nospecjit"
+[[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
+[[ "$compile_mode"   != "off" ]] && flag_suffix+="_fc${compile_mode}"
+[[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 
 # Storage plan flags. Only query-jit consumes the storage plan (FlatTable
 # scan layer); expr/operator/pipeline run entirely inside DuckDB and never
@@ -42,7 +57,11 @@ if [[ "$jit_level" == "query" ]]; then
     storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
 fi
 
-log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_job.txt
+if [[ "$engine" == "lingodb" ]]; then
+    log_name=aqp_middleware_${engine}_${lingodb_mode}_${split}_job.txt
+else
+    log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_job.txt
+fi
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
@@ -238,7 +257,7 @@ db_arg="--db=${db_conn}"
 lingodb_flags=""
 if [[ "$engine" == "lingodb" ]]; then
     db_arg="--in-memory"
-    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
+    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv --lingodb-mode=${lingodb_mode}"
 fi
 
 $cmd_prefix ../build_release/aqp_middleware \

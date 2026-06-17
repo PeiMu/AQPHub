@@ -413,12 +413,314 @@ All seven items implemented and gated (each: goldens x3 splits, 113/113).
    spec-hit-resolve-failed, AnnotateBuildSides mismatch); ht_finalize
    stays env-gated. Use build_debug for trace greps.
 
+## Archived: Phase 5 design specs (moved from CLAUDE.md, 2026-06-12)
+
+Original design text for §5.1-§5.7, all implemented and gated (results
+in "Query-JIT Phase 5 COMPLETE" above). Kept verbatim for the rationale
+data (wait-policy measurements, cache-key design, ABI notes).
+
+### 5.1 Object cache for query-jit + pipeline-jit fusion compilers
+
+`--jit-cache` is a DEBUG flag, default OFF (final measurements compile from
+scratch every repeat). Semantics of the existing cache (ir_to_llvm.cpp
+Impl:358-416, keep them): in-memory `obj_cache` map keyed by FNV-1a content
+hash → object-code bytes; process lifetime; survives `ResetModules()`
+(bytes re-added via `addObjectFile`); reuse hits across repeats AND across
+different queries/sub-queries whenever compile content is byte-identical
+(constants are part of the key — no parameterization, so cross-query hits
+are rare in practice; repeats 2..N of the same sub-query are the hit
+population). The flag gates the WHOLE cache (Impl::cache_enabled): when
+OFF there is zero reuse of any kind — repeats and cross-query alike both
+compile from scratch; the two hit populations share one map and cannot be
+gated separately.
+
+- Query-jit: add `TryCacheLoad`/`pending_cache_key` to `CompileQuerySteps`
+  (:7743). Key = FNV-1a over a canonical serialization of `QjitQueryPlan`:
+  per step (source table/temp name + is_temp, col refs + dtypes, filter
+  expr text, projection list, join key dtypes + layout offsets, sink kind +
+  ht id), HT tuple sizes/layouts, agg descs + output cells, step order,
+  plus codegen flags (skip_opt_, simd). Row counts EXCLUDED — verified the
+  module is row-count independent (`nrows`/`morsel_size` are runtime loads
+  from ctx, ir_to_llvm.cpp:8224-8237). The entry name must switch from
+  `s_filter_counter` to hash-derived (`"qjit_query_c" + key.substr(0,12)`,
+  pattern at :4952) or cache hits can't look the symbol up. No
+  duplicate-symbol hazard: TryCompileQueryJit calls `ResetModules()` before
+  every compile (duckdb_adapter.cpp:2723) ⇒ exactly one query-jit module
+  per generation.
+- Pipeline-jit fusion compilers (the old "Phase 6"): same
+  TryCacheLoad/pending_cache_key protocol for
+  `CompileFilterProbeProjectFusion` (:5719) and `CompileMultiProbeChain`
+  (:6732); key over stage IR text + schemas + per-stage flags
+  (skip_hash_cmp, payload prune, batch_probe, prefetch) via the existing
+  `BuildCacheContent` helper; hash-derived fn names as above.
+- Gate: `--jit-cache` repeat-2+ compile time ≈ 0 in the jit_compile CSV
+  column; goldens unchanged with cache on AND off.
+
+### 5.2 Mark-join IN-list support (`expr:single-attr`, 99 sub-queries)
+
+Verified shape (20a): DuckDB rewrites large IN-lists into a MARK hash join
+against a `CHUNK_GET` constant table; the IR converter emits
+`FilterNode` with qual `SingleAttrExpr` (Bool, table_index = the mark
+join's index, printed "IN (...)") above a `JoinNode(Mark)` whose build
+child is a `ChunkNode` with non-empty `GetContents()`. (Small IN-lists are
+already plain `InExprNode` quals — whitelisted and compiled.) Affected: 33
+none / 46 node-based / 20 rel-center sub-queries (14a-c, 18b-c, 20a-c,
+21a-c, ...).
+
+Fix — rewrite to an in-set predicate, NO hash join at all (strictly better
+than DuckDB's mark join here):
+- In `query_jit_steps.cpp` (both Analyzer and Decompose; no IR mutation —
+  recognize the pattern in place): a single-attr Bool qual whose
+  table_index matches a Mark `JoinNode` on the spine, where the join's
+  build child is a constants-only ChunkNode (`GetContents()` non-empty)
+  and there is exactly one equi-condition ⇒ treat as a streaming filter op
+  on the probe spine: filter column = the probe-side condition attr,
+  constant set = the chunk contents column. Drop the join and the chunk
+  from the steps (no HT id allocated).
+- Codegen: reuse the existing `InExprNode` path — `aqp_in_set_i32/_i64/
+  _str` runtime helpers are already registered in the shared LLJIT
+  (Impl ctor, ir_to_llvm.cpp:476-478).
+- NULL semantics are equivalent: NULL probe key ⇒ mark column NULL ⇒
+  filter drops the row; NULL key IN (list) ⇒ NULL ⇒ drops. Inner-join-only
+  invariant of the runtime is preserved (mark join never reaches it).
+- Still reject (trace new reasons): negated single-attr (NOT IN /
+  anti-mark), mark joins whose build child is a named temp chunk or
+  another subtree, multi-condition mark joins.
+- Gate: the 99 sub-queries flip to `exec` traces; goldens ×3.
+
+### 5.3 Spec-jit for query-jit (wait-on-not-ready kept, both jit levels)
+
+Current spec-jit (pipeline-jit only, node-based only,
+ir_query_splitter.cpp:715-1014): after Execute(i) finishes, a 1-worker bg
+pool Prepares sub-query i+1 on a separate Connection (placeholder temp
+registered with the ACTUAL cardinality of temp i — launch is deliberately
+post-execute, :722-729, so DuckDB's join order is accurate) and runs
+RegisterJITImpl into a speculative AQPJITContext; Phase B
+(PrecomputeNextExtraction) keeps or relaunches after the real SplitIR; HIT
+(CheckSpeculativeResult :1110) = normalized-SQL match + est/actual
+cardinality ratio ≤ 2 guard; learned-miss history skips known-miss
+launches on later repeats. Query-jit currently CANNOT use it: both launch
+sites gate on `jit_flags & AQP_JIT_LEVEL_MASK` (bit 7 is excluded), and
+the mechanism compiles DuckDB-embedded pipeline fns + executes the
+speculative prepared statement through DuckDB — query-jit does neither.
+
+Design (user ruled 2026-06-11, from measurement):
+- **WAIT on match-but-not-ready, ALL jit levels** — keep
+  CheckSpeculativeResult's blocking behavior (:1132-1139) and give
+  query-jit the same semantics. Data basis (5 heaviest JOB queries,
+  node-based, spec off, /tmp/waitpol): compiles are 0.3-5 ms/sub-query
+  (expr/operator) and 5-16 ms (pipeline/query), while the bg-compile
+  overlap window is only the inter-sub-query middleware work + Prepare
+  (~2-10 ms — spec launches post-execute by design), so not-ready is
+  common; the wait residual is bounded by one compile (≤16 ms, and ≤
+  inline recompile by construction), whereas never-wait forfeits
+  jit-vs-interp deltas of up to ~50 ms/sub-query, randomizes the
+  execution path (timing race → nondeterministic repeats), and would
+  poison the learned-miss history (not-ready counted as miss ⇒ later
+  repeats permanently interpret).
+  Full-JOB confirmation (113 queries × 565 spec-eligible sub-queries,
+  node-based, 2026-06-11): expr/operator/pipeline with spec ON (waits
+  embedded in the execute column) — WAIT beats NEVER-WAIT in aggregate by
+  +478/+447/+426 ms suite-wide; worst per-event losses are ~10 ms and ALL
+  have jit_compile≈0 (spec was ready ⇒ both policies run jit there — the
+  loss is codegen, not waiting). Query-jit (spec off, /tmp/policy_full/
+  query_node_r3.csv): worst case (zero overlap, r=full compile, Σr=4.6 s)
+  WAIT loses −3.7 s; best case (full overlap) wins +0.9 s. The dominant
+  term is NOT wait time but the 137/565 sub-queries whose compiled binary
+  runs SLOWER than the interpreter (Σ loss 1.6 s vs Σ gain 2.5 s; worst:
+  8c 183 ms, 17a 116 ms, 9d 86 ms, 7c 84 ms, 16b 80 ms, 12a 66 ms) — no
+  wait policy fixes j>e; that population needs a §5.5 codegen/cost
+  investigation, orthogonal to the policy ruling.
+- **MISS ⇒ same as no-spec mode** (query-jit): on a true miss
+  (SQL mismatch / ratio guard), fall through to the normal inline
+  TryCompileQueryJit path, exactly like pipeline-jit recompiles inline on
+  miss today. Spec stays strictly additive: never slower than spec-off.
+- **Stale-plan / join-reorder check**: (a) launch only post-execute with
+  actual cardinality in the placeholder (existing) so the speculative
+  Prepare sees the same stats an inline Prepare would — same join order by
+  construction; (b) normalized-SQL compare catches cross-sub-plan range
+  predicate differences (bloom filters don't change SQL and are irrelevant
+  to query-jit's own runtime); (c) keep the est/actual ratio > 2 guard as
+  belt-and-braces.
+- Query-jit bg task (new branch next to the pipeline one, same rotating
+  `spec_compilers_` + ResetModules-at-task-start discipline on the
+  1-worker pool): spec Connection → Prepare(spec_sql) → ConvertPlanToIR →
+  AnnotateBuildSides → AnalyzeQueryJit → BuildExecutionSteps →
+  CompileQuerySteps. Store `QjitQueryPlan` + entry fn + output/agg
+  metadata in the SpeculativeCompilation. Do NOT resolve sources in the bg
+  task — the consumed temp doesn't exist yet (placeholder has schema
+  only); resolution (`ResolveSource`/`GetOrLoadQjitTemp`/
+  `ResolveTempSource`) happens at HIT time on the main thread, after the
+  real temp is stored.
+- Gates to relax: `duckdb_flags = jit_flags & AQP_JIT_LEVEL_MASK; if (!duckdb_flags) return;`
+  in LaunchSpeculativeCompile (:735) and PrecomputeNextExtraction (:873)
+  must also accept `AQP_JIT_QUERY_JIT`. Keep the node-based-only strategy
+  gate for v1 (relationship-center extension is a separate decision).
+- Lifetime: DrainSpecs before temp clears (existing); the spec compiler's
+  modules stay alive through the HIT execution (two-compiler rotation
+  guarantees the next bg compile resets the OTHER instance); pool is
+  quiescent when Run returns.
+- Gate: goldens ×3 with spec on; `[AQP-SPECJIT]` HIT/MISS/not-ready counts
+  per query; node-based perf with spec on vs off — jit_compile column ≈ 0
+  on HIT sub-queries.
+
+### 5.4 Parallel CAS hash-table insert
+
+Today `QjitHashTable`: per-worker append buffers (race-free appends),
+then `qjit_ht_finalize` single-threaded — counts entries, allocates the
+pow-2 directory, walks all fragments linking each entry into its bucket
+chain. The link walk is O(total rows) on one core (e.g. 6f temp builds,
+millions of rows).
+
+Change: keep per-worker appends; split finalize into (1) main thread sums
+per-worker counts + allocates the directory; (2) `ParallelFor` over the
+per-worker fragment lists — for each entry: hash → bucket → CAS push
+(`e->next = head` then `compare_exchange_weak(head, e)` with release on
+success / relaxed on failure, retry loop). Probe-side loads need no
+atomics: the pool's condition-variable join at the end of the finalize
+ParallelFor establishes happens-before for every subsequent probe step.
+- ABI change: `qjit_ht_finalize(ht)` → `qjit_ht_finalize(ctx, ht)` (the
+  runtime needs the pool); update the entry-fn emission
+  (ir_to_llvm.cpp:8248) and the registered symbol.
+- Chain order inside a bucket becomes nondeterministic. Safe: the probe
+  loop emits ALL matches (multi-match backtracking), temp consumers are
+  order-insensitive, and JOB finals are MIN aggregates — golden VALUES
+  unchanged. The thread-invariance gate compares values, not row order.
+- Gate: unit test — builds with N∈{1,2,16} workers produce identical probe
+  result SETS (sort before compare); goldens ×3; finalize wall time before
+  vs after on a heavy build (6f temp5, 3.7M rows).
+
+### 5.5 Measurement + query-jit slower-than-interpreter investigation
+
+`bash measure_breakdown_time_job.sh duckdb <split> query none` per split
+(script already passes `--storage-plan --storage-cache` for query);
+rectangular-CSV check (existing awk); per-query medians vs pipeline-jit and
+interpreter; one cache-on debug run to confirm repeat-2+ compile ≈ 0.
+Correctness configs for query are already permanent in correctness_test.sh.
+
+Investigation (from the 2026-06-11 full-JOB policy run, node-based, see
+§5.3): 137/565 sub-queries execute SLOWER compiled than interpreted
+(Σ loss 1.6 s vs Σ gain 2.5 s). Worst queries by pure exec loss (Σ j−e,
+ms): 8c 183, 17a 116, 9d 86, 7c 84, 16b 80, 12a 66, 33a 62, 13d 57,
+12c 52, 22d 49. Profile these (e.g. 8c sub2: jit 138 ms vs interp 61 ms)
+to find the cause — candidates: single-vs-multi-threaded sections,
+HT finalize (§5.4 helps), missing scan-level selectivity tricks (zone
+maps), morsel size, string handling. Decide per finding: codegen fix vs a
+cost-based per-sub-query bailout (bailout shape/threshold is a USER
+decision). Raw data was /tmp/policy_full/query_node_r3.csv (volatile);
+regenerate with the measure script or a 3-repeat benchmark run.
+
+### 5.6 Storage-cache trim for query-jit (skip CSR/index sections)
+
+Query-jit pre-builds NOTHING per query: the storage plan is only a one-time
+columnar load of the base tables (FlatTables) out of imdb.db via a DuckDB
+scan; the binary cache file (`--storage-cache`) just avoids redoing that
+scan on later runs. The CSR/sorted/inverted indexes in the same file are
+kernel-path-only. Change (load AND build sides, gated on
+`kernel_path == NONE` so kernel-path runs are untouched):
+- `StoragePlan::LoadFromFile` gains a `skip_indexes` mode — seek past the
+  CSR/sorted/inverted sections instead of materializing them (RAM + load
+  time win; the cache file format is unchanged).
+- First-run build path (aqp_middleware.cpp:414-430): skip
+  `BuildCSRIndexes`/`BuildSortedIndices`/`BuildInvertedIndices` when only
+  query-jit needs the plan; `SaveToFile` then writes empty index sections
+  (a kernel-path run against such a cache must detect the empty sections
+  and rebuild — or use a separate cache file; keep the two paths on
+  separate `--storage-cache` paths to avoid surprises).
+- Gate: query-jit goldens ×3 splits unchanged; RSS at first query
+  noticeably lower than with full cache load; kernel-path configs still
+  golden against their own (full) cache file.
+
+### 5.7 `scan_qjit_temp` replacement scan (kill dual temp materialization)
+
+No storage-plan dependency, and NO patched-DuckDB change / libduckdb
+rebuild (verified: the precedents `scan_temp_collection` and
+`scan_kernel_temp` are registered entirely in the MIDDLEWARE adapter via
+DuckDB's public API — `RegisterTempCollectionScan`,
+duckdb_adapter.cpp:161-203: `Catalog::CreateTableFunction` + a callback
+appended to `db_config.replacement_scans`; the replacement-scan dispatch
+that maps temp names → table functions is `TempCollectionReplacementScan`
+:288-324). Today every query-jit-produced temp is stored twice: QjitTable
+(compiled consumers) + row-converted CDC `StoredTempResult` (interpreter
+consumers). Change:
+- New table function `scan_qjit_temp` registered next to
+  `scan_kernel_temp` (same pattern: bind reads schema from the adapter's
+  `qjit_temps_` map via a `function_info` pointer, projection_pushdown
+  on); scan fabricates 2048-row DataChunks on demand (INT32/INT64 direct,
+  VARCHAR via string_t views into the QjitTable arena — arena outlives
+  the scan because temps are cleared only at per-query reset,
+  duckdb_adapter.cpp:2204).
+- Add a third branch in `TempCollectionReplacementScan` checking
+  `qjit_temps_`; delete the CDC write-back in the query-jit store path
+  (StoreTempCollection's qjit branch). Fallback-produced temps
+  (interpreter sub-queries) keep their CDC path unchanged.
+- Cardinality: provide table_function cardinality from QjitTable nrows so
+  the optimizer sees the same stats the CDC path gave (join order parity —
+  verify with plan dumps on a split-heavy query, e.g. 16b). Note the CDC
+  path also serves per-column stats (`TempCollectionStatistics` :275) —
+  decide whether scan_qjit_temp needs equivalent stats or plan dumps show
+  parity without them.
+- Gate: goldens ×3 splits; RSS during 6f/16b drops vs dual
+  materialization; mixed jit/fallback chains still correct (fallback
+  consumer scanning a qjit temp, qjit consumer scanning a fallback temp).
+
+## Phase 6: Lingo-db parity audit (2026-06-12)
+
+Exhaustive sweep of lingo-db source (all SubOp transforms, HT/runtime
+internals, codegen tricks, compile modes) diffed against pipeline-jit +
+query-jit. Findings (full details + gap specs in CLAUDE.md "Phase 6"):
+- Parity confirmed: LIKE constant-pattern specialization (we already
+  inline prefix/suffix + contains/segments helpers), VarLen32 ≡ string_t,
+  SimpleObjectCache ≡ --jit-cache, parallel CAS HT build ≡ §5.4.
+- We exceed lingo-db: A+ join-filter pushdown + block skip (lingo-db has
+  no zone maps), mark-join IN-list rewrite without HT, spec-jit.
+- GAPS (to implement): §6.1 bloom-tagged HT chain pointers (lingo-db
+  helpers.h:197-216 — 16-bit bloom mask in pointer low bits, miss =
+  AND+CMP with zero derefs); §6.2 query-jit probe still always compares
+  Entry::hash (ir_to_llvm.cpp:8547) — pipeline-jit's do_skip_salt analog
+  missing in qjit; §6.5 low-prio: ReuseLocal/CommonPipelineElimination
+  HT-build dedupe, NOT-NULL validity elimination, cheap hash_64 for qjit
+  HTs, FastISel cheap-compile mode.
+- Measurement gap: lingodb_*_breakdown CSVs in job_result have NO execute
+  columns (adapter writes only lingodb_compile_time.csv, which the
+  measure script never preserves) ⇒ §6.3 fix + rerun needed for the full
+  suite comparison.
+- 6-query spot check (none-split, warm exec medians, ms): lingo/qjit =
+  11d 12.3/50.9, 16b 174.5/204.9, 9d 76.5/109.6, 6f 150.0/141.9,
+  7c 160.3/60.5, 5a 25.0/6.3 — aggregate parity (Σ 598.6 vs 574.1;
+  interp Σ 1476); compile comparable (27-44 vs 25-72 ms/query).
+- End-to-end picture (2026-06-12 CSVs, 10 warm repeats avg, seconds;
+  exec / jit-cold / middleware / total):
+    none       interp 9.07/-/0.00/9.07   pipeline 8.57/5.64/0.01/14.23
+               query 4.49/5.86/0.01/10.36
+    node-based interp 10.12/-/0.69/10.81 pipeline 9.60/1.31/0.82/11.74
+               query 4.41/2.93/0.82/8.15
+    rel-center interp 12.79/-/0.57/13.35 pipeline 12.68/0.58/0.58/13.85
+               query 7.34/6.69/0.54/14.57
+  Query-jit exec wins 112/113 queries on every split; j>e population
+  resolved (only 17d -5.9 ms nb, 12a -7.9 ms rc). End-to-end win only on
+  node-based (spec-jit hides compile); none/rc are compile-bound => §6.5
+  fast-compile and/or spec-jit-for-rc are the levers. Pipeline-jit exec
+  gain only ~5% suite-wide — operator-boundary interception can't capture
+  lingo-db's full-pipeline win; query-jit does.
+- Parity details confirmed in source: LIKE specialization = lingo-db
+  OptimizeRuntimeFunctions.cpp:81-147 vs our ir_to_llvm.cpp:1158-1348;
+  SimpleObjectCache = LLVMBackends.cpp:81-119; CAS HT build =
+  LazyJoinHashtable.cpp:20-30. Out-of-JOB-scope (stays deferred):
+  grouped-agg PreAggregationHashtable (64-partition per-thread fragments
+  + parallel merge — reference design if grouped agg is ever needed),
+  parallel sort, C/GPU backends, NUMA. Pipeline-jit scope note: DuckDB
+  JoinHashTable salt bits + --jit-skip-hash-cmp already play the §6.1
+  tag-filter and §6.2 skip-hash roles — nothing to do there.
+
 ## Remaining Work
 
-- Query-jit full formal perf sweep post-Phase-5:
-  measure_breakdown_time_job.sh duckdb {none,node-based,
-  relationship-center} query none (user runs; targeted 10-query loser
-  measurement already done, see Phase 5 §5.5 above).
+- Phase 6 gaps: §6.1 bloom-tagged chain pointers, §6.2 qjit
+  skip-stored-hash-cmp, §6.3 lingodb measurement fix + 3-split rerun,
+  §6.4 11d/9d/16b loss investigation, §6.5 low-prio candidates,
+  §6.6 DECIDED 2026-06-12: fast-tier backend first, then re-decide
+  spec machinery with measured ratio/penalty (entry at end of this
+  log; plan in CLAUDE.md Phase 6).
 - Performance sweep analysis: multi-probe vs single-probe vs interpreter,
   all splits (CSVs collected in measure/job_result/pipeline_jit_perf/).
 - Phase 7: Per-query flag tuning (skip_hash_cmp/payload_prune/batch_probe/
@@ -434,3 +736,666 @@ All seven items implemented and gated (each: goldens x3 splits, 113/113).
   in-spine.
 - All work since 2026-06-10 is UNCOMMITTED (incl. submodule
   SimplestJoin::build_child) — commit before/with Phase 5.
+
+## Spec-jit redesign decision (2026-06-12) — full-JOB model, §6.6 DECIDED
+
+### Instrumentation bug + fix (landed)
+
+Bug: CheckSpeculativeResult's blocking `future.wait()` on
+match-but-not-ready and the end-of-loop DrainSpecs both ran in an
+UNTIMED gap (after the "generate sub-SQL" chrono_toc in
+ir_query_splitter.cpp, before the adapter's chrono_tic), so spec-ON CSV
+column sums underreported wall time by the full wait. Proof by
+wall-clock equality: 10a spec wall 4.08 s vs nospec 4.04 s over 20 reps
+while colsums differed by 710 ms; 26b hid 0.94 s over 20 reps. After
+fix: 10a warm colsum 37.8→75.3 ms, 26b 73.1→125.6 ms; fixed overheads
+match nospec (2.17 vs 2.18 s). Consequences: every prior node-based
+spec-ON CSV (incl. Phase 6 job_result query CSVs) is tainted; 26b
+actually LOSES to interp (≈120 vs 73.7 ms warm); the 2026-06-11
+"WAIT beats NEVER-WAIT by 478 ms" ruling was an artifact of WAIT hiding
+its time. rc/none splits unaffected (no spec).
+
+Fix mechanics:
+- ir_query_splitter.h: `spec_wait_us_` member; `DrainSpecs(bool
+  charge_wait=false)`.
+- ir_query_splitter.cpp: not-ready wait timed and charged via
+  `DuckDBAdapter::AddSpecWaitTime`; end-of-loop `DrainSpecs(true)`;
+  summary line gains `wait_ms=`; per-query reset now also clears
+  spec_card_misses_ (pre-existing leak) and spec_wait_us_; --debug
+  traces added: per-iter `prepare_est=`/`actual_card=` (the agreed
+  §6.6(e) est/actual instrumentation), launch type, `waited X ms`,
+  decision.
+- duckdb_adapter.{h,cpp}: `spec_wait_extra_us_` +
+  `AddSpecWaitTime`/`ConsumeSpecWaitUs`; ALL jit-column writes
+  (ExecuteSQL qjit/pipeline/skipped, ExecuteSQLandCreateTempTable ×3,
+  ExecuteSpeculativeAndCreateTempTable entry) fold the pending wait in;
+  ResetQueryState clears it.
+- Stale pre-execute-launch comments rewritten (hook install, Phase A
+  header + !post_execute early-return, Phase B keep-on-match,
+  ExecuteOneIteration launch remark, duckdb_adapter post-execute hook).
+
+### Model (all 113 JOB, node-based + query-jit)
+
+Inputs: nospec_full.csv / spec_full.csv / interp_full.csv (repeat=15,
+warm medians) + spec_trace.out (--debug repeat=3, last-repeat events).
+Model: /tmp/awork/model_designs.py (copy if needed). Per-iteration
+quantities: c=inline compile, ej=jit exec, ei=interp exec, overlap
+windows from measured mat/upd/ext/gen columns; launch type
+(peek/phaseB/peek_kept), est/actual ratio, range-injection from traces.
+Fast tier assumption: compile/10, exec×1.5 (sensitivity below).
+
+  design                                          total    beats-interp
+  INTERP                                         10.95 s        —
+  NOSPEC (inline full compile)                   12.43 s        —
+  CURRENT spec-jit (measured, fixed)             12.40 s      39/113
+  OLD (early launch + relaunch on est-miss)      13.18 s      35/113
+  compensate=false (miss → interp, no wait)      11.32 s      33/113
+  compensate=true (miss → fast recompile)         9.58 s      69/113
+  REFINED (+ oracle wait-vs-interp on not-ready)  8.80 s      83/113
+  FASTALL (fast-compile everything, NO spec)      8.38 s        —
+  FASTALL + oracle jit-vs-interp per iter         7.38 s        —
+  triple oracle (early-full | fast | interp)      6.38 s        —
+
+Sensitivity over fast-ratio {5,10,20} × penalty {1.2,1.5,2.0}:
+REFINED 8.24–9.73 s (always best spec design, always beats interp);
+compensate=true 8.80–11.21 s; cost model WITHOUT fast tier: 11.04 s
+(loses to interp); FASTALL degrades to ~11.4 s at 5×/2.0 (more
+penalty-sensitive than REFINED, which keeps full-quality code on the
+usable path). Suite compile=7.04 s vs exec=4.56 s (nospec) —
+node-based query-jit is COMPILE-dominated.
+
+Trace stats (3 repeats): 1353 HIT / 0 MISS / 0 CARD_MISS decisions
+(learned history + Phase B keep-or-relaunch catch mismatches before
+consume; 949 peek launches, 765 Phase-B relaunches, 588 peek-kept),
+215 RANGE-SQL events. Usability misses are NOT the cost center —
+waits are.
+
+Notable per-query (CURRENT → REFINED vs interp, ms): 29c 176→78 (92),
+29a 156→62 (75), 29b 156→58 (59), 28b 148→61 (68), 33a 147→62 (53).
+Worst residual REFINED losses vs interp: 13b 70 vs 46, 13c 66 vs 42,
+1c 31 vs 10 (compile-dominated short queries — exactly what the fast
+tier fixes beyond what spec can).
+
+### Verdict + plan (now in CLAUDE.md §6.6)
+
+Current spec-jit ≈ nospec (saves nothing; post-execute launch never
+overlaps real compile time). OLD design measured worse — historical
+removal confirmed. The user's compensate idea only pays with a fast
+recompile tier; the decisive lever overall is the fast tier itself:
+FASTALL with no speculation beats oracle-REFINED. Plan: (1) implement
+fast-tier backend (CodeGenOptLevel::None + FastISel, no new dep; flag
+in §5.1 cache key), measure real ratio/penalty; (2) re-model and pick
+FASTALL-style vs REFINED compensate-jit; (3) TPDE only if FastISel
+ratio <~5×; rename --spec-jit → --compensate-jit with the new design;
+(4) re-measure tainted node-based query CSVs.
+
+### Addendum (2026-06-12, user-ratified plan refinement)
+
+User Q&A clarified and ratified the §6.6 plan: FASTALL = policy
+(fast-compile everything inline, planned flag `--fast-compile`);
+FastISel-O0 and TPDE = the two candidate BACKENDS for its fast tier —
+FastISel first (no dependency), TPDE compared head-to-head under the
+same policy only if FastISel's measured ratio <~5×. NEW_TRUE hard-
+depends on the fast backend (its miss path IS a fast recompile);
+NEW_FALSE alone loses to interp (11.32 s) so it exists only as
+compensate=false. End state: per-query winner tuning among
+interp/FASTALL/NEW_FALSE/NEW_TRUE (Phase-7 config-JSON pattern), plus
+the early-launch-fast-compile hybrid (miss cost ≈ a wasted 0.5-1 ms
+fast compile) as the path toward the ~6.3 s triple-oracle ceiling.
+CLAUDE.md §6.6 fully rewritten to be self-contained for new sessions.
+
+## §6.6 steps 1-3 EXECUTED (2026-06-12) — fast tier measured, TPDE wins
+
+### Implementation (landed, goldens ×3 splits ×2 backends PASS)
+
+`--fast-compile[=fastisel|tpde|off]` (param_config), plumbed via
+DuckDBAdapter::SetFastCompile → IrToLlvmCompiler(FastCompileBackend)
+and the splitter's spec compilers. FASTISEL = jtmb CodeGenOptLevel::None
++ EnableFastISel (lingo-db LLVMBackends.cpp:248-249 equivalent); both
+fast modes also skip OptimiseModule (folded into skip_opt_). Backend
+tag "F0/F1/F2" serialized into ALL 7 §5.1 cache-key sites. TPDE wiring:
+LLJITBuilder::setCompileFunctionCreator → our `TpdeOrcCompiler`
+(ir_to_llvm.cpp, after the using-declarations) — a reimplementation of
+tpde_llvm::ConcurrentOrcCompiler whose LLVM-SimpleCompiler fallback is
+NOT silent: it logs "[AQP-JIT] TPDE rejected module ..." so a
+measurement run cannot secretly degrade to all-LLVM. Measured: ZERO
+fallbacks across 113 queries × 3 splits — TPDE compiles 100% of our
+query-jit modules.
+
+TPDE build: vendored at third_party/tpde (copy of lingo-db's
+vendored/tpde minus docs/.git; encodegen main.cpp patched to init BOTH
+x64+arm64 LLVM targets — lingo-db never builds tpde-llvm so the bug
+went unnoticed there). Built with clang-20 (needs <format>; g++-12
+fails) + PIC; shipped as third_party/tpde_build/libtpde_bundle.so
+linked with version script tpde_llvm.map (exports ONLY tpde_llvm::*;
+everything else local). Rationale: lingo-db's prebuilt librunner.a
+embeds its own tpde core (436 tpde:: symbols, baseline backend) — a
+static-lib or ld-r+objcopy bundle hits multiple-definition /
+COMDAT-relocation errors; the shared lib + version script is the only
+clean isolation. Regeneration instructions in CMakeLists.txt (TPDE
+section); CMake auto-enables AQP_HAVE_TPDE iff the .so exists.
+
+New instrumentation: AQP_QJIT_TIME=1 (release-visible env, AQP_MP_TRACE
+pattern) prints "[AQP-QJIT-TIME] codegen label=<L> us=<N>" around
+CompileQuerySteps in TryCompileQueryJit — separates the
+backend-compressible codegen part of the jit_compile CSV column from
+Prepare/analysis. 6f none-split: codegen 26.0 ms (full O2+4passes) →
+3.6 ms FastISel (7.1×) → 1.0 ms TPDE (26×), while the column floor
+(~89 ms Prepare+analysis for that 5-join query) is backend-independent.
+On node-based/rc sub-queries the floor is small ⇒ column ratios below.
+
+Scripts: run_job.sh + measure_breakdown_time_job.sh arg 11 =
+fast_compile (off|fastisel|tpde), filename suffix _fc<backend>.
+
+### Measured sweep (113 JOB, repeat=15 warm medians, spec OFF, 2026-06-12)
+
+CSVs: job_result/duckdb_<split>_query_none_nospecjit[_fc*]_breakdown_
+time_log.csv. Analyzer: notes/specjit_model_2026-06-12/
+analyze_fastcompile.py (takes split arg).
+
+| split | off c/e/total | fastisel total | tpde c/e/total | interp |
+|---|---|---|---|---|
+| node-based | 7.09/4.49/12.44 | 7.89 | 0.54/5.82/7.08 | 10.95 |
+| none | 5.51/4.64/10.18 | 8.65 | 0.51/6.98/7.51 | ~9.8 |
+| rc | 6.24/7.60/14.51 | 11.05 | 0.44/9.17/10.20 | 13.35 |
+
+Per-query compile-column ratio (off/tpde) med 12.8/13.1/14.1×
+(node/none/rc); exec penalty med 1.32/1.58/1.25×. FastISel: ~6×,
+penalty ~1.33-1.70. TPDE strictly dominates FastISel on BOTH axes
+(faster compile AND equal-or-better code) on every split. tpde
+per-query losses are tiny: worst 6f rc +72 ms (exec-heavy, 899 ms
+exec × O0 penalty), the 17*/16b family on none +5-25 ms — per-query
+tuning targets. node-based tpde loses on ZERO queries vs off.
+
+### Model re-run (step 3) + DECISION
+
+model_designs.py updated: FAST_RATIO=12.8, FAST_EXEC_PENALTY=1.32
+(measured tpde node-based medians). Result: NEW_TRUE 9.06 s, oracle-
+REFINED 8.42 s — but MEASURED FASTALL-tpde is 7.08 s, beating even the
+oracle ceiling of the compensate-jit redesign. DECISION: ship
+--fast-compile=tpde as the FASTALL backend; compensate-jit redesign
+(early launch, 2-worker pool, usability check) does NOT pay and is
+shelved. §6.7 rc spec-jit also moot: rc residual compile is 0.44 s —
+nothing left to hide. Remaining headroom = per-query winner tuning
+(interp vs FASTALL vs full-jit; §6.6 step 4) toward the ~6.3 s
+triple-oracle ceiling, now mostly about the exec penalty, not compile.
+
+### Operational discoveries (this session)
+
+- RC timing CSV layout has FIVE head columns before the iteration
+  groups (node-based/none have FOUR; extra = FK-cluster preprocess
+  write). Any group-wise parser (model_designs.py-style) must use
+  head=5 for rc or jit/exe shift by one and compile masquerades as
+  exec — verified against AQP_QJIT_TIME codegen anchors on 29b.
+  model_designs.py itself is node-based-only ⇒ unaffected.
+- PRE-EXISTING issue (not fast-compile): 29b rc on build_debug aborts
+  at iteration 1 with the NDEBUG "Sub-IR contains CROSS_PRODUCT"
+  assertion (ir_query_splitter.cpp ExecuteSplitLoop), while release
+  with identical flags runs 6 temp iterations fine and passes goldens.
+  Likely the rc sub-IR carries a cross product that DuckDB's optimizer
+  re-plans as a join after the SQL round-trip (qjit accepted temp1-6,
+  which it wouldn't with a real cross product) — i.e. the assertion is
+  stricter than execution reality. Untouched; needs a user decision.
+
+## Compensate-jit redesign IMPLEMENTED + MEASURED (2026-06-12, post-FASTALL)
+
+User overrode the "shelved" verdict and ratified the §6.6 compensate-jit
+redesign for implementation with keep-criterion "ANY query reduces
+end-to-end time vs its best existing config". Plan file:
+~/.claude/plans/hazy-munching-planet.md. VERDICT: KEPT — 25/113 queries
+beat their best existing config (all via comptrue+fctpde).
+
+### Semantics (as shipped)
+
+`--compensate-jit[=true|false]` (param_config compensate_jit: -1 off /
+0 false / 1 true; run_job.sh + measure_breakdown_time_job.sh arg 12,
+filename suffix `_comp<v>`). Node-based only, all four jit levels
+(expr/operator/pipeline/query). Flag absent = legacy spec behavior.
+- EARLY LAUNCH: Phase-A bg compile launches at the POST-PREPARE hook
+  (assumed_card = Prepare estimate) instead of post-execute, so the
+  ALWAYS-full-quality bg compile overlaps Execute(i).
+- USABILITY CHECK without completion (CheckSpeculativeResult): SQL
+  match -> card guard (ratio<=2, hoisted BEFORE the wait; needs only
+  temp_tables_, available at check time) -> only-if-usable wait
+  (charged to next jit_compile column) -> bg_ok. Unusable specs are
+  RetirePendingSpec()'d (zombie-park — bg may still be running),
+  never waited on.
+- MISS POLICY at the ExecuteSubIR check site (also fires for
+  learned-miss skipped iterations via spec_learned_miss_iter_):
+  true => inline recompile with the fast tier (adapter one-shot
+  SetCompensateMissAction(FAST_ONCE): RegisterJITImpl/TryCompileQueryJit
+  through EnsureFastJitCompiler = --fast-compile backend if set, else
+  implied TPDE; separate compiler instance, F0/F1/F2 cache-key safe,
+  own qjit-symbol registration guard); false => interpret immediately
+  (duckdb levels: SetJITFlags only, no SetJITPendingIR; query-jit:
+  SKIP_QJIT_ONCE skips TryCompileQueryJit, Prepare still runs, jit CSV
+  column stays rectangular).
+- NO Phase-B relaunch: on peek mismatch learn miss + retire, return
+  before the relaunch block. Strictly one bg compile in flight
+  (1-worker pool unchanged). Keep-on-match + is_final retirement stay.
+- EnsureSpecCompiler forces the FULL backend for spec compilers in
+  compensate mode (legacy keeps GetFastCompile()).
+- Iteration 0 + final sub-query untouched (never spec-covered; they
+  compile per the global --fast-compile as before).
+- none-jit strict no-op (user invariant): enforced by the existing
+  level gate in LaunchSpeculativeCompile — verified by stderr+result
+  diff of 13a node-based --jit-level=none with/without the flag
+  (identical modulo ASLR pointers).
+
+### Early-launch race fix (deviation from the planned snapshot approach)
+
+SpeculativeQueryJitCompile reads live temp maps under a "launches are
+post-execute" assumption that early launch breaks (Execute(i) stores
+temp(i) concurrently). Instead of copying map state into
+SpeculativeCompilation, a single `std::shared_timed_mutex
+temp_state_mutex_` (C++14 — project default; std::shared_mutex is
+C++17) now guards the temp maps: shared locks at the bg read sites
+(TempCollectionReplacementScan/TempCollectionBind/QjitTempBind/
+RebuildTempTableIndices-in-spec) and exclusive locks at the 4
+main-thread map-shape writer sites (qjit run-result insert, store
+block qjit+CDC branches, RegisterPlaceholderTemp, GetOrLoadQjitTemp).
+Simpler and covers interpreter-consumer binds too.
+
+### BUG found by goldens: empty-placeholder bloom filters (FIXED)
+
+First golden run: node-based pipeline x compensate {true,false} FAILED
+on 9 queries (16a 17e 24b 26a 29c 30c 31c 9b 9c) with NULL results
+(query-jit passed everywhere). Root cause: LaunchSpeculativeCompile
+appends a temporary temp_tables_ entry for temp(i) so
+ApplyCrossSubPlanOptimizations can derive range preds + bloom filters
+from it — valid at post-execute launch (data complete), but at the
+compensate-mode post-Prepare launch temp(i) is still the EMPTY
+placeholder: BuildBloomFilter built a zero-row BF that rejected every
+probe row on spec HIT (BFs are not in the SQL text, so the SQL-match
+guard cannot catch them; query-jit was immune because its spec builds
+no BFs and its range-pred divergence IS caught by the SQL match). Also
+poisoned temp_min_max_cache_ ("temps are immutable" assumption). Fix:
+in compensate mode don't append temp(i) — spec SQL then diverges from
+inline SQL whenever the inline path injects temp(i)-derived range
+preds, which routes to the miss policy by design (range constants are
+baked into compiled code, never patchable). After fix: all 6 golden
+configs pass (node-based query/pipeline x true/false + rc/none query
+comptrue inertness runs).
+
+### Timer re-audit (one-off WALL patch, reverted)
+
+RunBenchmark per-iter wall vs CSV row sums under comptrue (10a/13a/
+26b/6f, repeat=5): coverage 97.6-99.6%, gap 0.5-3.3 ms/iter = fixed
+untimed overhead (result handling, log writes), NOT the hidden-wait
+class. CSV accounting is sound under compensate mode.
+
+### Measured sweep (node-based query-jit, 113 JOB, repeat=15 warm
+medians, compile/exec/total suite seconds; analyzer:
+measure/notes/specjit_model_2026-06-12/analyze_compensate.py)
+
+| config | compile | exec | total |
+|---|---|---|---|
+| interp | 0.00 | 10.09 | 10.80 |
+| nospec (full inline) | 7.09 | 4.49 | 12.44 |
+| nospec fctpde (FASTALL) | 0.54 | 5.82 | 7.08 |
+| comptrue | 3.04 | 5.53 | 9.45 |
+| compfalse | 3.45 | 8.02 | 12.38 |
+| comptrue + fctpde (hybrid) | 0.76 | 5.87 | 7.45 |
+
+- comptrue 9.45 s validates the model's NEW_TRUE 9.58 s prediction;
+  compfalse 12.38 s (model 11.32) confirms NEW_FALSE is not viable.
+- The hybrid (bg FULL compile overlapped, tpde inline on miss) loses
+  to plain FASTALL-tpde suite-wide (7.45 vs 7.08: spec-overlap saves
+  less than the full-quality bg compile costs in oversubscription/
+  waits) but WINS on 25/113 queries — biggest 17f -14.7 ms, 17e -6.8,
+  13d -4.1 — all queries where full-quality code on the usable path
+  beats tpde code. Winner counts: nospec_tpde 80, comptrue_tpde 25,
+  interp 7, nospec 1. Per-query-tuned suite ceiling: 6.99 s
+  (existing-only) -> 6.94 s (with compensate).
+- KEEP per user criterion; per-query true/false tuning is the §6.6
+  step 4 follow-up (config JSON), where comptrue_tpde becomes a
+  4th candidate config.
+
+### Known minor behaviors (accepted)
+
+- End-of-loop DrainSpecs(charge_wait=true) still blocks on the last
+  unconsumed spec (13a wait_ms=8.1, pipeline 10.5) — tuning candidate.
+- The [AQP-SPECJIT] summary line prints only when
+  hits+misses+card_misses+not_ready+bg_errors > 0; compensate counters
+  are intentionally not in the gate (a 2-iteration query whose only
+  spec retired at is_final prints no summary, e.g. 6f).
+- 26b node-based on build_debug aborts iter 3 with the PRE-EXISTING
+  NDEBUG CROSS_PRODUCT assertion (same class as 29b rc; reproduced
+  WITHOUT the compensate flag; release passes goldens). Untouched.
+
+## Archived from CLAUDE.md §6.6 (2026-06-13 cleanup)
+
+The following text was moved here from CLAUDE.md to keep that file
+focused on current state and open work. This is the original §6.6
+historical/design context that informed the fast-compile + compensate-jit
+decisions.
+
+### Original problem + model
+
+Node-based + query-jit was COMPILE-dominated — suite compile 7.04 s vs
+exec 4.56 s (nospec, warm). Two complementary attacks: HIDE compile
+behind execution (speculation) or SHRINK it (fast backend). The model
+said shrink first; measurement confirmed it.
+
+### Terminology
+
+- *Fast tier* = a fast-but-lower-quality JIT BACKEND for query-jit
+  compiles. Two candidates: (1) LLVM `CodeGenOptLevel::None` + FastISel
+  — same module, skip mid-end opt, quick instruction selector; no new
+  dependency; expected ~2-5× faster compile, ~1.2-2× slower code.
+  (2) TPDE — a separate single-pass compiler framework that consumes
+  LLVM IR but bypasses LLVM codegen entirely (vendored in lingo-db at
+  `/home/pei/Project/lingo-db/vendored/tpde/`, needs LLVM 19/20; we
+  link 20.1 — compatible); ~10-20× faster than even LLVM -O0 at
+  ~O0-quality code, but a new vendored dependency. Lingo-db ships both
+  (cheap-LLVM backend: LLVMBackends.cpp:248). Incremental compilation
+  is NOT feasible in LLVM (only constant patching — unusable here).
+- *FASTALL* = POLICY: fast-compile EVERY sub-query inline on the
+  critical path (incl. the final sub-query), no speculation, no
+  background thread, no prediction. Flag: `--fast-compile`.
+- *Compensate-jit* = POLICY: a bg thread always compiles sub-query i+1
+  (full quality) DURING Execute(i), launched at post-Prepare(i+1) from
+  estimated cardinality; at execute(i)-done check usability. On
+  usability miss: `compensate=false` => drop, interpret immediately, no
+  wait; `compensate=true` => fast-tier recompile. Usable-but-NOT-READY
+  => wait. NEW_TRUE/NEW_FALSE in the table = these two settings.
+- *REFINED* = compensate=true PLUS cost-based wait-vs-interpret on
+  usable-but-NOT-READY events. Modeled as an ORACLE — not implementable.
+
+### Instrumentation fix (LANDED 2026-06-12)
+
+Mechanics in lingo-db-reuse.log "Spec-jit redesign decision". Spec-jit's
+blocking waits fell in an untimed CSV gap => every node-based spec-ON CSV
+measured before 2026-06-12 underreports wall time by the full wait (10a
+37.8->75.3 ms, 26b 73.1->125.6 ms). Now waits are charged into the next
+jit_compile column, and --debug runs emit per-iter [AQP-SPECJIT] traces.
+rc/none splits were never affected (no spec there).
+
+### Full-JOB model (113 queries)
+
+Node-based + query-jit, warm medians; inputs: nospec/spec/interp sweeps
+repeat=15 + --debug trace repeat=3; fast tier ASSUMED 10x compile / 1.5x
+exec unless noted. Everything archived SELF-CONTAINED in
+`measure/notes/specjit_model_2026-06-12/`.
+
+| design | compile | exec | overhead | TOTAL | beats interp |
+|---|---|---|---|---|---|
+| INTERP (measured) | 0.00 | 10.23 | 0.72 | 10.95 s | - |
+| NOSPEC (measured) | 7.04 | 4.56 | 0.83 | 12.43 s | - |
+| CURRENT spec-jit (measured, fixed CSV) | 6.95 | 4.54 | 0.91 | 12.40 s | 39/113 |
+| OLD (early launch + full relaunch) | 7.72 | 4.54 | 0.91 | 13.18 s | 35/113 |
+| NEW_FALSE (compensate=false) | 2.72 | 7.69 | 0.91 | 11.32 s | 33/113 |
+| NEW_TRUE (compensate=true) | 2.83 | 5.84 | 0.91 | 9.58 s | 69/113 |
+| REFINED (oracle) | 2.47 | 5.42 | 0.91 | 8.80 s | 83/113 |
+| FASTALL (no spec) | 0.70 | 6.84 | 0.83 | 8.38 s | - |
+| FASTALL + oracle jit-vs-interp | - | - | - | 7.38 s | - |
+| TRIPLE ORACLE | 0.61 | 4.86 | 0.83 | ~6.3 s | - |
+
+### Verdict (key facts)
+
+- CURRENT spec-jit ~ NOSPEC (12.40 vs 12.43 s): saves ~nothing.
+- OLD (early launch, full-cost relaunch on miss): 13.18 s — worse.
+- Usability under EARLY launch: 57/565 usable; 395 miss.
+- FASTALL (8.38 s) beats even oracle-REFINED (8.80 s) at 10x/1.5x.
+- Hybrid headroom: TRIPLE ORACLE 0.61 s compile + 4.86 s exec.
+
+### Dependencies (why this order)
+
+NEW_TRUE's miss path REQUIRES a fast backend. Both NEW designs need the
+early-launch redesign + a 2nd compile worker. The model ignores core
+oversubscription during overlap (~1/n exec slowdown). All fast-tier rows
+rest on ASSUMED ratio/penalty => measure first.
+
+### Sensitivity analysis
+
+Ratio 5-20x x penalty 1.2-2.0: REFINED 8.24-9.73 s (always best spec
+design, always beats interp); NEW_TRUE 8.80-11.21 s; FASTALL degrades to
+~11.4 s at 5x/2.0. Cost model WITHOUT any fast tier: 11.04 s — loses to
+interp => the fast tier is the decisive lever.
+
+### Plan execution status
+
+1. DONE: --fast-compile (FastISel-O0), sweep JOB
+2. DONE: TPDE backend, head-to-head under FASTALL (TPDE wins both axes)
+3. DONE: Re-run model with measured ratio/penalty; then compensate-jit
+   implemented on user override (25/113 per-query wins, kept)
+4. OPEN: per-query winner tuning (tuned ceiling 6.94 s)
+5. OPEN: stale-CSV re-measure
+
+### §6.5 FastISel bullet promoted and shipped
+
+FastISel / CodeGenOptLevel::None fast-compile mode (lingo-db
+LLVMBackends.cpp:248) — promoted to §6.6 plan step 1, then SHIPPED
+2026-06-12 as `--fast-compile={fastisel,tpde}`.
+
+### Compensate-jit hybrid loss analysis (2026-06-13)
+
+Per-query breakdown of comptrue+fctpde vs FASTALL-tpde (node-based,
+repeat=15 warm medians, hybrid - FASTALL suite deltas):
+  jit_compile: +215.6 ms (wasted bg compiles + inline recompile on miss)
+  execution:   +49.7 ms  (core oversubscription from bg thread)
+  overhead:    +108.4 ms (spec machinery bookkeeping)
+Hybrid-loss queries dominant contributor: jit 17, exec 35, overhead 35.
+The hybrid wins only when a spec HIT delivers full-quality code whose
+exec advantage exceeds all three costs (17f/17d/17e family).
+
+Per-query tuned ceiling config saved to:
+measure/notes/specjit_model_2026-06-12/per_query_tuned_ceiling.json
+(113 queries, 4 configs, ceiling 6.94 s; winners: nospec_tpde 80,
+comptrue_tpde 25, interp 7, nospec 1).
+
+### Archived from CLAUDE.md: "Current state" pipeline-jit details (2026-06-15)
+
+`--jit-level=pipeline` compiles, per probe pipeline:
+- **Single hash-join probes**: `CompileFilterProbeProjectFusion` — one LLVM
+  function per HJ doing filter + HT probe + projection on the probe chunk.
+  Registered per-eid in `pipeline_fns`, dispatched in
+  `physical_hash_join.cpp:ExecuteInternal`.
+- **Consecutive HJ chains (N-probe)**: `CompileMultiProbeChain` — the whole
+  chain fused into one function (inspired by lingo-db's single-function
+  pipeline compilation): SSA-threaded columns, no intermediate
+  materialization, per-stage skip_hash_cmp and payload pruning. Dispatched
+  at the innermost HJ; outer HJs are passthrough.
+  `--single-column-int-join-mode` (default ON) bypasses DuckDB's
+  perfect/array hash join for chain members.
+- Full NULL-validity semantics (input masks, HT row validity prefix, NULL
+  keys never match, output mask writes).
+
+### Archived from CLAUDE.md: Query-jit architecture details (2026-06-15)
+
+Phases 0-5 of `--jit-level=query` are complete and gated. Architecture:
+per sub-query, the adapter Prepares (DuckDB optimizer) → ConvertPlanToIR →
+`AnnotateBuildSides` (physical-plan build/probe sides →
+`SimplestJoin::build_child`) → `AnalyzeQueryJit`/`BuildExecutionSteps`
+(src/qjit/query_jit_steps.cpp, three-pass) → `CompileQuerySteps`
+(src/jit/ir_to_llvm.cpp, ONE module + ONE entry fn, morsel body per step)
+→ `QjitExecutor::Run` over `QjitWorkerPool`. Any reject ⇒ whole
+sub-query on the DuckDB interpreter. Temps: dual-materialized as
+`qjit_temps_` QjitTable (compiled consumers, POSITIONAL column
+resolution) + `scan_qjit_temp` serves interpreter consumers directly
+(§5.7). Reject distribution on JOB after §5.2: 3× `plan-empty-result`,
+1× `exception` (pre-existing 10c converter cast).
+
+Storage-plan ruling: only TWO consumers exist — kernel-path
+(CSR/sorted/dimension paths, all gated `kernel_path != NONE`) and
+query-jit (`qjit_storage_plan_`, FlatTable column data ONLY). §5.6
+lazy-skip implemented.
+
+§5.5 A+ join-filter pushdown: build-key-0 min/max range guards +
+HT-membership pre-probe (runtime-gated ≤65536 entries) +
+cheap-before-expensive filter reorder + per-2048-row block skipping.
+Kill switch `AQP_QJIT_NO_JOINFILTER`. Routine `[AQP-QJIT]` traces are
+NDEBUG-only since 2026-06-12.
+
+### Archived from CLAUDE.md: Timing/benchmark infrastructure (2026-06-15)
+
+- The timing CSV is always rectangular: JIT-level runs emit the jit_compile
+  column (0.000) even when registration is skipped. Sites:
+  `duckdb_adapter.cpp` ExecuteSQL ×2 + ExecuteSQLandCreateTempTable,
+  `ir_query_splitter.cpp` SetJITFlags fallback.
+- `--jit-cache` (default OFF) gates the in-memory JIT object cache.
+  Cache covers CompileFilter/Projection/AggUpdate/Pipeline only — the fusion
+  compilers (FilterProbeProjectFusion, MultiProbeChain) have no cache yet.
+- Plot script `plot_middleware_jit.py` expects an `o1` opt token in
+  filenames the measure script doesn't emit; rename when copying.
+- Data-loading ruling (user, 2026-06-11): loading is excluded everywhere.
+  DB open / CSV load / storage-plan load+build timed into
+  `prepare_middleware` only in non-benchmark mode. In `--benchmark` CSVs,
+  column 0 is `ResetQueryState()` time (0.2-0.7 ms), label = `reset`.
+- CSV layout hazard: relationship-center rows have FIVE head columns
+  (extra FK-cluster preprocess); node-based/none have FOUR.
+
+## §6.6 step 4 — per-subquery tuning MEASURED (2026-06-16)
+
+Per-subquery tuning selects the best JIT config per (query, sub-query)
+pair from 9 candidate configs (tune_per_subquery.py). Oracle ceiling =
+5.47 s (jit+exe only, node-based, sum of per-subquery best warm means
+from uniform CSVs). Tuned JSON:
+`measure/job_result/tuned_per_subquery_node-based.json` (113 queries,
+winner counts: query_tpde majority, interp/operator/expr for light
+sub-queries).
+
+CollectionToQjitTable optimization (2026-06-16): when a query_tpde
+sub-query reads a temp produced by a non-query-jit sub-query, the DuckDB
+DataChunks must be converted to QjitTable format. The original row-by-row
+Append+FinishRow+Finalize path was replaced with bulk memcpy per chunk
+per column using new QjitTable::ReserveFlat/FlatData/FlatValidity/
+FlatArena/MarkFinalized API (query_jit_runtime.h/cpp). Integer columns
+use a single memcpy per chunk; VARCHAR columns iterate per row (unavoidable
+duckdb::string_t → QjitString arena copy). Top-10 excess queries recovered
+~33% of their gap (e.g. 17a: +91→+47 ms, 8c: +91→+60 ms; pre/post
+optimization, gap = measured − oracle per-query jit+exe).
+
+Measured results (113 JOB, node-based, repeat=15 warm mean, 2026-06-16):
+
+| Config | JIT (ms) | Exec (ms) | MW (ms) | E2E (s) | JIT+Exe (s) |
+|---|---|---|---|---|---|
+| Nospec tuned | 1,269 | 3,558 | 1,230 | **6.67** | **4.83** |
+| Spec tuned | 1,256 | 3,571 | 1,304 | **6.75** | **4.83** |
+| Ref FASTALL-tpde | — | — | — | 6.87 | 6.22 |
+| Ref interp | — | — | — | 10.86 | 10.17 |
+| Oracle ceiling | — | — | — | — | 5.47 |
+
+Key findings:
+1. JIT+exe (4.83 s) BEATS oracle ceiling (5.47 s) — favorable machine
+   conditions vs original uniform CSV measurement runs explain the gap.
+2. Spec-jit HURTS tuned configs: +75 ms MW overhead (spec machinery
+   launching bg compiles for sub-queries that end up as interp/operator
+   + mismatched-backend cache misses). Tuned configs should use
+   --no-spec-jit.
+3. End-to-end (6.67 s nospec) beats uniform TPDE (6.87 s) by 0.20 s
+   and interp (10.86 s) by 4.19 s.
+4. Remaining per-query gaps concentrate in the jit_compile column of
+   query_tpde sub-queries following non-query-jit sub-queries
+   (CollectionToQjitTable conversion): 17a sub 4 +35 ms (sub 3 was
+   expr), 8c sub 2 +31 ms (subs 0-1 were operator_simd), 12c sub 2
+   +16 ms, 12a sub 2 +15 ms. Anomaly: 14c sub 3 jit+exe = 44 ms vs
+   oracle 4.2 ms (both jit AND exe regress; cause TBD).
+
+qjit_temps_ caching across benchmark repeats: FEASIBLE (trivial 1-line
+change: remove qjit_temps_.clear() from ResetQueryState line 2632;
+QjitTable owns data via bulk memcpy, safe after temp_collections_ cleared)
+but REJECTED: (a) already beats oracle ceiling; (b) benchmark-specific
+(production runs once, conversion is a real per-execution cost); (c) makes
+benchmarks non-representative.
+
+Verdict: §6.6 is COMPLETE. Per-subquery tuning works (beats oracle,
+beats FASTALL-tpde end-to-end). No further optimization needed for the
+tuning mechanism itself. Remaining headroom is in §6.2/§6.1 probe-side
+hash tricks and §6.6 step 5 (fresh CSV re-measure, low priority).
+
+### Archived from CLAUDE.md §6.6 (2026-06-16, full section)
+
+**`--fast-compile={off,fastisel,tpde}` is IMPLEMENTED, gated
+(goldens ×3 splits × both backends, 0 TPDE fallbacks across all 339
+suite runs), and MEASURED. Implementation details + full sweep in
+lingo-db-reuse.log "§6.6 steps 1-3 EXECUTED".**
+
+**`--compensate-jit[=true|false]` is IMPLEMENTED, gated (goldens:
+node-based × {query,pipeline} × {true,false} + rc/none inertness
+runs, none-jit no-op diff, timer WALL audit 97.6-99.6% coverage) and
+MEASURED (node-based query, repeat=15 warm medians, totals): comptrue
+9.45 s (model NEW_TRUE said 9.58), compfalse 12.38 s (not viable),
+comptrue+fctpde hybrid 7.45 s vs FASTALL-tpde 7.08 s suite-wide BUT
+wins 25/113 queries (17f −14.7 ms) => KEPT per the user's any-query
+criterion; it is the 4th candidate for step-4 per-query tuning (tuned
+ceiling 6.99->6.94 s). Analyzer:
+measure/notes/specjit_model_2026-06-12/analyze_compensate.py.
+Semantics: node-based only, all four jit levels, flag absent = legacy
+spec. Early launch at the post-Prepare hook (bg compile ALWAYS full
+quality, overlaps Execute(i)); usability check without completion
+(SQL match -> card guard ratio<=2 BEFORE the wait -> wait only if
+usable, charged to next jit_compile column); miss policy inline:
+true => fast-tier recompile (adapter one-shot FAST_ONCE through a
+separate fast compiler; backend = --fast-compile if set else implied
+TPDE), false => interpret immediately (qjit: SKIP_QJIT_ONCE, Prepare
+still runs; CSV stays rectangular); no Phase-B relaunch (mispredict =>
+learned miss => miss policy next iteration); spec compilers forced to
+the FULL backend; iteration 0 + final sub-query untouched; none-jit
+strict no-op. Scripts arg 12 = compensate (off|true|false ->
+--compensate-jit= + _comp<v> suffix). Early-launch hazards (both
+in the log "Compensate-jit redesign IMPLEMENTED"): temp-map races
+fixed with temp_state_mutex_ (shared_timed_mutex -- C++14); spec
+launch must NOT derive range preds/bloom filters from temp(i)'s
+still-empty placeholder (zero-row BF rejected every probe row -- the
+9-query pipeline golden failure; temp(i) is now excluded in
+compensate mode, divergence routes to the miss policy via the SQL
+match).**
+
+Measured FASTALL sweep (113 JOB, repeat=15 warm medians, spec off;
+compile/exec/total suite seconds):
+
+| split | off | fastisel total | tpde | interp |
+|---|---|---|---|---|
+| node-based | 7.09/4.49/12.44 | 7.89 | 0.54/5.82/**7.08** | 10.95 |
+| none | 5.51/4.64/10.18 | 8.65 | 0.51/6.98/**7.51** | -- |
+| rel-center | 6.24/7.60/14.51 | 11.05 | 0.44/9.17/**10.20** | 13.35 |
+
+TPDE column-ratio med 12.8/13.1/14.1x, exec penalty med
+1.32/1.58/1.25x -- strictly dominates FastISel (~1.8x column ratio) on
+BOTH axes everywhere.
+
+Operational knowledge (fast tier):
+- Backend selection enters the cache key as tag F0/F1/F2 at all
+  7 opt_tag sites. TPDE ships as
+  third_party/tpde_build/libtpde_bundle.so (version script
+  tpde_llvm.map exports only tpde_llvm::* -- lingo-db's prebuilt
+  librunner.a embeds its own tpde:: symbols, must not collide).
+- TPDE fallback is NEVER silent: TpdeOrcCompiler (ir_to_llvm.cpp,
+  replaces stock ConcurrentOrcCompiler) logs [AQP-JIT] TPDE rejected
+  module then falls back to LLVM with the same O0+FastISel TM.
+- AQP_QJIT_TIME=1 (release-visible) prints per-sub-query
+  codegen-only [AQP-QJIT-TIME] lines -- isolates the
+  backend-compressible part of the jit_compile column.
+- run_job.sh / measure_breakdown_time_job.sh arg 11 = fast_compile
+  (off|fastisel|tpde -> --fast-compile= + _fc<backend> suffix),
+  arg 12 = compensate (off|true|false -> --compensate-jit= +
+  _comp<v> suffix). correctness_test.sh JIT_CONFIGS take an optional
+  6th field = compensate.
+- CSV layout hazard: relationship-center rows have FIVE head columns
+  before iteration groups (extra FK-cluster preprocess column);
+  node-based/none have FOUR. Group-wise parsers must use head=5 for rc
+  or jit/exe shift by one.
+- PRE-EXISTING open issue (needs user decision, untouched): 29b rc on
+  build_debug aborts iter 1 with "Sub-IR contains CROSS_PRODUCT"
+  assertion; release runs 6 temp iterations and passes goldens.
+
+History: CURRENT spec-jit ~ NOSPEC (12.40 vs 12.43 s, saves ~nothing);
+FASTALL-tpde (7.08 s) beats even oracle-REFINED (8.80 s) at measured
+12.8x/1.32; compensate-jit loses suite-wide but wins 25/113 queries =>
+kept as a per-query tuning candidate. Model inputs + scripts are
+self-contained in measure/notes/specjit_model_2026-06-12/.
+
+### Archived from CLAUDE.md §6.7 (2026-06-16)
+
+§6.7 Spec-jit for relationship-center — MOOT (2026-06-12, post fast
+tier). Resolved by §6.6: rc + --fast-compile=tpde = 10.20 s total with
+residual compile 0.44 s (was 14.51 s / 6.24 s compile) — almost no
+compile left to hide, so rc spec-jit cannot pay.
+
+Feasibility analysis (valid if ever revisited): the node-based-only gate
+is historical, not architectural. Phase A peek is node-based-specific
+(PeekNextSubquery, precomputed group queue); Phase B
+(PrecomputeNextExtraction) is splitter-generic. Plan would be Phase-B-only
+for rc (relax NODE_BASED gates at ir_query_splitter.cpp:332/:747/:918).
+But FASTALL-tpde eliminates the compile cost that spec-jit would hide.
