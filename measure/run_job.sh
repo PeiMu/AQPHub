@@ -7,7 +7,7 @@ jit_simd=$4
 payload_prune=${5:-on}
 prefetch=${6:-on}
 batch_probe=${7:-on}
-skip_hash_cmp=${8:-on}
+skip_hash_cmp=${8:-all}   # off | single | all (legacy: on=all)
 jit_cache=${9:-off}
 spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
 compile_mode=${11:-off}   # off | fastisel | tpde (--compile-mode backend; off=llvm)
@@ -32,7 +32,8 @@ elif [[ "$prefetch" != "on" ]]; then
     jit_extra_flags+=" --jit-prefetch=${prefetch}"
 fi
 [[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
-[[ "$skip_hash_cmp"  == "off" ]] && jit_extra_flags+=" --no-jit-skip-hash-cmp"
+[[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
+[[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode"   != "off" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
@@ -43,6 +44,7 @@ flag_suffix=""
 [[ "$prefetch"       == "off" ]] && flag_suffix+="_noprefetch"
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
+[[ "$skip_hash_cmp"  == "single" ]] && flag_suffix+="_skiphash1"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"

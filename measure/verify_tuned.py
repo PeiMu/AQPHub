@@ -75,7 +75,7 @@ def main():
     is_nb = split == "node-based"
 
     tuned_csv = os.path.join(base,
-        f"duckdb_{split}_query_none_nospecjit_tuned_breakdown_time_log.csv")
+        f"duckdb_{split}_query_none_tuned_breakdown_time_log.csv")
     tune_json_path = os.path.join(base,
         f"tuned_per_subquery_{split}.json")
 

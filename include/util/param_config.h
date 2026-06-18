@@ -97,7 +97,7 @@ struct ParamConfig {
   int jit_prefetch_entry_distance = 24;
   int jit_prefetch_row_distance = 12;
   bool jit_batch_probe = true;
-  bool jit_skip_hash_cmp = false;
+  int jit_skip_hash_cmp = 0; // 0=off, 1=single-int-key, 2=all-int-keys
   // In-memory JIT object cache across repeats. Default OFF so every repeat
   // measures the real compile time (warm-run cache hits would skew the
   // jit_compile CSV column).

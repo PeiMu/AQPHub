@@ -6184,10 +6184,13 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       break;
     }
   }
-  const bool do_skip_salt = skip_hash_cmp_ && all_keys_integer;
+  const bool do_skip_salt =
+      (skip_hash_cmp_ == 2 && all_keys_integer) ||
+      (skip_hash_cmp_ == 1 && all_keys_integer && probe_key_cols.size() == 1);
 #ifndef NDEBUG
-  std::cerr << "[AQP-JIT] skip_hash_cmp: flag=" << skip_hash_cmp_
+  std::cerr << "[AQP-JIT] skip_hash_cmp: mode=" << skip_hash_cmp_
             << " all_keys_integer=" << all_keys_integer
+            << " nkeys=" << probe_key_cols.size()
             << " do_skip_salt=" << do_skip_salt << "\n";
 #endif
 
@@ -6398,7 +6401,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     std::string opt_tag =
         std::to_string((int)simd_isa_) + "F" +
         std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") +
-        (skip_hash_cmp_ ? "k" : "_") + (batch_probe_ ? "b" : "_") +
+        "k" + std::to_string(skip_hash_cmp_) + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
         std::to_string(prefetch_entry_distance_) + "." +
         std::to_string(prefetch_row_distance_);
@@ -7164,7 +7167,9 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
         all_int = false;
       sd.keys.push_back(kc);
     }
-    sd.do_skip_salt = skip_hash_cmp_ && all_int;
+    sd.do_skip_salt =
+        (skip_hash_cmp_ == 2 && all_int) ||
+        (skip_hash_cmp_ == 1 && all_int && sd.keys.size() == 1);
     sd.num_keys = (unsigned)sd.keys.size();
   }
 
@@ -7300,7 +7305,7 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
     std::string opt_tag =
         std::to_string((int)simd_isa_) + "F" +
         std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") +
-        (skip_hash_cmp_ ? "k" : "_") + (batch_probe_ ? "b" : "_") +
+        "k" + std::to_string(skip_hash_cmp_) + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
         std::to_string(prefetch_entry_distance_) + "." +
         std::to_string(prefetch_row_distance_);
@@ -8107,7 +8112,9 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
                           std::to_string((int)fast_mode_) +
-                          (skip_opt_ ? "n" : "o");
+                          (skip_opt_ ? "n" : "o") +
+                          "H" + std::to_string(skip_hash_cmp_) +
+                          (bloom_tag_ ? "B" : "_");
     cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
                                       SerializeQjitPlan(plan));
     entry_name = "qjit_query_c" + cache_key.substr(0, 12);
@@ -8139,6 +8146,18 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
   Type *i32 = ecc.i32();
   Type *i64 = ecc.i64();
   Type *i64p = PointerType::getUnqual(i64);
+  Type *i16 = Type::getInt16Ty(C);
+
+  // §6.1 bloom-tag global: declare the extern bloomMasks[2048] table for
+  // codegen to GEP into (the actual data lives in query_jit_runtime.cpp).
+  GlobalVariable *bloom_gv = nullptr;
+  ArrayType *bloom_arr_ty = ArrayType::get(i16, 2048);
+  if (bloom_tag_) {
+    bloom_gv = cast<GlobalVariable>(
+        mod->getOrInsertGlobal("qjit_bloom_masks", bloom_arr_ty));
+    bloom_gv->setConstant(true);
+    bloom_gv->setLinkage(GlobalValue::ExternalLinkage);
+  }
 
   // QjitQueryContext (query_jit_abi.h — FIELD ORDER IS ABI):
   // 0 pool, 1 sources, 2 num_sources, 3 hash_tables, 4 num_hash_tables,
@@ -8164,6 +8183,16 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       "qjit_table_finish_row", FunctionType::get(void_ty, {i8p, i32}, false));
   FunctionCallee ht_append = mod->getOrInsertFunction(
       "qjit_ht_append", FunctionType::get(i8p, {i8p, i32, i64}, false));
+  // §6.12 fast-path HT append handle: {cursor, limit, stride, count}
+  StructType *HtHandleTy = StructType::get(C, {i8p, i8p, i64, i64p});
+  Type *ht_handle_p = PointerType::getUnqual(HtHandleTy);
+  FunctionCallee ht_begin_fn = mod->getOrInsertFunction(
+      "qjit_ht_begin", FunctionType::get(void_ty, {i8p, i32, ht_handle_p}, false));
+  FunctionCallee ht_append_slow_fn = mod->getOrInsertFunction(
+      "qjit_ht_append_slow",
+      FunctionType::get(i8p, {i8p, i32, i64, ht_handle_p}, false));
+  FunctionCallee ht_end_fn = mod->getOrInsertFunction(
+      "qjit_ht_end", FunctionType::get(void_ty, {i8p, i32, ht_handle_p}, false));
   FunctionCallee ht_dir_fn = mod->getOrInsertFunction(
       "qjit_ht_dir", FunctionType::get(i8p, {i8p}, false));
   FunctionCallee ht_mask_fn = mod->getOrInsertFunction(
@@ -8193,6 +8222,28 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
 
   std::vector<Function *> morsel_fns;
   morsel_fns.reserve(plan.steps.size());
+
+  auto can_skip_ehash = [&](int ht_id) -> bool {
+    if (skip_hash_cmp_ == 0) return false;
+    const qjit::QjitHtDesc &ht = plan.hts[ht_id];
+    bool all_int = true;
+    for (uint32_t j = 0; j < ht.num_keys; j++) {
+      int d = ht.cols[j].dtype;
+      if (d != AQP_DTYPE_INT8 && d != AQP_DTYPE_INT16 &&
+          d != AQP_DTYPE_INT32 && d != AQP_DTYPE_INT64) {
+        all_int = false;
+        break;
+      }
+    }
+    bool skip = (skip_hash_cmp_ == 2 && all_int) ||
+                (skip_hash_cmp_ == 1 && all_int && ht.num_keys == 1);
+#ifndef NDEBUG
+    std::cerr << "[AQP-QJIT] skip_hash_cmp: mode=" << skip_hash_cmp_
+              << " ht=" << ht_id << " nkeys=" << ht.num_keys
+              << " all_int=" << all_int << " skip=" << skip << "\n";
+#endif
+    return skip;
+  };
 
   // ---- one morsel body per step: void(ctx, begin, end, worker_id) ----
   for (size_t k = 0; k < plan.steps.size(); k++) {
@@ -8264,7 +8315,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       load_ht_ptr(op.ht_id);
       // Probed HTs were finalized by the entry fn before this step ran.
       ht_dirv[op.ht_id] = cc.b.CreateBitCast(
-          cc.b.CreateCall(ht_dir_fn, {ht_ptr[op.ht_id]}), i8pp);
+          cc.b.CreateCall(ht_dir_fn, {ht_ptr[op.ht_id]}), i64p);
       ht_maskv[op.ht_id] = cc.b.CreateCall(ht_mask_fn, {ht_ptr[op.ht_id]});
     }
 
@@ -8289,6 +8340,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     }
 
     Value *result = nullptr, *agg_state = nullptr, *sink_ht_ptr = nullptr;
+    Value *ht_handle = nullptr;
     switch (st.sink) {
     case qjit::QjitStep::Result:
       result = cc.b.CreateLoad(
@@ -8297,6 +8349,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     case qjit::QjitStep::HtBuild:
       load_ht_ptr(st.sink_ht);
       sink_ht_ptr = ht_ptr[st.sink_ht];
+      ht_handle = cc.b.CreateAlloca(HtHandleTy, nullptr, "ht_handle");
+      cc.b.CreateCall(ht_begin_fn, {sink_ht_ptr, m_worker, ht_handle});
       break;
     case qjit::QjitStep::Agg: {
       Value *ws_raw = cc.b.CreateLoad(
@@ -8413,6 +8467,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     }
 
     cc.b.SetInsertPoint(bb_exit);
+    if (ht_handle)
+      cc.b.CreateCall(ht_end_fn, {sink_ht_ptr, m_worker, ht_handle});
     cc.b.CreateRetVoid();
 
     cc.b.SetInsertPoint(bb_body);
@@ -8537,8 +8593,25 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
           cc.b.CreateCondBr(guard_vals[gi].member_ok, bb_mem, bb_gnext);
           cc.b.SetInsertPoint(bb_mem);
           Value *slot = cc.b.CreateAnd(h, ht_maskv[gop.ht_id], "g_slot");
-          Value *head = cc.b.CreateLoad(
-              i8p, cc.b.CreateGEP(i8p, ht_dirv[gop.ht_id], slot), "g_head");
+          Value *head_word = cc.b.CreateLoad(
+              i64, cc.b.CreateGEP(i64, ht_dirv[gop.ht_id], slot), "g_head_w");
+          if (bloom_tag_) {
+            Value *tag = cc.b.CreateTrunc(head_word, i16, "g_tag");
+            Value *idx = cc.b.CreateLShr(h, cc.c64(53), "g_bidx");
+            Value *mask = cc.b.CreateLoad(
+                i16,
+                cc.b.CreateGEP(bloom_arr_ty, bloom_gv,
+                               {cc.c64(0), idx}),
+                "g_bmask");
+            Value *reject = cc.b.CreateICmpNE(
+                cc.b.CreateAnd(mask, cc.b.CreateNot(tag)), ConstantInt::get(i16, 0),
+                "g_bloom_reject");
+            BasicBlock *bb_bloom_pass = BasicBlock::Create(C, "g_bloom_ok", fn);
+            cc.b.CreateCondBr(reject, cont, bb_bloom_pass);
+            cc.b.SetInsertPoint(bb_bloom_pass);
+          }
+          Value *head = cc.b.CreateIntToPtr(
+              cc.b.CreateLShr(head_word, cc.c64(16)), i8p, "g_head");
           BasicBlock *bb_from = cc.b.GetInsertBlock();
           BasicBlock *bb_ghead = BasicBlock::Create(C, "g_phead", fn);
           BasicBlock *bb_gchk = BasicBlock::Create(C, "g_check", fn);
@@ -8550,12 +8623,17 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
           cc.b.CreateCondBr(cc.b.CreateIsNull(e, "g_chain_end"), cont,
                             bb_gchk);
           cc.b.SetInsertPoint(bb_gchk);
-          Value *ehash = cc.b.CreateLoad(
-              i64,
-              cc.b.CreateBitCast(cc.b.CreateGEP(i8, e, cc.c64(8)), i64p),
-              "g_ehash");
           Value *row_ptr = cc.b.CreateGEP(i8, e, cc.c64(16), "g_row");
-          Value *match = cc.b.CreateICmpEQ(ehash, h, "g_hash_eq");
+          Value *match;
+          if (can_skip_ehash(gop.ht_id)) {
+            match = ConstantInt::getTrue(C);
+          } else {
+            Value *ehash = cc.b.CreateLoad(
+                i64,
+                cc.b.CreateBitCast(cc.b.CreateGEP(i8, e, cc.c64(8)), i64p),
+                "g_ehash");
+            match = cc.b.CreateICmpEQ(ehash, h, "g_hash_eq");
+          }
           for (size_t j = 0; j < kv.size(); ++j) {
             Value *kp =
                 cc.b.CreateGEP(i8, row_ptr, cc.c64(ght.cols[j].offset));
@@ -8592,8 +8670,25 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       for (size_t j = 1; j < kv.size(); ++j)
         h = emitCombine(h, emitMurmur(kv[j]));
       Value *slot = cc.b.CreateAnd(h, ht_maskv[op.ht_id], "slot");
-      Value *head = cc.b.CreateLoad(
-          i8p, cc.b.CreateGEP(i8p, ht_dirv[op.ht_id], slot), "head");
+      Value *head_word = cc.b.CreateLoad(
+          i64, cc.b.CreateGEP(i64, ht_dirv[op.ht_id], slot), "head_w");
+      if (bloom_tag_) {
+        Value *tag = cc.b.CreateTrunc(head_word, i16, "tag");
+        Value *idx = cc.b.CreateLShr(h, cc.c64(53), "bidx");
+        Value *mask = cc.b.CreateLoad(
+            i16,
+            cc.b.CreateGEP(bloom_arr_ty, bloom_gv,
+                           {cc.c64(0), idx}),
+            "bmask");
+        Value *reject = cc.b.CreateICmpNE(
+            cc.b.CreateAnd(mask, cc.b.CreateNot(tag)), ConstantInt::get(i16, 0),
+            "bloom_reject");
+        BasicBlock *bb_bloom_pass = BasicBlock::Create(C, "bloom_ok", fn);
+        cc.b.CreateCondBr(reject, cont, bb_bloom_pass);
+        cc.b.SetInsertPoint(bb_bloom_pass);
+      }
+      Value *head = cc.b.CreateIntToPtr(
+          cc.b.CreateLShr(head_word, cc.c64(16)), i8p, "head");
       BasicBlock *bb_from = cc.b.GetInsertBlock();
       BasicBlock *bb_phead = BasicBlock::Create(C, "p_head", fn);
       BasicBlock *bb_check = BasicBlock::Create(C, "p_check", fn);
@@ -8608,12 +8703,17 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
 
       cc.b.SetInsertPoint(bb_check);
       // Entry layout: { next @0, hash @8, row @16 } (QjitHashTable::Entry).
-      Value *ehash = cc.b.CreateLoad(
-          i64,
-          cc.b.CreateBitCast(cc.b.CreateGEP(i8, e, cc.c64(8)), i64p),
-          "ehash");
       Value *row_ptr = cc.b.CreateGEP(i8, e, cc.c64(16), "ht_row");
-      Value *match = cc.b.CreateICmpEQ(ehash, h, "hash_eq");
+      Value *match;
+      if (can_skip_ehash(op.ht_id)) {
+        match = ConstantInt::getTrue(C);
+      } else {
+        Value *ehash = cc.b.CreateLoad(
+            i64,
+            cc.b.CreateBitCast(cc.b.CreateGEP(i8, e, cc.c64(8)), i64p),
+            "ehash");
+        match = cc.b.CreateICmpEQ(ehash, h, "hash_eq");
+      }
       for (size_t j = 0; j < kv.size(); ++j) {
         Value *kp = cc.b.CreateGEP(i8, row_ptr, cc.c64(ht.cols[j].offset));
         Value *bk = cc.b.CreateLoad(i64, cc.b.CreateBitCast(kp, i64p),
@@ -8676,8 +8776,46 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       Value *h = emitMurmur(kv[0]);
       for (size_t j = 1; j < kv.size(); ++j)
         h = emitCombine(h, emitMurmur(kv[j]));
-      Value *rowp =
-          cc.b.CreateCall(ht_append, {sink_ht_ptr, m_worker, h});
+      // §6.12 inline fast-path: bump cursor within current chunk, avoiding
+      // the qjit_ht_append function call on the common path.
+      Value *cursor_ptr = cc.b.CreateStructGEP(HtHandleTy, ht_handle, 0);
+      Value *limit_ptr = cc.b.CreateStructGEP(HtHandleTy, ht_handle, 1);
+      Value *stride_val = cc.b.CreateLoad(
+          i64, cc.b.CreateStructGEP(HtHandleTy, ht_handle, 2), "stride");
+      Value *cursor_v = cc.b.CreateLoad(i8p, cursor_ptr, "cursor");
+      Value *next_v = cc.b.CreateGEP(i8, cursor_v, stride_val, "next_cursor");
+      Value *limit_v = cc.b.CreateLoad(i8p, limit_ptr, "limit");
+      Value *fits = cc.b.CreateICmpULE(
+          cc.b.CreatePtrToInt(next_v, i64),
+          cc.b.CreatePtrToInt(limit_v, i64), "fits");
+      BasicBlock *bb_fast = BasicBlock::Create(C, "ht_fast", fn);
+      BasicBlock *bb_slow = BasicBlock::Create(C, "ht_slow", fn);
+      BasicBlock *bb_sink = BasicBlock::Create(C, "ht_sink", fn);
+      cc.b.CreateCondBr(fits, bb_fast, bb_slow);
+      // Fast path: bump cursor, fill Entry header, return row pointer
+      cc.b.SetInsertPoint(bb_fast);
+      cc.b.CreateStore(next_v, cursor_ptr);
+      Value *cnt_ptr = cc.b.CreateLoad(
+          i64p, cc.b.CreateStructGEP(HtHandleTy, ht_handle, 3), "cnt_ptr");
+      Value *cnt = cc.b.CreateLoad(i64, cnt_ptr, "cnt");
+      cc.b.CreateStore(cc.b.CreateAdd(cnt, cc.c64(1)), cnt_ptr);
+      // Entry header: next @0, hash @8, row @16
+      cc.b.CreateStore(ConstantPointerNull::get(cast<PointerType>(i8p)),
+                       cc.b.CreateBitCast(cursor_v, i8pp));
+      cc.b.CreateStore(
+          h, cc.b.CreateBitCast(cc.b.CreateGEP(i8, cursor_v, cc.c64(8)), i64p));
+      Value *rowp_fast = cc.b.CreateGEP(i8, cursor_v, cc.c64(16), "rowp_fast");
+      cc.b.CreateBr(bb_sink);
+      // Slow path: call runtime, which allocates a new chunk + refreshes handle
+      cc.b.SetInsertPoint(bb_slow);
+      Value *rowp_slow = cc.b.CreateCall(
+          ht_append_slow_fn, {sink_ht_ptr, m_worker, h, ht_handle}, "rowp_slow");
+      cc.b.CreateBr(bb_sink);
+      // Merge
+      cc.b.SetInsertPoint(bb_sink);
+      PHINode *rowp = cc.b.CreatePHI(i8p, 2, "rowp");
+      rowp->addIncoming(rowp_fast, bb_fast);
+      rowp->addIncoming(rowp_slow, bb_slow);
       // Payload validity (branchless: i1 per payload column).
       std::vector<Value *> vbits(ht.cols.size(), nullptr);
       for (size_t cx = ht.num_keys; cx < ht.cols.size(); ++cx)

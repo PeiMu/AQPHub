@@ -25,9 +25,33 @@
 
 #include "qjit/query_jit_abi.h"
 
+extern const uint16_t qjit_bloom_masks[2048];
+
 namespace qjit {
 
 class QjitWorkerPool;
+
+// ---------------------------------------------------------------------------
+// Bloom-tagged pointer helpers (§6.1 — heads-only, lingo-db parity)
+// Low 16 bits of a directory word hold the OR of bloomMasks[hash>>53]
+// for every entry in the chain; high bits hold the pointer shifted left.
+// ---------------------------------------------------------------------------
+
+static inline uintptr_t bt_encode(void *ptr, uintptr_t prev_word,
+                                  uint64_t hash) {
+  uint16_t prev_tag = static_cast<uint16_t>(prev_word);
+  uint16_t cur_mask = qjit_bloom_masks[hash >> 53];
+  return (reinterpret_cast<uintptr_t>(ptr) << 16) |
+         static_cast<uint16_t>(cur_mask | prev_tag);
+}
+static inline void *bt_decode(uintptr_t word) {
+  return reinterpret_cast<void *>(word >> 16);
+}
+static inline bool bt_matches(uintptr_t word, uint64_t hash) {
+  uint16_t tag = static_cast<uint16_t>(word);
+  uint16_t mask = qjit_bloom_masks[hash >> 53];
+  return !(mask & ~tag);
+}
 
 // ---------------------------------------------------------------------------
 // QjitString helpers
@@ -93,6 +117,25 @@ public:
     total_size_ = 0;
   }
 
+  void BackChunkState(uint8_t **cursor, uint8_t **limit) {
+    if (chunks_.empty()) {
+      *cursor = *limit = nullptr;
+    } else {
+      auto &c = chunks_.back();
+      *cursor = c.data.get() + c.used;
+      *limit = c.data.get() + c.capacity;
+    }
+  }
+
+  void CommitBackChunk(uint8_t *new_cursor) {
+    if (chunks_.empty())
+      return;
+    auto &c = chunks_.back();
+    uint64_t old_used = c.used;
+    c.used = new_cursor - c.data.get();
+    total_size_ += (c.used - old_used);
+  }
+
 private:
   std::vector<Chunk> chunks_;
   uint64_t next_capacity_;
@@ -156,6 +199,12 @@ public:
 
   Entry *Lookup(uint64_t hash) const {
     assert(finalized_);
+    uintptr_t word = directory_[hash & dir_mask_].load(std::memory_order_relaxed);
+    return static_cast<Entry *>(bt_decode(word));
+  }
+
+  uintptr_t LookupTagged(uint64_t hash) const {
+    assert(finalized_);
     return directory_[hash & dir_mask_].load(std::memory_order_relaxed);
   }
 
@@ -164,12 +213,13 @@ public:
   uint64_t DirSize() const { return dir_mask_ + 1; }
   bool Finalized() const { return finalized_; }
 
-  /* Raw probe accessors for compiled code (valid after Finalize). */
-  Entry *const *DirData() const {
+  /* Raw probe accessors for compiled code (valid after Finalize).
+     Returns tagged words (uintptr_t) — codegen must untag (>>16). */
+  const uintptr_t *DirData() const {
     assert(finalized_);
-    static_assert(sizeof(std::atomic<Entry *>) == sizeof(Entry *),
-                  "directory must be reinterpretable as a plain Entry* array");
-    return reinterpret_cast<Entry *const *>(directory_.get());
+    static_assert(sizeof(std::atomic<uintptr_t>) == sizeof(uintptr_t),
+                  "directory must be reinterpretable as a plain uintptr_t array");
+    return reinterpret_cast<const uintptr_t *>(directory_.get());
   }
   uint64_t DirMask() const { return dir_mask_; }
 
@@ -182,6 +232,26 @@ public:
    * lifetime does not cover the HT (e.g. temp-table rebuilds). */
   QjitStringArena &Arena(uint32_t worker_id) { return arenas_[worker_id]; }
 
+  void BeginAppend(uint32_t worker_id, QjitHtAppendHandle *h) {
+    Fragment &f = fragments_[worker_id];
+    h->stride = entry_stride_;
+    h->count = &f.count;
+    f.buffer.BackChunkState(&h->cursor, &h->limit);
+  }
+
+  uint8_t *AppendRowSlow(uint32_t worker_id, uint64_t hash,
+                         QjitHtAppendHandle *h) {
+    Fragment &f = fragments_[worker_id];
+    f.buffer.CommitBackChunk(h->cursor);
+    uint8_t *row = AppendRow(worker_id, hash);
+    f.buffer.BackChunkState(&h->cursor, &h->limit);
+    return row;
+  }
+
+  void EndAppend(uint32_t worker_id, QjitHtAppendHandle *h) {
+    fragments_[worker_id].buffer.CommitBackChunk(h->cursor);
+  }
+
 private:
   struct Fragment {
     QjitBuffer buffer;
@@ -192,7 +262,7 @@ private:
   int64_t key0_offset_;
   std::vector<Fragment> fragments_;
   std::vector<QjitStringArena> arenas_;
-  std::unique_ptr<std::atomic<Entry *>[]> directory_;
+  std::unique_ptr<std::atomic<uintptr_t>[]> directory_;
   uint64_t dir_mask_ = 0;
   std::atomic<int64_t> key0_min_{INT64_MAX};
   std::atomic<int64_t> key0_max_{INT64_MIN};

@@ -136,7 +136,7 @@ def parse_csv(path, hasjit=True, head=4):
 #
 # Flag defaults (matching the global --jit-* defaults when not overridden):
 #   compile_mode=0, simd=False, payload_prune=True, prefetch=True,
-#   batch_probe=True, skip_hash_cmp=True
+#   batch_probe=True, skip_hash_cmp="all" (or "single"/"off")
 #
 # The "config" label must match ParseTuneLabel in ir_query_splitter.cpp.
 # Additional flags (compile_mode, simd, payload_prune, etc.) are read
@@ -154,31 +154,31 @@ def make_configs(split):
 
         # ---- expr-jit ----
         dict(label="expr",
-             filename=f"duckdb_{split}_expr_none_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_expr_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
         dict(label="expr_simd",
-             filename=f"duckdb_{split}_expr_auto_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_expr_auto_breakdown_time_log.csv",
              hasjit=True, flags=dict(simd=True)),
 
         # ---- operator-jit ----
         dict(label="operator",
-             filename=f"duckdb_{split}_operator_none_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_operator_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
         dict(label="operator_simd",
-             filename=f"duckdb_{split}_operator_auto_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_operator_auto_breakdown_time_log.csv",
              hasjit=True, flags=dict(simd=True)),
 
         # ---- pipeline-jit ----
         dict(label="pipeline",
-             filename=f"duckdb_{split}_pipeline_none_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_pipeline_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
         dict(label="pipeline_simd",
-             filename=f"duckdb_{split}_pipeline_auto_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_pipeline_auto_breakdown_time_log.csv",
              hasjit=True, flags=dict(simd=True)),
 
         # ---- query-jit (full LLVM backend) ----
         dict(label="query_full",
-             filename=f"duckdb_{split}_query_none_nospecjit_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_query_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
 
         # ---- query-jit (FastISel backend) ----
@@ -193,11 +193,11 @@ def make_configs(split):
 
         # ---- future configs (uncomment when CSVs exist) ----
         # dict(label="pipeline",
-        #      filename=f"duckdb_{split}_pipeline_none_nospecjit_nopayprune_breakdown_time_log.csv",
+        #      filename=f"duckdb_{split}_pipeline_none_nopayprune_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(payload_prune=False)),
         # dict(label="query_tpde",
-        #      filename=f"duckdb_{split}_query_none_nospecjit_fctpde_noskiphashcmp_breakdown_time_log.csv",
-        #      hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp=False)),
+        #      filename=f"duckdb_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
+        #      hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
     ]
 
 

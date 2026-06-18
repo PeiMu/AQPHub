@@ -281,7 +281,7 @@ public:
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
 
   void SetJITOptFlags(bool payload_prune, bool prefetch, int prefetch_dist,
-                      bool batch_probe, bool skip_hash_cmp,
+                      bool batch_probe, int skip_hash_cmp,
                       bool single_col_int_join = true) {
     jit_payload_prune_ = payload_prune;
     jit_prefetch_ = prefetch;
@@ -460,7 +460,7 @@ public:
   int GetJitPrefetchEntryDistance() const { return jit_prefetch_entry_distance_; }
   int GetJitPrefetchRowDistance() const { return jit_prefetch_row_distance_; }
   bool GetJitBatchProbe() const { return jit_batch_probe_; }
-  bool GetJitSkipHashCmp() const { return jit_skip_hash_cmp_; }
+  int GetJitSkipHashCmp() const { return jit_skip_hash_cmp_; }
   bool GetJitCache() const { return jit_cache_; }
   int GetCompileMode() const { return compile_mode_; }
 #endif
@@ -575,7 +575,7 @@ private:
   int  jit_prefetch_entry_distance_ = 24;
   int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
-  bool jit_skip_hash_cmp_ = true;
+  int  jit_skip_hash_cmp_ = 2; // 0=off, 1=single, 2=all
   bool jit_single_col_int_join_ = true;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;

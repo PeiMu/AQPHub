@@ -377,7 +377,7 @@ public:
 
   void SetBatchProbe(bool enable) { batch_probe_ = enable; }
 
-  void SetSkipHashCmp(bool enable) { skip_hash_cmp_ = enable; }
+  void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
 
   void SetCache(bool enable);
 
@@ -413,7 +413,8 @@ private:
   int prefetch_entry_distance_ = 24;
   int prefetch_row_distance_ = 12;
   bool batch_probe_ = false;
-  bool skip_hash_cmp_ = true;
+  int skip_hash_cmp_ = 2; // 0=off, 1=single-int-key, 2=all-int-keys
+  bool bloom_tag_ = true;
   bool cache_enabled_ = false;
 
   // LLVM state — managed via unique_ptr to avoid including LLVM headers here

@@ -1453,3 +1453,77 @@ Adaptive skip_hash_cmp: automatic per-join (key types known from IR at
 compile time; all JOB keys are INTEGER). Adaptive jit-level/compile-mode:
 negligible for JOB (85% of subqueries scan base tables; only 2.1% of
 subqueries have temp-sourced probe-side < 1000 rows).
+
+### Archived from CLAUDE.md: §6.1, §6.2, §6.4, §6.10 (2026-06-18)
+
+§6.1 Bloom-tagged hash-table chain pointers — COMPLETE.
+Always-on (no CLI flag). Heads-only tagging; `ir_to_llvm.h:bloom_tag_`.
+Directory type changed from `atomic<Entry*>[]` to `atomic<uintptr_t>[]`.
+Low 16 bits = OR of bloomMasks[hash>>53] for all entries in chain;
+high bits = pointer << 16. Codegen loads i64 tagged word, bloom-filters
+with AND+CMP, then untags with LShr(16). Entry::next is plain pointer
+(unchanged). bloomMasks[2048] table in query_jit_runtime.cpp (copied
+from lingo-db). Performance: net-neutral on JOB (9.8ms / 0.18%).
+Files changed: include/qjit/query_jit_runtime.h (bt_encode/decode/matches,
+directory_ type, DirData return type), src/qjit/query_jit_runtime.cpp
+(bloomMasks table, CAS push with bt_encode, directory alloc/zero),
+src/jit/ir_to_llvm.cpp (bloom_gv global, guard+main probe load i64
+→ bloom check → untag, bloom_tag_ in cache key).
+
+§6.2 Skip stored-hash compare for integer keys — COMPLETE.
+`--jit-skip-hash-cmp={off|single|all}` (int: 0/1/2). Pipeline-jit:
+CompileFilterProbeProjectFusion and CompileMultiProbeChain check
+skip_hash_cmp_ mode against key count and integer-only. Query-jit:
+CompileQuerySteps `can_skip_ehash()` lambda. Cache key updated with
+"H" + mode + bloom_tag flag. ParamConfig: int jit_skip_hash_cmp
+(was bool). LoadTuneEntry: accepts string "off"/"single"/"all" or
+bool (legacy compat). run_job.sh/measure scripts: arg 8 = skip_hash_cmp
+with values off|single|all.
+
+§6.4 11d-class gap investigation — RESOLVED.
+Root cause: systemic per-row execution overhead in query-jit vs DuckDB's
+vectorized interpreter (1.52x at ~99ns/row vs ~65ns/row). Not specific
+to 11d/9d/16b. Machine: 6 physical cores, 12 HT threads. 87/678
+sub-queries: interp exe faster (303ms total gap). 474/678: qjit exe
+faster (5344ms advantage). 68/87 would flip if exe matched interp.
+Actionable follow-ups: §6.11 SIMD scan, §6.12 inline sinks.
+
+§6.10 Spec-jit thread tuning (query-jit, node-based) — RESOLVED.
+Spec-jit hurts node-based query-jit regardless of thread config.
+Measured (113 JOB, node-based, 10 warm):
+  nospec 12t: 6.21s total, 0.54s jit, 5.03s exe (baseline)
+  spec   12t: 6.60s (+6.2%), 0.76s jit, 5.08s exe
+  spec   11t: 6.71s (+8.1%), 0.76s jit, 5.21s exe
+  spec   10t: 6.81s (+9.7%), 0.76s jit, 5.31s exe
+Winner counts: nospec 85, spec_12t 19, spec_11t 8, spec_10t 1.
+Oracle: 6.18s. Reducing workers loses more parallelism than it saves
+in contention relief. Spec only wins 5 queries (22ms savings) vs
+losses on 85+. Verdict: nospec optimal for node-based on 6c/12t.
+
+§6.12 Tighter morsel entry: inline fast-path HT append — COMPLETE
+(2026-06-18). Compiled morsel body now stack-allocates a
+QjitHtAppendHandle and calls qjit_ht_begin once at morsel entry. The
+hot loop does an inline bump-pointer check (cursor + stride <= limit);
+on the fast path no function call is needed. When the chunk is exhausted
+the slow path calls qjit_ht_append_slow, which allocates a new chunk
+and refreshes the handle. qjit_ht_end writes the cursor back at morsel
+exit. ABI struct: QjitHtAppendHandle {cursor, limit, stride, count}
+(query_jit_abi.h). Runtime: QjitBuffer::BackChunkState/CommitBackChunk,
+QjitHashTable::BeginAppend/AppendRowSlow/EndAppend
+(query_jit_runtime.h/cpp). Codegen: ir_to_llvm.cpp CompileQuerySteps
+HtBuild sink — fast/slow BasicBlocks with PHI merge for row pointer.
+Registered symbols: qjit_ht_begin, qjit_ht_append_slow, qjit_ht_end
+(duckdb_adapter.cpp:RegisterQjitRuntimeSymbols).
+Performance (node-based, 10 warm, 113 JOB, combined with §6.1+§6.2):
+  TPDE: exe -15%, e2e -12.1% (exe -816ms, jit +25ms)
+  FastISel: exe -11.4%, e2e -7.8% (exe -670ms, jit +68ms)
+  LLVM O2: exe -13%, e2e +1.0% (exe -565ms, jit +685ms — more IR)
+Per-query: 103-107/113 queries faster on exe; few small slowdowns
+(24b +4.6ms, 6c +6.3ms on specific backends).
+
+Script cleanup (same commit): removed qjit_threads arg 13 from
+measure_breakdown_time_job.sh, run_job.sh, and related scripts.
+breakdown_measurement_script.sh rewritten with explicit parameters
+(no defaults). measure/*.py: removed _nospecjit_ from CSV filenames.
+Tuned config distribution changed (90 subs moved from interp to JIT
+levels) because old tune_per_subquery.py referenced wrong filenames.

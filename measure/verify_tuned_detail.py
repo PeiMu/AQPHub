@@ -82,7 +82,7 @@ def main():
 
     tune_json = json.load(open(os.path.join(base, f"tuned_per_subquery_{split}.json")))
     tuned_csv = os.path.join(base,
-        f"duckdb_{split}_query_none_nospecjit_tuned_breakdown_time_log.csv")
+        f"duckdb_{split}_query_none_tuned_breakdown_time_log.csv")
     tuned_data = parse_per_subquery(tuned_csv, hasjit=True, head=head)
 
     if query not in tune_json:
@@ -96,12 +96,12 @@ def main():
     source_configs = {}
     CONFIG_FILES = {
         "interp":        (f"duckdb_{split}_none_off_breakdown_time_log.csv", False),
-        "expr":          (f"duckdb_{split}_expr_none_nospecjit_breakdown_time_log.csv", True),
-        "expr_simd":     (f"duckdb_{split}_expr_auto_nospecjit_breakdown_time_log.csv", True),
-        "operator":      (f"duckdb_{split}_operator_none_nospecjit_breakdown_time_log.csv", True),
-        "operator_simd": (f"duckdb_{split}_operator_auto_nospecjit_breakdown_time_log.csv", True),
-        "pipeline":      (f"duckdb_{split}_pipeline_none_nospecjit_breakdown_time_log.csv", True),
-        "pipeline_simd": (f"duckdb_{split}_pipeline_auto_nospecjit_breakdown_time_log.csv", True),
+        "expr":          (f"duckdb_{split}_expr_none_breakdown_time_log.csv", True),
+        "expr_simd":     (f"duckdb_{split}_expr_auto_breakdown_time_log.csv", True),
+        "operator":      (f"duckdb_{split}_operator_none_breakdown_time_log.csv", True),
+        "operator_simd": (f"duckdb_{split}_operator_auto_breakdown_time_log.csv", True),
+        "pipeline":      (f"duckdb_{split}_pipeline_none_breakdown_time_log.csv", True),
+        "pipeline_simd": (f"duckdb_{split}_pipeline_auto_breakdown_time_log.csv", True),
         "query_full":    (f"duckdb_{split}_query_none_breakdown_time_log.csv", True),
         "query_fastisel":(f"duckdb_{split}_query_none_fcfastisel_breakdown_time_log.csv", True),
         "query_tpde":    (f"duckdb_{split}_query_none_fctpde_breakdown_time_log.csv", True),

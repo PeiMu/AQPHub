@@ -204,10 +204,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_batch_probe = true;
     } else if (arg == "--no-jit-batch-probe") {
       config.jit_batch_probe = false;
+    } else if (arg == "--jit-skip-hash-cmp=off") {
+      config.jit_skip_hash_cmp = 0;
+    } else if (arg == "--jit-skip-hash-cmp=single") {
+      config.jit_skip_hash_cmp = 1;
+    } else if (arg == "--jit-skip-hash-cmp=all") {
+      config.jit_skip_hash_cmp = 2;
     } else if (arg == "--jit-skip-hash-cmp") {
-      config.jit_skip_hash_cmp = true;
-    } else if (arg == "--no-jit-skip-hash-cmp") {
-      config.jit_skip_hash_cmp = false;
+      config.jit_skip_hash_cmp = 2; // bare flag = all (legacy compat)
     } else if (arg == "--jit-cache") {
       config.jit_cache = true;
     } else if (arg == "--no-jit-cache") {
@@ -391,8 +395,8 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --[no-]jit-batch-probe           Batch/vectorized "
                "hash probe"
             << std::endl;
-  std::cout << "  --[no-]jit-skip-hash-cmp         Skip hash/salt cmp "
-               "for integer keys"
+  std::cout << "  --jit-skip-hash-cmp=off|single|all  Skip hash cmp "
+               "for int keys (single=1-key, all=any)"
             << std::endl;
   std::cout << "  --jit-cache                      Enable JIT compilation cache "
                "across --repeat runs (default: disabled)"

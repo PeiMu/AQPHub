@@ -105,6 +105,27 @@ void *qjit_buffer_grow(void *buffer, uint64_t bytes);
  * NULL keys are skipped at build). */
 void *qjit_ht_append(void *ht, uint32_t worker_id, uint64_t hash);
 
+/* §6.12 fast-path HT append: the compiled morsel body stack-allocates a
+ * QjitHtAppendHandle and calls qjit_ht_begin once at morsel entry.  The
+ * hot loop then does an inline bump-pointer check (cursor + stride <=
+ * limit); on the fast path no function call is needed.  When the chunk is
+ * exhausted the slow path calls qjit_ht_append_slow, which allocates a
+ * new chunk and refreshes the handle.  qjit_ht_end writes the cursor
+ * back to the underlying QjitBuffer at morsel exit.
+ *
+ * FIELD ORDER IS ABI — compiled code GEPs into this struct. */
+typedef struct {
+  uint8_t *cursor;   /* current write position in last chunk              */
+  uint8_t *limit;    /* end of last chunk capacity                        */
+  uint64_t stride;   /* entry_stride_ (constant for this HT)             */
+  uint64_t *count;   /* pointer to per-worker fragment count              */
+} QjitHtAppendHandle;
+
+void qjit_ht_begin(void *ht, uint32_t worker_id, QjitHtAppendHandle *handle);
+void *qjit_ht_append_slow(void *ht, uint32_t worker_id, uint64_t hash,
+                           QjitHtAppendHandle *handle);
+void qjit_ht_end(void *ht, uint32_t worker_id, QjitHtAppendHandle *handle);
+
 /* Size the pow-2 directory and link all worker fragments into chains,
  * using ctx->pool (ParallelFor + CAS bucket pushes) when the build is big
  * enough, serially otherwise. Must be called on the main thread after the

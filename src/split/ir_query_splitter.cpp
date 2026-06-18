@@ -185,8 +185,17 @@ void IRQuerySplitter::LoadTuneEntry(int idx, const nlohmann::json &val) {
     e.prefetch = val["prefetch"].get<bool>() ? 1 : 0;
   if (val.contains("batch_probe"))
     e.batch_probe = val["batch_probe"].get<bool>() ? 1 : 0;
-  if (val.contains("skip_hash_cmp"))
-    e.skip_hash_cmp = val["skip_hash_cmp"].get<bool>() ? 1 : 0;
+  if (val.contains("skip_hash_cmp")) {
+    auto &v = val["skip_hash_cmp"];
+    if (v.is_string()) {
+      std::string s = v.get<std::string>();
+      if (s == "off") e.skip_hash_cmp = 0;
+      else if (s == "single") e.skip_hash_cmp = 1;
+      else if (s == "all") e.skip_hash_cmp = 2;
+    } else {
+      e.skip_hash_cmp = v.get<bool>() ? 2 : 0;
+    }
+  }
   tune_entries_[idx] = e;
 }
 
@@ -256,7 +265,7 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
   if (te.batch_probe >= 0)
     config_.jit_batch_probe = te.batch_probe != 0;
   if (te.skip_hash_cmp >= 0)
-    config_.jit_skip_hash_cmp = te.skip_hash_cmp != 0;
+    config_.jit_skip_hash_cmp = te.skip_hash_cmp;
 
 #ifdef HAVE_DUCKDB
   if (config_.engine == BackendEngine::DUCKDB) {

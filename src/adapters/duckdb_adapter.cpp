@@ -3156,6 +3156,10 @@ void DuckDBAdapter::RegisterQjitRuntimeSymbols(
   comp->RegisterRuntimeSymbol("qjit_parallel_for", (void *)&qjit_parallel_for);
   comp->RegisterRuntimeSymbol("qjit_buffer_grow", (void *)&qjit_buffer_grow);
   comp->RegisterRuntimeSymbol("qjit_ht_append", (void *)&qjit_ht_append);
+  comp->RegisterRuntimeSymbol("qjit_ht_begin", (void *)&qjit_ht_begin);
+  comp->RegisterRuntimeSymbol("qjit_ht_append_slow",
+                              (void *)&qjit_ht_append_slow);
+  comp->RegisterRuntimeSymbol("qjit_ht_end", (void *)&qjit_ht_end);
   comp->RegisterRuntimeSymbol("qjit_ht_finalize", (void *)&qjit_ht_finalize);
   comp->RegisterRuntimeSymbol("qjit_str_arena_copy",
                               (void *)&qjit_str_arena_copy);
