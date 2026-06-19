@@ -35,8 +35,10 @@
 #include "adapters/lingodb_adapter.h"
 #endif
 
+#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <vector>
@@ -169,7 +171,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
       // save time to a file
       std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
+      log_file.open(g_timing_log_name, std::ios_base::app);
       log_file << std::fixed << std::setprecision(3) << (read_sql_time / 1000.0)
                << ", ";
       log_file.close();
@@ -259,7 +261,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
           chrono_toc(&timer, "Show output time is\n", false);
       // save time to a file
       std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
+      log_file.open(g_timing_log_name, std::ios_base::app);
       log_file << std::fixed << std::setprecision(3)
                << (show_output_time / 1000.0) << "\n";
       log_file.close();
@@ -274,6 +276,48 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
 }
 
 // Run benchmark on all queries in a directory
+static void MergeIterationLogs(const std::vector<std::string> &iter_files,
+                               const std::string &out_file) {
+  // Per-iteration files have: "Running benchmark for .../Xa.sql...\n" header
+  // then data rows. Merge them so all iterations of the same query are grouped:
+  //   Running benchmark for .../10a.sql...
+  //   <iter0 row>
+  //   <iter1 row>
+  //   ...
+  //   Running benchmark for .../10b.sql...
+  //   ...
+  using Rows = std::vector<std::string>;
+  std::map<std::string, Rows> per_query;       // header -> data rows (ordered)
+  std::vector<std::string> query_order;        // preserve first-seen order
+
+  for (const auto &path : iter_files) {
+    std::ifstream in(path);
+    if (!in.is_open()) continue;
+    std::string cur_header;
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.rfind("Running", 0) == 0) {
+        cur_header = line;
+        if (per_query.find(cur_header) == per_query.end())
+          query_order.push_back(cur_header);
+        continue;
+      }
+      if (!cur_header.empty() && !line.empty())
+        per_query[cur_header].push_back(line);
+    }
+  }
+
+  std::ofstream out(out_file);
+  for (const auto &hdr : query_order) {
+    out << hdr << "\n";
+    for (const auto &row : per_query[hdr])
+      out << row << "\n";
+  }
+
+  for (const auto &path : iter_files)
+    std::remove(path.c_str());
+}
+
 int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
                  middleware::storage::StoragePlan *storage_plan = nullptr) {
   std::cout << "\n========================================" << std::endl;
@@ -296,42 +340,62 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
   std::cout << "Found " << sql_files.size() << " SQL file(s)" << std::endl;
 
-  // Run tests on all queries
   std::vector<TestResult> results;
-  results.reserve(sql_files.size());
+  results.reserve(sql_files.size() * config.repeat_count);
 
   int passed = 0;
   int failed = 0;
+  bool first_run = true;
 
-  for (size_t qi = 0; qi < sql_files.size(); qi++) {
-    const auto &sql_file = sql_files[qi];
-    std::cout << "Run " + sql_file << std::endl;
+  std::vector<std::string> iter_log_files;
+  std::vector<std::string> iter_ldb_files;
+  bool is_lingodb = (config.engine == BackendEngine::LINGODB);
+
+  for (int iter = 0; iter < config.repeat_count; iter++) {
+    std::string iter_log = "time_log_iter" + std::to_string(iter) + ".csv";
+    iter_log_files.push_back(iter_log);
+
     if (config.enable_timing) {
-      std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
-      log_file << "Running benchmark for " << sql_file << "...\n";
-      log_file.close();
-      if (config.engine == BackendEngine::LINGODB) {
-        std::ofstream ldb_log;
-        ldb_log.open("lingodb_compile_time.csv", std::ios_base::app);
-        ldb_log << "Running benchmark for " << sql_file << "...\n";
-        ldb_log << "frontend, QOpt, lowerRelAlg, lowerSubOp, lowerDB, "
-                   "lowerArrow, lowerToLLVM, toLLVMIR, llvmOptimize, "
-                   "llvmCodeGen, baselineLowering, baselineCodeGen, "
-                   "baselineEmit, executionTime, total\n";
-        ldb_log.close();
+      g_timing_log_name = iter_log;
+      if (is_lingodb) {
+        std::string ldb_log = "lingodb_compile_iter" + std::to_string(iter) + ".csv";
+        iter_ldb_files.push_back(ldb_log);
+        g_lingodb_compile_log_name = ldb_log;
       }
     }
-    for (int iter = 0; iter < config.repeat_count; iter++) {
+
+    std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
+
+    for (size_t qi = 0; qi < sql_files.size(); qi++) {
+      const auto &sql_file = sql_files[qi];
+      std::cout << "Run " + sql_file << std::endl;
+      if (config.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "Running benchmark for " << sql_file << "...\n";
+        log_file.close();
+        if (is_lingodb) {
+          std::ofstream ldb_log;
+          ldb_log.open(g_lingodb_compile_log_name, std::ios_base::app);
+          ldb_log << "Running benchmark for " << sql_file << "...\n";
+          ldb_log << "frontend, QOpt, lowerRelAlg, lowerSubOp, lowerDB, "
+                     "lowerArrow, lowerToLLVM, toLLVMIR, llvmOptimize, "
+                     "llvmCodeGen, baselineLowering, baselineCodeGen, "
+                     "baselineEmit, executionTime, total\n";
+          ldb_log.close();
+        }
+      }
+
       std::chrono::high_resolution_clock::time_point timer;
       if (config.enable_timing)
         timer = chrono_tic();
-      if (qi > 0 || iter > 0)
+      if (!first_run)
         adapter->ResetQueryState();
+      first_run = false;
       if (config.enable_timing) {
         auto reset_time = chrono_toc(&timer, "", false);
         std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
+        log_file.open(g_timing_log_name, std::ios_base::app);
         log_file << std::fixed << std::setprecision(3)
                  << (reset_time / 1000.0) << ", ";
         log_file.close();
@@ -346,6 +410,15 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
       } else {
         failed++;
       }
+    }
+  }
+
+  if (config.enable_timing) {
+    g_timing_log_name = "time_log.csv";
+    MergeIterationLogs(iter_log_files, g_timing_log_name);
+    if (is_lingodb) {
+      g_lingodb_compile_log_name = "lingodb_compile_time.csv";
+      MergeIterationLogs(iter_ldb_files, g_lingodb_compile_log_name);
     }
   }
 
@@ -478,7 +551,7 @@ int main(int argc, char **argv) {
           chrono_toc(&timer, "Prepare Middleware time is\n", false);
       if (!config.benchmark_mode) {
         std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
+        log_file.open(g_timing_log_name, std::ios_base::app);
         log_file << std::fixed << std::setprecision(3)
                  << (prepare_middleware_time / 1000.0) << ", ";
         log_file.close();
@@ -498,7 +571,7 @@ int main(int argc, char **argv) {
           if (config.enable_timing) {
             auto reset_time = chrono_toc(&timer, "", false);
             std::ofstream log_file;
-            log_file.open("time_log.csv", std::ios_base::app);
+            log_file.open(g_timing_log_name, std::ios_base::app);
             log_file << std::fixed << std::setprecision(3)
                      << (reset_time / 1000.0) << ", ";
             log_file.close();

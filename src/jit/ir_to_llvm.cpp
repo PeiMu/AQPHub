@@ -9226,7 +9226,11 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     return nullptr;
   }
 
+  auto cg_t0 = std::chrono::steady_clock::now();
+
   OptimiseModule(*mod, skip_opt_);
+
+  auto cg_t1 = std::chrono::steady_clock::now();
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -9237,12 +9241,20 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     return nullptr;
   }
 
+  auto cg_t2 = std::chrono::steady_clock::now();
+
   auto sym = impl_->jit->lookup(entry_name);
   impl_->pending_cache_key.clear();
   if (!sym) {
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
   }
+
+  auto cg_t3 = std::chrono::steady_clock::now();
+  last_cg_timing_.opt_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t1 - cg_t0).count();
+  last_cg_timing_.add_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t2 - cg_t1).count();
+  last_cg_timing_.lookup_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t3 - cg_t2).count();
+
   return AQP_JIT_GET_ADDR(sym);
 }
 

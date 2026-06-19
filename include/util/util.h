@@ -10,11 +10,15 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <sys/stat.h>
 #include <vector>
 
 #define DEBUG_MIDDLEWARE true
 #define MEASURE_SINGLE_QUERY true
+
+extern std::string g_timing_log_name;
+extern std::string g_lingodb_compile_log_name;
 
 namespace middleware {
 bool ends_with_sql(const std::string &filename);

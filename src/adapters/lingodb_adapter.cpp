@@ -134,7 +134,7 @@ static const std::vector<std::string> kLingoDBTimingColumns = {
 static void WriteLingoDBTimingRow(
     const std::unordered_map<std::string, double> &timing) {
   std::ofstream log_file;
-  log_file.open("lingodb_compile_time.csv", std::ios_base::app);
+  log_file.open(g_lingodb_compile_log_name, std::ios_base::app);
   for (size_t i = 0; i < kLingoDBTimingColumns.size(); i++) {
     const auto &col = kLingoDBTimingColumns[i];
     auto it = timing.find(col);
@@ -241,7 +241,7 @@ QueryResult LingoDBAdapter::ExecuteSQL(const std::string &sql) {
   if (enable_timing_) {
     auto exe_time = chrono_toc(&timer, "Execute SQL time is\n", false);
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3) << (exe_time / 1000.0)
              << ", ";
     log_file.close();
@@ -310,7 +310,7 @@ void LingoDBAdapter::ExecuteSQLandCreateTempTable(
     auto execute_sub_sql_time =
         chrono_toc(&timer, "Execute sub-SQL time is\n", false);
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (execute_sub_sql_time / 1000.0) << ", ";
     log_file.close();
@@ -331,7 +331,7 @@ void LingoDBAdapter::ExecuteSQLandCreateTempTable(
     auto extra_materialize_time =
         chrono_toc(&timer, "Extra materialize time is\n", false);
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();

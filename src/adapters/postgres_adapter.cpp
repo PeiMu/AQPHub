@@ -145,7 +145,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
         chrono_toc(&timer, "Execute sub-SQL time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (execute_sub_sql_time / 1000.0) << ", ";
     log_file.close();
@@ -180,7 +180,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
         chrono_toc(&timer, "Extra materialize time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();

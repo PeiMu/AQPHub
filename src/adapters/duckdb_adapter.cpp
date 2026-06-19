@@ -3,6 +3,7 @@
  * */
 
 #include "adapters/duckdb_adapter.h"
+#include "util/util.h"
 
 #include <cctype>
 #include <cstring>
@@ -70,7 +71,7 @@ static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
 // Write one JIT timing value (in ms) as a CSV column.
 static void WriteJitTimingColumn(long us) {
   std::ofstream log_file;
-  log_file.open("time_log.csv", std::ios_base::app);
+  log_file.open(g_timing_log_name, std::ios_base::app);
   log_file << std::fixed << std::setprecision(3) << (us / 1000.0) << ", ";
   log_file.close();
 }
@@ -1803,7 +1804,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
         chrono_toc(&timer, "Extra materialize time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();
@@ -1960,7 +1961,7 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
     auto extra_materialize_time =
         chrono_toc(&timer, "Extra materialize time is\n", false);
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();
@@ -2661,6 +2662,7 @@ void DuckDBAdapter::ResetQueryState() {
   pending_bloom_filters_.clear();
   if (jit_compiler_)
     jit_compiler_->ResetModules();
+  jit_compiler_cache_.clear();
   auto ctx = GetClientContext();
   if (ctx)
     ctx->aqp_jit_context.reset();
@@ -2968,17 +2970,14 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
     stage = "optimize";
     Optimize();
     // Fresh binder ⇒ temp-table scans got fresh indices; rebuild the maps
-    // (restored below) so ConvertPlanToIR resolves ChunkNodes.
+    // so ConvertPlanToIR resolves ChunkNodes.
     intermediate_table_map.clear();
     chunk_col_names_.clear();
     stage = "rebuild-temp-indices";
     RebuildTempTableIndices(plan.get(), intermediate_table_map,
                             chunk_col_names_, temp_collections_,
                             qjit_temp_meta_);
-    // ConvertPlanToIR prints "Do not support yet" (and D_ASSERTs) on plans
-    // the converter can't represent — the only kind seen on JOB is
-    // EMPTY_RESULT (optimizer proved a sub-query empty). Reject before
-    // conversion to keep stdout identical to the baseline run.
+    // Reject EMPTY_RESULT plans before conversion to keep stdout identical.
     bool plan_empty_result =
         PlanContainsOpType(*plan, duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT);
     std::unique_ptr<ir_sql_converter::AQPStmt> ir;
@@ -3227,9 +3226,6 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
   }
 
   // use_fast (spec-jit FAST_ONCE): route through the TPDE compiler.
-  // When compile_mode_ == TPDE this IS jit_compiler_; each compiler
-  // instance has its own qjit-symbol registration guard
-  // (RegisterQjitRuntimeSymbols is not idempotent per compiler).
   aqp_jit::IrToLlvmCompiler *comp;
   if (use_fast) {
     comp = EnsureFastJitCompiler();
@@ -3256,9 +3252,7 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
     comp->ResetModules();
   }
 
-  // AQP_QJIT_TIME=1: codegen-only timing (LLVM-IR emission + opt + backend
-  // codegen + lookup), release-visible. Separates the backend-compressible
-  // part of the jit_compile CSV column from analysis/Prepare overhead.
+  // AQP_QJIT_TIME=1: codegen-only timing (opt + add + lookup breakdown).
   static const bool qjit_time_trace = std::getenv("AQP_QJIT_TIME") != nullptr;
   std::chrono::steady_clock::time_point cg_tic;
   if (qjit_time_trace)
@@ -3268,8 +3262,10 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
     auto cg_us = std::chrono::duration_cast<std::chrono::microseconds>(
                      std::chrono::steady_clock::now() - cg_tic)
                      .count();
-    fprintf(stderr, "[AQP-QJIT-TIME] codegen label=%s us=%lld\n",
-            label.c_str(), static_cast<long long>(cg_us));
+    auto &ct = comp->LastCodegenTiming();
+    fprintf(stderr, "[AQP-QJIT-TIME] codegen label=%s us=%lld opt=%ld add=%ld lookup=%ld\n",
+            label.c_str(), static_cast<long long>(cg_us),
+            ct.opt_us, ct.add_us, ct.lookup_us);
   }
   if (!compiled->fn)
     return fallback("compile-failed");

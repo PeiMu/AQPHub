@@ -2,6 +2,9 @@
 
 #include <algorithm>
 
+std::string g_timing_log_name = "time_log.csv";
+std::string g_lingodb_compile_log_name = "lingodb_compile_time.csv";
+
 namespace middleware {
 
 // Helper function to check if a file ends with .sql

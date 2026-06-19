@@ -13,14 +13,14 @@ set -e
 ## ============================================================
 ## lingodb LLVM backend
 ## ============================================================
-#bash ./measure_breakdown_time_job.sh lingodb none llvm off on on on all off off llvm && \
-#bash ./measure_breakdown_time_job.sh lingodb node-based llvm off on on on all off off llvm && \
+#bash ./measure_breakdown_time_job.sh lingodb none llvm && \
+#bash ./measure_breakdown_time_job.sh lingodb node-based llvm && \
 #
 ## ============================================================
 ## lingodb TPDE backend
 ## ============================================================
-#bash ./measure_breakdown_time_job.sh lingodb none tpde off on on on all off off llvm && \
-#bash ./measure_breakdown_time_job.sh lingodb node-based tpde off on on on all off off llvm
+#bash ./measure_breakdown_time_job.sh lingodb none tpde && \
+#bash ./measure_breakdown_time_job.sh lingodb node-based tpde && \
 
 # ============================================================
 # duckdb backend
@@ -29,9 +29,9 @@ set -e
 # ============================================================
 # Interpreter baseline (no JIT — spec is a no-op here)
 # ============================================================
-bash ./measure_breakdown_time_job.sh duckdb none none off on on on all off off llvm && \
-#bash ./measure_breakdown_time_job.sh duckdb relationship-center none off on on on all off off llvm && \
-bash ./measure_breakdown_time_job.sh duckdb node-based none off on on on all off off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb none none && \
+#bash ./measure_breakdown_time_job.sh duckdb relationship-center none && \
+bash ./measure_breakdown_time_job.sh duckdb node-based none && \
 
 # ============================================================
 # expr-jit (spec-jit default=off)
@@ -126,9 +126,9 @@ bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all o
 # tuned + spec=recompile
 bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile llvm job_result/tuned_per_subquery_node-based.json && \
 
-# ============================================================
-# pipeline kernel (none-split only)
-# ============================================================
+## ============================================================
+## pipeline kernel 
+## ============================================================
 #bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline none on on on all && \
 #bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline none on on on all && \
 #bash ./measure_breakdown_time_job_kernel.sh duckdb node-based pipeline none on on on all && \

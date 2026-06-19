@@ -389,7 +389,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     auto parse_sql_time = chrono_toc(&timer, "Parse SQL time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3) << (parse_sql_time / 1000.0)
              << ", ";
     log_file.close();
@@ -438,7 +438,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
           chrono_toc(&timer, "Convert Plan to IR time is\n", false);
       // save time to a file
       std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
+      log_file.open(g_timing_log_name, std::ios_base::app);
       log_file << std::fixed << std::setprecision(3)
                << (convert_plan_to_ir_time / 1000.0) << ", ";
       log_file.close();
@@ -489,7 +489,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     auto preprocess_time = chrono_toc(&timer, "Preprocess time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3) << (preprocess_time / 1000.0)
              << ", ";
     log_file.close();
@@ -671,7 +671,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         auto gen_and_analyze_time =
             chrono_toc(&timer, "Generate final + AnalyzeFinalIR time\n", false);
         std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
+        log_file.open(g_timing_log_name, std::ios_base::app);
         log_file << std::fixed << std::setprecision(3)
                  << (gen_and_analyze_time / 1000.0) << ", ";
         log_file << "0.000, "; // jit_compile_final = 0 (kernel path)
@@ -692,7 +692,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         auto exec_time =
             chrono_toc(&timer, "ExecuteFinalAggregate time\n", false);
         std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
+        log_file.open(g_timing_log_name, std::ios_base::app);
         log_file << std::fixed << std::setprecision(3)
                  << (exec_time / 1000.0) << ", ";
         log_file.close();
@@ -717,7 +717,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       auto generate_final_sub_sql_time =
           chrono_toc(&timer, "Generate final sub-SQL time is\n", false);
       std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
+      log_file.open(g_timing_log_name, std::ios_base::app);
       log_file << std::fixed << std::setprecision(3)
                << (generate_final_sub_sql_time / 1000.0) << ", ";
       log_file.close();
@@ -730,7 +730,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         auto combine_sql_time =
             chrono_toc(&timer, "Combine SQL time is\n", false);
         std::ofstream log_file;
-        log_file.open("time_log.csv", std::ios_base::app);
+        log_file.open(g_timing_log_name, std::ios_base::app);
         log_file << std::fixed << std::setprecision(3)
                  << (combine_sql_time / 1000.0) << ", ";
         log_file.close();
@@ -1499,7 +1499,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     pending_extract_us_ = 0.0;
 #endif
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (extract_next_sub_sql_time / 1000.0) << ", ";
     log_file.close();
@@ -1685,7 +1685,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
         if (config_.enable_timing) {
           std::ofstream log_file;
-          log_file.open("time_log.csv", std::ios_base::app);
+          log_file.open(g_timing_log_name, std::ios_base::app);
           log_file << std::fixed << std::setprecision(3)
                    << analyze_ms << ", " << compile_ms << ", ";
           log_file.close();
@@ -1703,7 +1703,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
         if (config_.enable_timing) {
           auto kernel_exec_time = chrono_toc(&timer, "ExecutePipelineKernel time\n", false);
           std::ofstream log_file;
-          log_file.open("time_log.csv", std::ios_base::app);
+          log_file.open(g_timing_log_name, std::ios_base::app);
           log_file << std::fixed << std::setprecision(3)
                    << (kernel_exec_time / 1000.0) << ", ";
           log_file.close();
@@ -1720,7 +1720,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
         if (config_.enable_timing) {
           auto materialize_time = chrono_toc(&timer, "Kernel materialization time\n", false);
           std::ofstream log_file;
-          log_file.open("time_log.csv", std::ios_base::app);
+          log_file.open(g_timing_log_name, std::ios_base::app);
           log_file << std::fixed << std::setprecision(3)
                    << (materialize_time / 1000.0) << ", ";
           log_file.close();
@@ -1774,7 +1774,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
         if (config_.enable_timing) {
           std::ofstream log_file;
-          log_file.open("time_log.csv", std::ios_base::app);
+          log_file.open(g_timing_log_name, std::ios_base::app);
           log_file << std::fixed << std::setprecision(3)
                    << analyze_ms << ", 0.000, ";
           log_file.close();
@@ -1791,7 +1791,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
         if (config_.enable_timing) {
           auto kernel_exec_time = chrono_toc(&timer, "ExecuteSubQueryPlan time\n", false);
           std::ofstream log_file;
-          log_file.open("time_log.csv", std::ios_base::app);
+          log_file.open(g_timing_log_name, std::ios_base::app);
           log_file << std::fixed << std::setprecision(3)
                    << (kernel_exec_time / 1000.0) << ", ";
           log_file.close();
@@ -1807,7 +1807,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
         if (config_.enable_timing) {
           auto materialize_time = chrono_toc(&timer, "Kernel materialization time\n", false);
           std::ofstream log_file;
-          log_file.open("time_log.csv", std::ios_base::app);
+          log_file.open(g_timing_log_name, std::ios_base::app);
           log_file << std::fixed << std::setprecision(3)
                    << (materialize_time / 1000.0) << ", ";
           log_file.close();
@@ -1829,7 +1829,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
       auto generate_sub_sql_time =
           chrono_toc(&timer, "Generate sub-SQL time is\n", false);
       std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
+      log_file.open(g_timing_log_name, std::ios_base::app);
       log_file << std::fixed << std::setprecision(3)
                << (generate_sub_sql_time / 1000.0) << ", ";
       log_file.close();
@@ -2085,7 +2085,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
   if (config_.enable_timing) {
     auto update_ir_time = chrono_toc(&timer, "Update IR time is\n", false);
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3) << (update_ir_time / 1000.0)
              << ", ";
     log_file.close();

@@ -397,6 +397,13 @@ public:
   FastCompileBackend GetFastMode() const { return fast_mode_; }
   SimdISA GetSimdISA() const { return simd_isa_; }
 
+  struct CodegenTiming {
+    long opt_us = 0;
+    long add_us = 0;
+    long lookup_us = 0;
+  };
+  const CodegenTiming &LastCodegenTiming() const { return last_cg_timing_; }
+
 private:
   bool skip_opt_;
   FastCompileBackend fast_mode_ = FastCompileBackend::OFF;
@@ -416,6 +423,8 @@ private:
   int skip_hash_cmp_ = 2; // 0=off, 1=single-int-key, 2=all-int-keys
   bool bloom_tag_ = true;
   bool cache_enabled_ = false;
+
+  CodegenTiming last_cg_timing_;
 
   // LLVM state — managed via unique_ptr to avoid including LLVM headers here
   struct Impl;
