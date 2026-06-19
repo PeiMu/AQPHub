@@ -10,7 +10,7 @@ batch_probe=${7:-on}
 skip_hash_cmp=${8:-all}   # off | single | all
 jit_cache=${9:-off}
 spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
-compile_mode=${11:-off}   # off | fastisel | tpde (--compile-mode backend; off=llvm)
+compile_mode=${11:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 
 # For lingodb, the 3rd arg selects the execution mode (llvm | tpde)
@@ -35,7 +35,7 @@ fi
 [[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
 [[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
-[[ "$compile_mode"   != "off" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 
 # Query-jit scans base tables through the storage plan; the binary cache file
@@ -55,7 +55,7 @@ flag_suffix=""
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 [[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
-[[ "$compile_mode"   != "off" ]] && flag_suffix+="_fc${compile_mode}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 
 log_name=time_log.csv

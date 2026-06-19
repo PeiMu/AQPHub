@@ -8389,81 +8389,318 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       stats_ptr = sp;
     }
 
-    // -- row loop --
-    PHINode *row;
-    if (!use_block_skip) {
-      BasicBlock *entry_tail = cc.b.GetInsertBlock();
+    // -- §6.11 ROF decision: two-phase scan when SIMD is on and a probe
+    // exists whose keys are all source columns (so Phase 1 can evaluate
+    // guards + compute hash without HT lookups). TPDE can't optimise the
+    // tight Phase 1 loop well enough to pay for the extra pass overhead.
+    int rof_first_probe = -1; // index in st.ops of the probe used for ROF
+    bool use_rof = false;
+    if (use_simd_ && impl_->vec_width > 1 &&
+        fast_mode_ != FastCompileBackend::TPDE) {
+      for (size_t oi = 0; oi < st.ops.size(); ++oi) {
+        const qjit::QjitStepOp &op = st.ops[oi];
+        if (op.kind != qjit::QjitStepOp::Probe)
+          continue;
+        bool all_src = !op.keys.empty();
+        for (const auto &kl : op.keys)
+          all_src = all_src && kl.src_col >= 0;
+        if (all_src) {
+          rof_first_probe = (int)oi;
+          use_rof = true;
+        }
+        break;
+      }
+    }
+
+    // ROF Phase 1: scan [begin,end) evaluating guards + filters before the
+    // first probe, compute hash for the ROF probe, write (row_idx, hash)
+    // to a stack selection buffer.  Phase 2 iterates the selection buffer.
+    // The buffer is sized to the morsel (max rows = end - begin).
+    Value *rof_sel_buf = nullptr;  // i64[morsel]: selected row indices
+    Value *rof_hash_buf = nullptr; // i64[morsel]: precomputed hashes
+    Value *rof_count = nullptr;    // i64*: number of selected rows
+    PHINode *rof_r2_idx = nullptr; // Phase 2 loop index (into sel/hash bufs)
+    if (use_rof) {
+      Value *morsel_n = cc.b.CreateSub(m_end, m_begin, "morsel_n");
+      rof_sel_buf = cc.b.CreateAlloca(i64, morsel_n, "rof_sel");
+      rof_hash_buf = cc.b.CreateAlloca(i64, morsel_n, "rof_hash");
+      rof_count = cc.b.CreateAlloca(i64, nullptr, "rof_cnt");
+      cc.b.CreateStore(cc.c64(0), rof_count);
+
+      // Phase 1 loop: iterate [begin, end) with optional block-skip.
+      BasicBlock *r1_head = BasicBlock::Create(C, "rof1_head", fn);
+      BasicBlock *r1_body = BasicBlock::Create(C, "rof1_body", fn);
+      BasicBlock *r1_next = BasicBlock::Create(C, "rof1_next", fn);
+      BasicBlock *r1_done = BasicBlock::Create(C, "rof1_done", fn);
+
+      if (!use_block_skip) {
+        BasicBlock *r1_pre = cc.b.GetInsertBlock();
+        cc.b.CreateBr(r1_head);
+        cc.b.SetInsertPoint(r1_head);
+        PHINode *r1_row = cc.b.CreatePHI(i64, 2, "r1_row");
+        r1_row->addIncoming(m_begin, r1_pre);
+        cc.b.CreateCondBr(cc.b.CreateICmpULT(r1_row, m_end), r1_body, r1_done);
+
+        cc.b.SetInsertPoint(r1_body);
+        cc.row_idx = r1_row;
+
+        // Evaluate guard range checks (same logic as the in-loop guards).
+        BasicBlock *r1_pass = BasicBlock::Create(C, "rof1_pass", fn);
+        BasicBlock *r1_fail = r1_next;
+        BasicBlock *r1_cur = r1_body;
+        for (size_t gi = 0; gi < st.guards.size(); ++gi) {
+          const qjit::QjitStep::Guard &g = st.guards[gi];
+          const qjit::QjitStepOp &gop = st.ops[g.op_index];
+          Value *k0_raw = cc.b.CreateSExt(
+              LoadI32(cc, cc.col_data[gop.keys[0].src_col]), i64);
+          Value *in_range = cc.b.CreateAnd(
+              cc.b.CreateICmpSGE(k0_raw, guard_vals[gi].lo),
+              cc.b.CreateICmpSLE(k0_raw, guard_vals[gi].hi), "r1_in_range");
+          BasicBlock *bb_gnext = BasicBlock::Create(C, "r1_gnext", fn);
+          cc.b.CreateCondBr(in_range, bb_gnext, r1_fail);
+          cc.b.SetInsertPoint(bb_gnext);
+        }
+
+        // Evaluate filters that appear before the first probe.
+        for (size_t oi = 0; oi < (size_t)rof_first_probe; ++oi) {
+          const qjit::QjitStepOp &op = st.ops[oi];
+          if (op.kind != qjit::QjitStepOp::Filter)
+            continue;
+          BasicBlock *bb_fp = BasicBlock::Create(C, "r1_fpass", fn);
+          std::vector<const ir_sql_converter::AQPExpr *> one{op.filter};
+          EmitShortCircuitFilter(cc, fn, one, bb_fp, r1_fail);
+          cc.b.SetInsertPoint(bb_fp);
+        }
+
+        // Compute hash for the ROF probe's keys.
+        {
+          const qjit::QjitStepOp &rop = st.ops[rof_first_probe];
+          Value *k0 = cc.b.CreateSExt(
+              LoadI32(cc, cc.col_data[rop.keys[0].src_col]), i64);
+          Value *h = emitMurmur(k0);
+          for (size_t j = 1; j < rop.keys.size(); ++j) {
+            Value *kj = cc.b.CreateSExt(
+                LoadI32(cc, cc.col_data[rop.keys[j].src_col]), i64);
+            h = emitCombine(h, emitMurmur(kj));
+          }
+          Value *cnt = cc.b.CreateLoad(i64, rof_count, "r1_cnt");
+          cc.b.CreateStore(r1_row, cc.b.CreateGEP(i64, rof_sel_buf, cnt));
+          cc.b.CreateStore(h, cc.b.CreateGEP(i64, rof_hash_buf, cnt));
+          cc.b.CreateStore(cc.b.CreateAdd(cnt, cc.c64(1)), rof_count);
+        }
+        cc.b.CreateBr(r1_next);
+
+        cc.b.SetInsertPoint(r1_next);
+        Value *r1_inc = cc.b.CreateAdd(r1_row, cc.c64(1), "r1_inc");
+        r1_row->addIncoming(r1_inc, r1_next);
+        cc.b.CreateBr(r1_head);
+
+        cc.b.SetInsertPoint(r1_done);
+      } else {
+        // Phase 1 with block-skip: two-level loop identical to the scalar
+        // path but writing to the selection buffer instead of processing.
+        BasicBlock *r1_oh = BasicBlock::Create(C, "rof1_blk_head", fn);
+        BasicBlock *r1_obody = BasicBlock::Create(C, "rof1_blk_body", fn);
+        BasicBlock *r1_bchk = BasicBlock::Create(C, "rof1_blk_chk", fn);
+        BasicBlock *r1_ipre = BasicBlock::Create(C, "rof1_blk_enter", fn);
+        BasicBlock *r1_onext = BasicBlock::Create(C, "rof1_blk_next", fn);
+        BasicBlock *r1_pre = cc.b.GetInsertBlock();
+        cc.b.CreateBr(r1_oh);
+
+        cc.b.SetInsertPoint(r1_oh);
+        PHINode *r1_cur = cc.b.CreatePHI(i64, 2, "r1_blk_cur");
+        r1_cur->addIncoming(m_begin, r1_pre);
+        cc.b.CreateCondBr(cc.b.CreateICmpULT(r1_cur, m_end), r1_obody, r1_done);
+
+        cc.b.SetInsertPoint(r1_obody);
+        Value *r1_blk_raw = cc.b.CreateAdd(
+            cc.b.CreateAnd(r1_cur, cc.c64(~(int64_t)(QJIT_BLOCK_ROWS - 1))),
+            cc.c64((int64_t)QJIT_BLOCK_ROWS), "r1_blk_raw");
+        Value *r1_blk_end = cc.b.CreateSelect(
+            cc.b.CreateICmpULT(r1_blk_raw, m_end), r1_blk_raw, m_end,
+            "r1_blk_end");
+        cc.b.CreateCondBr(cc.b.CreateIsNotNull(stats_ptr, "r1_has_stats"),
+                          r1_bchk, r1_ipre);
+
+        cc.b.SetInsertPoint(r1_bchk);
+        Value *r1_stats_i32 =
+            cc.b.CreateBitCast(stats_ptr, PointerType::getUnqual(i32));
+        Value *r1_blk = cc.b.CreateLShr(r1_cur, cc.c64(QJIT_BLOCK_SHIFT),
+                                         "r1_blk");
+        Value *r1_sidx = cc.b.CreateShl(r1_blk, cc.c64(1), "r1_sidx");
+        Value *r1_bmin = cc.b.CreateSExt(
+            cc.b.CreateLoad(i32, cc.b.CreateGEP(i32, r1_stats_i32, r1_sidx)),
+            i64, "r1_blk_min");
+        Value *r1_bmax = cc.b.CreateSExt(
+            cc.b.CreateLoad(
+                i32, cc.b.CreateGEP(i32, r1_stats_i32,
+                                    cc.b.CreateAdd(r1_sidx, cc.c64(1)))),
+            i64, "r1_blk_max");
+        Value *r1_skip = cc.b.CreateOr(
+            cc.b.CreateICmpSLT(r1_bmax, guard_vals[0].lo),
+            cc.b.CreateICmpSGT(r1_bmin, guard_vals[0].hi), "r1_blk_skip");
+        cc.b.CreateCondBr(r1_skip, r1_onext, r1_ipre);
+
+        cc.b.SetInsertPoint(r1_ipre);
+        cc.b.CreateBr(r1_head);
+
+        cc.b.SetInsertPoint(r1_head);
+        PHINode *r1_row = cc.b.CreatePHI(i64, 2, "r1_row");
+        r1_row->addIncoming(r1_cur, r1_ipre);
+        cc.b.CreateCondBr(cc.b.CreateICmpULT(r1_row, r1_blk_end),
+                          r1_body, r1_onext);
+
+        cc.b.SetInsertPoint(r1_body);
+        cc.row_idx = r1_row;
+
+        // Guard range checks.
+        for (size_t gi = 0; gi < st.guards.size(); ++gi) {
+          const qjit::QjitStep::Guard &g = st.guards[gi];
+          const qjit::QjitStepOp &gop = st.ops[g.op_index];
+          Value *k0_raw = cc.b.CreateSExt(
+              LoadI32(cc, cc.col_data[gop.keys[0].src_col]), i64);
+          Value *in_range = cc.b.CreateAnd(
+              cc.b.CreateICmpSGE(k0_raw, guard_vals[gi].lo),
+              cc.b.CreateICmpSLE(k0_raw, guard_vals[gi].hi), "r1_in_range");
+          BasicBlock *bb_gnext = BasicBlock::Create(C, "r1_gnext", fn);
+          cc.b.CreateCondBr(in_range, bb_gnext, r1_next);
+          cc.b.SetInsertPoint(bb_gnext);
+        }
+
+        // Filters before first probe.
+        for (size_t oi = 0; oi < (size_t)rof_first_probe; ++oi) {
+          const qjit::QjitStepOp &op = st.ops[oi];
+          if (op.kind != qjit::QjitStepOp::Filter)
+            continue;
+          BasicBlock *bb_fp = BasicBlock::Create(C, "r1_fpass", fn);
+          std::vector<const ir_sql_converter::AQPExpr *> one{op.filter};
+          EmitShortCircuitFilter(cc, fn, one, bb_fp, r1_next);
+          cc.b.SetInsertPoint(bb_fp);
+        }
+
+        // Hash for ROF probe.
+        {
+          const qjit::QjitStepOp &rop = st.ops[rof_first_probe];
+          Value *k0 = cc.b.CreateSExt(
+              LoadI32(cc, cc.col_data[rop.keys[0].src_col]), i64);
+          Value *h = emitMurmur(k0);
+          for (size_t j = 1; j < rop.keys.size(); ++j) {
+            Value *kj = cc.b.CreateSExt(
+                LoadI32(cc, cc.col_data[rop.keys[j].src_col]), i64);
+            h = emitCombine(h, emitMurmur(kj));
+          }
+          Value *cnt = cc.b.CreateLoad(i64, rof_count, "r1_cnt");
+          cc.b.CreateStore(r1_row, cc.b.CreateGEP(i64, rof_sel_buf, cnt));
+          cc.b.CreateStore(h, cc.b.CreateGEP(i64, rof_hash_buf, cnt));
+          cc.b.CreateStore(cc.b.CreateAdd(cnt, cc.c64(1)), rof_count);
+        }
+        cc.b.CreateBr(r1_next);
+
+        cc.b.SetInsertPoint(r1_next);
+        Value *r1_inc = cc.b.CreateAdd(r1_row, cc.c64(1), "r1_inc");
+        r1_row->addIncoming(r1_inc, r1_next);
+        cc.b.CreateBr(r1_head);
+
+        cc.b.SetInsertPoint(r1_onext);
+        r1_cur->addIncoming(r1_blk_end, r1_onext);
+        cc.b.CreateBr(r1_oh);
+
+        cc.b.SetInsertPoint(r1_done);
+      }
+      // Phase 2: iterate selection buffer [0, rof_count).
+      Value *rof_total = cc.b.CreateLoad(i64, rof_count, "rof_total");
+      BasicBlock *r2_pre = cc.b.GetInsertBlock();
       cc.b.CreateBr(bb_head);
+
       cc.b.SetInsertPoint(bb_head);
-      row = cc.b.CreatePHI(i64, 2, "row");
-      row->addIncoming(m_begin, entry_tail);
-      cc.b.CreateCondBr(cc.b.CreateICmpULT(row, m_end), bb_body, bb_exit);
+      rof_r2_idx = cc.b.CreatePHI(i64, 2, "r2_idx");
+      rof_r2_idx->addIncoming(cc.c64(0), r2_pre);
+      cc.b.CreateCondBr(cc.b.CreateICmpULT(rof_r2_idx, rof_total), bb_body,
+                        bb_exit);
 
       cc.b.SetInsertPoint(bb_next);
-      Value *row_next = cc.b.CreateAdd(row, cc.c64(1), "row_next");
-      row->addIncoming(row_next, bb_next);
+      Value *r2_inc = cc.b.CreateAdd(rof_r2_idx, cc.c64(1), "r2_inc");
+      rof_r2_idx->addIncoming(r2_inc, bb_next);
       cc.b.CreateBr(bb_head);
-    } else {
-      // Two-level loop: outer iterates QJIT_BLOCK_ROWS-aligned blocks and
-      // skips a whole block when its min/max range is disjoint from the
-      // build-key range of guards[0]; inner is the per-row loop.
-      BasicBlock *bb_oh = BasicBlock::Create(C, "blk_head", fn);
-      BasicBlock *bb_obody = BasicBlock::Create(C, "blk_body", fn);
-      BasicBlock *bb_bchk = BasicBlock::Create(C, "blk_chk", fn);
-      BasicBlock *bb_ipre = BasicBlock::Create(C, "blk_enter", fn);
-      BasicBlock *bb_onext = BasicBlock::Create(C, "blk_next", fn);
-      BasicBlock *entry_tail = cc.b.GetInsertBlock();
-      cc.b.CreateBr(bb_oh);
+    }
 
-      cc.b.SetInsertPoint(bb_oh);
-      PHINode *cur = cc.b.CreatePHI(i64, 2, "blk_cur");
-      cur->addIncoming(m_begin, entry_tail);
-      cc.b.CreateCondBr(cc.b.CreateICmpULT(cur, m_end), bb_obody, bb_exit);
+    // -- row loop (scalar, non-ROF) --
+    PHINode *row = nullptr;
+    if (!use_rof) {
+      if (!use_block_skip) {
+        BasicBlock *entry_tail = cc.b.GetInsertBlock();
+        cc.b.CreateBr(bb_head);
+        cc.b.SetInsertPoint(bb_head);
+        row = cc.b.CreatePHI(i64, 2, "row");
+        row->addIncoming(m_begin, entry_tail);
+        cc.b.CreateCondBr(cc.b.CreateICmpULT(row, m_end), bb_body, bb_exit);
 
-      cc.b.SetInsertPoint(bb_obody);
-      Value *blk_raw = cc.b.CreateAdd(
-          cc.b.CreateAnd(cur, cc.c64(~(int64_t)(QJIT_BLOCK_ROWS - 1))),
-          cc.c64((int64_t)QJIT_BLOCK_ROWS), "blk_raw");
-      Value *blk_end = cc.b.CreateSelect(
-          cc.b.CreateICmpULT(blk_raw, m_end), blk_raw, m_end, "blk_end");
-      cc.b.CreateCondBr(cc.b.CreateIsNotNull(stats_ptr, "has_stats"),
-                        bb_bchk, bb_ipre);
+        cc.b.SetInsertPoint(bb_next);
+        Value *row_next = cc.b.CreateAdd(row, cc.c64(1), "row_next");
+        row->addIncoming(row_next, bb_next);
+        cc.b.CreateBr(bb_head);
+      } else {
+        // Two-level loop: outer iterates QJIT_BLOCK_ROWS-aligned blocks and
+        // skips a whole block when its min/max range is disjoint from the
+        // build-key range of guards[0]; inner is the per-row loop.
+        BasicBlock *bb_oh = BasicBlock::Create(C, "blk_head", fn);
+        BasicBlock *bb_obody = BasicBlock::Create(C, "blk_body", fn);
+        BasicBlock *bb_bchk = BasicBlock::Create(C, "blk_chk", fn);
+        BasicBlock *bb_ipre = BasicBlock::Create(C, "blk_enter", fn);
+        BasicBlock *bb_onext = BasicBlock::Create(C, "blk_next", fn);
+        BasicBlock *entry_tail = cc.b.GetInsertBlock();
+        cc.b.CreateBr(bb_oh);
 
-      cc.b.SetInsertPoint(bb_bchk);
-      Value *stats_i32 =
-          cc.b.CreateBitCast(stats_ptr, PointerType::getUnqual(i32));
-      Value *blk = cc.b.CreateLShr(cur, cc.c64(QJIT_BLOCK_SHIFT), "blk");
-      Value *sidx = cc.b.CreateShl(blk, cc.c64(1), "sidx");
-      Value *bmin = cc.b.CreateSExt(
-          cc.b.CreateLoad(i32, cc.b.CreateGEP(i32, stats_i32, sidx)), i64,
-          "blk_min");
-      Value *bmax = cc.b.CreateSExt(
-          cc.b.CreateLoad(
-              i32,
-              cc.b.CreateGEP(i32, stats_i32,
-                             cc.b.CreateAdd(sidx, cc.c64(1)))),
-          i64, "blk_max");
-      Value *skip = cc.b.CreateOr(
-          cc.b.CreateICmpSLT(bmax, guard_vals[0].lo),
-          cc.b.CreateICmpSGT(bmin, guard_vals[0].hi), "blk_skip");
-      cc.b.CreateCondBr(skip, bb_onext, bb_ipre);
+        cc.b.SetInsertPoint(bb_oh);
+        PHINode *cur = cc.b.CreatePHI(i64, 2, "blk_cur");
+        cur->addIncoming(m_begin, entry_tail);
+        cc.b.CreateCondBr(cc.b.CreateICmpULT(cur, m_end), bb_obody, bb_exit);
 
-      cc.b.SetInsertPoint(bb_ipre);
-      cc.b.CreateBr(bb_head);
+        cc.b.SetInsertPoint(bb_obody);
+        Value *blk_raw = cc.b.CreateAdd(
+            cc.b.CreateAnd(cur, cc.c64(~(int64_t)(QJIT_BLOCK_ROWS - 1))),
+            cc.c64((int64_t)QJIT_BLOCK_ROWS), "blk_raw");
+        Value *blk_end = cc.b.CreateSelect(
+            cc.b.CreateICmpULT(blk_raw, m_end), blk_raw, m_end, "blk_end");
+        cc.b.CreateCondBr(cc.b.CreateIsNotNull(stats_ptr, "has_stats"),
+                          bb_bchk, bb_ipre);
 
-      cc.b.SetInsertPoint(bb_head);
-      row = cc.b.CreatePHI(i64, 2, "row");
-      row->addIncoming(cur, bb_ipre);
-      cc.b.CreateCondBr(cc.b.CreateICmpULT(row, blk_end), bb_body, bb_onext);
+        cc.b.SetInsertPoint(bb_bchk);
+        Value *stats_i32 =
+            cc.b.CreateBitCast(stats_ptr, PointerType::getUnqual(i32));
+        Value *blk = cc.b.CreateLShr(cur, cc.c64(QJIT_BLOCK_SHIFT), "blk");
+        Value *sidx = cc.b.CreateShl(blk, cc.c64(1), "sidx");
+        Value *bmin = cc.b.CreateSExt(
+            cc.b.CreateLoad(i32, cc.b.CreateGEP(i32, stats_i32, sidx)), i64,
+            "blk_min");
+        Value *bmax = cc.b.CreateSExt(
+            cc.b.CreateLoad(
+                i32,
+                cc.b.CreateGEP(i32, stats_i32,
+                               cc.b.CreateAdd(sidx, cc.c64(1)))),
+            i64, "blk_max");
+        Value *skip = cc.b.CreateOr(
+            cc.b.CreateICmpSLT(bmax, guard_vals[0].lo),
+            cc.b.CreateICmpSGT(bmin, guard_vals[0].hi), "blk_skip");
+        cc.b.CreateCondBr(skip, bb_onext, bb_ipre);
 
-      cc.b.SetInsertPoint(bb_next);
-      Value *row_next = cc.b.CreateAdd(row, cc.c64(1), "row_next");
-      row->addIncoming(row_next, bb_next);
-      cc.b.CreateBr(bb_head);
+        cc.b.SetInsertPoint(bb_ipre);
+        cc.b.CreateBr(bb_head);
 
-      cc.b.SetInsertPoint(bb_onext);
-      cur->addIncoming(blk_end, bb_onext);
-      cc.b.CreateBr(bb_oh);
+        cc.b.SetInsertPoint(bb_head);
+        row = cc.b.CreatePHI(i64, 2, "row");
+        row->addIncoming(cur, bb_ipre);
+        cc.b.CreateCondBr(cc.b.CreateICmpULT(row, blk_end), bb_body, bb_onext);
+
+        cc.b.SetInsertPoint(bb_next);
+        Value *row_next = cc.b.CreateAdd(row, cc.c64(1), "row_next");
+        row->addIncoming(row_next, bb_next);
+        cc.b.CreateBr(bb_head);
+
+        cc.b.SetInsertPoint(bb_onext);
+        cur->addIncoming(blk_end, bb_onext);
+        cc.b.CreateBr(bb_oh);
+      }
     }
 
     cc.b.SetInsertPoint(bb_exit);
@@ -8472,7 +8709,13 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     cc.b.CreateRetVoid();
 
     cc.b.SetInsertPoint(bb_body);
-    cc.row_idx = row;
+    if (use_rof) {
+      Value *sel_row = cc.b.CreateLoad(
+          i64, cc.b.CreateGEP(i64, rof_sel_buf, rof_r2_idx), "sel_row");
+      cc.row_idx = sel_row;
+    } else {
+      cc.row_idx = row;
+    }
 
     // cont = where a finished/failed row iteration goes. After a probe it
     // becomes that probe's advance block, so the chain walk resumes and
@@ -8556,7 +8799,20 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     };
 
     // ---- in-loop ops ----
+    Value *rof_precomp_hash = nullptr;
+    if (use_rof) {
+      rof_precomp_hash = cc.b.CreateLoad(
+          i64, cc.b.CreateGEP(i64, rof_hash_buf, rof_r2_idx), "rof_hash");
+    }
     for (size_t oi = 0; oi < st.ops.size(); ++oi) {
+      // In ROF mode, guards and filters before the first probe were already
+      // evaluated in Phase 1 — skip them in Phase 2.
+      if (use_rof && (int)oi < rof_first_probe) {
+        if (st.ops[oi].kind == qjit::QjitStepOp::Filter)
+          continue;
+      }
+      if (use_rof && !st.guards.empty() && (int)oi == st.guard_pos)
+        goto rof_skip_guards;
       // §5.5 A+ guards, emitted at guard_pos (after the cheap filters,
       // before the expensive ones). cont == bb_next here — guards precede
       // every Probe — so a guard drop skips the whole row, which is
@@ -8650,6 +8906,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
           cc.b.SetInsertPoint(bb_gnext);
         }
       }
+      rof_skip_guards:
       const qjit::QjitStepOp &op = st.ops[oi];
       if (op.kind == qjit::QjitStepOp::Filter) {
         BasicBlock *bb_pass = BasicBlock::Create(C, "f_pass", fn);
@@ -8666,9 +8923,15 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       std::vector<Value *> kv;
       for (const auto &kl : op.keys)
         kv.push_back(load_key_i64_or_skip(kl));
-      Value *h = emitMurmur(kv[0]);
-      for (size_t j = 1; j < kv.size(); ++j)
-        h = emitCombine(h, emitMurmur(kv[j]));
+      // §6.11 ROF: use precomputed hash for the first probe.
+      Value *h;
+      if (use_rof && (int)oi == rof_first_probe) {
+        h = rof_precomp_hash;
+      } else {
+        h = emitMurmur(kv[0]);
+        for (size_t j = 1; j < kv.size(); ++j)
+          h = emitCombine(h, emitMurmur(kv[j]));
+      }
       Value *slot = cc.b.CreateAnd(h, ht_maskv[op.ht_id], "slot");
       Value *head_word = cc.b.CreateLoad(
           i64, cc.b.CreateGEP(i64, ht_dirv[op.ht_id], slot), "head_w");

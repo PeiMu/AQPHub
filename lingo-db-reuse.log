@@ -1527,3 +1527,106 @@ breakdown_measurement_script.sh rewritten with explicit parameters
 (no defaults). measure/*.py: removed _nospecjit_ from CSV filenames.
 Tuned config distribution changed (90 subs moved from interp to JIT
 levels) because old tune_per_subquery.py referenced wrong filenames.
+
+## Archived from CLAUDE.md (2026-06-18): dropped/completed items
+
+### Phase 7: per-query flag tuning — DROPPED
+Was: sweep skip_hash_cmp × payload_prune × batch_probe × prefetch per
+query, save optimal configs to JSON.
+Reason: superseded by per-subquery config tuning (tune_per_subquery.py).
+Pipeline-jit wins only 4/678 sub-queries (0.6%) on node-based; sweeping
+its flags has negligible e2e impact. The commented-out future configs in
+tune_per_subquery.py:194-200 confirm this was planned but not worth
+measuring.
+
+### Swapped-side HJ support — DROPPED
+Was: pipeline-jit only; largest compile-coverage gap (~31% of HJs on
+none-split) and the main multi-probe chain breaker.
+Reason: pipeline-jit only (CompileMultiProbeChain called from
+duckdb_adapter.cpp:5070). Query-jit handles swapped sides through its
+own IR-based step builder (query_jit_steps.cpp). With query_tpde winning
+70.6% of sub-queries and pipeline-jit only 0.6%, pipeline-jit coverage
+improvements have marginal ROI.
+
+### Non-consecutive HJ fusion — DROPPED
+Was: FILTER/PROJ between HJs (21a, 21c, 27c, 5a, 5c); extend
+CompileMultiProbeChain with inter-stage filter/project codegen.
+Reason: pipeline-jit only. Query-jit's step model naturally absorbs
+inline filters/projections between probes (QjitStepOp::Filter ops
+within the same step). For cited queries (21a, 21c, 27c, 5a, 5c),
+tuned config already picks query_tpde for majority of sub-queries.
+
+### SIMD aggregation for query-jit — DROPPED
+Was: SIMD-vectorize ungrouped aggregate updates in query-jit morsel body.
+Reason: query-jit agg sinks process ~1 row after joins (JOB = ungrouped
+MIN/MAX/COUNT over final joined result). Agg uses external function calls
+(qjit_agg_update_i64/str/count in query_jit_runtime.cpp:550-559), not
+inline ops. Not combinable with §6.11 (which targets scan+filter, not
+agg). Pipeline-jit's BuildAggUpdateFunctionSIMD makes sense because it
+processes pre-probe DataChunks with higher row counts.
+
+### Object cache for query-jit — DONE (was listed as TODO)
+Implementation at ir_to_llvm.cpp:8108-8123: cache key from
+SerializeQjitPlan + codegen flags, TryCacheLoad lookup, gated by
+--jit-cache. Each sub-query produces a unique key (table names, column
+indices, join keys, filter exprs), so cache hits only occur on
+re-execution of the same query. TPDE compile is ~0.83ms per sub-query,
+so savings are minimal. Correctly listed as "low priority" — now
+confirmed implemented and working.
+
+### Prefetch for query-jit — DROPPED
+Was: software prefetch for query-jit HT probes, deferred for node-based.
+Verification (2026-06-18): L3=12MiB (Xeon E-2236). 264/271 HTs (97%)
+fit in L3 on node-based. 7 HTs in 5 queries (22a-d, 24a) exceed L3
+(max 39MB, 22c/22d), but those queries already run at 0.42-0.58x of
+interp exe — probes are not the bottleneck despite L3 misses. Only
+22d makes exe top 20 (#20). Prefetch would shave a small fraction off
+already-fast execution. Not worth implementing.
+
+### §6.11 Query-jit ROF two-phase split — COMPLETE (2026-06-18)
+
+Implemented two-phase ROF (Run-Once-Filter) in CompileQuerySteps
+(ir_to_llvm.cpp). Architecture: Phase 1 evaluates guard range checks +
+pre-probe filters + murmur hash for first probe keys in a scalar loop,
+writing (row_idx, hash) to stack selection buffer. Phase 2 iterates
+the selection buffer, skips already-evaluated guards/filters, and uses
+precomputed hash for the first HT probe.
+
+Key decisions:
+- Reuses --jit-simd=auto flag (no new flag). Activated when use_simd_ &&
+  vec_width > 1 && compile_mode != TPDE && first probe keys all from
+  source columns.
+- Handles both block-skip and non-block-skip loop variants (block-skip
+  emits the outer block loop + inner ROF loop; non-block-skip emits
+  ROF directly over [begin, end)).
+- TPDE falls back to original scalar loop (ROF uses LLVM IR constructs
+  that TPDE's register allocator can't optimize).
+- Cache key already includes simd_isa_, so ROF decision is captured.
+- Stack buffers: rof_sel_buf (i32 array, morsel-sized), rof_hash_buf
+  (i64 array, morsel-sized). Allocated on function entry.
+- Guards and pre-first-probe filters skipped in Phase 2 via
+  `if (use_rof && oi < rof_first_probe) continue` pattern.
+- Precomputed hash loaded from rof_hash_buf in Phase 2, replacing
+  the inline murmur computation for the first probe.
+
+Correctness: 113 JOB queries × 3 splits (none, node-based,
+relationship-center) PASS against golden files (2026-06-18).
+TPDE fallback verified correct (scalar path, same results).
+correctness_test.sh updated to include query|auto configs.
+
+Pre-implementation analysis:
+- 87 sub-queries where interp exe < qjit exe (total gap: 303ms)
+- 474 sub-queries where qjit exe < interp exe (total advantage: 5344ms)
+- 68/87 interp-winning subs would flip if exe matched (jit cost < gap)
+- Expected impact: ~200-300ms on node-based (ceiling = 303ms gap)
+
+Performance results (node-based, 10 warm runs, 113 JOB, 2026-06-19):
+Uniform ROF (--jit-simd=auto applied to all sub-queries) is neutral:
+  LLVM:    exe -0.8ms (-0.0%), total -8.7ms  (-0.1%)
+  FastISel: exe +11.5ms (+0.2%), total +16.3ms (+0.2%)
+Per-subquery tuner picks ROF selectively on scan-heavy sub-queries:
+  tuned:              exe -46.0ms (-1.1%), total -51.8ms (-0.8%)
+  tuned+specRecompile: exe -28.4ms (-0.6%), total -33.8ms (-0.5%)
+ROF gives the tuner a new option; improvement comes from selective use,
+not uniform application. tune_per_subquery.py updated with
+query_full_simd/query_fastisel_simd configs; ParseTuneLabel handles them.

@@ -191,6 +191,14 @@ def make_configs(split):
              filename=f"duckdb_{split}_query_none_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
+        # ---- query-jit SIMD (ROF two-phase; TPDE excluded — ROF disabled) ----
+        dict(label="query_full_simd",
+             filename=f"duckdb_{split}_query_auto_breakdown_time_log.csv",
+             hasjit=True, flags=dict(simd=True)),
+        dict(label="query_fastisel_simd",
+             filename=f"duckdb_{split}_query_auto_fcfastisel_breakdown_time_log.csv",
+             hasjit=True, flags=dict(compile_mode=1, simd=True)),
+
         # ---- future configs (uncomment when CSVs exist) ----
         # dict(label="pipeline",
         #      filename=f"duckdb_{split}_pipeline_none_nopayprune_breakdown_time_log.csv",

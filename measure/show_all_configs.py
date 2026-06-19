@@ -146,6 +146,10 @@ def main():
          f"duckdb_{split}_query_none_fcfastisel_breakdown_time_log.csv", True),
         ("query_tpde",
          f"duckdb_{split}_query_none_fctpde_breakdown_time_log.csv", True),
+        ("query_full_simd",
+         f"duckdb_{split}_query_auto_breakdown_time_log.csv", True),
+        ("query_fastisel_simd",
+         f"duckdb_{split}_query_auto_fcfastisel_breakdown_time_log.csv", True),
         ("tuned",
          f"duckdb_{split}_query_none_tuned_breakdown_time_log.csv", True),
     ]

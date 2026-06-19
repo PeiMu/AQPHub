@@ -34,8 +34,11 @@ JIT_CONFIGS=(
   "duckdb|relationship-center|pipeline|none|duckdb_job_relationship-center_golden.txt"
   "duckdb|relationship-center|pipeline|auto|duckdb_job_relationship-center_golden.txt"
   "duckdb|none|query|none|duckdb_job_no-split_golden.txt"
+  "duckdb|none|query|auto|duckdb_job_no-split_golden.txt"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt"
   "duckdb|relationship-center|query|none|duckdb_job_relationship-center_golden.txt"
+  "duckdb|relationship-center|query|auto|duckdb_job_relationship-center_golden.txt"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret"
   "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|recompile"
@@ -142,7 +145,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   golden="duckdb_job_node-based_golden.txt"
 
   bash run_job.sh duckdb node-based query none \
-       on on on on off off off "$TUNE_JSON"
+       on on on on off off llvm "$TUNE_JSON"
 
   output="job_result/aqp_middleware_duckdb_node-based_query_none_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -169,7 +172,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
 
   bash run_job.sh duckdb node-based query none \
-       on on on on off recompile off "$TUNE_JSON"
+       on on on on off recompile llvm "$TUNE_JSON"
 
   output="job_result/aqp_middleware_duckdb_node-based_query_none_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then

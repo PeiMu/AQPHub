@@ -163,6 +163,13 @@ IRQuerySplitter::ParseTuneLabel(const std::string &label) {
   } else if (label == "query_tpde") {
     e.query_jit = true;
     e.compile_mode = 2;
+  } else if (label == "query_full_simd") {
+    e.query_jit = true;
+    e.jit_simd = true;
+  } else if (label == "query_fastisel_simd") {
+    e.query_jit = true;
+    e.compile_mode = 1;
+    e.jit_simd = true;
   } else {
     std::cerr << "[TUNE] unknown config label '" << label
               << "', treating as interp\n";
