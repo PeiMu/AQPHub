@@ -1,9 +1,13 @@
+ANALYZING...
+ANALYZE done
 [LingoDB] Loaded 21 tables from CSV: /home/pei/Project/benchmarks/imdb_job-postgres/lingo_db_csv
 
 ========================================
 Running Benchmark: /home/pei/Project/benchmarks/imdb_job-postgres/queries
 ========================================
 Found 113 SQL file(s)
+
+--- Iteration 0 ---
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql
 
 === Query Results ===
@@ -581,3 +585,4 @@ Failed: 0
 ========================================
 Execution completed
 ========================================
+lingodb runs: 33773 ms
