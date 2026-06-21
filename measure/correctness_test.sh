@@ -63,6 +63,9 @@ KERNEL_CONFIGS=(
 passed=0
 failed=0
 total=$(( ${#JIT_CONFIGS[@]} + ${#KERNEL_CONFIGS[@]} ))
+declare -a FAILED_CONFIGS=()
+FAIL_LOG="job_result/correctness_failures.log"
+: > "$FAIL_LOG"
 
 # --- Run JIT-level configs via run_job.sh ---
 for entry in "${JIT_CONFIGS[@]}"; do
@@ -81,13 +84,23 @@ for entry in "${JIT_CONFIGS[@]}"; do
     output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${spec_suffix}_job.txt"
   fi
 
+  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} spec=${spec_jit_mode}"
+
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
     continue
   fi
   if [[ ! -f "$golden" ]]; then
     echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
     continue
   fi
@@ -99,6 +112,10 @@ for entry in "${JIT_CONFIGS[@]}"; do
   else
     echo "  FAIL: differences found"
     echo "$d" | head -20
+    FAILED_CONFIGS+=("$config_label")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "$d" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
   fi
   echo ""
@@ -113,14 +130,23 @@ for entry in "${KERNEL_CONFIGS[@]}"; do
        on on on on on off
 
   output="job_result/aqp_middleware_${engine}_${split}_kernel-${kernel_path}_${jit_simd}_job.txt"
+  config_label="engine=${engine} split=${split} kernel-path=${kernel_path} simd=${jit_simd}"
 
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
     continue
   fi
   if [[ ! -f "$golden" ]]; then
     echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
     continue
   fi
@@ -132,6 +158,10 @@ for entry in "${KERNEL_CONFIGS[@]}"; do
   else
     echo "  FAIL: differences found"
     echo "$d" | head -20
+    FAILED_CONFIGS+=("$config_label")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "$d" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
   fi
   echo ""
@@ -147,12 +177,21 @@ if [[ -f "$TUNE_JSON" ]]; then
   bash run_job.sh duckdb node-based query none \
        on on on on off off llvm "$TUNE_JSON"
 
+  config_label="tune-config node-based spec=off"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
   elif [[ ! -f "$golden" ]]; then
     echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
   else
     d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden"))
@@ -162,6 +201,10 @@ if [[ -f "$TUNE_JSON" ]]; then
     else
       echo "  FAIL: differences found"
       echo "$d" | head -20
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
       ((failed++))
     fi
   fi
@@ -170,6 +213,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + spec-jit=recompile
   echo "=== Testing: per-subquery tune-config (node-based, spec-jit=recompile) ==="
   ((total++))
+  config_label="tune-config node-based spec=recompile"
 
   bash run_job.sh duckdb node-based query none \
        on on on on off recompile llvm "$TUNE_JSON"
@@ -177,9 +221,17 @@ if [[ -f "$TUNE_JSON" ]]; then
   output="job_result/aqp_middleware_duckdb_node-based_query_none_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
   elif [[ ! -f "$golden" ]]; then
     echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
     ((failed++))
   else
     d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden"))
@@ -189,6 +241,10 @@ if [[ -f "$TUNE_JSON" ]]; then
     else
       echo "  FAIL: differences found"
       echo "$d" | head -20
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
       ((failed++))
     fi
   fi
@@ -200,4 +256,13 @@ fi
 echo "==============================="
 echo "Results: ${passed}/${total} passed, ${failed} failed"
 echo "==============================="
+if (( ${#FAILED_CONFIGS[@]} > 0 )); then
+  echo ""
+  echo "Failed configs:"
+  for i in "${!FAILED_CONFIGS[@]}"; do
+    echo "  $((i+1)). ${FAILED_CONFIGS[$i]}"
+  done
+  echo ""
+  echo "Full diffs saved to: $FAIL_LOG"
+fi
 exit $failed

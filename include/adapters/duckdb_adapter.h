@@ -47,6 +47,7 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb_version_compat.h"
 
 #ifdef HAVE_LLVM
 #include "duckdb/execution/physical_operator.hpp"
@@ -774,9 +775,11 @@ private:
   TempCollectionCardinality(duckdb::ClientContext &context,
                             const duckdb::FunctionData *bind_data);
 
+#if DUCKDB_VERSION_AT_LEAST(1, 5)
   static duckdb::unique_ptr<duckdb::BaseStatistics>
   TempCollectionStatistics(duckdb::ClientContext &context,
                            duckdb::TableFunctionGetStatisticsInput &input);
+#endif
 
   // Inject join_stats into PhysicalHashJoin nodes whose build side scans a
   // temp table, enabling DuckDB's perfect hash join optimization.

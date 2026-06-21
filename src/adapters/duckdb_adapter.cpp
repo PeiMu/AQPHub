@@ -336,6 +336,7 @@ DuckDBAdapter::TempCollectionCardinality(
   return duckdb::make_uniq<duckdb::NodeStatistics>(cardinality, cardinality);
 }
 
+#if DUCKDB_VERSION_AT_LEAST(1, 5)
 duckdb::unique_ptr<duckdb::BaseStatistics>
 DuckDBAdapter::TempCollectionStatistics(
     duckdb::ClientContext &context,
@@ -347,6 +348,7 @@ DuckDBAdapter::TempCollectionStatistics(
   }
   return nullptr;
 }
+#endif
 
 // Replacement scan callback
 duckdb::unique_ptr<duckdb::TableRef>
