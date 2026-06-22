@@ -323,6 +323,14 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
              << (execute_final_sql_time / 1000.0) << ", ";
     log_file.close();
   }
+
+  // EXPLAIN ANALYZE the final sub-SQL for the web UI's "Show Plan" toggle
+  // (outside the timed sections, like the per-iteration plan above).
+  if (config_.enable_explain) {
+    std::cout << "\n=== Final Sub-Query Plan ===\n"
+              << adapter_->ExplainAnalyze(final_sql)
+              << "\n=== End Sub-Query Plan ===" << std::endl;
+  }
   return query_result;
 }
 
@@ -425,6 +433,15 @@ bool IRQuerySplitter::ExecuteOneIteration(
   adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
                                          config_.enable_update_temp_card,
                                          config_.enable_timing);
+
+  // EXPLAIN ANALYZE this sub-SQL for the web UI's "Show Plan" toggle. Emitted
+  // outside the timed sections so the timing breakdown is unaffected; prior
+  // iterations' temp tables already exist, so the plan resolves correctly.
+  if (config_.enable_explain) {
+    std::cout << "\n=== Sub-Query Plan ===\n"
+              << adapter_->ExplainAnalyze(sub_sql)
+              << "\n=== End Sub-Query Plan ===" << std::endl;
+  }
 
   if (config_.enable_timing)
     timer = chrono_tic();

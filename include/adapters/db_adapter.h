@@ -21,6 +21,18 @@ struct QueryResult {
   QueryResult() : num_rows(0), num_columns(0) {}
 };
 
+// Strip trailing ';' and whitespace so an "EXPLAIN ..." prefix produces a
+// single statement. Used by ExplainAnalyze overrides across adapters.
+inline std::string StripSqlTerminator(const std::string &sql) {
+  size_t end = sql.size();
+  while (end > 0 && (sql[end - 1] == ';' || sql[end - 1] == ' ' ||
+                     sql[end - 1] == '\n' || sql[end - 1] == '\r' ||
+                     sql[end - 1] == '\t')) {
+    --end;
+  }
+  return sql.substr(0, end);
+}
+
 class EngineAdapter {
 public:
   EngineAdapter() = default;
@@ -71,6 +83,11 @@ public:
   // Returns {estimated_cost, estimated_rows}
   virtual std::pair<double, double>
   GetEstimatedCost(const std::string &sql) = 0;
+
+  // Return the EXPLAIN ANALYZE plan of a sub-SQL as formatted text (used by
+  // --explain mode to display per-sub-query plans). Default returns "" for
+  // engines that don't implement plan display; overridden per adapter.
+  virtual std::string ExplainAnalyze(const std::string &sql) { return ""; }
 
   // Batch version: evaluate multiple EXPLAIN queries in one round-trip
   // Default implementation calls GetEstimatedCost sequentially (fine for

@@ -52,6 +52,7 @@ struct ParamConfig {
   bool enable_timing = false;
   bool enable_debug_print = false;
   bool enable_sub_plan_combiner = false;
+  bool enable_explain = false; // Print EXPLAIN ANALYZE plan per sub-SQL
 
   // Parse configuration from command-line arguments
   static ParamConfig ParseFromArgs(int argc, char **argv);
