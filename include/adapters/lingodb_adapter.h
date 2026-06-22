@@ -4,6 +4,10 @@
 #include "pg_query.h"
 #include <nlohmann/json.hpp>
 
+// pg_query.h defines _(a) as (a) (PostgreSQL i18n macro), which collides
+// with lingo-db's use of _ as a variable name in lock_guard declarations.
+#undef _
+
 #include <lingodb/catalog/Catalog.h>
 #include <lingodb/execution/Execution.h>
 #include <lingodb/runtime/Session.h>

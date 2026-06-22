@@ -7,13 +7,11 @@ git clone --recurse-submodules git@github.com:PeiMu/AQPHub.git
 ```bash
 sudo apt install nlohmann-json3-dev # we need json
 
-mkdir -p build_debug && cd build_debug/
-cmake -DCMAKE_BUILD_TYPE=Debug .. # requires CMake 4.0 or higher
-make -j32
+CC=clang-20 CXX=clang++-20 cmake -S . -B build_debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build_debug -j$(nproc)
 
-mkdir -p build_release && cd build_release/
-cmake -DCMAKE_BUILD_TYPE=Release .. # requires CMake 4.0 or higher
-make -j32
+CC=clang-20 CXX=clang++-20 cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Release
+cmake --build build_release -j$(nproc)
 ```
 
 ## Configuration
