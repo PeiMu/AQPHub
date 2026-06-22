@@ -2617,6 +2617,37 @@ DuckDBAdapter::GetEstimatedCost(const std::string &sql) {
   }
 }
 
+std::string DuckDBAdapter::ExplainAnalyze(const std::string &sql) {
+  // DuckDB EXPLAIN ANALYZE returns (explain_key, explain_value); the rendered
+  // profiling tree is the last column. Reuse ExecuteSQL and join those values.
+  try {
+    QueryResult r = ExecuteSQL("EXPLAIN ANALYZE " + StripSqlTerminator(sql));
+    std::string plan_text;
+    for (const auto &row : r.rows) {
+      if (!row.empty())
+        plan_text += row.back();
+      plan_text += "\n";
+    }
+
+    // DuckDB prepends a "Query Profiling Information" box and echoes the whole
+    // query (one very wide line) before the tree. Drop everything before the
+    // "Total Time" box so the box shows just the operator tree with timings.
+    // The "Total Time" content line sits two lines below its box's top border,
+    // so back up two line-starts to keep the box intact.
+    size_t tt = plan_text.find("Total Time");
+    if (tt != std::string::npos) {
+      size_t pos = plan_text.rfind('\n', tt);
+      for (int k = 0; k < 2 && pos != std::string::npos && pos > 0; ++k)
+        pos = plan_text.rfind('\n', pos - 1);
+      plan_text = plan_text.substr(pos == std::string::npos ? 0 : pos + 1);
+    }
+
+    return plan_text;
+  } catch (const std::exception &e) {
+    return std::string("EXPLAIN ANALYZE failed: ") + e.what();
+  }
+}
+
 void DuckDBAdapter::CleanUp() {
 #if IN_MEM_TMP_TABLE
   temp_collections_.clear();

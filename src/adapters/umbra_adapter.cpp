@@ -137,4 +137,21 @@ UmbraAdapter::GetEstimatedCost(const std::string &sql) {
   return {estimated_rows, estimated_rows};
 }
 
+std::string UmbraAdapter::ExplainAnalyze(const std::string &sql) {
+  // Umbra accepts plain "EXPLAIN ANALYZE" but may reject Postgres-only options
+  // (VERBOSE/BUFFERS). Reuse the inherited ExecuteSQL and join the plan rows.
+  try {
+    QueryResult r = ExecuteSQL("EXPLAIN ANALYZE " + StripSqlTerminator(sql));
+    std::string plan_text;
+    for (const auto &row : r.rows) {
+      if (!row.empty())
+        plan_text += row.front();
+      plan_text += "\n";
+    }
+    return plan_text;
+  } catch (const std::exception &e) {
+    return std::string("EXPLAIN ANALYZE failed: ") + e.what();
+  }
+}
+
 } // namespace middleware

@@ -265,6 +265,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       }
     } else if (arg.find("--csv-dir=") == 0) {
       config.csv_dir = arg.substr(10);
+    } else if (arg == "--explain") {
+      config.enable_explain = true;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -435,6 +437,9 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --tune-config=<path>             Per-subquery JIT config "
                "JSON (from tune_per_subquery.py)"
+	    << std::endl;
+  std::cout << "  --explain                        Print EXPLAIN ANALYZE plan "
+               "for each sub-SQL (default: disabled)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

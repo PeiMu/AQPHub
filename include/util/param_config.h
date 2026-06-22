@@ -59,6 +59,7 @@ struct ParamConfig {
   bool enable_timing = false;
   bool enable_debug_print = false;
   bool enable_sub_plan_combiner = false;
+  bool enable_explain = false; // Print EXPLAIN ANALYZE plan per sub-SQL
 
   // Measurement infrastructure
   int repeat_count = 1;      // --repeat=N: run query N times in-process
