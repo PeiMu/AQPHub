@@ -1991,6 +1991,12 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
     // 7.3b: Lazy CSR — removed eager FlatTable+CSR build here.
     // EnsureReferencedTempsReady() will build on demand before AnalyzeSubIR.
+
+    if (config_.enable_explain) {
+      std::cout << "\n=== Sub-Query Plan ===\n"
+                << adapter_->ExplainAnalyze(sub_sql)
+                << "\n=== End Sub-Query Plan ===" << std::endl;
+    }
   }
 
   if (config_.enable_tuning)
@@ -2000,15 +2006,6 @@ bool IRQuerySplitter::ExecuteOneIteration(
                       log_scan_table, log_scan_rows,
                       log_num_joins, log_num_filters,
                       log_num_output_cols, log_exe_ms);
-
-  // EXPLAIN ANALYZE this sub-SQL for the web UI's "Show Plan" toggle. Emitted
-  // outside the timed sections so the timing breakdown is unaffected; prior
-  // iterations' temp tables already exist, so the plan resolves correctly.
-  if (config_.enable_explain) {
-    std::cout << "\n=== Sub-Query Plan ===\n"
-              << adapter_->ExplainAnalyze(sub_sql)
-              << "\n=== End Sub-Query Plan ===" << std::endl;
-  }
 
   if (config_.enable_timing)
     timer = chrono_tic();
