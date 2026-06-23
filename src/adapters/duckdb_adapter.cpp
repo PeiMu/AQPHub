@@ -1497,24 +1497,18 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     }
 #endif
     jit_pending_ir_ = nullptr;
-  } else if (jit_flags_ & AQP_JIT_LEVEL_MASK) {
-    // Registration skipped (e.g. cross-product guard). Drop the stale JIT
+  } else {
+    // No JIT registration for this sub-query (interpreter tune entry, or
+    // cross-product guard with non-zero jit_flags). Drop the stale JIT
     // context from the previous iteration: EIDs are operator memory
     // addresses which get reused across sub-plans, so leftover compiled
     // fns would mis-dispatch on this plan and corrupt results.
     GetClientContext()->aqp_jit_context.reset();
-    if (enable_timing_) {
-      // Keep the timing CSV rectangular: JIT-level runs always emit the
-      // jit_compile column, even when registration was skipped.
+    if (enable_timing_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
       WriteJitTimingColumn(ConsumeSpecWaitUs());
+    } else if (enable_timing_ && !query_jit_ && jit_compiler_) {
+      WriteJitTimingColumn(0);
     }
-  } else if (enable_timing_ && !query_jit_ && jit_compiler_) {
-    // Tune-config interp: jit_flags_==0 and query_jit_==false for this
-    // subquery, but the query-level run created jit_compiler_ (other
-    // subqueries use JIT).  Emit a 0 jit_compile column to keep the CSV
-    // rectangular.  Guard on !query_jit_: the query-jit path (line ~1416)
-    // already wrote its own jit_compile column.
-    WriteJitTimingColumn(0);
   }
 #endif
 
@@ -2696,6 +2690,8 @@ void DuckDBAdapter::ResetQueryState() {
   if (jit_compiler_)
     jit_compiler_->ResetModules();
   jit_compiler_cache_.clear();
+  fast_jit_compiler_.reset();
+  fast_qjit_syms_registered_ = false;
   auto ctx = GetClientContext();
   if (ctx)
     ctx->aqp_jit_context.reset();
