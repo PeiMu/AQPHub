@@ -51,10 +51,8 @@ public:
   // mode: "SPEED" (LLVM JIT) or "BASELINE_SPEED" (TPDE fast codegen)
   void SetExecutionMode(const std::string &mode);
 
-private:
+protected:
   std::shared_ptr<lingodb::runtime::Session> session_;
-  nlohmann::json parse_tree_;
-  bool scheduler_started_ = false;
   lingodb::execution::ExecutionMode exec_mode_ =
       lingodb::execution::ExecutionMode::SPEED;
 
@@ -62,6 +60,16 @@ private:
 
   void CreateTempTableFromArrow(const std::string &table_name,
                                 std::shared_ptr<arrow::Table> table);
+
+  static void WriteLingoDBTimingRow(
+      const std::unordered_map<std::string, double> &timing);
+
+  static QueryResult ArrowTableToQueryResult(
+      const std::shared_ptr<arrow::Table> &table);
+
+private:
+  nlohmann::json parse_tree_;
+  bool scheduler_started_ = false;
 };
 
 } // namespace middleware

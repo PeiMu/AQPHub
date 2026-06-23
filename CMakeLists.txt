@@ -26,6 +26,9 @@ if (LLVM_FOUND)
     message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION} at ${LLVM_DIR}")
     include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
     add_definitions(${LLVM_DEFINITIONS})
+    # Ensure LLVM's lib directory appears in RUNPATH even when CMake treats it
+    # as an implicit link directory (happens with some clang++-20 installations).
+    list(APPEND CMAKE_BUILD_RPATH "${LLVM_LIBRARY_DIR}")
     llvm_map_components_to_libnames(LLVM_LIBS
             core orcjit native passes analysis support)
     set(HAVE_LLVM TRUE)
@@ -432,7 +435,8 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
         get_property(MLIR_EXTENSION_LIBS GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 
         add_library(lingodb_adapter STATIC
-                src/adapters/lingodb_adapter.cpp)
+                src/adapters/lingodb_adapter.cpp
+                src/adapters/lingodb_runtime_adapter.cpp)
         target_include_directories(lingodb_adapter PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${LINGODB_ROOT}/include

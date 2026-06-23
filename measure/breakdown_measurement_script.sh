@@ -24,6 +24,14 @@ set -e
 #bash ./measure_breakdown_time_job.sh lingodb node-based tpde && \
 
 # ============================================================
+# lingo-db-runtime (DuckDB optimizer + LingoDB JIT runtime)
+# ============================================================
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime node-based llvm && \
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime node-based tpde && \
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime none llvm && \
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime none tpde && \
+
+# ============================================================
 # duckdb backend
 # ============================================================
 #

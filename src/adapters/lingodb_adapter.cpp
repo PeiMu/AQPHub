@@ -75,9 +75,38 @@ lingodb::catalog::Type ArrowTypeToLingoDBType(
   }
 }
 
-middleware::QueryResult ArrowTableToQueryResult(
+} // namespace
+
+namespace {
+const std::vector<std::string> kLingoDBTimingColumns = {
+    "frontend", "QOpt", "lowerRelAlg", "lowerSubOp", "lowerDB", "lowerArrow",
+    "lowerToLLVM", "toLLVMIR", "llvmOptimize", "llvmCodeGen",
+    "baselineLowering", "baselineCodeGen", "baselineEmit",
+    "executionTime", "total"};
+} // namespace
+
+namespace middleware {
+
+void LingoDBAdapter::WriteLingoDBTimingRow(
+    const std::unordered_map<std::string, double> &timing) {
+  std::ofstream log_file;
+  log_file.open(g_lingodb_compile_log_name, std::ios_base::app);
+  for (size_t i = 0; i < kLingoDBTimingColumns.size(); i++) {
+    const auto &col = kLingoDBTimingColumns[i];
+    auto it = timing.find(col);
+    if (it != timing.end()) {
+      log_file << std::fixed << std::setprecision(3) << it->second;
+    }
+    if (i + 1 < kLingoDBTimingColumns.size())
+      log_file << ", ";
+  }
+  log_file << "\n";
+  log_file.close();
+}
+
+QueryResult LingoDBAdapter::ArrowTableToQueryResult(
     const std::shared_ptr<arrow::Table> &table) {
-  middleware::QueryResult result;
+  QueryResult result;
   if (!table || table->num_columns() == 0) {
     return result;
   }
@@ -124,33 +153,6 @@ middleware::QueryResult ArrowTableToQueryResult(
 
   return result;
 }
-
-static const std::vector<std::string> kLingoDBTimingColumns = {
-    "frontend", "QOpt", "lowerRelAlg", "lowerSubOp", "lowerDB", "lowerArrow",
-    "lowerToLLVM", "toLLVMIR", "llvmOptimize", "llvmCodeGen",
-    "baselineLowering", "baselineCodeGen", "baselineEmit",
-    "executionTime", "total"};
-
-static void WriteLingoDBTimingRow(
-    const std::unordered_map<std::string, double> &timing) {
-  std::ofstream log_file;
-  log_file.open(g_lingodb_compile_log_name, std::ios_base::app);
-  for (size_t i = 0; i < kLingoDBTimingColumns.size(); i++) {
-    const auto &col = kLingoDBTimingColumns[i];
-    auto it = timing.find(col);
-    if (it != timing.end()) {
-      log_file << std::fixed << std::setprecision(3) << it->second;
-    }
-    if (i + 1 < kLingoDBTimingColumns.size())
-      log_file << ", ";
-  }
-  log_file << "\n";
-  log_file.close();
-}
-
-} // namespace
-
-namespace middleware {
 
 LingoDBAdapter::LingoDBAdapter(const std::string &db_path) {
   EnsureLingoDBInit();

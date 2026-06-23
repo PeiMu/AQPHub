@@ -14,10 +14,10 @@ compile_mode=${11:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 hide_latency=${13:-off}   # on | off (--hide-latency-across-queries)
 
-# For lingodb, the 3rd arg selects the execution mode (llvm | tpde)
-# instead of the DuckDB jit level.
+# For lingodb/lingo-db-runtime, the 3rd arg selects the execution mode
+# (llvm | tpde) instead of the DuckDB jit level.
 lingodb_mode="llvm"
-if [[ "$engine" == "lingodb" ]]; then
+if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     lingodb_mode=${3:-llvm}
     jit_level=none
     jit_simd=none
@@ -62,7 +62,7 @@ if [[ "$jit_level" == "query" ]]; then
     storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
 fi
 
-if [[ "$engine" == "lingodb" ]]; then
+if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     log_name=aqp_middleware_${engine}_${lingodb_mode}_${split}_job.txt
 else
     log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_job.txt
@@ -88,7 +88,7 @@ elif [[ "$engine" == "mariadb" ]]; then
 elif [[ "$engine" == "opengauss" ]]; then
     db_conn="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132"
 
-elif [[ "$engine" == "lingodb" ]]; then
+elif [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     db_conn=""
 
 else
@@ -98,8 +98,12 @@ fi
 
 # For node-based split on non-DuckDB backends, pass the DuckDB helper DB
 # for planning.  For DuckDB itself the flag is unused.
+# lingo-db-runtime always needs the helper DB (DuckDB optimizes, LingoDB executes).
 helper_db_arg=""
-if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
+if [[ "$engine" == "lingo-db-runtime" ]]; then
+    helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
+    helper_db_arg="--helper-db-path=${helper_db_path}"
+elif [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
     helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$engine" == "mariadb" ]]; then
@@ -186,7 +190,7 @@ cleanup() {
         mariadb_stop
     elif [[ "$engine" == "opengauss" ]]; then
         opengauss_stop
-    elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" ]]; then
+    elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
         :
     else
 	      pg_stop
@@ -227,7 +231,7 @@ elif [[ "$engine" == "mariadb" ]]; then
     mariadb_start
 elif [[ "$engine" == "opengauss" ]]; then
     opengauss_start
-elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" ]]; then
+elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     :
 else
     pg_start
@@ -257,10 +261,10 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
-# LingoDB: in-memory with CSV loading instead of --db
+# LingoDB / lingo-db-runtime: in-memory with CSV loading instead of --db
 db_arg="--db=${db_conn}"
 lingodb_flags=""
-if [[ "$engine" == "lingodb" ]]; then
+if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     db_arg="--in-memory"
     lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv --lingodb-mode=${lingodb_mode}"
 fi

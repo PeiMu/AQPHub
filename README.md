@@ -1,3 +1,17 @@
+## Prerequisites
+
+| Dependency | Minimum version | Install (Debian/Ubuntu) |
+|------------|----------------|------------------------|
+| CMake | 3.25 | `sudo apt install cmake` |
+| Clang/LLVM | 20.1 | [apt.llvm.org](https://apt.llvm.org/) — `sudo apt install clang-20 llvm-20-dev libmlir-20-dev mlir-20-tools` |
+| nlohmann-json | 3.x | `sudo apt install nlohmann-json3-dev` |
+| Ninja (optional) | 1.10+ | `sudo apt install ninja-build` |
+| Python | 3.9+ | `sudo apt install python3` (for analysis scripts in `measure/`) |
+| Boost | 1.83+ | `sudo apt install libboost-context-dev` (required by LingoDB adapter) |
+| Apache Arrow | — | `sudo apt install libarrow-dev` (required by LingoDB adapter) |
+
+Clang-20 and LLVM-20 are required because the JIT compiler and LingoDB adapter depend on LLVM 20 APIs and MLIR 20 dialects.
+
 ## Clone Project
 ```bash
 git clone --recurse-submodules git@github.com:PeiMu/AQPHub.git
@@ -5,8 +19,6 @@ git clone --recurse-submodules git@github.com:PeiMu/AQPHub.git
 
 ## How to compile
 ```bash
-sudo apt install nlohmann-json3-dev # we need json
-
 CC=clang-20 CXX=clang++-20 cmake -S . -B build_debug -DCMAKE_BUILD_TYPE=Debug
 cmake --build build_debug -j$(nproc)
 

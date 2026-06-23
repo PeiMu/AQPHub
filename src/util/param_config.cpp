@@ -38,6 +38,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.engine = BackendEngine::OPENGAUSS;
       } else if (engine_str == "lingodb" || engine_str == "lingo-db") {
         config.engine = BackendEngine::LINGODB;
+      } else if (engine_str == "lingo-db-runtime" || engine_str == "lingodb-runtime") {
+        config.engine = BackendEngine::LINGODB_RUNTIME;
       } else {
         throw std::runtime_error(
             "Unknown engine: " + arg.substr(9) +
@@ -305,9 +307,16 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     config.enable_storage_plan = true;
   }
 
+  if (config.engine == BackendEngine::LINGODB_RUNTIME &&
+      config.helper_db.empty())
+    throw std::runtime_error(
+        "--engine=lingo-db-runtime requires --helper-db-path=<path> "
+        "(DuckDB database for query optimization)");
+
   if (config.in_memory) {
-    if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB)
-      throw std::runtime_error("--in-memory is only supported with --engine=duckdb or --engine=lingodb");
+    if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB &&
+        config.engine != BackendEngine::LINGODB_RUNTIME)
+      throw std::runtime_error("--in-memory is only supported with --engine=duckdb, --engine=lingodb, or --engine=lingo-db-runtime");
     if (config.csv_dir.empty() && !config.schema_path.empty()) {
       auto pos = config.schema_path.find_last_of('/');
       config.csv_dir = (pos != std::string::npos ? config.schema_path.substr(0, pos) : ".") + "/csv";

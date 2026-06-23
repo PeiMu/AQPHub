@@ -61,6 +61,10 @@ JIT_CONFIGS=(
   "lingodb|none|tpde|none|lingodb_job_no-split_golden.txt"
   "lingodb|node-based|tpde|none|duckdb_job_node-based_golden.txt"
   "lingodb|relationship-center|tpde|none|lingodb_job_no-split_golden.txt"
+  "lingo-db-runtime|node-based|llvm|none|duckdb_job_node-based_golden.txt"
+  "lingo-db-runtime|node-based|tpde|none|duckdb_job_node-based_golden.txt"
+  "lingo-db-runtime|none|llvm|none|duckdb_job_no-split_golden.txt"
+  "lingo-db-runtime|none|tpde|none|duckdb_job_no-split_golden.txt"
 )
 
 # --- Kernel-path configs: engine | split | kernel_path | jit_simd | golden_file ---
@@ -93,7 +97,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   [[ "$spec_jit_mode" != "off" ]] && spec_suffix="_spec${spec_jit_mode}"
   hide_suffix=""
   [[ "$hide_lat" == "hidelatency" ]] && hide_suffix="_hidelatency"
-  if [[ "$engine" == "lingodb" ]]; then
+  if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
     output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${spec_suffix}${hide_suffix}_job.txt"

@@ -33,6 +33,7 @@
 
 #ifdef HAVE_LINGODB
 #include "adapters/lingodb_adapter.h"
+#include "adapters/lingodb_runtime_adapter.h"
 #endif
 
 #include <cstdio>
@@ -121,6 +122,19 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
                 << db_path << std::endl;
     }
     auto adapter = std::make_unique<LingoDBAdapter>(db_path);
+    adapter->SetExecutionMode(config.lingodb_mode);
+    if (config.in_memory) {
+      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
+  }
+  case BackendEngine::LINGODB_RUNTIME: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
+    if (config.enable_debug_print) {
+      std::cout << "[AQP Middleware] Creating LingoDB-Runtime adapter: "
+                << db_path << std::endl;
+    }
+    auto adapter = std::make_unique<LingoDBRuntimeAdapter>(db_path);
     adapter->SetExecutionMode(config.lingodb_mode);
     if (config.in_memory) {
       adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
@@ -257,7 +271,35 @@ void ExecuteSingleQuery(
       }
 #endif
 
-      query_result = adapter->ExecuteSQL(sql);
+#if defined(HAVE_LINGODB) && defined(HAVE_DUCKDB)
+      if (config.engine == BackendEngine::LINGODB_RUNTIME) {
+        auto *rt_adapter =
+            dynamic_cast<LingoDBRuntimeAdapter *>(adapter);
+        if (!rt_adapter)
+          throw std::runtime_error(
+              "LINGODB_RUNTIME engine requires LingoDBRuntimeAdapter");
+
+        DuckDBAdapter helper(config.helper_db);
+        helper.ParseSQL(sql);
+        helper.FilterOptimize();
+        auto ir = helper.ConvertPlanToIR();
+        if (!ir)
+          throw std::runtime_error(
+              "[lingo-db-runtime] Failed to convert DuckDB plan to IR");
+
+        if (config.enable_debug_print) {
+          std::string ir_sql =
+              ir_sql_converter::ConvertIRToSQL(*ir, 0);
+          std::cout << "DuckDB-optimized IR SQL:\n"
+                    << ir_sql << std::endl;
+        }
+
+        query_result = rt_adapter->ExecuteIRQuery(*ir);
+      } else
+#endif
+      {
+        query_result = adapter->ExecuteSQL(sql);
+      }
     }
     result.num_rows = query_result.num_rows;
 
@@ -368,7 +410,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
   std::vector<std::string> iter_log_files;
   std::vector<std::string> iter_ldb_files;
-  bool is_lingodb = (config.engine == BackendEngine::LINGODB);
+  bool is_lingodb = (config.engine == BackendEngine::LINGODB ||
+                     config.engine == BackendEngine::LINGODB_RUNTIME);
 
   for (int iter = 0; iter < config.repeat_count; iter++) {
     std::string iter_log = "time_log_iter" + std::to_string(iter) + ".csv";
@@ -537,7 +580,8 @@ int main(int argc, char **argv) {
          config.engine == BackendEngine::UMBRA ||
          config.engine == BackendEngine::MARIADB ||
          config.engine == BackendEngine::OPENGAUSS ||
-         config.engine == BackendEngine::LINGODB) &&
+         config.engine == BackendEngine::LINGODB ||
+         config.engine == BackendEngine::LINGODB_RUNTIME) &&
         !config.schema_path.empty()) {
       if (!ir_sql_converter::InitSchemaParser(config.schema_path)) {
         std::cerr << "Warning: Failed to load schema, column indices will be 0"

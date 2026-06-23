@@ -61,6 +61,16 @@ public:
                                             const std::string &temp_table_name,
                                             bool update_temp_card) = 0;
 
+  // Execute IR directly (bypassing SQL generation) and create temp table.
+  // Default: GenerateSQL + ExecuteSQLandCreateTempTable.
+  virtual void ExecuteIRandCreateTempTable(
+      ir_sql_converter::AQPStmt &ir,
+      const std::string &temp_table_name,
+      bool update_temp_card) {
+    std::string sql = GenerateSQL(ir, subquery_index++);
+    ExecuteSQLandCreateTempTable(sql, temp_table_name, update_temp_card);
+  }
+
   // Temp table management
   virtual void CreateTempTable(const std::string &table_name,
                                const QueryResult &result) = 0;

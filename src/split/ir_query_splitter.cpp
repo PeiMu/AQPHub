@@ -2057,6 +2057,33 @@ bool IRQuerySplitter::ExecuteOneIteration(
   }
 #endif
 
+  if (!kernel_executed &&
+      config_.engine == BackendEngine::LINGODB_RUNTIME) {
+    // Direct IR-to-MLIR execution path (no SQL generation)
+    temp_table_name = GenerateTempTableName();
+    adapter_->subquery_index++;
+
+    if (config_.enable_timing) {
+      auto generate_sub_sql_time =
+          chrono_toc(&timer, "Generate sub-SQL time (IR path)\n", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (generate_sub_sql_time / 1000.0) << ", ";
+      log_file.close();
+    }
+
+    if (config_.print_sql || config_.enable_debug_print) {
+      std::cout << "\n=== IR-to-MLIR Execution (no SQL) ===" << std::endl;
+      std::cout << "Temp table: " << temp_table_name << std::endl;
+    }
+
+    adapter_->ExecuteIRandCreateTempTable(
+        *executable_ir, temp_table_name, config_.enable_update_temp_card);
+    cardinality = adapter_->GetTempTableCardinality(temp_table_name);
+    kernel_executed = true;
+  }
+
   if (!kernel_executed) {
     // Standard DuckDB execution path
     std::string sub_sql =
