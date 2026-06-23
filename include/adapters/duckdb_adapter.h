@@ -517,6 +517,7 @@ public:
   // loop; SetPlan(sub_plan) + ConvertPlanToIR() converts each sub-plan to IR)
   duckdb::unique_ptr<duckdb::LogicalOperator> TakePlan();
   void SetPlan(duckdb::unique_ptr<duckdb::LogicalOperator> p);
+  void SetPlanner(std::unique_ptr<duckdb::Planner> p) { planner = std::move(p); }
 
   struct pair_hash {
     template <class T1, class T2>

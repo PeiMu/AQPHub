@@ -7,6 +7,7 @@
 #   1=engine 2=split 3=jit_level 4=jit_simd
 #   5=payload_prune 6=prefetch 7=batch_probe 8=skip_hash_cmp
 #   9=jit_cache 10=spec_jit 11=compile_mode 12=tune_config
+#   13=hide_latency
 #
 set -e
 
@@ -126,8 +127,42 @@ bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all o
 # tuned + spec=recompile
 bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile llvm job_result/tuned_per_subquery_node-based.json && \
 
+# ============================================================
+# cross-query latency hiding (node-based only)
+# Orthogonal flag: re-measure key configs with --hide-latency-across-queries
+# ============================================================
+# interpreter + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based none off on on on all off off llvm "" on && \
+# expr-jit + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based expr none on on on all off off llvm "" on && \
+bash ./measure_breakdown_time_job.sh duckdb node-based expr auto on on on all off off llvm "" on && \
+# operator-jit + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based operator none on on on all off off llvm "" on && \
+bash ./measure_breakdown_time_job.sh duckdb node-based operator auto on on on all off off llvm "" on && \
+# pipeline-jit + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline none on on on all off off llvm "" on && \
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline auto on on on all off off llvm "" on && \
+# query-jit llvm + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off off llvm "" on && \
+# query-jit fastisel + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off off fastisel "" on && \
+# query-jit tpde + hide-latency (primary config)
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off off tpde "" on && \
+# query-jit llvm + spec=recompile + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile llvm "" on && \
+# query-jit llvm + spec=interpret + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off interpret llvm "" on && \
+# query-jit fastisel + spec=recompile + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile fastisel "" on && \
+# query-jit fastisel + spec=interpret + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off interpret fastisel "" on && \
+# query-jit tpde + spec=recompile + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile tpde "" on && \
+# query-jit tpde + spec=interpret + hide-latency
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off interpret tpde "" on && \
+
 ## ============================================================
-## pipeline kernel 
+## pipeline kernel
 ## ============================================================
 #bash ./measure_breakdown_time_job_kernel.sh duckdb none pipeline none on on on all && \
 #bash ./measure_breakdown_time_job_kernel.sh duckdb relationship-center pipeline none on on on all && \

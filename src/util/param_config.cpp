@@ -265,6 +265,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       }
     } else if (arg.find("--csv-dir=") == 0) {
       config.csv_dir = arg.substr(10);
+    } else if (arg == "--hide-latency-across-queries") {
+      config.hide_latency_across_queries = true;
     } else if (arg == "--explain") {
       config.enable_explain = true;
     } else if (arg == "--help" || arg == "-h") {
@@ -415,6 +417,9 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --query-jit-morsel=N             Query-jit morsel size in "
                "rows (default 20000)"
+            << std::endl;
+  std::cout << "  --hide-latency-across-queries    Prepare query N+1 on bg "
+               "thread while N executes (node-based + DuckDB)"
             << std::endl;
   std::cout << "\n  Measurement:" << std::endl;
   std::cout << "  --repeat=N                       Run query N times in-process "

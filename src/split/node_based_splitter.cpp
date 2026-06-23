@@ -6,6 +6,7 @@
 #ifdef HAVE_DUCKDB
 
 #include "split/node_based_splitter.h"
+#include "split/ir_query_splitter.h"
 
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
@@ -435,6 +436,21 @@ std::unique_ptr<ir_sql_converter::AQPStmt> NodeBasedSplitter::PeekNextSubquery(
     spec_ir->Print();
   }
   return spec_ir;
+}
+
+void NodeBasedSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
+  ctx_ = prep.bg_conn->context.get();
+  plan_ = std::move(prep.remaining_plan);
+  qs_ = std::move(prep.qs);
+  sp_ = std::move(prep.sp);
+  reorder_get_ = std::move(prep.reorder_get);
+  subqueries_ = std::move(prep.subqueries);
+  table_expr_queue_ = std::move(prep.table_expr_queue);
+  proj_expr_ = std::move(prep.proj_expr);
+  last_sibling_node_ = std::move(prep.last_sibling_node);
+  merge_sibling_expr_ = prep.merge_sibling_expr;
+  sub_plan_types_ = std::move(prep.sub_plan_types);
+  terminal_ = false;
 }
 
 } // namespace middleware

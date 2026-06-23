@@ -298,6 +298,191 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
               << " compile_mode=" << te.compile_mode << "\n";
 }
 
+#ifdef HAVE_DUCKDB
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
+                                  duckdb::DuckDB &db_ref, bool debug) {
+  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto t0 = std::chrono::high_resolution_clock::now();
+  try {
+    // Read SQL file
+    {
+      std::ifstream f(sql_path);
+      if (!f.is_open()) {
+        result->error = "failed to open " + sql_path;
+        return result;
+      }
+      std::stringstream buf;
+      buf << f.rdbuf();
+      result->sql = buf.str();
+    }
+
+    // Extract query name (filename without .sql)
+    {
+      auto slash = sql_path.rfind('/');
+      std::string fname =
+          (slash != std::string::npos) ? sql_path.substr(slash + 1) : sql_path;
+      auto dot = fname.rfind('.');
+      if (dot != std::string::npos)
+        fname = fname.substr(0, dot);
+      result->query_name = std::move(fname);
+    }
+
+    // Create bg connection + parse + plan (mirrors DuckDBAdapter::ParseSQL)
+    result->bg_conn = std::make_unique<duckdb::Connection>(db_ref);
+    auto *ctx = result->bg_conn->context.get();
+
+    bool auto_commit = ctx->transaction.IsAutoCommit();
+    if (auto_commit)
+      ctx->transaction.BeginTransaction();
+
+    duckdb::Parser parser(ctx->GetParserOptions());
+    parser.ParseQuery(result->sql);
+    if (parser.statements.empty() ||
+        parser.statements[0]->type !=
+            duckdb::StatementType::SELECT_STATEMENT) {
+      if (auto_commit)
+        ctx->transaction.Commit();
+      result->error = "not a single SELECT statement";
+      return result;
+    }
+
+    result->bg_planner = std::make_unique<duckdb::Planner>(*ctx);
+    result->bg_planner->CreatePlan(std::move(parser.statements[0]));
+    auto plan = std::move(result->bg_planner->plan);
+    if (!plan) {
+      if (auto_commit)
+        ctx->transaction.Commit();
+      result->error = "failed to create logical plan";
+      return result;
+    }
+
+    // FilterOptimize (mirrors DuckDBAdapter::FilterOptimize)
+    if (plan->RequireOptimizer()) {
+      duckdb::Optimizer optimizer(*result->bg_planner->binder, *ctx);
+      plan = optimizer.FilterOptimize(std::move(plan));
+    }
+
+    if (auto_commit)
+      ctx->transaction.Commit();
+
+    // Preprocess (mirrors NodeBasedSplitter::Preprocess)
+    result->qs = std::make_unique<duckdb::QuerySplit>(*ctx);
+    result->sp = std::make_unique<duckdb::SubqueryPreparer>(
+        *result->bg_planner->binder, *ctx);
+    result->reorder_get = std::make_unique<duckdb::ReorderGet>(*ctx);
+
+    // SplitIR first iteration (mirrors NodeBasedSplitter::SplitIR)
+    // BLOCK 1: no pending subqueries on first iteration
+
+    // RunMiddleOptimize
+    auto_commit = ctx->transaction.IsAutoCommit();
+    if (auto_commit)
+      ctx->transaction.BeginTransaction();
+    {
+      duckdb::Optimizer optimizer(*result->bg_planner->binder, *ctx);
+      plan = optimizer.MiddleOptimize(std::move(plan));
+    }
+    if (auto_commit)
+      ctx->transaction.Commit();
+
+    plan = result->qs->Clear(std::move(plan));
+    plan = result->qs->Split(std::move(plan), true);
+    auto subqueries = result->qs->GetSubqueries();
+    auto table_expr_queue = result->qs->GetTableExprQueue();
+    auto proj_expr = result->qs->GetProjExpr();
+
+    // BLOCK 2
+    result->reorder_get->ReorderTables(subqueries);
+    result->sp->MergeSubquery(plan, std::move(subqueries));
+    plan = result->sp->UpdateProjHead(std::move(plan), proj_expr);
+
+    plan = result->qs->Clear(std::move(plan));
+    plan = result->qs->Split(std::move(plan), true);
+    subqueries = result->qs->GetSubqueries();
+    table_expr_queue = result->qs->GetTableExprQueue();
+    proj_expr = result->qs->GetProjExpr();
+
+    // Early terminal cases
+    if (subqueries.empty() || subqueries.size() == 1) {
+      if (subqueries.size() == 1) {
+        auto &child_node = subqueries.front()[0];
+        bool merged = false;
+        result->sp->MergeToSubquery(plan, child_node, merged);
+      }
+      // Terminal: the entire query is a single sub-plan. Convert to IR.
+      auto extraction =
+          std::make_unique<SubqueryExtraction>(std::set<unsigned int>{});
+      extraction->is_final = true;
+
+      // Convert plan to IR using bg planner's binder
+      std::unordered_map<unsigned int, std::string> empty_map;
+      auto ir = ir_sql_converter::ConvertDuckDBPlanToIR(
+          *result->bg_planner->binder, *ctx, plan.get(), empty_map, false);
+      extraction->sub_ir = std::move(ir);
+
+      result->first_extraction = std::move(extraction);
+      result->first_sub_sql.clear();
+      result->success = true;
+      auto t1 = std::chrono::high_resolution_clock::now();
+      result->prep_time_us =
+          std::chrono::duration<double, std::micro>(t1 - t0).count();
+      return result;
+    }
+
+    // Normal: extract first subquery group as sub-plan
+    result->last_sibling_node = nullptr;
+    if (subqueries.front().size() > 1)
+      result->last_sibling_node = std::move(subqueries.front()[1]);
+
+    result->sp->ClearOldTableIndex();
+    result->sp->AddOldTableIndex(subqueries.front()[0]);
+    auto sub_plan = result->sp->GenerateProjHead(
+        plan, std::move(subqueries.front()[0]), table_expr_queue, proj_expr,
+        false);
+    subqueries.pop_front();
+    table_expr_queue.pop_front();
+
+    sub_plan->ResolveOperatorTypes();
+    result->sub_plan_types = sub_plan->types;
+
+    // Convert sub-plan to IR
+    std::unordered_map<unsigned int, std::string> empty_map;
+    auto sub_ir = ir_sql_converter::ConvertDuckDBPlanToIR(
+        *result->bg_planner->binder, *ctx, sub_plan.get(), empty_map, false);
+    if (!sub_ir) {
+      result->error = "sub-plan IR conversion failed";
+      return result;
+    }
+
+    // Generate SQL from IR
+    result->first_sub_sql =
+        ir_sql_converter::ConvertIRToSQL(*sub_ir, 0);
+
+    auto extraction =
+        std::make_unique<SubqueryExtraction>(std::set<unsigned int>{});
+    extraction->sub_ir = std::move(sub_ir);
+    result->first_extraction = std::move(extraction);
+
+    // Store remaining state for iterations 2+
+    result->remaining_plan = std::move(plan);
+    result->subqueries = std::move(subqueries);
+    result->table_expr_queue = std::move(table_expr_queue);
+    result->proj_expr = std::move(proj_expr);
+    result->merge_sibling_expr = false;
+
+    result->success = true;
+  } catch (const std::exception &e) {
+    result->error = e.what();
+  }
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  result->prep_time_us =
+      std::chrono::duration<double, std::micro>(t1 - t0).count();
+  return result;
+}
+#endif
+
 QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   if (config_.enable_debug_print) {
     std::cout
@@ -369,35 +554,52 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 
   // === Phase 1: Parse SQL ===
-  if (config_.enable_debug_print) {
-    std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
-  }
   std::chrono::high_resolution_clock::time_point timer;
-  if (config_.enable_timing)
-    timer = chrono_tic();
-  // For NODE_BASED: parse SQL with the DuckDB helper adapter so it builds a
-  // DuckDB logical plan.  All other strategies parse on the execution adapter.
 #ifdef HAVE_DUCKDB
-  if (config_.strategy == SplitStrategy::NODE_BASED) {
-    duckdb_adapter_->ParseSQL(sql);
-  } else
+  bool using_cross_query_prep =
+      active_cross_query_prep_ && active_cross_query_prep_->success &&
+      config_.strategy == SplitStrategy::NODE_BASED;
+  if (using_cross_query_prep) {
+    if (config_.enable_debug_print)
+      std::cout << "[IRQuerySplitter] Phase 1+2: Skipped (cross-query prep)\n";
+    // Inject bg planner so iterations 2+ can use GetBinder()/ConvertPlanToIR()
+    duckdb_adapter_->SetPlanner(std::move(active_cross_query_prep_->bg_planner));
+    if (config_.enable_timing) {
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << "0.000, "; // parse_sql placeholder
+      log_file.close();
+    }
+  } else {
+    active_cross_query_prep_.reset();
 #endif
-  {
-    adapter_->ParseSQL(sql);
+    if (config_.enable_debug_print)
+      std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
+    if (config_.enable_timing)
+      timer = chrono_tic();
+#ifdef HAVE_DUCKDB
+    if (config_.strategy == SplitStrategy::NODE_BASED) {
+      duckdb_adapter_->ParseSQL(sql);
+    } else
+#endif
+    {
+      adapter_->ParseSQL(sql);
+    }
+    if (config_.enable_timing) {
+      auto parse_sql_time = chrono_toc(&timer, "Parse SQL time is\n", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (parse_sql_time / 1000.0) << ", ";
+      log_file.close();
+    }
+#ifdef HAVE_DUCKDB
   }
-  if (config_.enable_timing) {
-    auto parse_sql_time = chrono_toc(&timer, "Parse SQL time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open(g_timing_log_name, std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3) << (parse_sql_time / 1000.0)
-             << ", ";
-    log_file.close();
-  }
+#endif
 
   // === Phase 2: Pre-Optimize (ONLY for DuckDB, or node-based split) ===
 #ifdef HAVE_DUCKDB
-  {
+  if (!using_cross_query_prep) {
     DuckDBAdapter *pre_opt = nullptr;
     if (config_.strategy == SplitStrategy::NODE_BASED) {
       pre_opt = duckdb_adapter_; // always a DuckDBAdapter*
@@ -478,22 +680,50 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir = std::move(whole_ir);
 
   // === Strategy Preprocessing ===
-  if (config_.enable_debug_print) {
-    std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
-  }
   std::chrono::high_resolution_clock::time_point timer;
-  if (config_.enable_timing)
-    timer = chrono_tic();
-  splitter_->Preprocess(remaining_ir);
-  if (config_.enable_timing) {
-    auto preprocess_time = chrono_toc(&timer, "Preprocess time is\n", false);
-    // save time to a file
-    std::ofstream log_file;
-    log_file.open(g_timing_log_name, std::ios_base::app);
-    log_file << std::fixed << std::setprecision(3) << (preprocess_time / 1000.0)
-             << ", ";
-    log_file.close();
+#ifdef HAVE_DUCKDB
+  if (active_cross_query_prep_ && active_cross_query_prep_->success &&
+      config_.strategy == SplitStrategy::NODE_BASED) {
+    if (config_.enable_debug_print)
+      std::cout << "[IRQuerySplitter] Preprocess: using cross-query prep\n";
+    auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+    node_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+#if defined(HAVE_LLVM)
+    precomputed_extraction_ =
+        std::move(active_cross_query_prep_->first_extraction);
+#endif
+    if (config_.enable_timing) {
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << "0.000, "; // preprocess placeholder
+      log_file.close();
+    }
+    if (config_.enable_debug_print) {
+      double prep_us = active_cross_query_prep_->prep_time_us;
+      std::cerr << "[CROSS-QUERY] query=" << query_name_
+                << " bg_prep=" << std::fixed << std::setprecision(1)
+                << (prep_us / 1000.0) << "ms\n";
+    }
+  } else {
+    active_cross_query_prep_.reset();
+#endif
+    if (config_.enable_debug_print)
+      std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
+    if (config_.enable_timing)
+      timer = chrono_tic();
+    splitter_->Preprocess(remaining_ir);
+    if (config_.enable_timing) {
+      auto preprocess_time =
+          chrono_toc(&timer, "Preprocess time is\n", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (preprocess_time / 1000.0) << ", ";
+      log_file.close();
+    }
+#ifdef HAVE_DUCKDB
   }
+#endif
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   // Phase A wiring: the adapter fires this hook twice per iteration — after

@@ -35,6 +35,34 @@
 
 namespace middleware {
 
+#ifdef HAVE_DUCKDB
+struct CrossQueryPrepResult {
+  std::unique_ptr<duckdb::Connection> bg_conn;
+  std::unique_ptr<duckdb::Planner> bg_planner;
+
+  std::string sql;
+  std::string query_name;
+
+  std::unique_ptr<SubqueryExtraction> first_extraction;
+  std::string first_sub_sql;
+
+  duckdb::unique_ptr<duckdb::LogicalOperator> remaining_plan;
+  std::unique_ptr<duckdb::QuerySplit> qs;
+  std::unique_ptr<duckdb::SubqueryPreparer> sp;
+  std::unique_ptr<duckdb::ReorderGet> reorder_get;
+  duckdb::subquery_queue subqueries;
+  duckdb::table_expr_info table_expr_queue;
+  std::vector<duckdb::TableExpr> proj_expr;
+  duckdb::unique_ptr<duckdb::LogicalOperator> last_sibling_node;
+  bool merge_sibling_expr = false;
+  duckdb::vector<duckdb::LogicalType> sub_plan_types;
+
+  bool success = false;
+  std::string error;
+  double prep_time_us = 0.0;
+};
+#endif
+
 // Mapping entry for column index updates
 struct ColumnMapping {
   unsigned int old_table_idx;
@@ -88,6 +116,16 @@ public:
 
   // Statistics
   int GetIterationCount() const { return iteration_count_; }
+
+#ifdef HAVE_DUCKDB
+  // §7.2 Cross-query latency hiding
+  void SetCrossQueryPrep(std::unique_ptr<CrossQueryPrepResult> prep) {
+    active_cross_query_prep_ = std::move(prep);
+  }
+  static std::unique_ptr<CrossQueryPrepResult>
+  PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
+                   bool debug);
+#endif
 
 private:
   // === IR-based Iterative Split-Execute Loop (all strategies) ===
@@ -320,6 +358,8 @@ private:
 #endif
 
 #ifdef HAVE_DUCKDB
+  std::unique_ptr<CrossQueryPrepResult> active_cross_query_prep_;
+
   // Lazy CSR (7.3b): build FlatTable + CSR from DuckDB ColumnDataCollection
   // on demand, only when a kernel iteration actually needs the temp.
   void EnsureKernelTempReady(const std::string &temp_name);

@@ -12,6 +12,7 @@ jit_cache=${9:-off}
 spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
 compile_mode=${11:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
+hide_latency=${13:-off}   # on | off (--hide-latency-across-queries)
 
 # For lingodb, the 3rd arg selects the execution mode (llvm | tpde)
 # instead of the DuckDB jit level.
@@ -37,6 +38,7 @@ fi
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
+[[ "$hide_latency"   == "on"  ]] && jit_extra_flags+=" --hide-latency-across-queries"
 
 # Query-jit scans base tables through the storage plan; the binary cache file
 # is built on first use if missing (--storage-plan is auto-enabled by the
@@ -57,6 +59,7 @@ flag_suffix=""
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
+[[ "$hide_latency"   == "on"  ]] && flag_suffix+="_hidelatency"
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"

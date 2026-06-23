@@ -101,6 +101,7 @@ if (LLVM_FOUND)
             BYPRODUCTS ${AQP_TPDE_BUNDLE}
             COMMAND ${AQP_CLANGXX_20} -shared
                 -o ${AQP_TPDE_BUNDLE}
+                -Wl,-soname,libtpde_bundle.so
                 -Wl,--whole-archive ${AQP_TPDE_BUILD}/tpde-llvm/libtpde_llvm.a
                 -Wl,--no-whole-archive ${AQP_TPDE_BUILD}/tpde/libtpde.a
                     ${AQP_TPDE_BUILD}/tpde/deps/fadec/libfadec.a
@@ -111,7 +112,9 @@ if (LLVM_FOUND)
         )
 
         add_library(tpde_bundle SHARED IMPORTED)
-        set_target_properties(tpde_bundle PROPERTIES IMPORTED_LOCATION ${AQP_TPDE_BUNDLE})
+        set_target_properties(tpde_bundle PROPERTIES
+            IMPORTED_LOCATION ${AQP_TPDE_BUNDLE}
+            IMPORTED_SONAME libtpde_bundle.so)
         add_dependencies(tpde_bundle tpde_ep)
 
         target_include_directories(aqp_jit_lib PRIVATE

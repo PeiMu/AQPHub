@@ -148,9 +148,14 @@ std::string ReadSQLFile(const std::string &file_path) {
 }
 
 // Execute single query with timing and result collection
-void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path,
-                        const ParamConfig &config, TestResult &result,
-                        middleware::storage::StoragePlan *storage_plan = nullptr) {
+void ExecuteSingleQuery(
+    EngineAdapter *adapter, const std::string &sql_file_path,
+    const ParamConfig &config, TestResult &result,
+    middleware::storage::StoragePlan *storage_plan = nullptr
+#ifdef HAVE_DUCKDB
+    , std::unique_ptr<CrossQueryPrepResult> cross_prep = nullptr
+#endif
+    ) {
   result.query_file = get_filename(sql_file_path);
   result.success = false;
   result.num_rows = 0;
@@ -163,19 +168,32 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
     adapter->enable_timing_ = config.enable_timing;
 
     std::chrono::high_resolution_clock::time_point timer;
-    if (config.enable_timing)
-      timer = chrono_tic();
-    // Read SQL file
-    std::string sql = ReadSQLFile(sql_file_path);
-    if (config.enable_timing) {
-      auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3) << (read_sql_time / 1000.0)
-               << ", ";
-      log_file.close();
+    std::string sql;
+#ifdef HAVE_DUCKDB
+    if (cross_prep && cross_prep->success) {
+      sql = cross_prep->sql;
+      if (config.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "0.000, "; // read_sql placeholder (done by bg thread)
+        log_file.close();
+      }
+    } else {
+#endif
+      if (config.enable_timing)
+        timer = chrono_tic();
+      sql = ReadSQLFile(sql_file_path);
+      if (config.enable_timing) {
+        auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (read_sql_time / 1000.0) << ", ";
+        log_file.close();
+      }
+#ifdef HAVE_DUCKDB
     }
+#endif
 
     if (config.print_sql || config.enable_debug_print) {
       std::cout << "========================================" << std::endl;
@@ -185,16 +203,13 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
     QueryResult query_result;
 
     if (config.NeedsSplit()) {
-      // Execute with split strategy using IRQuerySplitter
       if (config.enable_debug_print) {
         std::cout << "\n=== Execution with Split Strategy: "
                   << config.GetStrategyName() << " ===" << std::endl;
       }
 
-      // Create IRQuerySplitter with the selected strategy
       IRQuerySplitter splitter(adapter, config, storage_plan);
 
-      // Pass query name for per-subquery tune config lookup
       {
         std::string qname = get_filename(sql_file_path);
         auto dot = qname.rfind('.');
@@ -203,7 +218,11 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
         splitter.SetQueryName(qname);
       }
 
-      // Execute with split
+#ifdef HAVE_DUCKDB
+      if (cross_prep)
+        splitter.SetCrossQueryPrep(std::move(cross_prep));
+#endif
+
       query_result = splitter.ExecuteWithSplit(sql);
 
     } else {
@@ -366,6 +385,20 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
     std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
 
+    // §7.2: Cross-query latency hiding — bg thread pool + pending future
+#ifdef HAVE_DUCKDB
+    std::unique_ptr<ThreadPool> cross_query_pool;
+    std::future<std::unique_ptr<CrossQueryPrepResult>> pending_cross_prep;
+    DuckDBAdapter *duck_for_cross =
+        config.hide_latency_across_queries &&
+                config.strategy == SplitStrategy::NODE_BASED &&
+                config.engine == BackendEngine::DUCKDB
+            ? dynamic_cast<DuckDBAdapter *>(adapter)
+            : nullptr;
+    if (duck_for_cross)
+      cross_query_pool = std::make_unique<ThreadPool>(1);
+#endif
+
     for (size_t qi = 0; qi < sql_files.size(); qi++) {
       const auto &sql_file = sql_files[qi];
       std::cout << "Run " + sql_file << std::endl;
@@ -389,6 +422,21 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
       std::chrono::high_resolution_clock::time_point timer;
       if (config.enable_timing)
         timer = chrono_tic();
+
+      // Consume bg prep from previous query (if any)
+      std::unique_ptr<CrossQueryPrepResult> cross_prep;
+#ifdef HAVE_DUCKDB
+      if (duck_for_cross && pending_cross_prep.valid()) {
+        cross_prep = pending_cross_prep.get();
+        if (!cross_prep || !cross_prep->success) {
+          if (config.enable_debug_print && cross_prep)
+            std::cerr << "[CROSS-QUERY] prep failed: " << cross_prep->error
+                      << "\n";
+          cross_prep.reset();
+        }
+      }
+#endif
+
       if (!first_run)
         adapter->ResetQueryState();
       first_run = false;
@@ -401,8 +449,23 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         log_file.close();
       }
 
+      // Launch bg prep for next query (before executing current)
+#ifdef HAVE_DUCKDB
+      if (duck_for_cross && qi + 1 < sql_files.size()) {
+        auto &db_ref = duck_for_cross->GetDB();
+        const std::string &next_file = sql_files[qi + 1];
+        bool debug = config.enable_debug_print;
+        pending_cross_prep = cross_query_pool->Submit(
+            [&next_file, &db_ref, debug]() {
+              return IRQuerySplitter::PrepareNextQuery(next_file, db_ref,
+                                                      debug);
+            });
+      }
+#endif
+
       TestResult result;
-      ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan);
+      ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan,
+                         std::move(cross_prep));
       results.push_back(result);
 
       if (result.success) {

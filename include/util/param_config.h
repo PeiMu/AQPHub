@@ -117,6 +117,9 @@ struct ParamConfig {
   // TPDE regardless of --compile-mode. Only takes effect for node-based +
   // DuckDB + non-zero jit level.
   int spec_jit = 0;
+  // Cross-query latency hiding: prepare query N+1's first sub-query on a
+  // background thread while query N executes. Only NODE_BASED + DuckDB.
+  bool hide_latency_across_queries = false;
   // Query-jit (--jit-level=query) worker count; 0 = hardware_concurrency.
   // 1 runs the same outlined-morsel code path serially (debug/bisect knob).
   int query_jit_threads = 0;
