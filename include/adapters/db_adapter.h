@@ -71,6 +71,13 @@ public:
     ExecuteSQLandCreateTempTable(sql, temp_table_name, update_temp_card);
   }
 
+  // Execute IR directly and return results (for final query).
+  // Default: GenerateSQL + ExecuteSQL.
+  virtual QueryResult ExecuteIRQuery(ir_sql_converter::AQPStmt &ir) {
+    std::string sql = GenerateSQL(ir, subquery_index++);
+    return ExecuteSQL(sql);
+  }
+
   // Temp table management
   virtual void CreateTempTable(const std::string &table_name,
                                const QueryResult &result) = 0;

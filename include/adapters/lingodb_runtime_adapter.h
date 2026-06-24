@@ -16,7 +16,7 @@ public:
       const std::string &temp_table_name,
       bool update_temp_card) override;
 
-  QueryResult ExecuteIRQuery(ir_sql_converter::AQPStmt &ir);
+  QueryResult ExecuteIRQuery(ir_sql_converter::AQPStmt &ir) override;
 };
 
 } // namespace middleware

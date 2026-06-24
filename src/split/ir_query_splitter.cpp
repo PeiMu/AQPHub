@@ -1171,7 +1171,12 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::chrono::high_resolution_clock::time_point duckdb_final_start;
       if (config_.enable_tuning)
         duckdb_final_start = std::chrono::high_resolution_clock::now();
-      query_result = adapter_->ExecuteSQL(final_sql);
+      if (config_.engine == BackendEngine::LINGODB_RUNTIME &&
+          remaining_ir && trivial_temp.empty()) {
+        query_result = adapter_->ExecuteIRQuery(*remaining_ir);
+      } else {
+        query_result = adapter_->ExecuteSQL(final_sql);
+      }
       if (config_.enable_tuning)
         log_final_exe_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - duckdb_final_start).count();

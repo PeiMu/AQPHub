@@ -40,6 +40,8 @@
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/IRMapping.h>
+#include <lingodb/compiler/Dialect/RelAlg/IR/RelAlgOpsInterfaces.h>
 
 namespace relalg = lingodb::compiler::dialect::relalg;
 namespace db = lingodb::compiler::dialect::db;
@@ -639,13 +641,15 @@ private:
     auto loc = builder.getUnknownLoc();
     auto joinType = join.GetSimplestJoinType();
 
-    mlir::Value left = convertNode(builder, *join.children[0]);
-    mlir::Value right = convertNode(builder, *join.children[1]);
+    // DuckDB: children[0]=probe, children[1]=build
+    // LingoDB: left=build, right=probe
+    // Swap to match conventions.
+    mlir::Value left = convertNode(builder, *join.children[1]);
+    mlir::Value right = convertNode(builder, *join.children[0]);
 
-    // Collect table indices reachable from left and right subtrees
     std::set<unsigned int> leftTableIndices, rightTableIndices;
-    collectTableIndices(*join.children[0], leftTableIndices);
-    collectTableIndices(*join.children[1], rightTableIndices);
+    collectTableIndices(*join.children[1], leftTableIndices);
+    collectTableIndices(*join.children[0], rightTableIndices);
 
     // Handle Mark Join (used for IN clauses) — kept as fallback but
     // normally converted to SemiJoin via isMarkFilterPattern
@@ -1200,9 +1204,20 @@ private:
 
     auto scope = resolveScope(attr.GetTableIndex());
     auto colRef = resolveColRef(scope, attr.GetColumnName());
-    auto colVal = builder.create<tuples::GetColumnOp>(
-        loc, colRef.getColumn().type, colRef, tuple);
+    auto colType = colRef.getColumn().type;
 
+    bool isNonNullType = !colType.isa<db::NullableType>();
+    if (isNonNullType) {
+      // Column is non-nullable: IS NULL is always false, IS NOT NULL always true
+      bool isNotNull = expr.GetSimplestExprType() ==
+                       ir_sql_converter::SimplestExprType::NonNullType;
+      return builder.create<mlir::arith::ConstantOp>(
+          loc, builder.getI1Type(),
+          builder.getIntegerAttr(builder.getI1Type(), isNotNull ? 1 : 0));
+    }
+
+    auto colVal = builder.create<tuples::GetColumnOp>(
+        loc, colType, colRef, tuple);
     auto isNull = builder.create<db::IsNullOp>(loc, colVal);
 
     if (expr.GetSimplestExprType() ==
@@ -1331,9 +1346,245 @@ private:
   }
 };
 
-class NoOpQueryOptimizer : public lingodb::execution::QueryOptimizer {
+class DecomposeInnerJoinsOnly
+    : public mlir::PassWrapper<DecomposeInnerJoinsOnly,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
 public:
-  void optimize(mlir::ModuleOp &) override {}
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DecomposeInnerJoinsOnly)
+
+  llvm::StringRef getArgument() const override {
+    return "relalg-decompose-inner-joins-only";
+  }
+
+  void runOnOperation() override {
+    using namespace lingodb::compiler::dialect;
+    std::vector<relalg::InnerJoinOp> joins;
+    getOperation().walk(
+        [&](relalg::InnerJoinOp op) { joins.push_back(op); });
+    for (auto innerJoin : joins) {
+      mlir::OpBuilder builder(innerJoin);
+      auto cp = builder.create<relalg::CrossProductOp>(
+          innerJoin->getLoc(), innerJoin.getLeft(), innerJoin.getRight());
+      auto sel = builder.create<relalg::SelectionOp>(innerJoin->getLoc(),
+                                                      cp);
+      sel.getPredicate().getBlocks().splice(sel.getPredicate().end(),
+                                            innerJoin.getPredicate().getBlocks());
+      innerJoin.replaceAllUsesWith(sel.getResult());
+      innerJoin->erase();
+    }
+  }
+};
+
+class DecomposeSelectionsOnly
+    : public mlir::PassWrapper<DecomposeSelectionsOnly,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DecomposeSelectionsOnly)
+
+  llvm::StringRef getArgument() const override {
+    return "relalg-decompose-selections-only";
+  }
+
+private:
+  void getConditionVals(mlir::Value v,
+                        std::vector<mlir::Value> &values) {
+    using namespace lingodb::compiler::dialect;
+    if (auto andOp = mlir::dyn_cast_or_null<db::AndOp>(v.getDefiningOp())) {
+      for (auto operand : andOp.getVals())
+        getConditionVals(operand, values);
+    } else {
+      values.push_back(v);
+    }
+  }
+
+  void decomposeSelection(mlir::Value v, mlir::Value &tree) {
+    using namespace lingodb::compiler::dialect;
+    auto currentSel =
+        mlir::dyn_cast_or_null<relalg::SelectionOp>(v.getDefiningOp()->getParentOp());
+    mlir::OpBuilder builder(currentSel);
+    mlir::IRMapping mapping;
+    auto newSel = builder.create<relalg::SelectionOp>(
+        currentSel->getLoc(),
+        tuples::TupleStreamType::get(builder.getContext()), tree);
+    tree = newSel;
+    newSel.initPredicate();
+    mapping.map(currentSel.getPredicateArgument(),
+                newSel.getPredicateArgument());
+    builder.setInsertionPointToStart(&newSel.getPredicate().front());
+    relalg::detail::inlineOpIntoBlock(
+        v.getDefiningOp(), v.getDefiningOp()->getParentOp(),
+        &newSel.getPredicateBlock(), mapping);
+    builder.create<tuples::ReturnOp>(currentSel->getLoc(),
+                                     mapping.lookup(v));
+    auto *terminator = newSel.getLambdaBlock().getTerminator();
+    terminator->erase();
+  }
+
+  void decomposeMap(lingodb::compiler::dialect::relalg::MapOp currentMap,
+                    mlir::Value &tree) {
+    using namespace lingodb::compiler::dialect;
+    auto *terminator = currentMap.getPredicate().front().getTerminator();
+    if (auto returnOp =
+            mlir::dyn_cast_or_null<tuples::ReturnOp>(terminator)) {
+      assert(returnOp.getResults().size() ==
+             currentMap.getComputedCols().size());
+      auto computedValRange = returnOp.getResults();
+      for (size_t i = 0; i < computedValRange.size(); i++) {
+        mlir::OpBuilder builder(currentMap);
+        mlir::IRMapping mapping;
+        auto currentAttr = mlir::cast<tuples::ColumnDefAttr>(
+            currentMap.getComputedCols()[i]);
+        mlir::Value currentVal = computedValRange[i];
+        auto newMap = builder.create<relalg::MapOp>(
+            currentMap->getLoc(),
+            tuples::TupleStreamType::get(builder.getContext()), tree,
+            builder.getArrayAttr({currentAttr}));
+        tree = newMap;
+        newMap.getPredicate().push_back(new mlir::Block);
+        newMap.getPredicate().addArgument(
+            tuples::TupleType::get(builder.getContext()),
+            currentMap->getLoc());
+        builder.setInsertionPointToStart(&newMap.getPredicate().front());
+        auto ret1 = builder.create<tuples::ReturnOp>(currentMap->getLoc());
+        mapping.map(currentMap.getLambdaArgument(),
+                    newMap.getLambdaArgument());
+        relalg::detail::inlineOpIntoBlock(
+            currentVal.getDefiningOp(),
+            currentVal.getDefiningOp()->getParentOp(),
+            &newMap.getLambdaBlock(), mapping);
+        builder.create<tuples::ReturnOp>(currentMap->getLoc(),
+                                         mapping.lookup(currentVal));
+        ret1->erase();
+      }
+    }
+  }
+
+  void runOnOperation() override {
+    using namespace lingodb::compiler::dialect;
+    std::vector<mlir::Operation *> toErase;
+
+    // Decompose multi-condition SelectionOps into individual ones
+    getOperation().walk([&](relalg::SelectionOp op) {
+      auto *terminator = op.getRegion().front().getTerminator();
+      mlir::Value val = op.getRel();
+      if (terminator->getNumOperands() > 0) {
+        std::vector<mlir::Value> conditionValues;
+        getConditionVals(terminator->getOperand(0), conditionValues);
+        if (conditionValues.size() > 1) {
+          for (auto condition : conditionValues)
+            decomposeSelection(condition, val);
+          op.replaceAllUsesWith(val);
+          toErase.push_back(op.getOperation());
+        }
+      } else {
+        op.replaceAllUsesWith(val);
+        toErase.push_back(op.getOperation());
+      }
+    });
+
+    getOperation().walk([&](relalg::MapOp op) {
+      mlir::Value val = op.getRel();
+      if (op.getComputedCols().size() == 1)
+        return;
+      if (auto returnOp = mlir::dyn_cast_or_null<tuples::ReturnOp>(
+              op.getRegion().front().getTerminator())) {
+        bool anyRelalgOp = false;
+        for (auto v : returnOp.getResults()) {
+          if (auto *defOp = v.getDefiningOp()) {
+            if (defOp->getDialect() ==
+                op.getContext()
+                    ->getLoadedDialect<relalg::RelAlgDialect>()) {
+              anyRelalgOp = true;
+              break;
+            }
+          }
+        }
+        if (!anyRelalgOp)
+          return;
+      }
+      decomposeMap(op, val);
+      op.replaceAllUsesWith(val);
+      toErase.push_back(op.getOperation());
+    });
+
+    for (auto *op : toErase)
+      op->erase();
+  }
+};
+
+class PartialQueryOptimizer : public lingodb::execution::QueryOptimizer {
+  lingodb::catalog::Catalog &catalog_;
+
+public:
+  explicit PartialQueryOptimizer(lingodb::catalog::Catalog &catalog)
+      : catalog_(catalog) {}
+
+  void optimize(mlir::ModuleOp &module) override {
+    auto start = std::chrono::high_resolution_clock::now();
+
+    mlir::PassManager pm(module.getContext());
+    using namespace lingodb::compiler::dialect;
+    // Full LingoDB optimizer pipeline with:
+    // - DecomposeLambdasPass replaced by DecomposeSelectionsOnly
+    //   (InnerJoin→CrossProduct causes nested-loop joins and catastrophic
+    //   performance, so we keep InnerJoinOps with hash join attributes)
+    // - OptimizeJoinOrderPass skipped (preserve DuckDB's join ordering)
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createSimplifyAggregationsPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createExtractNestedOperatorsPass());
+    pm.addPass(mlir::createCSEPass());
+    pm.addPass(lingodb::compiler::createCanonicalizerPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createInferNotNullConditionsPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        std::make_unique<DecomposeSelectionsOnly>());
+    pm.addPass(lingodb::compiler::createCanonicalizerPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createImplicitToExplicitJoinsPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createInferNotNullConditionsPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        std::make_unique<DecomposeSelectionsOnly>());
+    pm.addNestedPass<mlir::func::FuncOp>(relalg::createPushdownPass());
+    pm.addNestedPass<mlir::func::FuncOp>(relalg::createUnnestingPass());
+    pm.addNestedPass<mlir::func::FuncOp>(relalg::createColumnFoldingPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        std::make_unique<DecomposeSelectionsOnly>());
+    pm.addNestedPass<mlir::func::FuncOp>(relalg::createPushdownPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createAttachMetaDataPass(catalog_));
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createReduceGroupByKeysPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createExpandTransitiveEqualities());
+    // OptimizeJoinOrderPass deliberately skipped
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createCombinePredicatesPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createEliminateNullableTypesPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createOptimizeImplementationsPass());
+    pm.addNestedPass<mlir::func::FuncOp>(relalg::createDetachMetaDataPass());
+    pm.addNestedPass<mlir::func::FuncOp>(
+        relalg::createCommonSubtreeEliminationPass());
+    pm.addPass(lingodb::compiler::createCanonicalizerPass());
+    pm.addNestedPass<mlir::func::FuncOp>(relalg::createIntroduceTmpPass());
+
+    if (mlir::failed(pm.run(module)))
+      llvm::errs() << "PartialQueryOptimizer: pass pipeline failed\n";
+
+    auto end = std::chrono::high_resolution_clock::now();
+    timing["QOpt"] = std::chrono::duration_cast<std::chrono::microseconds>(
+                         end - start)
+                         .count() /
+                     1000.0;
+#ifndef NDEBUG
+    std::cerr << "[LingoDB-Runtime] Optimized MLIR:" << std::endl;
+    module.print(llvm::errs());
+    std::cerr << std::endl;
+#endif
+  }
 };
 
 class IRFrontend : public lingodb::execution::Frontend {
@@ -1401,7 +1652,7 @@ void LingoDBRuntimeAdapter::ExecuteIRandCreateTempTable(
   // 1+2. Build and execute MLIR with minimal optimizer (skip plan-changing passes)
   auto config =
       lingodb::execution::createQueryExecutionConfig(exec_mode_, false);
-  config->queryOptimizer = std::make_unique<NoOpQueryOptimizer>();
+  config->queryOptimizer = std::make_unique<PartialQueryOptimizer>(*session_->getCatalog());
   config->frontend = std::make_unique<IRFrontend>(&ir, session_.get());
 
   std::shared_ptr<arrow::Table> result_table;
@@ -1479,7 +1730,7 @@ QueryResult LingoDBRuntimeAdapter::ExecuteIRQuery(
 
   auto config =
       lingodb::execution::createQueryExecutionConfig(exec_mode_, false);
-  config->queryOptimizer = std::make_unique<NoOpQueryOptimizer>();
+  config->queryOptimizer = std::make_unique<PartialQueryOptimizer>(*session_->getCatalog());
   config->frontend = std::make_unique<IRFrontend>(&ir, session_.get());
 
   std::shared_ptr<arrow::Table> result_table;

@@ -525,3 +525,67 @@ Run all 113 JOB queries, compare against golden files:
 - `tune_per_subquery.py [split]` — pick best config per (query, sub-query)
 - `show_all_configs.py [split]` — summary table across all configs
 - `find_top_queries.py [path] [--top=N]` — rank queries by slowest median
+
+---
+
+## Implementation Status: COMPLETE (2026-06-24)
+
+All 113 JOB queries pass with node-based/none splits, llvm/tpde backends
+(4 configs, 452 executions).
+
+Flag: `--engine=lingo-db-runtime`
+
+### Files created
+- `include/adapters/lingodb_runtime_adapter.h`
+- `src/adapters/lingodb_runtime_adapter.cpp`
+
+### Files modified
+- `include/util/param_config.h` (LINGODB_RUNTIME enum)
+- `src/util/param_config.cpp` (flag parsing)
+- `include/adapters/db_adapter.h` (ExecuteIRandCreateTempTable, ExecuteIRQuery virtuals)
+- `include/adapters/lingodb_adapter.h` (private→protected)
+- `src/aqp_middleware.cpp` (adapter creation, none-split path)
+- `src/split/ir_query_splitter.cpp` (execution loop, final query IR path)
+- `CMakeLists.txt` (lingodb_runtime_adapter.cpp in lingodb_adapter library)
+- `measure/correctness_test.sh` (4 RT configs)
+- `measure/breakdown_measurement_script.sh` (4 RT configs)
+
+### Key components
+- **IRToRelAlgConverter**: SimplestIR → MLIR RelAlg conversion
+  - Handles: Scan, Filter, Join, CrossProduct, Projection, Aggregation,
+    OrderBy, Limit, SemiJoin, MarkJoin
+  - Hash join build/probe side swap: DuckDB children[0]=probe/children[1]=build,
+    LingoDB left=build/right=probe. Converter swaps to match conventions.
+  - IS NULL on non-nullable columns: returns constant true/false
+  - Non-nullable temp table columns: null_count()==0 → non-nullable type
+- **IRFrontend**: Custom Frontend implementation for LingoDB execution pipeline
+- **PartialQueryOptimizer**: 24 of 26 LingoDB optimizer passes
+  - Skipped: OptimizeJoinOrderPass (preserve DuckDB's join ordering)
+  - Replaced: DecomposeLambdasPass → DecomposeSelectionsOnly
+    (InnerJoin→CrossProduct causes nested-loop joins via translateNL)
+  - Full pass-by-pass analysis: see `duckdb_opt_lingodb_passes_analysis.md`
+- **DecomposeSelectionsOnly**: Custom MLIR pass that splits AND-ed SelectionOps
+  and multi-column MapOps without touching InnerJoinOps
+- **Cross-product fallback**: hasCrossProduct() check → falls back to SQL path
+
+### Hash join build/probe convention (critical for performance)
+
+DuckDB: children[0]=probe (outer), children[1]=build (inner/hash table)
+
+LingoDB InnerJoinLowering (RelAlgToSubOp.cpp:1333):
+  translateNL(adaptor.getRight(), adaptor.getLeft(), ...)
+  → translateHJ(left=RIGHT, right=LEFT, hashLeft=rightHash, hashRight=leftHash)
+  → InsertOp(right=LEFT) = build hash table from LEFT operand
+  → LookupOp(left=RIGHT) = probe with RIGHT operand
+So: relalg.join %left, %right → left=build, right=probe
+
+SemiJoinLowering (line 1356): translateNL(LEFT, RIGHT, ...) — opposite,
+  so SemiJoin does NOT need the swap.
+
+### Why DecomposeLambdasPass can't be used
+
+1. CrossProductOp lowers to nested-loop join (translateNL → translateNLJ)
+2. prepareForHash() only works on PredicateOperators; CrossProductOp has
+   no predicate region, so hash join can't be set up
+3. Original SQL path works because OptimizeJoinOrderPass re-creates
+   InnerJoinOps with proper hash join setup after join reordering

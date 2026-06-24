@@ -263,7 +263,9 @@ void LingoDBAdapter::CreateTempTableFromArrow(
   for (int i = 0; i < table->num_columns(); i++) {
     auto field = table->schema()->field(i);
     auto lingo_type = ArrowTypeToLingoDBType(field->type());
-    def.columns.emplace_back(field->name(), lingo_type, field->nullable());
+    bool has_nulls = table->column(i)->null_count() > 0;
+    bool nullable = field->nullable() && has_nulls;
+    def.columns.emplace_back(field->name(), lingo_type, nullable);
   }
 
   auto entry =
