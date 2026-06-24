@@ -440,6 +440,12 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
             : nullptr;
     if (duck_for_cross)
       cross_query_pool = std::make_unique<ThreadPool>(1);
+#if defined(HAVE_LLVM)
+    // Ping-pong compilers for Phase 2: bg_prep(N+1) resets one compiler
+    // while ExecuteSingleQuery(N) uses code from the other.
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> cross_compilers[2];
+    int cross_compiler_idx = 0;
+#endif
 #endif
 
     for (size_t qi = 0; qi < sql_files.size(); qi++) {
@@ -498,11 +504,34 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         auto &db_ref = duck_for_cross->GetDB();
         const std::string &next_file = sql_files[qi + 1];
         bool debug = config.enable_debug_print;
+#if defined(HAVE_LLVM)
+        auto &bg_comp_slot = cross_compilers[cross_compiler_idx];
+        cross_compiler_idx ^= 1;
+        // Resolve effective flags for next query's first sub-query
+        std::string next_qname;
+        {
+          auto sl = next_file.rfind('/');
+          next_qname = (sl != std::string::npos)
+                           ? next_file.substr(sl + 1) : next_file;
+          auto dt = next_qname.rfind('.');
+          if (dt != std::string::npos) next_qname = next_qname.substr(0, dt);
+        }
+        auto [eff_flags, eff_cm] =
+            IRQuerySplitter::ResolveTuneFlags(config, next_qname, 0);
         pending_cross_prep = cross_query_pool->Submit(
-            [&next_file, &db_ref, debug]() {
-              return IRQuerySplitter::PrepareNextQuery(next_file, db_ref,
-                                                      debug);
+            [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
+             eff_flags, eff_cm]() {
+              return IRQuerySplitter::PrepareNextQuery(
+                  next_file, db_ref, duck_for_cross, config, bg_comp_slot,
+                  eff_flags, eff_cm);
             });
+#else
+        pending_cross_prep = cross_query_pool->Submit(
+            [&next_file, &db_ref, duck_for_cross, &config]() {
+              return IRQuerySplitter::PrepareNextQuery(
+                  next_file, db_ref, duck_for_cross, config);
+            });
+#endif
       }
 #endif
 

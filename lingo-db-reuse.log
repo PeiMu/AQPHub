@@ -1630,3 +1630,230 @@ Per-subquery tuner picks ROF selectively on scan-heavy sub-queries:
 ROF gives the tuner a new option; improvement comes from selective use,
 not uniform application. tune_per_subquery.py updated with
 query_full_simd/query_fastisel_simd configs; ParseTuneLabel handles them.
+
+### §7.2 Cross-query latency hiding — Phase 1 COMPLETE (2026-06-23)
+
+Implemented `--hide-latency-across-queries` flag: while query N
+executes, a background thread prepares query N+1's first sub-query.
+Currently hides: read SQL, parse+plan+FilterOptimize, MiddleOptimize+
+Split+Preprocess, first sub-query extraction (SplitIR), and first
+sub-query IR→SQL generation.
+
+Architecture:
+- `CrossQueryPrepResult` struct (ir_query_splitter.h) holds bg_conn,
+  bg_planner, sql, first_extraction, remaining split state (plan_,
+  qs_, sp_, reorder_get_, subqueries_, table_expr_queue_, proj_expr_,
+  last_sibling_node_, sub_plan_types_).
+- `IRQuerySplitter::PrepareNextQuery` (static, ir_query_splitter.cpp)
+  runs the full pipeline on a fresh `duckdb::Connection(db_ref)`:
+  parse → Planner::CreatePlan → FilterOptimize → MiddleOptimize →
+  QuerySplit::Split (×2, mirroring NodeBasedSplitter::Preprocess) →
+  ReorderGet → MergeSubquery → UpdateProjHead → GenerateProjHead →
+  ConvertDuckDBPlanToIR → ConvertIRToSQL. Handles terminal (single
+  sub-plan) and normal (multi-sub) cases.
+- Benchmark loop (aqp_middleware.cpp) creates a ThreadPool(1) per
+  iteration. Launches bg prep for qi+1 before executing qi. Consumes
+  bg prep at start of qi+1 via future.get().
+- `NodeBasedSplitter::InitFromCrossQueryPrep` adopts the pre-computed
+  split state (ctx_, plan_, qs_, sp_, etc.) from the bg prep result.
+  ctx_ points to bg_conn->context (bg_conn kept alive in
+  active_cross_query_prep_).
+- `SetPlanner(bg_planner)` injects the bg planner into the main
+  DuckDBAdapter so GetBinder() returns the bg binder for iterations
+  2+ (ConvertPlanToIR needs binder+context consistency).
+- Context mismatch (main conn ctx vs bg binder) is benign:
+  ConvertDuckDBPlanToIR uses context only for EstimateCardinality
+  (read-only catalog lookup, same DuckDB instance).
+
+NOT yet hidden (Phase 2, TODO):
+- First sub-query conn->Prepare() or PrepareWithQueryJitAnalysis()
+- First sub-query TryCompileQueryJit() (query-jit codegen)
+- First sub-query RegisterJIT() (expr/operator/pipeline JIT)
+These are done synchronously in ExecuteSQLandCreateTempTable on the
+main thread. The spec-jit pattern (SpeculativeQueryJitCompile on
+bg_conn with separate compiler) proves cross-connection Prepare+compile
+is feasible. Phase 2 design pending.
+
+Key files changed:
+- include/split/ir_query_splitter.h: CrossQueryPrepResult struct,
+  SetCrossQueryPrep(), PrepareNextQuery() declaration
+- include/split/node_based_splitter.h: InitFromCrossQueryPrep()
+- include/util/param_config.h: hide_latency_across_queries flag
+- include/adapters/duckdb_adapter.h: SetPlanner()
+- src/aqp_middleware.cpp: benchmark loop pipelining, cross_prep
+  consumption, bg prep launch
+- src/split/ir_query_splitter.cpp: PrepareNextQuery() implementation,
+  ExecuteWithSplit/ExecuteSplitLoop cross-query-prep consumption
+- src/split/node_based_splitter.cpp: InitFromCrossQueryPrep()
+- src/util/param_config.cpp: flag parsing + PrintUsage
+- measure/correctness_test.sh: 10 new hidelatency configs
+- measure/{run_job,measure_breakdown_time_job,breakdown_measurement_script}.sh:
+  hide_latency parameter (arg 13)
+
+Correctness: 113 JOB queries × 10 configs (none/expr/operator/pipeline/
+query × none/auto simd × spec modes) all PASS against golden files
+(2026-06-23). Performance measurement pending.
+
+### §7.2 Cross-query latency hiding — Phase 2 scaffolding (2026-06-23)
+
+Phase 2 goal: extend PrepareNextQuery to also Prepare + JIT compile
+the first sub-query on the bg thread, hiding an additional ~100 ms
+(TPDE) or ~1 s (LLVM O2) across 113 queries per iteration.
+
+Scaffolding done (Steps 1, 2, 5 from plan). Core logic TODO (Steps 3, 4).
+
+Code changes (uncommitted on topdown_fix, interleaved with bug fix):
+
+1. ir_query_splitter.h — CrossQueryPrepResult Phase 2 fields added:
+   - prepared (unique_ptr<PreparedStatement>) for non-query-jit + interp
+   - qjit_spec (unique_ptr<QjitSpecCompiled>) for query-jit payload
+   - has_prepare, has_qjit booleans
+   - PrepareNextQuery signature expanded: added DuckDBAdapter*, ParamConfig&,
+     IrToLlvmCompiler& params (with HAVE_LLVM guards for compiler param)
+
+2. ir_query_splitter.cpp:
+   - EnsureCrossCompiler static helper (lines 304-331): mirrors
+     EnsureSpecCompiler. Creates/reconfigures IrToLlvmCompiler with correct
+     SIMD ISA, fast compile backend, prefetch/batch_probe/skip_hash_cmp
+     settings, and optionally registers qjit runtime symbols. Ready to use,
+     not yet called.
+   - PrepareNextQuery body: signature updated but body still only does Phase 1
+     work. After first_sub_sql is generated (~line 503), Phase 2 paths
+     A (query-jit), B (non-query-jit), C (interpreter) are NOT yet added.
+   - ExecuteWithSplit init (~line 584): added duck->SetJITFlags(config_.jit_flags)
+     for completeness alongside existing SetCompileMode/SetQueryJit calls.
+
+3. aqp_middleware.cpp:
+   - Ping-pong compilers (lines 400-405): cross_compilers[2] array +
+     cross_compiler_idx, inside #if defined(HAVE_LLVM). Same pattern as
+     spec-jit's spec_compilers_[spec_compiler_idx_].
+   - Updated PrepareNextQuery launch (lines 461-480): passes duck_for_cross,
+     config, bg_comp_slot to PrepareNextQuery. Flips cross_compiler_idx ^= 1
+     each iteration.
+
+Remaining work for Phase 2:
+
+Step 3 — PrepareNextQuery body (ir_query_splitter.cpp, after ~line 503):
+  After first_sub_sql is generated, add three paths:
+  (A) Query-jit: EnsureCrossCompiler + bg_compiler->ResetModules() +
+      duck->SpeculativeQueryJitCompile(first_sub_sql, label, *bg_conn,
+      bg_compiler.get()) → store in result->qjit_spec, set has_qjit.
+  (B) Non-query-jit: bg_conn->Prepare(first_sub_sql) + EnsureCrossCompiler +
+      bg_compiler->ResetModules() + duck->RegisterJITImpl(physical_plan,
+      *sub_ir, bg_ctx, bg_compiler.get(), ...) → store prepared, set
+      has_prepare.
+  (C) Interpreter: bg_conn->Prepare(first_sub_sql) → store prepared, set
+      has_prepare.
+  On failure, leave has_prepare=false/has_qjit=false (fallback to inline).
+
+Step 4 — ExecuteOneIteration consumption (ir_query_splitter.cpp, ~line 2103):
+  When precomputed_extraction_ was populated from cross-query prep AND the
+  prep has has_qjit or has_prepare, modify first iteration's execution:
+  (A) Query-jit HIT: use first_sub_sql (skip GenerateSQL), increment
+      subquery_index++, SetQjitSpecHit(move(qjit_spec)),
+      ExecuteSQLandCreateTempTable(first_sub_sql, temp, ...).
+  (B) Non-query-jit/Interp: use first_sub_sql, increment subquery_index++,
+      ExecuteSpeculativeAndCreateTempTable(*prepared, *bg_conn, temp, ...).
+  (C) Fallback: normal inline path.
+
+Key functions to reuse (NOT rewrite):
+  - SpeculativeQueryJitCompile (duckdb_adapter.cpp:3311)
+  - RegisterJITImpl (duckdb_adapter.cpp:4147)
+  - ExecuteSpeculativeAndCreateTempTable (duckdb_adapter.cpp:1818)
+  - SetQjitSpecHit (duckdb_adapter.h:424)
+
+Detailed plan: /home/pei/.claude/plans/nifty-swinging-engelbart.md
+
+## §7.2 Cross-query latency hiding — COMPLETE (2026-06-24)
+
+### Phase 1 — COMPLETE (commit `a78e4e3`)
+Hides read SQL, parse, preprocess, first sub-query extraction + IR→SQL gen
+(~64 ms/iter across 113 JOB queries). bg thread does Phase 1 work while
+query N executes. Correctness verified (113 queries × 10 configs).
+
+### Phase 2 — COMPLETE
+Also Prepare + JIT compile first sub-query on bg thread. Three paths:
+  (A) Query-jit: SpeculativeQueryJitCompile on bg_conn with EnsureCrossCompiler.
+  (B) Non-query-jit (expr/operator/pipeline): bg_conn->Prepare + RegisterJITImpl
+      with empty TempCollectionSnapshot (avoids unsynchronized access).
+  (C) Interpreter: bg_conn->Prepare only.
+
+Correctness: 56/56 configs pass (113 JOB queries × 3 splits × all jit-levels
+× compile-modes × spec-jit modes × hidelatency × kernel-path).
+
+Performance (node-based, 10 warm runs, 113 JOB queries):
+  - query-jit TPDE hidelatency: -1.2 s vs non-hidelatency
+  - pipeline-jit hidelatency: -731 ms vs non-hidelatency
+  - Zero regression on non-hidelatency configs.
+
+Implementation details:
+
+1. ir_query_splitter.h — CrossQueryPrepResult Phase 2 fields:
+   - prepared (unique_ptr<PreparedStatement>) for non-query-jit + interp
+   - qjit_spec (unique_ptr<QjitSpecCompiled>) for query-jit payload
+   - has_prepare, has_qjit booleans
+   - PrepareNextQuery signature expanded: DuckDBAdapter*, ParamConfig&,
+     IrToLlvmCompiler&, effective_jit_flags, effective_compile_mode
+   - ResolveTuneFlags static method: resolves (jit_flags, compile_mode)
+     from file-scope s_tune_json cache; main thread only.
+
+2. ir_query_splitter.cpp:
+   - s_tune_json / s_tune_loaded_path: file-scope static JSON cache,
+     refactored from SetQueryName's function-scope static. Shared by
+     SetQueryName and ResolveTuneFlags (main thread only, no race).
+   - EnsureCrossCompiler static helper: mirrors EnsureSpecCompiler.
+     Creates/reconfigures IrToLlvmCompiler with correct SIMD ISA, fast
+     compile backend, prefetch/batch_probe/skip_hash_cmp settings, and
+     optionally registers qjit runtime symbols.
+   - PrepareNextQuery body: after first_sub_sql, adds three paths A/B/C.
+     Path B uses empty TempCollectionSnapshot to avoid unsynchronized
+     intermediate_table_map/temp_collections_ access.
+   - ExecuteOneIteration Phase 2 consumption: at iteration_count_ == 1,
+     checks active_cross_query_prep_->has_qjit / has_prepare.
+     Query-jit HIT: SetQjitSpecHit + ExecuteSQLandCreateTempTable.
+     Non-query-jit/interp HIT: ExecuteSpeculativeAndCreateTempTable.
+
+3. aqp_middleware.cpp:
+   - Ping-pong compilers: cross_compilers[2] + cross_compiler_idx,
+     flipped ^= 1 each query (inside #if defined(HAVE_LLVM)).
+   - ResolveTuneFlags called on main thread for next query's sub_idx=0.
+   - PrepareNextQuery launch passes effective flags to bg thread.
+
+4. duckdb_adapter.cpp — Timing bug fix:
+   - ExecuteSpeculativeAndCreateTempTable line 1820: guard
+     WriteJitTimingColumn(ConsumeSpecWaitUs()) with
+     `if (jit_flags_ & AQP_JIT_LEVEL_MASK)`. No-JIT interpreter mode
+     must not write a jit_compile column, which would shift all subsequent
+     CSV columns and break the plot script.
+
+5. Use-after-free bug fix:
+   - active_cross_query_prep_.reset() after Phase 2 consumption destroyed
+     bg_conn while NodeBasedSplitter::ctx_ still held raw pointer to
+     bg_conn->context. Fixed by clearing only Phase 2 fields:
+     has_qjit=false, has_prepare=false, qjit_spec.reset(), prepared.reset().
+     The struct is destroyed when IRQuerySplitter is destroyed at end of
+     ExecuteSingleQuery.
+
+6. measure/correctness_test.sh:
+   - Removed 2 invalid lingodb|relationship-center configs (lingodb does
+     not support relationship-center split).
+   - Final config count: 54 JIT + 3 kernel = 57 total (+ 2 tune-config).
+
+Verified assumptions:
+  1. active_cross_query_prep_ lifetime: not reset in success branch of
+     ExecuteSplitLoop. Stays alive through iteration 1.
+  2. First sub-query never references temp tables (BLOCK 1 skipped on
+     iteration 1 because subqueries_.empty()).
+  3. RegisterJITImpl tolerates IR/plan mismatches (graceful fallback).
+  4. bg_conn->Prepare() concurrency: safe (per-connection context_lock).
+  5. Path B thread safety: jit_flags_ read-only during cross-query prep.
+  6. Compiler ping-pong: cross_compilers[2] independent of spec_compilers_[2].
+  7. EnsureCrossCompiler config: identical to EnsureSpecCompiler in all fields.
+
+Key functions reused (NOT rewritten):
+  - SpeculativeQueryJitCompile (duckdb_adapter.cpp:3305)
+  - RegisterJITImpl (duckdb_adapter.cpp:452)
+  - ExecuteSpeculativeAndCreateTempTable (duckdb_adapter.cpp:1812)
+  - SetQjitSpecHit (duckdb_adapter.h:424)
+  - EnsureCrossCompiler (ir_query_splitter.cpp:342)
+  - LaunchSpeculativeCompile (ir_query_splitter.cpp:1354, reference pattern)

@@ -206,26 +206,66 @@ void IRQuerySplitter::LoadTuneEntry(int idx, const nlohmann::json &val) {
   tune_entries_[idx] = e;
 }
 
+namespace {
+nlohmann::json s_tune_json;
+std::string s_tune_loaded_path;
+bool EnsureTuneJsonLoaded(const std::string &path) {
+  if (s_tune_loaded_path == path)
+    return true;
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    std::cerr << "[TUNE] cannot open " << path << "\n";
+    return false;
+  }
+  s_tune_json = nlohmann::json::parse(f, nullptr, false);
+  if (s_tune_json.is_discarded()) {
+    s_tune_json = nlohmann::json{};
+    return false;
+  }
+  s_tune_loaded_path = path;
+  return true;
+}
+} // namespace
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+std::pair<uint32_t, int> IRQuerySplitter::ResolveTuneFlags(
+    const ParamConfig &config, const std::string &query_name, int sub_idx) {
+  if (config.tune_config_path.empty())
+    return {config.jit_flags, config.compile_mode};
+  if (!EnsureTuneJsonLoaded(config.tune_config_path))
+    return {config.jit_flags, config.compile_mode};
+  auto it = s_tune_json.find(query_name);
+  if (it == s_tune_json.end())
+    return {config.jit_flags, config.compile_mode};
+  auto sub_key = std::to_string(sub_idx);
+  auto sub_it = it->find(sub_key);
+  if (sub_it == it->end())
+    return {config.jit_flags, config.compile_mode};
+  std::string label = sub_it->value("config", "interp");
+  TuneEntry te = ParseTuneLabel(label);
+  if (sub_it->contains("compile_mode"))
+    te.compile_mode = (*sub_it)["compile_mode"].get<int>();
+  if (sub_it->contains("simd"))
+    te.jit_simd = (*sub_it)["simd"].get<bool>();
+  uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
+  uint32_t flags = te.jit_flags | simd_bits;
+  if (te.query_jit)
+    flags |= AQP_JIT_QUERY_JIT;
+  return {flags, te.compile_mode};
+}
+#endif
+
 void IRQuerySplitter::SetQueryName(const std::string &name) {
   query_name_ = name;
   tune_entries_.clear();
   if (config_.tune_config_path.empty())
     return;
 
-  static nlohmann::json tune_json;
-  static std::string loaded_path;
-  if (loaded_path != config_.tune_config_path) {
-    std::ifstream f(config_.tune_config_path);
-    if (!f.is_open()) {
-      std::cerr << "[TUNE] cannot open " << config_.tune_config_path << "\n";
-      return;
-    }
-    tune_json = nlohmann::json::parse(f);
-    loaded_path = config_.tune_config_path;
-  }
+  if (!EnsureTuneJsonLoaded(config_.tune_config_path))
+    return;
 
-  auto it = tune_json.find(query_name_);
-  if (it == tune_json.end())
+  auto it = s_tune_json.find(query_name_);
+  if (it == s_tune_json.end())
     return;
   for (auto &[idx_str, val] : it->items()) {
     int idx = std::stoi(idx_str);
@@ -299,9 +339,56 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
 }
 
 #ifdef HAVE_DUCKDB
+
+#ifdef HAVE_LLVM
+static void EnsureCrossCompiler(
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &comp,
+    DuckDBAdapter *duck, uint32_t jit_flags, int compile_mode,
+    bool need_qjit) {
+  aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
+  if (jit_flags & AQP_JIT_SIMD_AVX2)
+    simd = aqp_jit::SimdISA::AVX2;
+  else if (jit_flags & AQP_JIT_SIMD_AVX512)
+    simd = aqp_jit::SimdISA::AVX512;
+  auto want_fast =
+      static_cast<aqp_jit::FastCompileBackend>(compile_mode);
+  if (comp && (comp->GetFastMode() != want_fast ||
+               comp->GetSimdISA() != simd))
+    comp.reset();
+  if (!comp) {
+    comp = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        duck->GetJitDebug(), simd, want_fast);
+    comp->SetPrefetch(duck->GetJitPrefetch(),
+                      duck->GetJitPrefetchDistance());
+    comp->SetProbePrefetchDistances(duck->GetJitPrefetchEntryDistance(),
+                                   duck->GetJitPrefetchRowDistance());
+    comp->SetBatchProbe(duck->GetJitBatchProbe());
+    comp->SetSkipHashCmp(duck->GetJitSkipHashCmp());
+    if (duck->GetJitCache())
+      comp->SetCache(true);
+  }
+  if (need_qjit)
+    duck->RegisterQjitRuntimeSymbols(comp.get());
+}
+#endif
+
+#ifdef HAVE_LLVM
 std::unique_ptr<CrossQueryPrepResult>
 IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
-                                  duckdb::DuckDB &db_ref, bool debug) {
+                                  duckdb::DuckDB &db_ref,
+                                  DuckDBAdapter *duck,
+                                  const ParamConfig &config,
+                                  std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+                                  uint32_t effective_jit_flags,
+                                  int effective_compile_mode) {
+#else
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
+                                  duckdb::DuckDB &db_ref,
+                                  DuckDBAdapter *duck,
+                                  const ParamConfig &config) {
+#endif
+  bool debug = config.enable_debug_print;
   auto result = std::make_unique<CrossQueryPrepResult>();
   auto t0 = std::chrono::high_resolution_clock::now();
   try {
@@ -459,6 +546,65 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
     result->first_sub_sql =
         ir_sql_converter::ConvertIRToSQL(*sub_ir, 0);
 
+#if defined(HAVE_LLVM)
+    // Phase 2: bg compile first sub-query
+    if (!result->first_sub_sql.empty()) {
+      try {
+        bool is_query_jit = (effective_jit_flags & AQP_JIT_QUERY_JIT) != 0;
+        bool has_jit = (effective_jit_flags & AQP_JIT_LEVEL_MASK) != 0;
+        if (is_query_jit) {
+          // Path A: query-jit — full bg compile via SpeculativeQueryJitCompile
+          EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
+                              effective_compile_mode, /*need_qjit=*/true);
+          bg_compiler->ResetModules();
+          std::string label = "cross-" + result->query_name + "-sq0";
+          result->qjit_spec = duck->SpeculativeQueryJitCompile(
+              result->first_sub_sql, label, *result->bg_conn,
+              bg_compiler.get());
+          result->has_qjit = (result->qjit_spec != nullptr);
+          if (debug && result->has_qjit)
+            std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
+        } else if (has_jit) {
+          // Path B: non-query-jit — Prepare + RegisterJITImpl
+          result->prepared = result->bg_conn->Prepare(result->first_sub_sql);
+          if (result->prepared && !result->prepared->HasError() &&
+              result->prepared->data &&
+              result->prepared->data->physical_plan) {
+            EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
+                                effective_compile_mode, /*need_qjit=*/false);
+            bg_compiler->ResetModules();
+            auto *bg_ctx = result->bg_conn->context.get();
+            bg_ctx->aqp_jit_context =
+                duckdb::make_uniq<duckdb::AQPJITContext>();
+            std::unordered_set<const ir_sql_converter::AQPStmt *>
+                consumed_filters, consumed_joins;
+            DuckDBAdapter::TempCollectionSnapshot empty_snapshot;
+            duck->RegisterJITImpl(
+                result->prepared->data->physical_plan->Root(), *sub_ir,
+                bg_ctx, bg_compiler.get(), consumed_filters, consumed_joins,
+                &empty_snapshot);
+            if (bg_ctx->aqp_jit_context->flags == 0)
+              bg_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+            result->has_prepare = true;
+            if (debug)
+              std::cerr << "[CROSS-QUERY] Phase 2 path B (jit) OK\n";
+          }
+        } else {
+          // Path C: interpreter — just Prepare
+          result->prepared = result->bg_conn->Prepare(result->first_sub_sql);
+          if (result->prepared && !result->prepared->HasError())
+            result->has_prepare = true;
+          if (debug && result->has_prepare)
+            std::cerr << "[CROSS-QUERY] Phase 2 path C (interp) OK\n";
+        }
+      } catch (const std::exception &e) {
+        if (debug)
+          std::cerr << "[CROSS-QUERY] Phase 2 compile failed: " << e.what()
+                    << "\n";
+      }
+    }
+#endif
+
     auto extraction =
         std::make_unique<SubqueryExtraction>(std::set<unsigned int>{});
     extraction->sub_ir = std::move(sub_ir);
@@ -537,8 +683,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duck->SetBenchmarkMode(config_.benchmark_mode);
       duck->SetJITCache(config_.jit_cache);
       duck->SetCompileMode(config_.compile_mode);
-      // Query-jit is plumbed separately: the SetJITFlags sites below mask
-      // jit_flags with AQP_JIT_LEVEL_MASK, which excludes AQP_JIT_QUERY_JIT.
+      duck->SetJITFlags(config_.jit_flags);
       duck->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
                         config_.query_jit_threads, config_.query_jit_morsel);
       duck->SetQueryJitStoragePlan(storage_plan_);
@@ -2085,6 +2230,58 @@ bool IRQuerySplitter::ExecuteOneIteration(
   }
 
   if (!kernel_executed) {
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+    // Phase 2 cross-query HIT: first sub-query bg-compiled by PrepareNextQuery
+    bool cross_query_hit = false;
+    if (iteration_count_ == 1 && active_cross_query_prep_ &&
+        (active_cross_query_prep_->has_qjit ||
+         active_cross_query_prep_->has_prepare)) {
+      cross_query_hit = true;
+      auto &cqp = *active_cross_query_prep_;
+      std::string sub_sql = cqp.first_sub_sql;
+      adapter_->subquery_index++;
+      temp_table_name = GenerateTempTableName();
+
+      if (config_.enable_timing) {
+        chrono_toc(&timer, "", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "0.000, ";
+        log_file.close();
+      }
+
+      if (config_.enable_sub_plan_combiner)
+        sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
+      if (config_.print_sql || config_.enable_debug_print) {
+        std::cout << "\n=== Sub-Query SQL (cross-query HIT) ===" << std::endl;
+        std::cout << sub_sql << std::endl;
+      }
+
+      if (!tune_entries_.empty())
+        ApplyTuneOverride(iteration_count_ - 1);
+
+      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+      if (cqp.has_qjit) {
+        duck->SetQjitSpecHit(std::move(cqp.qjit_spec));
+        adapter_->ExecuteSQLandCreateTempTable(
+            sub_sql, temp_table_name, config_.enable_update_temp_card);
+      } else {
+        duck->ExecuteSpeculativeAndCreateTempTable(
+            *cqp.prepared, *cqp.bg_conn, temp_table_name,
+            config_.enable_update_temp_card);
+      }
+      active_cross_query_prep_->has_qjit = false;
+      active_cross_query_prep_->has_prepare = false;
+      active_cross_query_prep_->qjit_spec.reset();
+      active_cross_query_prep_->prepared.reset();
+
+      if (config_.enable_debug_print)
+        std::cerr << "[CROSS-QUERY] Phase 2 HIT consumed for "
+                  << query_name_ << " sq0\n";
+    }
+    if (!cross_query_hit)
+#endif
+    {
     // Standard DuckDB execution path
     std::string sub_sql =
         adapter_->GenerateSQL(*executable_ir, adapter_->subquery_index++);
@@ -2254,6 +2451,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
                 << adapter_->ExplainAnalyze(sub_sql)
                 << "\n=== End Sub-Query Plan ===" << std::endl;
     }
+    } // end if (!cross_query_hit)
   }
 
   if (config_.enable_tuning)

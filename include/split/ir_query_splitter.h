@@ -57,6 +57,14 @@ struct CrossQueryPrepResult {
   bool merge_sibling_expr = false;
   duckdb::vector<duckdb::LogicalType> sub_plan_types;
 
+  // Phase 2: bg-compiled first sub-query
+#if defined(HAVE_LLVM)
+  std::unique_ptr<duckdb::PreparedStatement> prepared;
+  bool has_prepare = false;
+  std::unique_ptr<DuckDBAdapter::QjitSpecCompiled> qjit_spec;
+  bool has_qjit = false;
+#endif
+
   bool success = false;
   std::string error;
   double prep_time_us = 0.0;
@@ -122,9 +130,21 @@ public:
   void SetCrossQueryPrep(std::unique_ptr<CrossQueryPrepResult> prep) {
     active_cross_query_prep_ = std::move(prep);
   }
+#if defined(HAVE_LLVM)
   static std::unique_ptr<CrossQueryPrepResult>
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
-                   bool debug);
+                   DuckDBAdapter *duck, const ParamConfig &config,
+                   std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+                   uint32_t effective_jit_flags, int effective_compile_mode);
+  // Resolve effective (jit_flags, compile_mode) for a query's sub_idx,
+  // applying tune override if configured. Main thread only.
+  static std::pair<uint32_t, int> ResolveTuneFlags(
+      const ParamConfig &config, const std::string &query_name, int sub_idx);
+#else
+  static std::unique_ptr<CrossQueryPrepResult>
+  PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
+                   DuckDBAdapter *duck, const ParamConfig &config);
+#endif
 #endif
 
 private:

@@ -1815,9 +1815,8 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
   std::chrono::high_resolution_clock::time_point timer;
   if (enable_timing_) {
     timer = chrono_tic();
-    // ≈0 on a ready HIT; non-zero = the splitter's blocking wait on the
-    // matched-but-unfinished bg compile (charged via AddSpecWaitTime).
-    WriteJitTimingColumn(ConsumeSpecWaitUs());
+    if (jit_flags_ & AQP_JIT_LEVEL_MASK)
+      WriteJitTimingColumn(ConsumeSpecWaitUs());
   }
 
   // Inject temp table stats into spec connection's physical plan
