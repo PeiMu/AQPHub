@@ -151,9 +151,13 @@ public:
    * Level 2+: Compile ALL filter expressions inside a SimplestFilter IR node,
    * fused into a single function with AND semantics.
    * Returns a compiled AQPExprFn, or nullptr on failure.
+   * params_out: if non-null and cache_mode==2, receives the runtime params
+   *   buffer. Caller must set aqp_jit_set_params(buf.data()) before calling
+   *   the compiled function.
    */
   AQPExprFn CompileFilter(const ir_sql_converter::AQPStmt &filter_node,
-                          const std::vector<ColSchema> &schema);
+                          const std::vector<ColSchema> &schema,
+                          std::vector<uint8_t> *params_out = nullptr);
 
   /**
    * Level 1: Compile a single expression into its own function.
@@ -233,7 +237,8 @@ public:
    */
   AQPPipelineFn CompilePipeline(const ir_sql_converter::AQPStmt *filter_node,
                                 const ir_sql_converter::AQPStmt *proj_node,
-                                const std::vector<ColSchema> &in_schema);
+                                const std::vector<ColSchema> &in_schema,
+                                std::vector<uint8_t> *params_out = nullptr);
 
 #if !DISABLE_AGG_JIT
   /**
@@ -305,7 +310,8 @@ public:
       const std::vector<int32_t> &lhs_output_dtypes = {},
       const std::vector<int32_t> &rhs_output_dtypes = {},
       const std::vector<int> &lhs_key_chunk_idxs = {},
-      const std::vector<int32_t> &lhs_key_dtypes = {});
+      const std::vector<int32_t> &lhs_key_dtypes = {},
+      std::vector<uint8_t> *params_out = nullptr);
 
   /**
    * Multi-probe fusion: compile the entire probe chain as a single function.
@@ -313,7 +319,8 @@ public:
    * Returns function pointer with AQPPipelineFn signature, where pipeline_state
    * is AQPMultiProbeState*. Returns nullptr on failure.
    */
-  void *CompileMultiProbeChain(const std::vector<ProbeStageInfo> &stages);
+  void *CompileMultiProbeChain(const std::vector<ProbeStageInfo> &stages,
+                              std::vector<uint8_t> *params_out = nullptr);
 
   /**
    * Query-jit (--jit-level=query): compile a whole sub-query plan
@@ -330,7 +337,8 @@ public:
    * Caller must have registered the qjit_* runtime symbols via
    * RegisterRuntimeSymbol first. Returns the entry fn or nullptr.
    */
-  void *CompileQuerySteps(const qjit::QjitQueryPlan &plan);
+  void *CompileQuerySteps(const qjit::QjitQueryPlan &plan,
+                          std::vector<uint8_t> *params_out = nullptr);
 
   /**
    * Register one extern "C" runtime symbol (absoluteSymbols) so compiled
@@ -351,11 +359,13 @@ public:
                         JITTrackerHandle &tracker);
   AQPExprFn CompileFilter(const ir_sql_converter::AQPStmt &filter_node,
                           const std::vector<ColSchema> &schema,
-                          JITTrackerHandle &tracker);
+                          JITTrackerHandle &tracker,
+                          std::vector<uint8_t> *params_out = nullptr);
   AQPPipelineFn CompilePipeline(const ir_sql_converter::AQPStmt *filter_node,
                                 const ir_sql_converter::AQPStmt *proj_node,
                                 const std::vector<ColSchema> &in_schema,
-                                JITTrackerHandle &tracker);
+                                JITTrackerHandle &tracker,
+                                std::vector<uint8_t> *params_out = nullptr);
   void SetPrefetch(bool enable, int distance = 8) {
     prefetch_ = enable;
     prefetch_distance_ = distance;
@@ -379,7 +389,9 @@ public:
 
   void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
 
-  void SetCache(bool enable);
+  void SetCache(int mode);
+
+  static void ClearObjCache();
 
   // Releases all JIT-compiled modules (machine code, IR, symbol-table
   // entries, ExecutionSession state) added since the last reset. The
@@ -422,6 +434,7 @@ private:
   bool batch_probe_ = false;
   int skip_hash_cmp_ = 2; // 0=off, 1=single-int-key, 2=all-int-keys
   bool bloom_tag_ = true;
+  int cache_mode_ = 0;  // 0=off, 1=strict, 2=template
   bool cache_enabled_ = false;
 
   CodegenTiming last_cg_timing_;
@@ -432,5 +445,11 @@ private:
 
   // LLVM IR emission helpers (used inside ir_to_llvm.cpp only)
 };
+
+// §7.3 template cache: thread-local params pointer for non-query-jit levels.
+// The caller sets this before invoking the compiled function; compiled code
+// loads constants from it. Query-jit uses QjitUserData instead.
+void aqp_jit_set_params(const uint8_t *p);
+const uint8_t *aqp_jit_get_params();
 
 } // namespace aqp_jit

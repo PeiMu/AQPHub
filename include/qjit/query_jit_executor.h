@@ -86,7 +86,8 @@ public:
               const std::vector<uint32_t> &ht_tuple_sizes,
               const std::vector<QjitAggCellDesc> &agg_descs,
               const std::vector<int> &agg_output_cells, QjitTable &result,
-              const std::vector<uint32_t> &ht_key0_offsets = {});
+              const std::vector<uint32_t> &ht_key0_offsets = {},
+              const std::vector<uint8_t> &params_buf = {});
 
 private:
   QjitWorkerPool pool_;

@@ -297,8 +297,8 @@ public:
 
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
-  // In-memory JIT object cache across repeats (--jit-cache, default off).
-  void SetJITCache(bool enable) { jit_cache_ = enable; }
+  // JIT object cache mode (--jit-cache=..., default 0=off).
+  void SetJITCache(int mode) { jit_cache_ = mode; }
 
   // Compile mode (--compile-mode): 0=llvm (full quality), 2=tpde.
   // Must be set before the first compile — the backend is fixed at
@@ -392,6 +392,7 @@ public:
     std::vector<qjit::QjitAggCellDesc> agg_descs;
     std::vector<int> agg_output_cells;
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
+    std::vector<uint8_t> params_buf; // template cache mode 2: runtime constants
   };
 
   // Speculative query-jit compile payload: built on the bg pool, consumed on
@@ -465,7 +466,7 @@ public:
   int GetJitPrefetchRowDistance() const { return jit_prefetch_row_distance_; }
   bool GetJitBatchProbe() const { return jit_batch_probe_; }
   int GetJitSkipHashCmp() const { return jit_skip_hash_cmp_; }
-  bool GetJitCache() const { return jit_cache_; }
+  int GetJitCache() const { return jit_cache_; }
   int GetCompileMode() const { return compile_mode_; }
 #endif
 
@@ -584,7 +585,7 @@ private:
   bool jit_single_col_int_join_ = true;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
-  bool jit_cache_ = false;
+  int jit_cache_ = 0;
   int compile_mode_ = 0;
   CompensateMissAction compensate_miss_action_ = CompensateMissAction::NONE;
   // TPDE compiler for spec-jit miss recompiles. Only created when the main

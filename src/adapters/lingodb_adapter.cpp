@@ -89,6 +89,8 @@ namespace middleware {
 
 void LingoDBAdapter::WriteLingoDBTimingRow(
     const std::unordered_map<std::string, double> &timing) {
+  if (timing.empty()) return;
+
   std::ofstream log_file;
   log_file.open(g_lingodb_compile_log_name, std::ios_base::app);
   for (size_t i = 0; i < kLingoDBTimingColumns.size(); i++) {

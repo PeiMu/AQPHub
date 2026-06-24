@@ -13,6 +13,9 @@
 // Include both adapters (conditionally compiled based on availability)
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
+#ifdef HAVE_LLVM
+#include "jit/ir_to_llvm.h"
+#endif
 #endif
 
 #ifdef HAVE_POSTGRES
@@ -428,6 +431,11 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
     std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
 
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+    if (iter > 0 && config.jit_cache)
+      aqp_jit::IrToLlvmCompiler::ClearObjCache();
+#endif
+
     // §7.2: Cross-query latency hiding — bg thread pool + pending future
 #ifdef HAVE_DUCKDB
     std::unique_ptr<ThreadPool> cross_query_pool;
@@ -701,6 +709,10 @@ int main(int argc, char **argv) {
     } else {
       for (int iter = 0; iter < config.repeat_count; iter++) {
         if (iter > 0) {
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+          if (config.jit_cache)
+            aqp_jit::IrToLlvmCompiler::ClearObjCache();
+#endif
           if (config.enable_timing)
             timer = chrono_tic();
           adapter->ResetQueryState();

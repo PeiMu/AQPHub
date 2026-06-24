@@ -87,6 +87,16 @@ typedef void (*QjitMorselFn)(QjitQueryContext *ctx, uint64_t begin,
  * Returns produced row count, or negative on error. */
 typedef int64_t (*QjitQueryFn)(QjitQueryContext *ctx);
 
+/* Composite user-data wrapper threaded through ctx->user.
+ * Carries both the per-step block-skip statistics (existing) and the
+ * runtime filter-constant buffer (single-run-template cache mode 2).
+ * FIELD ORDER IS ABI — compiled code GEPs into this struct. */
+typedef struct {
+    const void *block_stats;  /* const int32_t** indexed by step            */
+    const void *params;       /* flat byte buffer of filter constants       */
+    uint64_t    params_size;  /* byte count (debug assertions only)         */
+} QjitUserData;
+
 /* ---- runtime entry points (registered as absoluteSymbols) ------------- */
 
 /* Run fn over [0, total) in chunks of `morsel` rows on ctx->pool workers.

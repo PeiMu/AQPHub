@@ -41,18 +41,37 @@ JIT_CONFIGS=(
   "duckdb|relationship-center|query|auto|duckdb_job_relationship-center_golden.txt"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret"
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|off||single-run-strict"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|off||single-run-template"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off||single-run-template"
   "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|recompile"
   "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|interpret"
-  "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off|hidelatency"
-  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|hidelatency"
+  "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off||single-run-strict"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile||single-run-strict"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret||single-run-strict"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|recompile||single-run-strict"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret||single-run-strict"
+  "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile||single-run-template"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret||single-run-template"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off||single-run-template"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|recompile||single-run-template"
+  "duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret||single-run-template"
   "duckdb|relationship-center|query|none|duckdb_job_relationship-center_golden.txt|recompile"
   "duckdb|none|query|none|duckdb_job_no-split_golden.txt|recompile"
   "lingodb|none|llvm|none|lingodb_job_no-split_golden.txt"
@@ -81,27 +100,34 @@ FAIL_LOG="job_result/correctness_failures.log"
 
 # --- Run JIT-level configs via run_job.sh ---
 for entry in "${JIT_CONFIGS[@]}"; do
-  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode hide_lat <<< "$entry"
+  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode hide_lat jit_cache_mode <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
   hide_lat=${hide_lat:-off}
+  jit_cache_mode=${jit_cache_mode:-off}
   hide_lat_arg="off"
   [[ "$hide_lat" == "hidelatency" ]] && hide_lat_arg="on"
-  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} spec=${spec_jit_mode} hide_lat=${hide_lat_arg} ==="
+  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} spec=${spec_jit_mode} hide_lat=${hide_lat_arg} cache=${jit_cache_mode} ==="
 
   bash run_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
-       on on on on off "${spec_jit_mode}" llvm "" "${hide_lat_arg}"
+       on on on on "${jit_cache_mode}" "${spec_jit_mode}" llvm "" "${hide_lat_arg}"
 
   spec_suffix=""
   [[ "$spec_jit_mode" != "off" ]] && spec_suffix="_spec${spec_jit_mode}"
   hide_suffix=""
   [[ "$hide_lat" == "hidelatency" ]] && hide_suffix="_hidelatency"
+  cache_suffix=""
+  if [[ "$jit_cache_mode" == "on" ]]; then
+    cache_suffix="_jitcache"
+  elif [[ "$jit_cache_mode" != "off" ]]; then
+    cache_suffix="_jitcache_${jit_cache_mode//-/_}"
+  fi
   if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
-    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${spec_suffix}${hide_suffix}_job.txt"
+    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${cache_suffix}${spec_suffix}${hide_suffix}_job.txt"
   fi
 
-  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} spec=${spec_jit_mode} hide_lat=${hide_lat_arg}"
+  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} spec=${spec_jit_mode} cache=${jit_cache_mode} hide_lat=${hide_lat_arg}"
 
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"

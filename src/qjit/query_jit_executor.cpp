@@ -140,7 +140,8 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
                           const std::vector<QjitAggCellDesc> &agg_descs,
                           const std::vector<int> &agg_output_cells,
                           QjitTable &result,
-                          const std::vector<uint32_t> &ht_key0_offsets) {
+                          const std::vector<uint32_t> &ht_key0_offsets,
+                          const std::vector<uint8_t> &params_buf) {
   const uint32_t nworkers = pool_.NumWorkers();
 
   std::vector<QjitTableView> views(srcs.size());
@@ -179,6 +180,11 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
     }
   }
 
+  QjitUserData user_data{};
+  user_data.block_stats = srcs.empty() ? nullptr : (const void *)step_stats.data();
+  user_data.params = params_buf.empty() ? nullptr : (const void *)params_buf.data();
+  user_data.params_size = params_buf.size();
+
   QjitQueryContext ctx{};
   ctx.pool = &pool_;
   ctx.sources = views.data();
@@ -189,7 +195,7 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
   ctx.num_workers = nworkers;
   ctx.morsel_size = morsel_size_;
   ctx.result = &result;
-  ctx.user = srcs.empty() ? nullptr : (void *)step_stats.data();
+  ctx.user = &user_data;
 
   int64_t rc = fn(&ctx);
   if (rc < 0)

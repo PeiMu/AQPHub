@@ -1108,7 +1108,8 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       int64_t rows = qjit_executor_->Run(
           reinterpret_cast<QjitQueryFn>(compiled->fn), compiled->srcs,
           compiled->ht_tuple_sizes, compiled->agg_descs,
-          compiled->agg_output_cells, qtable, compiled->ht_key0_offsets);
+          compiled->agg_output_cells, qtable, compiled->ht_key0_offsets,
+          compiled->params_buf);
       if (rows >= 0) {
         if (enable_timing_) {
           auto run_us =
@@ -1609,7 +1610,8 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
                             qjit_compiled->srcs, qjit_compiled->ht_tuple_sizes,
                             qjit_compiled->agg_descs,
                             qjit_compiled->agg_output_cells, *qtable,
-                            qjit_compiled->ht_key0_offsets);
+                            qjit_compiled->ht_key0_offsets,
+                            qjit_compiled->params_buf);
     if (rows >= 0) {
 #ifndef NDEBUG
       fprintf(stderr, "[AQP-QJIT] exec label=%s rows=%lld\n",
@@ -3285,7 +3287,7 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
   std::chrono::steady_clock::time_point cg_tic;
   if (qjit_time_trace)
     cg_tic = std::chrono::steady_clock::now();
-  compiled->fn = comp->CompileQuerySteps(plan);
+  compiled->fn = comp->CompileQuerySteps(plan, &compiled->params_buf);
   if (qjit_time_trace) {
     auto cg_us = std::chrono::duration_cast<std::chrono::microseconds>(
                      std::chrono::steady_clock::now() - cg_tic)
@@ -3408,7 +3410,8 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
 
     // The caller (bg task) ran spec_comp->ResetModules() and the qjit
     // runtime symbols were registered at spec-compiler creation.
-    payload->compiled->fn = spec_comp->CompileQuerySteps(payload->plan);
+    payload->compiled->fn = spec_comp->CompileQuerySteps(
+        payload->plan, &payload->compiled->params_buf);
     if (!payload->compiled->fn)
       return reject("compile-failed");
 
@@ -4076,7 +4079,7 @@ void DuckDBAdapter::EnsureJITCompiler() {
   jit_compiler_->SetBatchProbe(jit_batch_probe_);
   jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
   if (jit_cache_)
-    jit_compiler_->SetCache(true);
+    jit_compiler_->SetCache(jit_cache_);
 }
 
 void DuckDBAdapter::PreCreateCompilers(
@@ -4099,7 +4102,7 @@ void DuckDBAdapter::PreCreateCompilers(
     comp->SetBatchProbe(jit_batch_probe_);
     comp->SetSkipHashCmp(jit_skip_hash_cmp_);
     if (jit_cache_)
-      comp->SetCache(true);
+      comp->SetCache(jit_cache_);
     jit_compiler_cache_[key] = {std::move(comp), false};
   }
 }
@@ -4135,7 +4138,7 @@ aqp_jit::IrToLlvmCompiler *DuckDBAdapter::EnsureFastJitCompiler() {
   fast_jit_compiler_->SetBatchProbe(jit_batch_probe_);
   fast_jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
   if (jit_cache_)
-    fast_jit_compiler_->SetCache(true);
+    fast_jit_compiler_->SetCache(jit_cache_);
   return fast_jit_compiler_.get();
 }
 
@@ -4642,7 +4645,8 @@ void DuckDBAdapter::RegisterJITImpl(
         FilterAllColsAvailable(filter_ir, schema) &&
         !skip_like) {
       auto t_filter = chrono_tic();
-      ::AQPExprFn raw_fn = jit_comp->CompileFilter(*filter_ir, schema);
+      std::vector<uint8_t> filter_params;
+      ::AQPExprFn raw_fn = jit_comp->CompileFilter(*filter_ir, schema, &filter_params);
       if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
         chrono_toc(&t_filter, "RegisterJIT::CompileFilter\n", false);
       }
@@ -4666,6 +4670,8 @@ void DuckDBAdapter::RegisterJITImpl(
             !has_like) {
           uint64_t scan_eid = duckdb::ExpressionID(child);
           jit_ctx->aqp_jit_context->scan_filter_fns[scan_eid] = fn;
+          if (!filter_params.empty())
+            jit_ctx->aqp_jit_context->expr_params[scan_eid] = std::move(filter_params);
           jit_ctx->aqp_jit_context->fused_scan_filter_eids.insert(eid);
 #ifndef NDEBUG
           std::cerr << "[AQP-JIT] scan+filter fusion: scan_eid=0x" << std::hex
@@ -4673,6 +4679,8 @@ void DuckDBAdapter::RegisterJITImpl(
 #endif
         } else {
           jit_ctx->aqp_jit_context->expr_fns[eid] = fn;
+          if (!filter_params.empty())
+            jit_ctx->aqp_jit_context->expr_params[eid] = std::move(filter_params);
           jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
         }
 
@@ -4719,8 +4727,9 @@ void DuckDBAdapter::RegisterJITImpl(
       const ir_sql_converter::AQPStmt *proj_ir = nullptr;
 
       auto t_pipe = chrono_tic();
+      std::vector<uint8_t> pipe_params;
       ::AQPPipelineFn pipe_fn =
-          jit_comp->CompilePipeline(filter_ir, proj_ir, schema);
+          jit_comp->CompilePipeline(filter_ir, proj_ir, schema, &pipe_params);
       if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
         chrono_toc(&t_pipe, "RegisterJIT::CompilePipeline\n", false);
       }
@@ -4730,6 +4739,8 @@ void DuckDBAdapter::RegisterJITImpl(
         if (!jit_ctx->aqp_jit_context)
           jit_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
         jit_ctx->aqp_jit_context->pipeline_fns[eid] = fn;
+        if (!pipe_params.empty())
+          jit_ctx->aqp_jit_context->pipeline_params[eid] = std::move(pipe_params);
         jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
 #ifndef NDEBUG
         std::cerr << "[AQP-JIT] compiled pipeline eid=0x" << std::hex << eid
@@ -5091,7 +5102,8 @@ void DuckDBAdapter::RegisterJITImpl(
         }
         // AQPMultiProbeState::views[] holds at most 4 stages (JOB max is 3).
         if (all_eligible && stages.size() >= 2 && stages.size() <= 4) {
-          void *fused_fn = jit_comp->CompileMultiProbeChain(stages);
+          std::vector<uint8_t> mp_params;
+          void *fused_fn = jit_comp->CompileMultiProbeChain(stages, &mp_params);
           if (getenv("AQP_MP_TRACE")) {
             fprintf(stderr, "[MP-COMPILE] fused_fn=%p innermost=%llx\n", fused_fn,
                     (unsigned long long)stages[0].eid);
@@ -5105,6 +5117,9 @@ void DuckDBAdapter::RegisterJITImpl(
 
             ctx->aqp_jit_context->multi_probe_fns[innermost_eid] =
                 reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
+            if (!mp_params.empty())
+              ctx->aqp_jit_context->multi_probe_params[innermost_eid] =
+                  std::move(mp_params);
 
             // Register HT views for ALL stages including the innermost
             // (si=0): the inner HJ skips single-probe registration via
@@ -5729,6 +5744,7 @@ void DuckDBAdapter::RegisterJITImpl(
                     }
 
                     auto t_fpp = chrono_tic();
+                    std::vector<uint8_t> fpp_params;
                     void *probe_fused_fn =
                         jit_comp->CompileFilterProbeProjectFusion(
                             probe_filter_ir, join_ir, probe_proj_ir,
@@ -5736,7 +5752,7 @@ void DuckDBAdapter::RegisterJITImpl(
                             payload_row_indices, lhs_output_idxs,
                             rhs_output_layout_idxs, lhs_output_dtypes,
                             rhs_output_dtypes, lhs_key_chunk_idxs,
-                            lhs_key_dtypes);
+                            lhs_key_dtypes, &fpp_params);
                     if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
                       chrono_toc(
                           &t_fpp,
@@ -5747,6 +5763,9 @@ void DuckDBAdapter::RegisterJITImpl(
                       jit_ctx->aqp_jit_context->pipeline_fns[eid] =
                           reinterpret_cast<duckdb::AQPPipelineFn>(
                               probe_fused_fn);
+                      if (!fpp_params.empty())
+                        jit_ctx->aqp_jit_context->pipeline_params[eid] =
+                            std::move(fpp_params);
                       jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
 #ifndef NDEBUG
                       std::cerr

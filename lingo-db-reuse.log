@@ -1857,3 +1857,109 @@ Key functions reused (NOT rewritten):
   - SetQjitSpecHit (duckdb_adapter.h:424)
   - EnsureCrossCompiler (ir_query_splitter.cpp:342)
   - LaunchSpeculativeCompile (ir_query_splitter.cpp:1354, reference pattern)
+
+## §7.3 JIT object cache — mode 1+2 COMPLETE (2026-06-24)
+
+### Mode 1: single-run-strict — COMPLETE
+
+In-memory cache stores compiled ELF `.o` bytes keyed by FNV-1a hash of
+serialized plan. Column names stripped from key (safe: FindColIdx matches
+by (table_idx, col_idx) only). Process-global static ObjCache() protected
+by mutex. Cleared between --repeat iterations via ClearObjCache().
+
+Key: SerializeQjitPlan (ir_to_llvm.cpp:4975) — source table names,
+column indices, dtypes, filter expression text, probe HT descriptors,
+optimization flags. Does NOT include query name → enables cross-query
+reuse. Compile-mode in opt_tag prevents cross-contamination.
+
+Hit rate: 167/652 = 25.6% (113 JOB queries, TPDE, node-based).
+
+### Mode 2: single-run-template — COMPLETE
+
+Parameterized compilation: constants loaded from runtime params array
+instead of LLVM immediates. Cache key strips constant values + column
+names, replacing values with type tags ($I, $F, $S, $L<kind>).
+
+Hit rate: 209/652 = 32.1% (+42 additional hits vs mode 1).
+
+Implementation:
+- Query-jit: QjitUserData wrapper struct carries {block_stats, params,
+  params_size} through ctx->user (query_jit_abi.h). Mode 1 sets
+  params=nullptr.
+- Expr/operator/pipeline-jit: Thread-local g_jit_params (aqp_jit.cpp)
+  set by caller before invoking compiled function. Compiled code calls
+  aqp_jit_get_params() via LLJIT symbol table. Params buffer stored in
+  AQPJITContext::expr_params, pipeline_params, multi_probe_params maps.
+- ParamsBuilder: flat byte buffer with two-phase allocation. Fixed 8-byte
+  slots for strings {offset, len} with deferred data appended by
+  Finalize(). Deterministic layout regardless of string content length.
+- Template serializers: SerializeExprTemplate, SerializeQjitPlanTemplate,
+  SerializeStmtTemplate, SerializeProbeStagesTemplate.
+- Params rebuilders: BuildParamsBuffer, BuildParamsFromStmt,
+  BuildParamsFromProbeStages (walk plan in codegen order on cache hit).
+- Template mode skips SortFiltersByCost and SIMD/TwoPass filter
+  optimizations to ensure deterministic expression walk order.
+- LIKE patterns: template mode uses generic aqp_like_match for all
+  patterns (avoids parameterizing specialized PREFIX/SUFFIX/CONTAINS).
+- IN-list >8: NOT parameterized (hash directory is value-dependent).
+- Cache key includes C<mode> in opt_tag to prevent mode 1/2
+  cross-contamination.
+
+DuckDB dispatch sites (set/clear thread-local params):
+- physical_filter.cpp: expr-level and pipeline-level dispatch
+- physical_hash_join.cpp: single-probe and multi-probe dispatch
+- physical_table_scan.cpp: scan filter dispatch
+
+Middleware adapter sites (store params buffers in AQPJITContext):
+- CompileFilter → expr_params[eid] or expr_params[scan_eid]
+- CompilePipeline → pipeline_params[eid]
+- CompileMultiProbeChain → multi_probe_params[innermost_eid]
+- CompileFilterProbeProjectFusion → pipeline_params[eid]
+
+Bug fixes:
+1. Inline string storage produced variable-length params buffers
+   (different string lengths → different subsequent offsets). Fixed by
+   deferred string allocation with fixed-size slots.
+2. SortFiltersByCost reordered filter expressions, breaking deterministic
+   correspondence between BuildParamsFromStmt and codegen. Fixed by
+   gating sort with !template_mode.
+3. CompileMultiProbeChain: only stage 0's filter_ir is compiled into
+   filter code. BuildParamsFromProbeStages walks only stage 0 to match.
+
+### §7.3a — Near-miss clustering analysis
+
+| Strategy | Unique plans | Additional hits | Hit rate |
+|----------|-------------|-----------------|----------|
+| Exact match (before col-name strip) | 530 | — | 21.5% |
+| Column names stripped (mode 1) | 504 | +22 | 25.6% |
+| + Constants stripped (mode 2) | 459 | +42 actual (+70 predicted) | 32.1% |
+| + Table names stripped (not valid) | 408 | +122 | 39.6% |
+
+Near-miss blockers: 1 group blocked by LIKE pattern structural
+difference (prefix vs contains → different codegen). Zero IN-list
+structural blockers.
+
+### Correctness verification
+
+76 JIT_CONFIGS + 3 kernel + 2 tune-config = 81 total configs in
+correctness_test.sh. All pass golden correctness across 113 JOB queries.
+Cache configs tested: 13 single-run-strict + 12 single-run-template
+covering all jit levels × spec-jit modes × SIMD.
+
+### Performance characteristics
+
+Template compilation is NOT strictly better:
+- Integer/float: extra memory load per row (immediate → load params[i])
+- String equality: lose compile-time length pre-filter constant folding
+- IN-list ≤8: unrolled CMP imm → loop over params array
+- SIMD: ConstantVector::getSplat → load + broadcast
+- TPDE: no LICM, param loads emit per-row. LLVM O2 hoists them.
+- Rough estimate: ~650 μs total extra runtime vs ~70 ms compile savings
+  (TPDE). Net positive for TPDE; significant for LLVM O2.
+
+### §7.2 merged into §7.3
+
+--jit-cache mode >= 1 automatically enables --hide-latency-across-queries
+(param_config.cpp). breakdown_measurement_script.sh measures both
+optimizations together via jit-cache configs. Standalone
+--hide-latency-across-queries flag still works for use without cache.

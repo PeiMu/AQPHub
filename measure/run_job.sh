@@ -25,7 +25,11 @@ fi
 
 # Build CLI flags from positional args
 jit_extra_flags=""
-[[ "$jit_cache"      == "on"  ]] && jit_extra_flags+=" --jit-cache"
+if [[ "$jit_cache" == "on" ]]; then
+    jit_extra_flags+=" --jit-cache"
+elif [[ "$jit_cache" != "off" ]]; then
+    jit_extra_flags+=" --jit-cache=${jit_cache}"
+fi
 [[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
@@ -48,7 +52,11 @@ flag_suffix=""
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
 [[ "$skip_hash_cmp"  == "single" ]] && flag_suffix+="_skiphash1"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
-[[ "$jit_cache"      == "on"  ]] && flag_suffix+="_jitcache"
+if [[ "$jit_cache" == "on" ]]; then
+    flag_suffix+="_jitcache"
+elif [[ "$jit_cache" != "off" ]]; then
+    flag_suffix+="_jitcache_${jit_cache//-/_}"
+fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"

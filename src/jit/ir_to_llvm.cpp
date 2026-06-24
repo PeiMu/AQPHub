@@ -132,6 +132,10 @@ void aqp_copy_string(void *dst_data, void *src_data,
 #include <stdexcept>
 #include <string>
 #include <dlfcn.h>
+#ifndef NDEBUG
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <unordered_map>
 #include <vector>
 
@@ -596,6 +600,7 @@ struct IrToLlvmCompiler::Impl {
         {es.intern("aqp_copy_string"), AQP_JIT_SYM(::aqp_copy_string)},
         {es.intern("memcpy"), AQP_JIT_SYM((void *)&memcpy)},
         {es.intern("memset"), AQP_JIT_SYM((void *)&memset)},
+        {es.intern("aqp_jit_get_params"), AQP_JIT_SYM(aqp_jit_get_params)},
     }));
   }
 
@@ -646,6 +651,87 @@ static void SetTargetAttrs(Function *fn, const std::string &cpu,
     fn->addFnAttr("target-features", features);
 }
 
+// §7.3 single-run-template (cache mode 2): tracks constant layout during
+// codegen. The same walk order at cache-hit time produces an identical buffer.
+struct ParamsBuilder {
+  std::vector<uint8_t> buf;
+  uint32_t offset = 0;
+
+  uint32_t Align(uint32_t alignment) {
+    uint32_t r = offset % alignment;
+    if (r) offset += alignment - r;
+    buf.resize(offset);
+    return offset;
+  }
+
+  uint32_t AllocI32(int32_t v) {
+    Align(4);
+    uint32_t off = offset;
+    buf.resize(offset + 4);
+    memcpy(buf.data() + off, &v, 4);
+    offset += 4;
+    return off;
+  }
+
+  uint32_t AllocI64(int64_t v) {
+    Align(8);
+    uint32_t off = offset;
+    buf.resize(offset + 8);
+    memcpy(buf.data() + off, &v, 8);
+    offset += 8;
+    return off;
+  }
+
+  uint32_t AllocF32(float v) {
+    Align(4);
+    uint32_t off = offset;
+    buf.resize(offset + 4);
+    memcpy(buf.data() + off, &v, 4);
+    offset += 4;
+    return off;
+  }
+
+  uint32_t AllocF64(double v) {
+    Align(8);
+    uint32_t off = offset;
+    buf.resize(offset + 8);
+    memcpy(buf.data() + off, &v, 8);
+    offset += 8;
+    return off;
+  }
+
+  // Returns offset of an 8-byte slot {uint32_t str_offset, uint32_t str_len}.
+  // Actual string bytes are appended during Finalize(). This keeps the
+  // fixed-offset section deterministic regardless of string length.
+  uint32_t AllocString(const std::string &s) {
+    Align(4);
+    uint32_t off = offset;
+    buf.resize(offset + 8);
+    // Placeholder: str_offset patched in Finalize(), str_len written now.
+    uint32_t len = (uint32_t)s.size();
+    memset(buf.data() + off, 0, 4);      // str_offset placeholder
+    memcpy(buf.data() + off + 4, &len, 4);
+    offset += 8;
+    deferred_strings_.push_back({off, s});
+    return off;
+  }
+
+  void Finalize() {
+    for (auto &ds : deferred_strings_) {
+      uint32_t str_start = (uint32_t)buf.size();
+      buf.resize(buf.size() + ds.data.size());
+      if (!ds.data.empty())
+        memcpy(buf.data() + str_start, ds.data.data(), ds.data.size());
+      memcpy(buf.data() + ds.slot_offset, &str_start, 4);
+    }
+    deferred_strings_.clear();
+  }
+
+private:
+  struct DeferredString { uint32_t slot_offset; std::string data; };
+  std::vector<DeferredString> deferred_strings_;
+};
+
 // ---------------------------------------------------------------------------
 // Per-compilation context — holds the LLVM module and IR builder state
 // ---------------------------------------------------------------------------
@@ -677,6 +763,11 @@ struct CompileCtx {
   // NOT). Default off: pipeline-jit relies on DuckDB re-checking, and the
   // extra branch would cost it for no correctness gain.
   bool strict_null_guard = false;
+
+  // §7.3 template cache mode: load constants from runtime params buffer.
+  bool template_mode = false;
+  Value *params_base = nullptr; // i8* to flat params buffer (loaded once)
+  ParamsBuilder *params_builder = nullptr; // offset tracker during codegen
 
   CompileCtx(LLVMContext &ctx, Module &m, const std::vector<ColSchema> &s,
              Value *chunk, Value *sel)
@@ -711,6 +802,15 @@ struct CompileCtx {
   }
   ConstantInt *ci(int v, int bits) {
     return ConstantInt::get(llctx, APInt(bits, v));
+  }
+
+  // §7.3 template mode: emit call to aqp_jit_get_params() to load
+  // params_base from the thread-local (non-query-jit only).
+  void LoadParamsFromThreadLocal() {
+    FunctionCallee gp = mod.getOrInsertFunction(
+        "aqp_jit_get_params",
+        FunctionType::get(i8p(), {}, false));
+    params_base = b.CreateCall(gp, {}, "params_tl");
   }
 
   // Load col data pointer for column col_chunk_idx (index into AQPChunkView)
@@ -914,6 +1014,69 @@ static LikePatternKind ClassifyLikePatternEx(const std::string &pattern,
   return LIKE_COMPLEX;
 }
 
+// §7.3 template-mode helpers: emit a load from the runtime params buffer
+// instead of an LLVM immediate. The ParamsBuilder tracks offsets during
+// codegen; at cache-hit time, BuildParamsBuffer re-walks the same expressions
+// in the same order to produce a byte-identical layout.
+static Value *EmitParamI32(CompileCtx &cc, int32_t v) {
+  uint32_t off = cc.params_builder->AllocI32(v);
+  Value *p = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), cc.params_base,
+                             cc.c64(off));
+  return cc.b.CreateLoad(
+      cc.i32(), cc.b.CreateBitCast(p, PointerType::getUnqual(cc.i32())),
+      "pi32");
+}
+
+static Value *EmitParamI64(CompileCtx &cc, int64_t v) {
+  uint32_t off = cc.params_builder->AllocI64(v);
+  Value *p = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), cc.params_base,
+                             cc.c64(off));
+  return cc.b.CreateLoad(
+      cc.i64(), cc.b.CreateBitCast(p, PointerType::getUnqual(cc.i64())),
+      "pi64");
+}
+
+static Value *EmitParamF32(CompileCtx &cc, float v) {
+  uint32_t off = cc.params_builder->AllocF32(v);
+  Value *p = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), cc.params_base,
+                             cc.c64(off));
+  return cc.b.CreateLoad(
+      cc.f32(), cc.b.CreateBitCast(p, PointerType::getUnqual(cc.f32())),
+      "pf32");
+}
+
+static Value *EmitParamF64(CompileCtx &cc, double v) {
+  uint32_t off = cc.params_builder->AllocF64(v);
+  Value *p = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), cc.params_base,
+                             cc.c64(off));
+  return cc.b.CreateLoad(
+      cc.f64(), cc.b.CreateBitCast(p, PointerType::getUnqual(cc.f64())),
+      "pf64");
+}
+
+// Returns {pat_ptr (i8*), pat_len (i32)} loaded from params buffer.
+// Slot layout: {uint32_t str_offset, uint32_t str_len} at fixed position.
+// Actual string bytes at params_base + str_offset (filled by Finalize).
+static std::pair<Value *, Value *> EmitParamString(CompileCtx &cc,
+                                                   const std::string &s) {
+  uint32_t off = cc.params_builder->AllocString(s);
+  Value *slot = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), cc.params_base,
+                                cc.c64(off));
+  Value *str_off = cc.b.CreateLoad(
+      cc.i32(),
+      cc.b.CreateBitCast(slot, PointerType::getUnqual(cc.i32())), "pstr_off");
+  Value *len = cc.b.CreateLoad(
+      cc.i32(),
+      cc.b.CreateBitCast(
+          cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), slot, cc.c64(4)),
+          PointerType::getUnqual(cc.i32())),
+      "pstr_len");
+  Value *ptr = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), cc.params_base,
+                               cc.b.CreateZExt(str_off, cc.b.getInt64Ty()),
+                               "pstr_ptr");
+  return {ptr, len};
+}
+
 // Emit comparison for VarConstComparison node.
 // Returns i1 (true = row matches).
 static Value *EmitVarConst(CompileCtx &cc,
@@ -956,7 +1119,13 @@ static Value *EmitVarConst(CompileCtx &cc,
       rhs_raw = (int64_t)cv->GetIntValue();
     else if (cv->GetType() == SimplestVarType::FloatVar)
       rhs_raw = (int64_t)cv->GetFloatValue();
-    Value *rhs = cc.c32((int32_t)rhs_raw);
+    Value *rhs;
+    if (cc.template_mode && cc.params_builder) {
+      Value *r64 = EmitParamI64(cc, rhs_raw);
+      rhs = cc.b.CreateTrunc(r64, cc.i32(), "pi32t");
+    } else {
+      rhs = cc.c32((int32_t)rhs_raw);
+    }
 
     switch (op) {
     case SimplestExprType::Equal:
@@ -984,7 +1153,9 @@ static Value *EmitVarConst(CompileCtx &cc,
       rhs_raw = (int64_t)cv->GetIntValue();
     else if (cv->GetType() == SimplestVarType::FloatVar)
       rhs_raw = (int64_t)cv->GetFloatValue();
-    Value *rhs = cc.c64(rhs_raw);
+    Value *rhs = (cc.template_mode && cc.params_builder)
+                     ? EmitParamI64(cc, rhs_raw)
+                     : cc.c64(rhs_raw);
     switch (op) {
     case SimplestExprType::Equal:
       return cc.b.CreateICmpEQ(lhs, rhs);
@@ -1008,7 +1179,13 @@ static Value *EmitVarConst(CompileCtx &cc,
     float rhs_raw = (cv->GetType() == SimplestVarType::FloatVar)
                         ? (float)cv->GetFloatValue()
                         : 0.0f;
-    Value *rhs = ConstantFP::get(cc.f32(), rhs_raw);
+    Value *rhs;
+    if (cc.template_mode && cc.params_builder) {
+      Value *r64 = EmitParamF64(cc, (double)rhs_raw);
+      rhs = cc.b.CreateFPTrunc(r64, cc.f32(), "pf32t");
+    } else {
+      rhs = ConstantFP::get(cc.f32(), rhs_raw);
+    }
     switch (op) {
     case SimplestExprType::Equal:
       return cc.b.CreateFCmpOEQ(lhs, rhs);
@@ -1032,7 +1209,9 @@ static Value *EmitVarConst(CompileCtx &cc,
     double rhs_raw = (cv->GetType() == SimplestVarType::FloatVar)
                          ? (double)cv->GetFloatValue()
                          : 0.0;
-    Value *rhs = ConstantFP::get(cc.f64(), rhs_raw);
+    Value *rhs = (cc.template_mode && cc.params_builder)
+                     ? EmitParamF64(cc, rhs_raw)
+                     : ConstantFP::get(cc.f64(), rhs_raw);
     switch (op) {
     case SimplestExprType::Equal:
       return cc.b.CreateFCmpOEQ(lhs, rhs);
@@ -1106,13 +1285,20 @@ static Value *EmitVarConst(CompileCtx &cc,
         cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr, "char_ptr");
 
     const std::string &pat = cv->GetStringValue();
-    Constant *pat_const =
-        ConstantDataArray::getString(cc.llctx, pat, /*AddNull=*/false);
-    GlobalVariable *pat_gv =
-        new GlobalVariable(cc.mod, pat_const->getType(), /*isConst=*/true,
-                           GlobalValue::PrivateLinkage, pat_const, "pat");
-    Value *pat_ptr = cc.b.CreateBitCast(pat_gv, cc.i8p());
-    Value *pat_len = cc.c32((int32_t)pat.size());
+    Value *pat_ptr, *pat_len;
+    if (cc.template_mode && cc.params_builder) {
+      auto [pp, pl] = EmitParamString(cc, pat);
+      pat_ptr = pp;
+      pat_len = pl;
+    } else {
+      Constant *pat_const =
+          ConstantDataArray::getString(cc.llctx, pat, /*AddNull=*/false);
+      GlobalVariable *pat_gv =
+          new GlobalVariable(cc.mod, pat_const->getType(), /*isConst=*/true,
+                             GlobalValue::PrivateLinkage, pat_const, "pat");
+      pat_ptr = cc.b.CreateBitCast(pat_gv, cc.i8p());
+      pat_len = cc.c32((int32_t)pat.size());
+    }
 
     FunctionType *ft4 = FunctionType::get(
         cc.i32(), {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
@@ -1148,6 +1334,21 @@ static Value *EmitVarConst(CompileCtx &cc,
           (op == SimplestExprType::NotEqual) ? cc.b.CreateNot(m_phi) : m_phi;
     } else if (op == SimplestExprType::TextLike ||
                op == SimplestExprType::Text_Not_Like) {
+      // §7.3 template mode: LIKE specialized paths bake pattern bytes as
+      // globals; use the generic aqp_like_match for all patterns since
+      // pat_ptr/pat_len are already parameterized.
+      if (cc.template_mode && cc.params_builder) {
+        FunctionType *ft4_like = FunctionType::get(
+            cc.i32(), {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
+        FunctionCallee callee =
+            cc.mod.getOrInsertFunction("aqp_like_match", ft4_like);
+        Value *r =
+            cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
+        Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+        cmp_result = (op == SimplestExprType::Text_Not_Like)
+                         ? cc.b.CreateNot(m)
+                         : m;
+      } else {
       std::string literal;
       LikeSegments seg_info;
       LikePatternKind kind = ClassifyLikePatternEx(pat, literal, seg_info);
@@ -1411,6 +1612,7 @@ static Value *EmitVarConst(CompileCtx &cc,
                          ? cc.b.CreateNot(m)
                          : m;
       }
+      } // end template-mode else
     } else if (op == SimplestExprType::GreaterEqual ||
                op == SimplestExprType::LessEqual ||
                op == SimplestExprType::GreaterThan ||
@@ -1663,11 +1865,17 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
     }
 
     if (vals.size() <= 8) {
-      // Unroll: lhs == v1 || lhs == v2 || ...
       Value *any = ConstantInt::getFalse(cc.llctx);
       for (const auto &v : vals) {
         int32_t iv = (int32_t)v->GetIntValue();
-        Value *match = cc.b.CreateICmpEQ(lhs, cc.c32(iv));
+        Value *rv;
+        if (cc.template_mode && cc.params_builder) {
+          Value *r64 = EmitParamI64(cc, (int64_t)iv);
+          rv = cc.b.CreateTrunc(r64, cc.i32(), "pin_i32");
+        } else {
+          rv = cc.c32(iv);
+        }
+        Value *match = cc.b.CreateICmpEQ(lhs, rv);
         any = cc.b.CreateOr(any, match);
       }
       return expr->negated ? cc.b.CreateNot(any) : any;
@@ -1714,7 +1922,10 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
       Value *any = ConstantInt::getFalse(cc.llctx);
       for (const auto &v : vals) {
         int64_t iv = (int64_t)v->GetIntValue();
-        Value *match = cc.b.CreateICmpEQ(lhs, cc.c64(iv));
+        Value *rv = (cc.template_mode && cc.params_builder)
+                        ? EmitParamI64(cc, iv)
+                        : cc.c64(iv);
+        Value *match = cc.b.CreateICmpEQ(lhs, rv);
         any = cc.b.CreateOr(any, match);
       }
       return expr->negated ? cc.b.CreateNot(any) : any;
@@ -1778,8 +1989,6 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
     Value *char_ptr = cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr);
 
     if (vals.size() <= 8) {
-      // Inline OR-chain: (len==L1 && memcmp==0) || (len==L2 && ...) || ...
-      // Same pattern as the integer IN-set unrolling above.
       FunctionType *ft_memcmp = FunctionType::get(
           cc.i32(), {cc.i8p(), cc.i8p(), cc.i64()}, false);
       FunctionCallee memcmp_fn =
@@ -1788,12 +1997,12 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
       Value *any = ConstantInt::getFalse(cc.llctx);
       for (size_t i = 0; i < vals.size(); ++i) {
         const std::string &s = vals[i]->GetStringValue();
-        int32_t s_len = (int32_t)s.size();
 
-        Value *len_eq = cc.b.CreateICmpEQ(slen, cc.c32(s_len));
-        Value *match;
-        if (s_len == 0) {
-          match = len_eq;
+        Value *str_ptr, *str_len_v;
+        if (cc.template_mode && cc.params_builder) {
+          auto [pp, pl] = EmitParamString(cc, s);
+          str_ptr = pp;
+          str_len_v = pl;
         } else {
           Constant *str_const =
               ConstantDataArray::getString(cc.llctx, s, false);
@@ -1801,13 +2010,19 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
               cc.mod, str_const->getType(), true,
               GlobalValue::PrivateLinkage, str_const,
               "in_str_val" + std::to_string(i));
-          Value *str_ptr = cc.b.CreateBitCast(str_gv, cc.i8p());
-          // memcmp length 0 when len differs: the column string may be
-          // shorter than the pattern, and this And is non-short-circuit —
-          // an unconditional pattern-length memcmp could overread the
-          // column bytes. Result is ANDed with the false len_eq anyway.
-          Value *cmp_len =
-              cc.b.CreateSelect(len_eq, cc.c64((int64_t)s_len), cc.c64(0));
+          str_ptr = cc.b.CreateBitCast(str_gv, cc.i8p());
+          str_len_v = cc.c32((int32_t)s.size());
+        }
+
+        Value *len_eq = cc.b.CreateICmpEQ(slen, str_len_v);
+        Value *match;
+        if (!cc.template_mode && s.empty()) {
+          match = len_eq;
+        } else {
+          Value *cmp_len = cc.b.CreateSelect(
+              len_eq,
+              cc.b.CreateSExt(str_len_v, cc.i64()),
+              cc.c64(0));
           Value *mcr =
               cc.b.CreateCall(memcmp_fn, {char_ptr, str_ptr, cmp_len});
           Value *bytes_eq = cc.b.CreateICmpEQ(mcr, cc.c32(0));
@@ -2073,7 +2288,8 @@ static BasicBlock *EmitShortCircuitFilter(
 static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
                                      const std::string &fn_name,
                                      const std::vector<const AQPExpr *> &exprs,
-                                     const std::vector<ColSchema> &schema) {
+                                     const std::vector<ColSchema> &schema,
+                                     ParamsBuilder *pb = nullptr) {
   Type *i8p = PointerType::getUnqual(Type::getInt8Ty(llctx));
   Type *i32 = Type::getInt32Ty(llctx);
   Type *i64 = Type::getInt64Ty(llctx);
@@ -2109,6 +2325,12 @@ static Function *BuildFilterFunction(LLVMContext &llctx, Module &mod,
 
   CompileCtx cc(llctx, mod, schema, chunk_arg, sel_arg);
   cc.b.SetInsertPoint(entry_bb);
+
+  if (pb) {
+    cc.template_mode = true;
+    cc.params_builder = pb;
+    cc.LoadParamsFromThreadLocal();
+  }
 
   // Load nrows from chunk->nrows (field index 1)
   Value *nrows_ptr = cc.b.CreateStructGEP(ChunkViewTy, chunk_arg, 1);
@@ -3908,7 +4130,8 @@ static Function *BuildPipelineFunction(
     LLVMContext &llctx, Module &mod, const std::string &fn_name,
     const std::vector<const AQPExpr *> &filter_exprs,
     const std::vector<int> &col_mapping, const std::vector<int32_t> &col_dtypes,
-    const std::vector<ColSchema> &schema) {
+    const std::vector<ColSchema> &schema,
+    ParamsBuilder *pb = nullptr) {
   Type *i8p = PointerType::getUnqual(Type::getInt8Ty(llctx));
   Type *i32 = Type::getInt32Ty(llctx);
   Type *i64 = Type::getInt64Ty(llctx);
@@ -3947,6 +4170,12 @@ static Function *BuildPipelineFunction(
   CompileCtx cc(llctx, mod, schema, in_arg,
                 out_arg /* repurposed as sel_arg placeholder */);
   cc.b.SetInsertPoint(entry_bb);
+
+  if (pb) {
+    cc.template_mode = true;
+    cc.params_builder = pb;
+    cc.LoadParamsFromThreadLocal();
+  }
 
   // Load in->nrows
   Value *nrows = cc.b.CreateLoad(
@@ -4843,10 +5072,16 @@ IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd,
 
 IrToLlvmCompiler::~IrToLlvmCompiler() = default;
 
-void IrToLlvmCompiler::SetCache(bool enable) {
-  cache_enabled_ = enable;
-  if (enable && impl_)
+void IrToLlvmCompiler::SetCache(int mode) {
+  cache_mode_ = mode;
+  cache_enabled_ = mode > 0;
+  if (cache_enabled_ && impl_)
     impl_->EnableCache();
+}
+
+void IrToLlvmCompiler::ClearObjCache() {
+  std::lock_guard<std::mutex> lk(Impl::ObjCacheMu());
+  Impl::ObjCache().clear();
 }
 
 // --- JITTrackerHandle ---
@@ -4889,16 +5124,18 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
 
 AQPExprFn IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
                                           const std::vector<ColSchema> &schema,
-                                          JITTrackerHandle &tracker) {
+                                          JITTrackerHandle &tracker,
+                                          std::vector<uint8_t> *params_out) {
   TrackerGuard g(impl_->current_tracker, tracker);
-  return CompileFilter(filter_node, schema);
+  return CompileFilter(filter_node, schema, params_out);
 }
 
 AQPPipelineFn IrToLlvmCompiler::CompilePipeline(
     const AQPStmt *filter_node, const AQPStmt *proj_node,
-    const std::vector<ColSchema> &in_schema, JITTrackerHandle &tracker) {
+    const std::vector<ColSchema> &in_schema, JITTrackerHandle &tracker,
+    std::vector<uint8_t> *params_out) {
   TrackerGuard g(impl_->current_tracker, tracker);
-  return CompilePipeline(filter_node, proj_node, in_schema);
+  return CompilePipeline(filter_node, proj_node, in_schema, params_out);
 }
 
 static std::string BuildCacheContent(const std::string &tag,
@@ -4975,7 +5212,7 @@ static std::string SerializeQjitPlan(const qjit::QjitQueryPlan &plan) {
          (st.source_is_temp ? "T" : "B");
     for (const auto &c : st.cols)
       s += "|" + std::to_string(c.table_index) + "." +
-           std::to_string(c.column_index) + "." + c.column_name + "." +
+           std::to_string(c.column_index) + "." +
            std::to_string(c.expected_dtype);
     for (const auto &op : st.ops) {
       if (op.kind == qjit::QjitStepOp::Filter) {
@@ -5015,6 +5252,216 @@ static std::string SerializeQjitPlan(const qjit::QjitQueryPlan &plan) {
   for (int c : plan.agg_output_cells)
     s += "," + std::to_string(c);
   return s;
+}
+
+static void SerializeExprTemplate(std::string &s, const AQPExpr *expr) {
+  if (!expr) return;
+  auto nt = expr->GetNodeType();
+  if (nt == VarConstComparisonNode) {
+    auto *cmp = static_cast<const SimplestVarConstComparison *>(expr);
+    s += cmp->attr->Print(false);
+    s += ":" + std::to_string((int)cmp->GetSimplestExprType());
+    auto vt = cmp->const_var->GetType();
+    if (vt == SimplestVarType::IntVar)
+      s += "$I";
+    else if (vt == SimplestVarType::FloatVar)
+      s += "$F";
+    else if (vt == SimplestVarType::StringVar) {
+      auto op = cmp->GetSimplestExprType();
+      if (op == SimplestExprType::TextLike ||
+          op == SimplestExprType::Text_Not_Like) {
+        std::string literal;
+        LikeSegments seg_info;
+        LikePatternKind kind = ClassifyLikePatternEx(
+            cmp->const_var->GetStringValue(), literal, seg_info);
+        s += "$L" + std::to_string(kind);
+        if (kind == LIKE_MULTI_SEGMENT)
+          s += "x" + std::to_string(seg_info.segs.size());
+      } else {
+        s += "$S";
+      }
+    } else if (vt == SimplestVarType::Date)
+      s += "$D";
+    else
+      s += "$?";
+  } else if (nt == InExprNode) {
+    auto *in = static_cast<const SimplestInExpr *>(expr);
+    s += in->attr->Print(false);
+    s += (in->negated ? ":NI" : ":IN");
+    int n = (int)in->values.size();
+    if (n <= 8) {
+      auto vt = in->values.empty() ? SimplestVarType::IntVar
+                                   : in->values[0]->GetType();
+      if (vt == SimplestVarType::IntVar)
+        s += "$I*" + std::to_string(n);
+      else if (vt == SimplestVarType::StringVar)
+        s += "$S*" + std::to_string(n);
+      else
+        s += "$?*" + std::to_string(n);
+    } else {
+      s += const_cast<AQPExpr *>(expr)->Print(false);
+    }
+  } else if (nt == LogicalExprNode) {
+    auto *le = static_cast<const SimplestLogicalExpr *>(expr);
+    s += "(";
+    SerializeExprTemplate(s, le->left_expr.get());
+    s += "L" + std::to_string((int)le->GetLogicalOp());
+    SerializeExprTemplate(s, le->right_expr.get());
+    s += ")";
+  } else if (nt == IsNullExprNode) {
+    s += const_cast<AQPExpr *>(expr)->Print(false);
+  } else {
+    s += const_cast<AQPExpr *>(expr)->Print(false);
+  }
+}
+
+static std::string SerializeQjitPlanTemplate(const qjit::QjitQueryPlan &plan) {
+  std::string s;
+  for (const auto &st : plan.steps) {
+    s += "S{" + st.source_table + "#" + std::to_string(st.source_table_index) +
+         (st.source_is_temp ? "T" : "B");
+    for (const auto &c : st.cols)
+      s += "|" + std::to_string(c.table_index) + "." +
+           std::to_string(c.column_index) + "." +
+           std::to_string(c.expected_dtype);
+    for (const auto &op : st.ops) {
+      if (op.kind == qjit::QjitStepOp::Filter) {
+        s += ";FT:";
+        SerializeExprTemplate(s, op.filter);
+      } else {
+        s += ";P:" + std::to_string(op.ht_id);
+        for (const auto &k : op.keys)
+          AppendQjitLoc(s, k);
+      }
+    }
+    s += ";g" + std::to_string(st.guard_pos);
+    for (const auto &g : st.guards)
+      s += "(" + std::to_string(g.op_index) + (g.membership ? "m" : "r") + ")";
+    s += ";b" + std::to_string(st.block_skip_col);
+    s += ";K" + std::to_string((int)st.sink) + ":" + std::to_string(st.sink_ht);
+    for (const auto &o : st.outputs)
+      AppendQjitLoc(s, o);
+    for (const auto &a : st.agg_cells) {
+      s += ";A" + std::to_string((int)a.fn) + (a.has_arg ? "v" : "x");
+      if (a.has_arg)
+        AppendQjitLoc(s, a.arg);
+    }
+    s += "}";
+  }
+  for (const auto &ht : plan.hts) {
+    s += "H{" + std::to_string(ht.num_keys) + "," +
+         std::to_string(ht.prefix_bytes) + "," + std::to_string(ht.tuple_size);
+    for (const auto &c : ht.cols)
+      s += "|" + std::to_string(c.table_index) + "." +
+           std::to_string(c.column_index) + "." + std::to_string(c.dtype) +
+           "@" + std::to_string(c.offset);
+    s += "}";
+  }
+  s += "G";
+  s += plan.has_agg ? "1" : "0";
+  for (int c : plan.agg_output_cells)
+    s += "," + std::to_string(c);
+  return s;
+}
+
+static void BuildParamsFromExpr(ParamsBuilder &pb, const AQPExpr *expr) {
+  if (!expr) return;
+  auto nt = expr->GetNodeType();
+  if (nt == VarConstComparisonNode) {
+    auto *cmp = static_cast<const SimplestVarConstComparison *>(expr);
+    auto vt = cmp->const_var->GetType();
+    if (vt == SimplestVarType::IntVar || vt == SimplestVarType::Date) {
+      int64_t v = (int64_t)cmp->const_var->GetIntValue();
+      pb.AllocI64(v);
+    } else if (vt == SimplestVarType::FloatVar) {
+      double v = (double)cmp->const_var->GetFloatValue();
+      pb.AllocF64(v);
+    } else if (vt == SimplestVarType::StringVar) {
+      pb.AllocString(cmp->const_var->GetStringValue());
+    }
+  } else if (nt == InExprNode) {
+    auto *in = static_cast<const SimplestInExpr *>(expr);
+    if ((int)in->values.size() <= 8) {
+      for (const auto &v : in->values) {
+        if (v->GetType() == SimplestVarType::IntVar ||
+            v->GetType() == SimplestVarType::Date)
+          pb.AllocI64((int64_t)v->GetIntValue());
+        else if (v->GetType() == SimplestVarType::StringVar)
+          pb.AllocString(v->GetStringValue());
+        else if (v->GetType() == SimplestVarType::FloatVar)
+          pb.AllocF64((double)v->GetFloatValue());
+      }
+    }
+  } else if (nt == LogicalExprNode) {
+    auto *le = static_cast<const SimplestLogicalExpr *>(expr);
+    BuildParamsFromExpr(pb, le->left_expr.get());
+    BuildParamsFromExpr(pb, le->right_expr.get());
+  }
+}
+
+static std::vector<uint8_t> BuildParamsBuffer(
+    const qjit::QjitQueryPlan &plan) {
+  ParamsBuilder pb;
+  for (const auto &st : plan.steps)
+    for (const auto &op : st.ops)
+      if (op.kind == qjit::QjitStepOp::Filter)
+        BuildParamsFromExpr(pb, op.filter);
+  pb.Finalize();
+  return std::move(pb.buf);
+}
+
+// §7.3 template mode helpers for non-query-jit: serialize expression tree
+// with constants replaced by type tags, and build params buffer from
+// the expression's constant values. Walk order must match codegen order
+// (qual_vec iteration order in BuildFilterFunction / EmitExpr).
+
+static std::string SerializeStmtTemplate(const AQPStmt *node) {
+  if (!node) return "";
+  std::string s;
+  for (const auto &qe : node->qual_vec) {
+    SerializeExprTemplate(s, qe.get());
+    s += "&";
+  }
+  return s;
+}
+
+static std::vector<uint8_t> BuildParamsFromStmt(const AQPStmt *node) {
+  ParamsBuilder pb;
+  if (node)
+    for (const auto &qe : node->qual_vec)
+      BuildParamsFromExpr(pb, qe.get());
+  pb.Finalize();
+  return std::move(pb.buf);
+}
+
+static std::string SerializeProbeStagesTemplate(
+    const std::vector<ProbeStageInfo> &stages) {
+  std::string s;
+  for (const auto &st : stages) {
+    s += "STAGE{";
+    if (st.filter_ir)
+      s += SerializeStmtTemplate(st.filter_ir);
+    s += "||";
+    if (st.join_ir)
+      s += const_cast<ir_sql_converter::AQPStmt *>(st.join_ir)->Print(false, 0);
+    s += "||";
+    s += BuildCacheContent("p", st.probe_schema);
+    s += BuildCacheContent("y", st.payload_schema);
+    AppendIntVec(s, "pri", st.payload_row_indices);
+    AppendIntVec(s, "lo", st.lhs_output_idxs);
+    AppendIntVec(s, "ro", st.rhs_output_layout_idxs);
+    AppendIntVec(s, "ld", st.lhs_output_dtypes);
+    AppendIntVec(s, "rd", st.rhs_output_dtypes);
+    AppendIntVec(s, "lk", st.lhs_key_chunk_idxs);
+    AppendIntVec(s, "kd", st.lhs_key_dtypes);
+    s += st.skip_hash_cmp_eligible ? "E}" : "e}";
+  }
+  return s;
+}
+
+static std::vector<uint8_t> BuildParamsFromProbeStages(
+    const std::vector<ProbeStageInfo> &stages) {
+  return BuildParamsFromStmt(stages.empty() ? nullptr : stages[0].filter_ir);
 }
 
 unsigned IrToLlvmCompiler::GetVecWidth() const {
@@ -5217,7 +5664,8 @@ IrToLlvmCompiler::CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
 
 AQPExprFn
 IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
-                                const std::vector<ColSchema> &schema) {
+                                const std::vector<ColSchema> &schema,
+                                std::vector<uint8_t> *params_out) {
 
   // Collect the qual_vec expressions from the filter node
   std::vector<const AQPExpr *> exprs;
@@ -5227,6 +5675,8 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   if (exprs.empty())
     return nullptr;
 
+  const bool template_mode = cache_mode_ == 2;
+
   // Use a monotonic counter to guarantee a unique function name within
   // this LLJIT instance (hash collisions caused "Duplicate definition").
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
@@ -5235,26 +5685,37 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   // In-memory cache lookup
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
-    std::string expr_text =
-        const_cast<AQPStmt &>(filter_node).Print(false, 0);
+    std::string expr_text = template_mode
+        ? SerializeStmtTemplate(&filter_node)
+        : const_cast<AQPStmt &>(filter_node).Print(false, 0);
     std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
-                          std::to_string((int)fast_mode_);
+                          std::to_string((int)fast_mode_) +
+                          "C" + std::to_string(cache_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("filter:" + opt_tag, schema, expr_text));
     fn_name = "aqp_expr_c" + cache_key.substr(0, 12);
     void *cached = impl_->TryCacheLoad(cache_key, fn_name);
-    if (cached)
+    if (cached) {
+      if (template_mode && params_out)
+        *params_out = BuildParamsFromStmt(&filter_node);
       return reinterpret_cast<AQPExprFn>(cached);
+    }
   }
 
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_filter_mod", *ctx);
 
+  // §7.3 template mode: use plain scalar path to ensure walk order matches
+  // BuildParamsFromStmt (which iterates qual_vec in order). SIMD and TwoPass
+  // reorder expressions, breaking the deterministic params layout.
+  ParamsBuilder tmpl_pb;
+  ParamsBuilder *pb_ptr = template_mode ? &tmpl_pb : nullptr;
+
   // Try SIMD version first if enabled and expressions are SIMD-friendly.
   // Split: separate numeric (SIMD-able) from VARCHAR (scalar-only) expressions.
   Function *fn = nullptr;
   bool used_simd = false;
-  if (use_simd_ && impl_->vec_width > 1) {
+  if (!template_mode && use_simd_ && impl_->vec_width > 1) {
     // Check which top-level expressions are SIMD-friendly
     std::vector<const AQPExpr *> simd_exprs, scalar_exprs;
     for (const AQPExpr *e : exprs) {
@@ -5285,7 +5746,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     }
   }
   // Fall back to scalar — try two-pass (cheap-then-expensive) when mixed
-  if (!fn && exprs.size() >= 2) {
+  if (!template_mode && !fn && exprs.size() >= 2) {
     std::vector<const AQPExpr *> cheap, expensive;
     for (const AQPExpr *e : exprs) {
       if (IsExpensiveExpr(e))
@@ -5305,7 +5766,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     }
   }
   if (!fn) {
-    fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
+    fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema, pb_ptr);
   }
   if (!fn)
     return nullptr;
@@ -5360,6 +5821,11 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
 #endif
     logAllUnhandledErrors(sym.takeError(), errs());
     return nullptr;
+  }
+
+  if (template_mode && params_out) {
+    tmpl_pb.Finalize();
+    *params_out = std::move(tmpl_pb.buf);
   }
 
   return AQP_JIT_GET_FN(AQPExprFn, sym);
@@ -5696,7 +6162,8 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
 AQPPipelineFn
 IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
                                   const AQPStmt *proj_node,
-                                  const std::vector<ColSchema> &in_schema) {
+                                  const std::vector<ColSchema> &in_schema,
+                                  std::vector<uint8_t> *params_out) {
 
   // Collect filter expressions
   std::vector<const AQPExpr *> filter_exprs;
@@ -5704,6 +6171,8 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
     for (const auto &qe : filter_node->qual_vec)
       filter_exprs.push_back(qe.get());
   }
+
+  const bool template_mode = cache_mode_ == 2;
 
   // Build projection column mapping
   std::vector<int> col_mapping;
@@ -5740,28 +6209,36 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
   // In-memory cache lookup
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
-    std::string ft = filter_node
-        ? const_cast<AQPStmt *>(filter_node)->Print(false, 0) : "";
+    std::string ft = template_mode
+        ? SerializeStmtTemplate(filter_node)
+        : (filter_node ? const_cast<AQPStmt *>(filter_node)->Print(false, 0) : "");
     std::string pt = proj_node
         ? const_cast<AQPStmt *>(proj_node)->Print(false, 0) : "";
     std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
-                          std::to_string((int)fast_mode_);
+                          std::to_string((int)fast_mode_) +
+                          "C" + std::to_string(cache_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("pipe:" + opt_tag, in_schema, ft + "||" + pt));
     fn_name = "aqp_pipe_c" + cache_key.substr(0, 12);
     void *cached = impl_->TryCacheLoad(cache_key, fn_name);
-    if (cached)
+    if (cached) {
+      if (template_mode && params_out)
+        *params_out = BuildParamsFromStmt(filter_node);
       return reinterpret_cast<AQPPipelineFn>(cached);
+    }
   }
 
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_pipe_mod", *ctx);
 
+  ParamsBuilder tmpl_pb;
+  ParamsBuilder *pb_ptr = template_mode ? &tmpl_pb : nullptr;
+
   // Try SIMD pipeline if enabled and all filter expressions are SIMD-friendly
   // TODO: SIMD pipeline has control flow issues — disabled until fixed
   Function *fn = nullptr;
   bool used_simd = false;
-  if (false && use_simd_ && impl_->vec_width > 1 &&
+  if (false && !template_mode && use_simd_ && impl_->vec_width > 1 &&
       (filter_exprs.empty() || AllExprsSIMDFriendly(filter_exprs, in_schema))) {
     fn = BuildPipelineFunctionSIMD(*ctx, *mod, fn_name, filter_exprs,
                                    col_mapping, col_dtypes, in_schema,
@@ -5780,7 +6257,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
   }
   if (!fn)
     fn = BuildPipelineFunction(*ctx, *mod, fn_name, filter_exprs, col_mapping,
-                               col_dtypes, in_schema);
+                               col_dtypes, in_schema, pb_ptr);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -5824,6 +6301,11 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
             << "  out_cols=" << col_mapping.size()
             << (cache_key.empty() ? "" : " [cached]") << "\n";
 #endif
+
+  if (template_mode && params_out) {
+    tmpl_pb.Finalize();
+    *params_out = std::move(tmpl_pb.buf);
+  }
 
   return AQP_JIT_GET_FN(AQPPipelineFn, sym);
 }
@@ -6089,7 +6571,8 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     const std::vector<int32_t> &lhs_output_dtypes,
     const std::vector<int32_t> &rhs_output_dtypes,
     const std::vector<int> &lhs_key_chunk_idxs,
-    const std::vector<int32_t> &lhs_key_dtypes) {
+    const std::vector<int32_t> &lhs_key_dtypes,
+    std::vector<uint8_t> *params_out) {
 
   const SimplestJoin *join =
       join_node ? dynamic_cast<const SimplestJoin *>(join_node) : nullptr;
@@ -6097,13 +6580,15 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     return nullptr;
   }
 
+  const bool template_mode = cache_mode_ == 2;
+
   // Build filter expressions
   std::vector<const AQPExpr *> filter_exprs;
   if (filter_node) {
     for (const auto &qe : filter_node->qual_vec)
       filter_exprs.push_back(qe.get());
   }
-  SortFiltersByCost(filter_exprs);
+  if (!template_mode) SortFiltersByCost(filter_exprs);
 
   // Extract probe key columns. Prefer DuckDB-authoritative chunk positions
   // when supplied (one per join condition, same order). Otherwise fall back
@@ -6381,7 +6866,9 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string extra;
-    if (filter_node)
+    if (template_mode)
+      extra += SerializeStmtTemplate(filter_node);
+    else if (filter_node)
       extra += const_cast<AQPStmt *>(filter_node)->Print(false, 0);
     extra += "||";
     if (join_node)
@@ -6404,13 +6891,17 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
         "k" + std::to_string(skip_hash_cmp_) + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
         std::to_string(prefetch_entry_distance_) + "." +
-        std::to_string(prefetch_row_distance_);
+        std::to_string(prefetch_row_distance_) +
+        "C" + std::to_string(cache_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("fprobe:" + opt_tag, probe_schema, extra));
     fn_name = "aqp_fpp_c" + cache_key.substr(0, 12);
     void *cached = impl_->TryCacheLoad(cache_key, fn_name);
-    if (cached)
+    if (cached) {
+      if (template_mode && params_out)
+        *params_out = BuildParamsFromStmt(filter_node);
       return cached;
+    }
   }
 
   auto ctx = std::make_unique<LLVMContext>();
@@ -6468,10 +6959,18 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
   BasicBlock *bail_bb = BasicBlock::Create(*ctx, "bail", fn);
   BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
 
+  ParamsBuilder tmpl_pb;
+
   Value *dummy_sel =
       ConstantPointerNull::get(PointerType::getUnqual(SelViewTy));
   CompileCtx cc(*ctx, *mod, probe_schema, in_arg, dummy_sel);
   cc.b.SetInsertPoint(entry_bb);
+
+  if (template_mode) {
+    cc.template_mode = true;
+    cc.params_builder = &tmpl_pb;
+    cc.LoadParamsFromThreadLocal();
+  }
 
   // ---- Entry: load view fields once ----
   Value *view_ptr =
@@ -7125,6 +7624,11 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
             << "  payload_width=" << payload_width << "\n";
 #endif
 
+  if (template_mode && params_out) {
+    tmpl_pb.Finalize();
+    *params_out = std::move(tmpl_pb.buf);
+  }
+
   return AQP_JIT_GET_ADDR(sym);
 }
 
@@ -7134,10 +7638,13 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
 // = outermost. Output columns match the outermost HJ's output layout.
 // ---------------------------------------------------------------------------
 void *IrToLlvmCompiler::CompileMultiProbeChain(
-    const std::vector<ProbeStageInfo> &stages) {
+    const std::vector<ProbeStageInfo> &stages,
+    std::vector<uint8_t> *params_out) {
 
   const size_t N = stages.size();
   if (N < 2) return nullptr;
+
+  const bool template_mode = cache_mode_ == 2;
 
   // --- Per-stage key descriptors ---
   struct StageKeyCol {
@@ -7308,13 +7815,20 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
         "k" + std::to_string(skip_hash_cmp_) + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
         std::to_string(prefetch_entry_distance_) + "." +
-        std::to_string(prefetch_row_distance_);
+        std::to_string(prefetch_row_distance_) +
+        "C" + std::to_string(cache_mode_);
+    std::string stages_serial = template_mode
+        ? SerializeProbeStagesTemplate(stages)
+        : SerializeProbeStages(stages);
     cache_key = Impl::ComputeCacheKey("mprobe:" + opt_tag + "||" +
-                                      SerializeProbeStages(stages));
+                                      stages_serial);
     fn_name = "aqp_mpc_c" + cache_key.substr(0, 12);
     void *cached = impl_->TryCacheLoad(cache_key, fn_name);
-    if (cached)
+    if (cached) {
+      if (template_mode && params_out)
+        *params_out = BuildParamsFromProbeStages(stages);
       return cached;
+    }
   }
 
   auto ctx = std::make_unique<LLVMContext>();
@@ -7359,12 +7873,20 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
   BasicBlock *bail_bb = BasicBlock::Create(*ctx, "bail", fn);
   BasicBlock *exit_bb = BasicBlock::Create(*ctx, "exit", fn);
 
+  ParamsBuilder tmpl_pb;
+
   auto &probe_schema = stages[0].probe_schema;
   Value *dummy_sel = ConstantPointerNull::get(
       PointerType::getUnqual(
           StructType::get(*ctx, {PointerType::getUnqual(i32), i32})));
   CompileCtx cc(*ctx, *mod, probe_schema, in_arg, dummy_sel);
   cc.b.SetInsertPoint(entry_bb);
+
+  if (template_mode) {
+    cc.template_mode = true;
+    cc.params_builder = &tmpl_pb;
+    cc.LoadParamsFromThreadLocal();
+  }
 
   // --- Load AQPMultiProbeState, extract per-stage HT views ---
   Value *mps_ptr = cc.b.CreateBitCast(state_arg, PointerType::getUnqual(MPSTy), "mps");
@@ -7600,7 +8122,7 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
     for (const auto &qe : stages[0].filter_ir->qual_vec)
       filter_exprs.push_back(qe.get());
   }
-  SortFiltersByCost(filter_exprs);
+  if (!template_mode) SortFiltersByCost(filter_exprs);
 
   BasicBlock *hash_0_bb = BasicBlock::Create(*ctx, "hash_0", fn);
   BasicBlock *after_filter_bb;
@@ -8078,6 +8600,11 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
   }
 #endif
 
+  if (template_mode && params_out) {
+    tmpl_pb.Finalize();
+    *params_out = std::move(tmpl_pb.buf);
+  }
+
   return AQP_JIT_GET_ADDR(sym);
 }
 
@@ -8098,9 +8625,12 @@ bool IrToLlvmCompiler::RegisterRuntimeSymbol(const char *name, void *addr) {
   return true;
 }
 
-void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
+void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
+                                          std::vector<uint8_t> *params_out) {
   if (plan.steps.empty())
     return nullptr;
+
+  const bool template_mode = cache_mode_ == 2;
 
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string entry_name = "qjit_query_" + std::to_string(fn_id);
@@ -8110,17 +8640,47 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
   // serialization + codegen flags fully determines the object code.
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
+    std::string serialized_plan = template_mode
+        ? SerializeQjitPlanTemplate(plan)
+        : SerializeQjitPlan(plan);
     std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
                           std::to_string((int)fast_mode_) +
                           (skip_opt_ ? "n" : "o") +
                           "H" + std::to_string(skip_hash_cmp_) +
-                          (bloom_tag_ ? "B" : "_");
+                          (bloom_tag_ ? "B" : "_") +
+                          "C" + std::to_string(cache_mode_);
     cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
-                                      SerializeQjitPlan(plan));
+                                      serialized_plan);
     entry_name = "qjit_query_c" + cache_key.substr(0, 12);
     void *cached = impl_->TryCacheLoad(cache_key, entry_name);
-    if (cached)
+
+#ifndef NDEBUG
+    // §7.3a: dump cache keys for near-miss clustering analysis.
+    {
+      const char *dp = std::getenv("AQP_DUMP_CACHE_KEYS");
+      if (dp && dp[0]) {
+        static std::mutex dmu;
+        static uint64_t dseq = 0;
+        std::lock_guard<std::mutex> lk(dmu);
+        std::string line = "SEQ=" + std::to_string(dseq++) +
+                           "\tHIT=" + std::to_string(cached ? 1 : 0) +
+                           "\tKEY=" + cache_key +
+                           "\tOPT=" + opt_tag +
+                           "\tPLAN=" + serialized_plan + "\n";
+        int fd = ::open(dp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+          (void)::write(fd, line.data(), line.size());
+          ::close(fd);
+        }
+      }
+    }
+#endif
+
+    if (cached) {
+      if (template_mode && params_out)
+        *params_out = BuildParamsBuffer(plan);
       return cached;
+    }
   }
 
   auto ctx = std::make_unique<LLVMContext>();
@@ -8169,6 +8729,10 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       C, {i8p, PointerType::getUnqual(ecc.AQPChunkViewTy), i64, i8p, i64, i8p,
           i64, i64, i8p, i8p});
   Type *ctxp = PointerType::getUnqual(QjitCtxTy);
+
+  // QjitUserData (query_jit_abi.h): { block_stats, params, params_size }
+  StructType *QjitUserDataTy = StructType::get(C, {i8p, i8p, i64});
+  Type *udp = PointerType::getUnqual(QjitUserDataTy);
 
   FunctionCallee append_i32 = mod->getOrInsertFunction(
       "qjit_table_append_i32",
@@ -8245,11 +8809,17 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     return skip;
   };
 
+  // §7.3 template mode: build params layout in lock-step with codegen.
+  ParamsBuilder tmpl_params;
+  ParamsBuilder *tmpl_params_ptr = template_mode ? &tmpl_params : nullptr;
+
   // ---- one morsel body per step: void(ctx, begin, end, worker_id) ----
   for (size_t k = 0; k < plan.steps.size(); k++) {
     const qjit::QjitStep &st = plan.steps[k];
     CompileCtx cc(C, *mod, schemas[k], /*chunk=*/nullptr, /*sel=*/nullptr);
     cc.strict_null_guard = true;
+    cc.template_mode = template_mode;
+    cc.params_builder = tmpl_params_ptr;
 
     auto emitMurmur = [&](Value *x) -> Value * {
       Value *t = cc.b.CreateXor(x, cc.b.CreateLShr(x, SHIFT32));
@@ -8292,6 +8862,15 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
     for (unsigned i = 0; i < (unsigned)st.cols.size(); ++i) {
       cc.col_data.push_back(cc.LoadColData(i));
       cc.col_validity.push_back(cc.LoadColValidity(i));
+    }
+
+    // §7.3 template mode: load params_base from QjitUserData once per morsel.
+    if (template_mode) {
+      Value *user_raw = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 9), "user_raw");
+      Value *ud = cc.b.CreateBitCast(user_raw, udp);
+      cc.params_base = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitUserDataTy, ud, 1), "params_base");
     }
 
     std::vector<Value *> ht_ptr(plan.hts.size(), nullptr);
@@ -8362,9 +8941,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       break;
     }
     }
-    // §5.5 A+ block skip: per-step block-stats pointer from ctx->user
-    // (executor-provided array of const int32_t* indexed by step; both the
-    // array and the per-step entry may be null).
+    // §5.5 A+ block skip: per-step block-stats pointer from
+    // QjitUserData::block_stats (const int32_t** indexed by step).
     bool use_block_skip = st.block_skip_col >= 0 && !st.guards.empty();
     Value *stats_ptr = nullptr;
     if (use_block_skip) {
@@ -8376,16 +8954,32 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
       cc.b.CreateCondBr(cc.b.CreateIsNotNull(user_raw, "has_user"), bb_ust,
                         bb_ujoin);
       cc.b.SetInsertPoint(bb_ust);
+      // Load block_stats from QjitUserData field 0
+      Value *ud_bs = cc.b.CreateBitCast(user_raw, udp);
+      Value *bstats = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitUserDataTy, ud_bs, 0), "bstats");
+      Value *bstats_ok = cc.b.CreateIsNotNull(bstats, "has_bstats");
+      BasicBlock *bb_bst = BasicBlock::Create(C, "bstats_load", fn);
+      BasicBlock *bb_bst_join = BasicBlock::Create(C, "bstats_join", fn);
+      cc.b.CreateCondBr(bstats_ok, bb_bst, bb_bst_join);
+
+      cc.b.SetInsertPoint(bb_bst);
       Value *stats0 = cc.b.CreateLoad(
           i8p,
-          cc.b.CreateGEP(i8p, cc.b.CreateBitCast(user_raw, i8pp),
+          cc.b.CreateGEP(i8p, cc.b.CreateBitCast(bstats, i8pp),
                          cc.c64((int64_t)k)),
           "stats_k");
+      cc.b.CreateBr(bb_bst_join);
+      cc.b.SetInsertPoint(bb_bst_join);
+      PHINode *bsp = cc.b.CreatePHI(i8p, 2, "bstats_k");
+      bsp->addIncoming(ConstantPointerNull::get(cast<PointerType>(i8p)), bb_ust);
+      bsp->addIncoming(stats0, bb_bst);
       cc.b.CreateBr(bb_ujoin);
+
       cc.b.SetInsertPoint(bb_ujoin);
       PHINode *sp = cc.b.CreatePHI(i8p, 2, "stats");
       sp->addIncoming(ConstantPointerNull::get(cast<PointerType>(i8p)), upre);
-      sp->addIncoming(stats0, bb_ust);
+      sp->addIncoming(bsp, bb_bst_join);
       stats_ptr = sp;
     }
 
@@ -9254,6 +9848,11 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan) {
   last_cg_timing_.opt_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t1 - cg_t0).count();
   last_cg_timing_.add_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t2 - cg_t1).count();
   last_cg_timing_.lookup_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t3 - cg_t2).count();
+
+  if (template_mode && params_out) {
+    tmpl_params.Finalize();
+    *params_out = std::move(tmpl_params.buf);
+  }
 
   return AQP_JIT_GET_ADDR(sym);
 }

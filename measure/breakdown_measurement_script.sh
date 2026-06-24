@@ -136,38 +136,86 @@ bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all o
 bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile llvm job_result/tuned_per_subquery_node-based.json && \
 
 # ============================================================
-# cross-query latency hiding (node-based only)
-# Orthogonal flag: re-measure key configs with --hide-latency-across-queries
+# jit-cache=single-run-strict (cache + hide-latency, node-based)
+# Applies to all jit levels: cache reuses compiled objects,
+# hide-latency pre-compiles next query's first sub-query in bg.
 # ============================================================
-# interpreter + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based none off on on on all off off llvm "" on && \
-# expr-jit + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based expr none on on on all off off llvm "" on && \
-bash ./measure_breakdown_time_job.sh duckdb node-based expr auto on on on all off off llvm "" on && \
-# operator-jit + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based operator none on on on all off off llvm "" on && \
-bash ./measure_breakdown_time_job.sh duckdb node-based operator auto on on on all off off llvm "" on && \
-# pipeline-jit + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline none on on on all off off llvm "" on && \
-bash ./measure_breakdown_time_job.sh duckdb node-based pipeline auto on on on all off off llvm "" on && \
-# query-jit llvm + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off off llvm "" on && \
-# query-jit fastisel + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off off fastisel "" on && \
-# query-jit tpde + hide-latency (primary config)
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off off tpde "" on && \
-# query-jit llvm + spec=recompile + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile llvm "" on && \
-# query-jit llvm + spec=interpret + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off interpret llvm "" on && \
-# query-jit fastisel + spec=recompile + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile fastisel "" on && \
-# query-jit fastisel + spec=interpret + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off interpret fastisel "" on && \
-# query-jit tpde + spec=recompile + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off recompile tpde "" on && \
-# query-jit tpde + spec=interpret + hide-latency
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all off interpret tpde "" on && \
+# interpreter + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based none off on on on all single-run-strict off llvm && \
+# expr-jit + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based expr none on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based expr auto on on on all single-run-strict off llvm && \
+# operator-jit + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based operator none on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based operator auto on on on all single-run-strict off llvm && \
+# pipeline-jit + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline none on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline auto on on on all single-run-strict off llvm && \
+# query-jit llvm + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict off llvm && \
+# query-jit fastisel + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict off fastisel && \
+# query-jit tpde + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict off tpde && \
+# query-jit + strict cache + spec-jit
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict interpret llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict interpret fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict interpret tpde && \
+# query-jit SIMD + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-strict off fastisel && \
+# query-jit SIMD + strict cache + spec-jit
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-strict recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-strict interpret llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-strict recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-strict interpret fastisel && \
+# tuned + strict cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict off llvm job_result/tuned_per_subquery_node-based.json && \
+# tuned + strict cache + spec=recompile
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-strict recompile llvm job_result/tuned_per_subquery_node-based.json && \
+
+# ============================================================
+# jit-cache=single-run-template (parameterized cache + hide-latency)
+# Template parameterization now applies to all jit levels: constants
+# are loaded from a runtime params buffer instead of LLVM immediates.
+# ============================================================
+# expr-jit + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based expr none on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based expr auto on on on all single-run-template off llvm && \
+# operator-jit + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based operator none on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based operator auto on on on all single-run-template off llvm && \
+# pipeline-jit + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline none on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based pipeline auto on on on all single-run-template off llvm && \
+# query-jit llvm + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template off llvm && \
+# query-jit fastisel + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template off fastisel && \
+# query-jit tpde + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template off tpde && \
+# query-jit + template cache + spec-jit
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template interpret llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template interpret fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template interpret tpde && \
+# query-jit SIMD + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-template off fastisel && \
+# query-jit SIMD + template cache + spec-jit
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-template recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-template interpret llvm && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-template recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb node-based query auto on on on all single-run-template interpret fastisel && \
+# tuned + template cache
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template off llvm job_result/tuned_per_subquery_node-based.json && \
+# tuned + template cache + spec=recompile
+bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template recompile llvm job_result/tuned_per_subquery_node-based.json && \
 
 ## ============================================================
 ## pipeline kernel

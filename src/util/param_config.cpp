@@ -214,10 +214,15 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_skip_hash_cmp = 2;
     } else if (arg == "--jit-skip-hash-cmp") {
       config.jit_skip_hash_cmp = 2; // bare flag = all (legacy compat)
-    } else if (arg == "--jit-cache") {
-      config.jit_cache = true;
+    } else if (arg == "--jit-cache" || arg == "--jit-cache=single-run" ||
+               arg == "--jit-cache=single-run-strict") {
+      config.jit_cache = 1;
+    } else if (arg == "--jit-cache=single-run-template") {
+      config.jit_cache = 2;
+    } else if (arg == "--jit-cache=full") {
+      config.jit_cache = 3;
     } else if (arg == "--no-jit-cache") {
-      config.jit_cache = false;
+      config.jit_cache = 0;
     } else if (arg == "--compile-mode=fastisel") {
       config.compile_mode = 1;
     } else if (arg == "--compile-mode=tpde") {
@@ -325,6 +330,9 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       throw std::runtime_error("--in-memory requires --csv-dir=<path> or --schema=<path>");
   }
 
+  if (config.jit_cache >= 1)
+    config.hide_latency_across_queries = true;
+
   return config;
 }
 void ParamConfig::PrintUsage() {
@@ -411,8 +419,16 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --jit-skip-hash-cmp=off|single|all  Skip hash cmp "
                "for int keys (single=1-key, all=any)"
             << std::endl;
-  std::cout << "  --jit-cache                      Enable JIT compilation cache "
-               "across --repeat runs (default: disabled)"
+  std::cout << "  --jit-cache[=MODE]               JIT object cache mode "
+               "(default: off)\n"
+               "                                     single-run-strict: exact plan "
+               "match, cleared between iterations\n"
+               "                                     single-run-template: "
+               "parameterized constants, relaxed key (PLANNED)\n"
+               "                                     full: persistent disk cache "
+               "(PLANNED)\n"
+               "                                     bare --jit-cache = "
+               "single-run-strict"
             << std::endl;
   std::cout << "  --compile-mode=llvm|fastisel|tpde JIT backend: llvm (LLVM O2, "
                "default), fastisel (LLVM O0+FastISel), or tpde (TPDE fast codegen)"
