@@ -1858,7 +1858,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     entry.sql = sql;
     entry.temp_table_name = temp_table_name;
     entry.types = temp_table_types;
-    if (qjit_stored && qjit_compiled) {
+    if (qjit_compiled) {
       entry.is_query_jit = true;
       entry.cache_key = qjit_compiled->replay_cache_key;
       entry.fn_name = qjit_compiled->replay_fn_name;
@@ -1874,9 +1874,12 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       entry.agg_output_cells = qjit_compiled->agg_output_cells;
       entry.out_descs = qjit_compiled->out_descs;
       entry.params_buf = qjit_compiled->params_buf;
-      entry.column_names = qjit_temp_meta_[temp_table_name].column_names;
+      if (qjit_stored)
+        entry.column_names = qjit_temp_meta_[temp_table_name].column_names;
+      else
+        entry.column_names = temp_collections_[temp_table_name].column_names;
     } else {
-      entry.is_interpreter_fallback = !qjit_compiled;
+      entry.is_interpreter_fallback = true;
       const auto &cn = qjit_stored
           ? qjit_temp_meta_[temp_table_name].column_names
           : temp_collections_[temp_table_name].column_names;

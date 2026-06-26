@@ -1291,14 +1291,20 @@ QueryResult IRQuerySplitter::ReplayQueryPlan(const CachedQueryPlan &cached) {
         log_file.close();
       }
     } else {
-      // Interpreter fallback: adapter writes jit_compile + execute +
-      // extra_materialize (3 cols); we only append update_ir.
+      // Interpreter fallback: disable adapter-level timing to avoid
+      // double-writes, then measure the whole call here.
+      bool saved_timing = duck->enable_timing_;
+      duck->enable_timing_ = false;
       duck->ExecuteSQLandCreateTempTable(sub.sql, sub.temp_table_name,
                                           config_.enable_update_temp_card);
+      duck->enable_timing_ = saved_timing;
       if (config_.enable_timing) {
+        auto us = chrono_toc(&timer, "", false);
         std::ofstream log_file;
         log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << "0.000, ";  // update_ir
+        // jit_compile, execute, extra_materialize, update_ir
+        log_file << std::fixed << std::setprecision(3) << "0.000, "
+                 << (us / 1000.0) << ", 0.000, 0.000, ";
         log_file.close();
       }
     }
