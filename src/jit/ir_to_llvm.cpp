@@ -1338,8 +1338,15 @@ static Value *EmitVarConst(CompileCtx &cc,
         cc.b.CreateSelect(is_inline, inline_ptr, heap_ptr, "char_ptr");
 
     const std::string &pat = cv->GetStringValue();
-    Value *pat_ptr, *pat_len;
-    if (cc.template_mode && cc.params_builder) {
+    const bool is_like = (op == SimplestExprType::TextLike ||
+                          op == SimplestExprType::Text_Not_Like);
+    Value *pat_ptr = nullptr, *pat_len = nullptr;
+    if (cc.template_mode && cc.params_builder && is_like) {
+      // LIKE specialized paths allocate literal/segments themselves
+      // in BuildParamsFromExpr; skip the raw pattern allocation here.
+      // LIKE_EQUALITY and LIKE_COMPLEX still need pat_ptr/pat_len,
+      // so those branches call EmitParamString on their own.
+    } else if (cc.template_mode && cc.params_builder) {
       auto [pp, pl] = EmitParamString(cc, pat);
       pat_ptr = pp;
       pat_len = pl;
@@ -1387,21 +1394,7 @@ static Value *EmitVarConst(CompileCtx &cc,
           (op == SimplestExprType::NotEqual) ? cc.b.CreateNot(m_phi) : m_phi;
     } else if (op == SimplestExprType::TextLike ||
                op == SimplestExprType::Text_Not_Like) {
-      // §7.3 template mode: LIKE specialized paths bake pattern bytes as
-      // globals; use the generic aqp_like_match for all patterns since
-      // pat_ptr/pat_len are already parameterized.
-      if (cc.template_mode && cc.params_builder) {
-        FunctionType *ft4_like = FunctionType::get(
-            cc.i32(), {cc.i8p(), cc.i32(), cc.i8p(), cc.i32()}, false);
-        FunctionCallee callee =
-            cc.mod.getOrInsertFunction("aqp_like_match", ft4_like);
-        Value *r =
-            cc.b.CreateCall(callee, {char_ptr, slen, pat_ptr, pat_len});
-        Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
-        cmp_result = (op == SimplestExprType::Text_Not_Like)
-                         ? cc.b.CreateNot(m)
-                         : m;
-      } else {
+      {
       std::string literal;
       LikeSegments seg_info;
       LikePatternKind kind = ClassifyLikePatternEx(pat, literal, seg_info);
@@ -1415,7 +1408,12 @@ static Value *EmitVarConst(CompileCtx &cc,
 #endif
 
       if (kind == LIKE_EQUALITY) {
-        // No wildcards: reuse aqp_str_eq with length pre-filter
+        // No wildcards: reuse aqp_str_eq with length pre-filter.
+        if (cc.template_mode && cc.params_builder) {
+          auto [pp, pl] = EmitParamString(cc, pat);
+          pat_ptr = pp;
+          pat_len = pl;
+        }
         BasicBlock *pre_bb = cc.b.GetInsertBlock();
         Function *fn = pre_bb->getParent();
         BasicBlock *match_bb =
@@ -1442,14 +1440,20 @@ static Value *EmitVarConst(CompileCtx &cc,
                          : phi;
 
       } else if (kind == LIKE_PREFIX || kind == LIKE_SUFFIX) {
-        // Inline memcmp IR — zero function-call overhead for simple patterns
-        Constant *lit_const = ConstantDataArray::getString(
-            cc.llctx, literal, /*AddNull=*/false);
-        GlobalVariable *lit_gv = new GlobalVariable(
-            cc.mod, lit_const->getType(), /*isConst=*/true,
-            GlobalValue::PrivateLinkage, lit_const, "like_lit");
-        Value *lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
-        Value *lit_len = cc.c32((int32_t)literal.size());
+        Value *lit_ptr, *lit_len;
+        if (cc.template_mode && cc.params_builder) {
+          auto [lp, ll] = EmitParamString(cc, literal);
+          lit_ptr = lp;
+          lit_len = ll;
+        } else {
+          Constant *lit_const = ConstantDataArray::getString(
+              cc.llctx, literal, /*AddNull=*/false);
+          GlobalVariable *lit_gv = new GlobalVariable(
+              cc.mod, lit_const->getType(), /*isConst=*/true,
+              GlobalValue::PrivateLinkage, lit_const, "like_lit");
+          lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
+          lit_len = cc.c32((int32_t)literal.size());
+        }
 
         BasicBlock *pre_bb = cc.b.GetInsertBlock();
         Function *fn = pre_bb->getParent();
@@ -1493,14 +1497,24 @@ static Value *EmitVarConst(CompileCtx &cc,
                          : phi;
 
       } else if (kind == LIKE_CONTAINS) {
-        // Inline memchr + memcmp loop — matches DuckDB's FindStrInStr.
-        Constant *lit_const = ConstantDataArray::getString(
-            cc.llctx, literal, /*AddNull=*/false);
-        GlobalVariable *lit_gv = new GlobalVariable(
-            cc.mod, lit_const->getType(), /*isConst=*/true,
-            GlobalValue::PrivateLinkage, lit_const, "like_lit");
-        Value *lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
-        int32_t needle_len = (int32_t)literal.size();
+        Value *lit_ptr;
+        Value *needle_len_v;
+        Value *first_char;
+        if (cc.template_mode && cc.params_builder) {
+          auto [lp, ll] = EmitParamString(cc, literal);
+          lit_ptr = lp;
+          needle_len_v = ll;
+          first_char = EmitParamI32(cc, (int32_t)(unsigned char)literal[0]);
+        } else {
+          Constant *lit_const = ConstantDataArray::getString(
+              cc.llctx, literal, /*AddNull=*/false);
+          GlobalVariable *lit_gv = new GlobalVariable(
+              cc.mod, lit_const->getType(), /*isConst=*/true,
+              GlobalValue::PrivateLinkage, lit_const, "like_lit");
+          lit_ptr = cc.b.CreateBitCast(lit_gv, cc.i8p());
+          needle_len_v = cc.c32((int32_t)literal.size());
+          first_char = cc.c32((int32_t)(unsigned char)literal[0]);
+        }
 
         BasicBlock *pre_bb = cc.b.GetInsertBlock();
         Function *fn = pre_bb->getParent();
@@ -1514,12 +1528,14 @@ static Value *EmitVarConst(CompileCtx &cc,
             BasicBlock::Create(cc.llctx, "ct_done", fn);
 
         Value *len_ok =
-            cc.b.CreateICmpSGE(slen, cc.c32(needle_len), "ct_len_ok");
+            cc.b.CreateICmpSGE(slen, needle_len_v, "ct_len_ok");
         cc.b.CreateCondBr(len_ok, search_bb, notfound_bb);
 
         cc.b.SetInsertPoint(search_bb);
+        Value *needle_minus_1 = cc.b.CreateSub(needle_len_v, cc.c32(1),
+                                               "needle_m1");
         Value *search_end =
-            cc.b.CreateSub(slen, cc.c32(needle_len - 1), "ct_end");
+            cc.b.CreateSub(slen, needle_minus_1, "ct_end");
         Value *init_off = cc.c32(0);
 
         BasicBlock *loop_bb =
@@ -1542,8 +1558,6 @@ static Value *EmitVarConst(CompileCtx &cc,
             cc.i8p(), {cc.i8p(), cc.i32(), cc.i64()}, false);
         FunctionCallee memchr_fn =
             cc.mod.getOrInsertFunction("memchr", ft_memchr);
-        Value *first_char =
-            cc.c32((int32_t)(unsigned char)literal[0]);
         Value *loc = cc.b.CreateCall(
             memchr_fn, {hay_ptr, first_char, remain_ext}, "ct_loc");
 
@@ -1557,15 +1571,27 @@ static Value *EmitVarConst(CompileCtx &cc,
         cc.b.CreateCondBr(loc_null, notfound_bb, check_bb);
 
         cc.b.SetInsertPoint(check_bb);
-        if (needle_len == 1) {
-          cc.b.CreateBr(found_bb);
-        } else {
+        Value *is_single = cc.b.CreateICmpEQ(needle_len_v, cc.c32(1),
+                                             "ct_single");
+        BasicBlock *single_bb =
+            BasicBlock::Create(cc.llctx, "ct_single_found", fn);
+        BasicBlock *multi_bb =
+            BasicBlock::Create(cc.llctx, "ct_multi", fn);
+        cc.b.CreateCondBr(is_single, single_bb, multi_bb);
+
+        cc.b.SetInsertPoint(single_bb);
+        cc.b.CreateBr(found_bb);
+
+        cc.b.SetInsertPoint(multi_bb);
+        {
           FunctionType *ft_mc = FunctionType::get(
               cc.i32(), {cc.i8p(), cc.i8p(), cc.i64()}, false);
           FunctionCallee mc_fn =
               cc.mod.getOrInsertFunction("memcmp", ft_mc);
+          Value *needle_len_ext =
+              cc.b.CreateSExt(needle_len_v, cc.i64(), "nlen_ext");
           Value *mcr = cc.b.CreateCall(
-              mc_fn, {loc, lit_ptr, cc.b.getInt64(needle_len)});
+              mc_fn, {loc, lit_ptr, needle_len_ext});
           Value *eq = cc.b.CreateICmpEQ(mcr, cc.c32(0), "ct_eq");
 
           BasicBlock *next_bb =
@@ -1603,59 +1629,97 @@ static Value *EmitVarConst(CompileCtx &cc,
       } else if (kind == LIKE_MULTI_SEGMENT) {
         int32_t n_segs = (int32_t)seg_info.segs.size();
 
-        std::vector<Constant *> seg_ptrs, seg_lens_vals;
-        for (auto &seg : seg_info.segs) {
-          Constant *sc = ConstantDataArray::getString(
-              cc.llctx, seg, /*AddNull=*/false);
-          GlobalVariable *sg = new GlobalVariable(
-              cc.mod, sc->getType(), /*isConst=*/true,
-              GlobalValue::PrivateLinkage, sc, "like_seg");
-          seg_ptrs.push_back(
-              ConstantExpr::getBitCast(sg, cc.i8p()));
-          seg_lens_vals.push_back(
-              cc.b.getInt32((int32_t)seg.size()));
+        if (cc.template_mode && cc.params_builder) {
+          // Build seg_ptrs/seg_lens arrays on the stack from params buffer.
+          Value *ptrs_alloca = cc.b.CreateAlloca(cc.i8p(), cc.c32(n_segs),
+                                                 "seg_ptrs_a");
+          Value *lens_alloca = cc.b.CreateAlloca(cc.i32(), cc.c32(n_segs),
+                                                 "seg_lens_a");
+          for (int si = 0; si < n_segs; ++si) {
+            auto [sp, sl] = EmitParamString(cc, seg_info.segs[si]);
+            cc.b.CreateStore(
+                sp, cc.b.CreateGEP(cc.i8p(), ptrs_alloca, cc.c32(si)));
+            cc.b.CreateStore(
+                sl, cc.b.CreateGEP(cc.i32(), lens_alloca, cc.c32(si)));
+          }
+          FunctionType *ft_seg = FunctionType::get(
+              cc.i32(),
+              {cc.i8p(), cc.i32(),
+               PointerType::getUnqual(cc.i8p()),
+               PointerType::getUnqual(cc.i32()),
+               cc.i32(), cc.i32(), cc.i32()},
+              false);
+          FunctionCallee callee = cc.mod.getOrInsertFunction(
+              "aqp_like_match_segments", ft_seg);
+          Value *r = cc.b.CreateCall(
+              callee,
+              {char_ptr, slen, ptrs_alloca, lens_alloca, cc.c32(n_segs),
+               cc.c32(seg_info.has_leading_pct ? 1 : 0),
+               cc.c32(seg_info.has_trailing_pct ? 1 : 0)});
+          Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+          cmp_result = (op == SimplestExprType::Text_Not_Like)
+                           ? cc.b.CreateNot(m)
+                           : m;
+        } else {
+          std::vector<Constant *> seg_ptrs, seg_lens_vals;
+          for (auto &seg : seg_info.segs) {
+            Constant *sc = ConstantDataArray::getString(
+                cc.llctx, seg, /*AddNull=*/false);
+            GlobalVariable *sg = new GlobalVariable(
+                cc.mod, sc->getType(), /*isConst=*/true,
+                GlobalValue::PrivateLinkage, sc, "like_seg");
+            seg_ptrs.push_back(
+                ConstantExpr::getBitCast(sg, cc.i8p()));
+            seg_lens_vals.push_back(
+                cc.b.getInt32((int32_t)seg.size()));
+          }
+
+          ArrayType *ptr_arr_ty = ArrayType::get(cc.i8p(), n_segs);
+          Constant *ptr_arr =
+              ConstantArray::get(ptr_arr_ty, seg_ptrs);
+          GlobalVariable *ptr_gv = new GlobalVariable(
+              cc.mod, ptr_arr_ty, /*isConst=*/true,
+              GlobalValue::PrivateLinkage, ptr_arr, "seg_ptrs");
+
+          ArrayType *len_arr_ty = ArrayType::get(cc.i32(), n_segs);
+          Constant *len_arr =
+              ConstantArray::get(len_arr_ty, seg_lens_vals);
+          GlobalVariable *len_gv = new GlobalVariable(
+              cc.mod, len_arr_ty, /*isConst=*/true,
+              GlobalValue::PrivateLinkage, len_arr, "seg_lens");
+
+          Value *ptrs_ptr = cc.b.CreateBitCast(
+              ptr_gv, PointerType::getUnqual(cc.i8p()));
+          Value *lens_ptr = cc.b.CreateBitCast(
+              len_gv, PointerType::getUnqual(cc.i32()));
+
+          FunctionType *ft_seg = FunctionType::get(
+              cc.i32(),
+              {cc.i8p(), cc.i32(),
+               PointerType::getUnqual(cc.i8p()),
+               PointerType::getUnqual(cc.i32()),
+               cc.i32(), cc.i32(), cc.i32()},
+              false);
+          FunctionCallee callee = cc.mod.getOrInsertFunction(
+              "aqp_like_match_segments", ft_seg);
+          Value *r = cc.b.CreateCall(
+              callee,
+              {char_ptr, slen, ptrs_ptr, lens_ptr, cc.c32(n_segs),
+               cc.c32(seg_info.has_leading_pct ? 1 : 0),
+               cc.c32(seg_info.has_trailing_pct ? 1 : 0)});
+          Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
+          cmp_result = (op == SimplestExprType::Text_Not_Like)
+                           ? cc.b.CreateNot(m)
+                           : m;
         }
-
-        ArrayType *ptr_arr_ty = ArrayType::get(cc.i8p(), n_segs);
-        Constant *ptr_arr =
-            ConstantArray::get(ptr_arr_ty, seg_ptrs);
-        GlobalVariable *ptr_gv = new GlobalVariable(
-            cc.mod, ptr_arr_ty, /*isConst=*/true,
-            GlobalValue::PrivateLinkage, ptr_arr, "seg_ptrs");
-
-        ArrayType *len_arr_ty = ArrayType::get(cc.i32(), n_segs);
-        Constant *len_arr =
-            ConstantArray::get(len_arr_ty, seg_lens_vals);
-        GlobalVariable *len_gv = new GlobalVariable(
-            cc.mod, len_arr_ty, /*isConst=*/true,
-            GlobalValue::PrivateLinkage, len_arr, "seg_lens");
-
-        Value *ptrs_ptr = cc.b.CreateBitCast(
-            ptr_gv, PointerType::getUnqual(cc.i8p()));
-        Value *lens_ptr = cc.b.CreateBitCast(
-            len_gv, PointerType::getUnqual(cc.i32()));
-
-        FunctionType *ft_seg = FunctionType::get(
-            cc.i32(),
-            {cc.i8p(), cc.i32(),
-             PointerType::getUnqual(cc.i8p()),
-             PointerType::getUnqual(cc.i32()),
-             cc.i32(), cc.i32(), cc.i32()},
-            false);
-        FunctionCallee callee = cc.mod.getOrInsertFunction(
-            "aqp_like_match_segments", ft_seg);
-        Value *r = cc.b.CreateCall(
-            callee,
-            {char_ptr, slen, ptrs_ptr, lens_ptr, cc.c32(n_segs),
-             cc.c32(seg_info.has_leading_pct ? 1 : 0),
-             cc.c32(seg_info.has_trailing_pct ? 1 : 0)});
-        Value *m = cc.b.CreateICmpNE(r, cc.c32(0));
-        cmp_result = (op == SimplestExprType::Text_Not_Like)
-                         ? cc.b.CreateNot(m)
-                         : m;
 
       } else {
         // LIKE_COMPLEX: fallback to generic backtracking matcher
+        if (cc.template_mode && cc.params_builder) {
+          auto [pp, pl] = EmitParamString(cc, pat);
+          pat_ptr = pp;
+          pat_len = pl;
+        }
         FunctionCallee callee =
             cc.mod.getOrInsertFunction("aqp_like_match", ft4);
         Value *r =
@@ -1665,7 +1729,7 @@ static Value *EmitVarConst(CompileCtx &cc,
                          ? cc.b.CreateNot(m)
                          : m;
       }
-      } // end template-mode else
+      }
     } else if (op == SimplestExprType::GreaterEqual ||
                op == SimplestExprType::LessEqual ||
                op == SimplestExprType::GreaterThan ||
@@ -5451,7 +5515,27 @@ static void BuildParamsFromExpr(ParamsBuilder &pb, const AQPExpr *expr) {
       double v = (double)cmp->const_var->GetFloatValue();
       pb.AllocF64(v);
     } else if (vt == SimplestVarType::StringVar) {
-      pb.AllocString(cmp->const_var->GetStringValue());
+      auto op = cmp->GetSimplestExprType();
+      if (op == SimplestExprType::TextLike ||
+          op == SimplestExprType::Text_Not_Like) {
+        std::string literal;
+        LikeSegments seg_info;
+        LikePatternKind kind = ClassifyLikePatternEx(
+            cmp->const_var->GetStringValue(), literal, seg_info);
+        if (kind == LIKE_MULTI_SEGMENT) {
+          for (const auto &seg : seg_info.segs)
+            pb.AllocString(seg);
+        } else if (kind == LIKE_CONTAINS) {
+          pb.AllocString(literal);
+          pb.AllocI32((int32_t)(unsigned char)literal[0]);
+        } else if (kind == LIKE_PREFIX || kind == LIKE_SUFFIX) {
+          pb.AllocString(literal);
+        } else {
+          pb.AllocString(cmp->const_var->GetStringValue());
+        }
+      } else {
+        pb.AllocString(cmp->const_var->GetStringValue());
+      }
     }
   } else if (nt == InExprNode) {
     auto *in = static_cast<const SimplestInExpr *>(expr);
