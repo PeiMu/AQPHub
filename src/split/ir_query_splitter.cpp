@@ -142,16 +142,34 @@ IRQuerySplitter::ParseTuneLabel(const std::string &label) {
     // no JIT
   } else if (label == "expr") {
     e.jit_flags = AQP_JIT_EXPR;
+  } else if (label == "expr_fastisel") {
+    e.jit_flags = AQP_JIT_EXPR;
+    e.compile_mode = 1;
+  } else if (label == "expr_tpde") {
+    e.jit_flags = AQP_JIT_EXPR;
+    e.compile_mode = 2;
   } else if (label == "expr_simd") {
     e.jit_flags = AQP_JIT_EXPR;
     e.jit_simd = true;
   } else if (label == "operator") {
     e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+  } else if (label == "operator_fastisel") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+    e.compile_mode = 1;
+  } else if (label == "operator_tpde") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
+    e.compile_mode = 2;
   } else if (label == "operator_simd") {
     e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
     e.jit_simd = true;
   } else if (label == "pipeline") {
     e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
+  } else if (label == "pipeline_fastisel") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
+    e.compile_mode = 1;
+  } else if (label == "pipeline_tpde") {
+    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
+    e.compile_mode = 2;
   } else if (label == "pipeline_simd") {
     e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
     e.jit_simd = true;
@@ -1268,8 +1286,8 @@ QueryResult IRQuerySplitter::ReplayQueryPlan(const CachedQueryPlan &cached) {
         std::ofstream log_file;
         log_file.open(g_timing_log_name, std::ios_base::app);
         // jit_compile, execute, extra_materialize, update_ir
-        log_file << std::fixed << std::setprecision(3) << (us / 1000.0)
-                 << ", 0.000, 0.000, 0.000, ";
+        log_file << std::fixed << std::setprecision(3) << "0.000, "
+                 << (us / 1000.0) << ", 0.000, 0.000, ";
         log_file.close();
       }
     } else {
@@ -1305,8 +1323,8 @@ QueryResult IRQuerySplitter::ReplayQueryPlan(const CachedQueryPlan &cached) {
       std::ofstream log_file;
       log_file.open(g_timing_log_name, std::ios_base::app);
       // jit_compile_final, execute_final
-      log_file << std::fixed << std::setprecision(3) << (us / 1000.0)
-               << ", 0.000, ";
+      log_file << std::fixed << std::setprecision(3) << "0.000, "
+               << (us / 1000.0) << ", ";
       log_file.close();
     }
   } else {
@@ -2385,16 +2403,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
       } else {
         duck->ExecuteSpeculativeAndCreateTempTable(
             *cqp.prepared, *cqp.bg_conn, temp_table_name,
-            config_.enable_update_temp_card);
-        if (duck->IsPlanRecording()) {
-          CachedSubquery entry;
-          entry.sql = sub_sql;
-          entry.temp_table_name = temp_table_name;
-          entry.column_names =
-              duck->GetTempCollectionColumnNames(temp_table_name);
-          entry.types = duck->GetTempCollectionTypes(temp_table_name);
-          duck->GetPlanRecording().push_back(std::move(entry));
-        }
+            config_.enable_update_temp_card, sub_sql);
       }
       active_cross_query_prep_->has_qjit = false;
       active_cross_query_prep_->has_prepare = false;
@@ -2497,7 +2506,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
       } else {
         duck->ExecuteSpeculativeAndCreateTempTable(
             *hit_spec->spec_prepared, *hit_spec->spec_conn,
-            temp_table_name, config_.enable_update_temp_card);
+            temp_table_name, config_.enable_update_temp_card, sub_sql);
       }
       // hit_spec (and the compiler holding its JIT code) outlives execution;
       // the hook's bg compile used the other ping-pong compiler.

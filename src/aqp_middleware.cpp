@@ -301,8 +301,9 @@ void ExecuteSingleQuery(
                   chrono_toc(&replay_timer, "split=none replay\n", false);
               std::ofstream log_file;
               log_file.open(g_timing_log_name, std::ios_base::app);
+              // jit_compile=0, execute=measured (replay does no compilation)
               log_file << std::fixed << std::setprecision(3)
-                       << (replay_us / 1000.0) << ", 0.000, ";
+                       << "0.000, " << (replay_us / 1000.0) << ", ";
               log_file.close();
             }
           }

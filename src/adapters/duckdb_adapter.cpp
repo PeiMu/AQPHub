@@ -1890,7 +1890,8 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
 #ifdef HAVE_LLVM
 void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
     duckdb::PreparedStatement &prepared, duckdb::Connection &spec_conn,
-    const std::string &temp_table_name, bool update_temp_card) {
+    const std::string &temp_table_name, bool update_temp_card,
+    const std::string &sql) {
   std::chrono::high_resolution_clock::time_point timer;
   if (enable_timing_) {
     timer = chrono_tic();
@@ -2039,6 +2040,16 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();
+  }
+
+  if (plan_recording_active_) {
+    CachedSubquery entry;
+    entry.sql = sql;
+    entry.temp_table_name = temp_table_name;
+    entry.types = temp_table_types;
+    entry.is_interpreter_fallback = true;
+    entry.column_names = temp_collections_[temp_table_name].column_names;
+    plan_recording_.push_back(std::move(entry));
   }
 }
 

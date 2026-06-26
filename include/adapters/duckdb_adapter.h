@@ -385,7 +385,8 @@ public:
 
   void ExecuteSpeculativeAndCreateTempTable(
       duckdb::PreparedStatement &prepared, duckdb::Connection &spec_conn,
-      const std::string &temp_table_name, bool update_temp_card);
+      const std::string &temp_table_name, bool update_temp_card,
+      const std::string &sql = "");
 
   // Invoked twice per ExecuteSQLandCreateTempTable:
   // 1. post_execute=false — after Prepare (chunk index, column names/types and

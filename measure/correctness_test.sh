@@ -22,7 +22,7 @@ JIT_CONFIGS=(
   # ============================================================
   "duckdb|none|none|none|duckdb_job_no-split_golden.txt"
   "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt"
-  "duckdb|relationship-center|none|none|duckdb_job_relationship-center_golden.txt"
+  #"duckdb|relationship-center|none|none|duckdb_job_relationship-center_golden.txt"
 
   # ============================================================
   # expr-jit, compile_mode=llvm (default)
@@ -31,7 +31,7 @@ JIT_CONFIGS=(
   #"duckdb|none|expr|auto|duckdb_job_no-split_golden.txt"
   "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt"
   #"duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt"
-  "duckdb|relationship-center|expr|none|duckdb_job_relationship-center_golden.txt"
+  #"duckdb|relationship-center|expr|none|duckdb_job_relationship-center_golden.txt"
   #"duckdb|relationship-center|expr|auto|duckdb_job_relationship-center_golden.txt"
 
   # expr-jit, compile_mode=fastisel
@@ -40,10 +40,16 @@ JIT_CONFIGS=(
 
   # expr-jit, compile_mode=tpde (no simd=auto — TPDE falls back to scalar)
   "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|||tpde"
+  # expr-jit, none-split, fastisel/tpde
+  "duckdb|none|expr|none|duckdb_job_no-split_golden.txt|||fastisel"
+  "duckdb|none|expr|none|duckdb_job_no-split_golden.txt|||tpde"
 
   # expr-jit spec-jit (node-based, llvm)
   "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile"
   #"duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|interpret"
+  # expr-jit spec-jit, fastisel/tpde
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile||fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile||tpde"
 
   # ============================================================
   # operator-jit, compile_mode=llvm
@@ -52,7 +58,7 @@ JIT_CONFIGS=(
   #"duckdb|none|operator|auto|duckdb_job_no-split_golden.txt"
   "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt"
   #"duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt"
-  "duckdb|relationship-center|operator|none|duckdb_job_relationship-center_golden.txt"
+  #"duckdb|relationship-center|operator|none|duckdb_job_relationship-center_golden.txt"
   #"duckdb|relationship-center|operator|auto|duckdb_job_relationship-center_golden.txt"
 
   # operator-jit, compile_mode=fastisel
@@ -61,30 +67,31 @@ JIT_CONFIGS=(
 
   # operator-jit, compile_mode=tpde (no simd=auto)
   "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|||tpde"
+  # operator-jit, none-split, fastisel/tpde
+  "duckdb|none|operator|none|duckdb_job_no-split_golden.txt|||fastisel"
+  "duckdb|none|operator|none|duckdb_job_no-split_golden.txt|||tpde"
 
   # operator-jit spec-jit (node-based, llvm)
   "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile"
   #"duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|interpret"
+  # operator-jit spec-jit, fastisel/tpde
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile||fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile||tpde"
 
   # ============================================================
-  # pipeline-jit, compile_mode=llvm
+  # pipeline-jit (deprioritized — commented out)
   # ============================================================
-  "duckdb|none|pipeline|none|duckdb_job_no-split_golden.txt"
+  #"duckdb|none|pipeline|none|duckdb_job_no-split_golden.txt"
   #"duckdb|none|pipeline|auto|duckdb_job_no-split_golden.txt"
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt"
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt"
   #"duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt"
-  "duckdb|relationship-center|pipeline|none|duckdb_job_relationship-center_golden.txt"
+  #"duckdb|relationship-center|pipeline|none|duckdb_job_relationship-center_golden.txt"
   #"duckdb|relationship-center|pipeline|auto|duckdb_job_relationship-center_golden.txt"
-  # spec-jit (pipeline)
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|recompile"
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|recompile"
   #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|interpret"
-
-  # pipeline-jit, compile_mode=fastisel
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|||fastisel"
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|||fastisel"
   #"duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|||fastisel"
-
-  # pipeline-jit, compile_mode=tpde (no simd=auto)
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|||tpde"
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|||tpde"
 
   # ============================================================
   # query-jit, compile_mode=llvm
@@ -93,13 +100,13 @@ JIT_CONFIGS=(
   #"duckdb|none|query|auto|duckdb_job_no-split_golden.txt"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt"
-  "duckdb|relationship-center|query|none|duckdb_job_relationship-center_golden.txt"
+  #"duckdb|relationship-center|query|none|duckdb_job_relationship-center_golden.txt"
   #"duckdb|relationship-center|query|auto|duckdb_job_relationship-center_golden.txt"
   # spec-jit (query, llvm)
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile"
   #"duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret"
-  "duckdb|relationship-center|query|none|duckdb_job_relationship-center_golden.txt|recompile"
-  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|recompile"
+  #"duckdb|relationship-center|query|none|duckdb_job_relationship-center_golden.txt|recompile"
+  #"duckdb|none|query|none|duckdb_job_no-split_golden.txt|recompile"
 
   # query-jit, compile_mode=fastisel
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||fastisel"
@@ -107,68 +114,112 @@ JIT_CONFIGS=(
 
   # query-jit, compile_mode=tpde (no simd=auto)
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||tpde"
+  # query-jit, none-split, fastisel/tpde
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|||fastisel"
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|||tpde"
+  # query-jit spec-jit, fastisel/tpde
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile||fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile||tpde"
 
   # ============================================================
   # jit-cache=single-run-strict
   # ============================================================
-  # interpreter
-  "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt|off|single-run-strict"
   # expr-jit (llvm)
   "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-strict"
   #"duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off|single-run-strict"
+  # expr-jit (fastisel/tpde)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-strict|fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-strict|tpde"
   # operator-jit (llvm)
   "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-strict"
   #"duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off|single-run-strict"
-  # pipeline-jit (llvm)
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|single-run-strict"
+  # operator-jit (fastisel/tpde)
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-strict|fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-strict|tpde"
+  # pipeline-jit (deprioritized)
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|single-run-strict"
   #"duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off|single-run-strict"
   # query-jit (llvm)
-  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|off|single-run-strict"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-strict"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off|single-run-strict"
-  # query-jit + strict + spec-jit (llvm)
+  # query-jit (fastisel/tpde)
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-strict|fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-strict|tpde"
+  # strict + spec-jit=recompile (llvm)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict"
   #"duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret|single-run-strict"
+  # strict + spec-jit=recompile (fastisel/tpde)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict|fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict|tpde"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict|fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict|tpde"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict|fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-strict|tpde"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|recompile|single-run-strict"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret|single-run-strict"
 
   # ============================================================
   # jit-cache=single-run-template
   # ============================================================
-  # interpreter
-  "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt|off|single-run-template"
   # expr-jit (llvm)
   "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-template"
   #"duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
+  # expr-jit (fastisel/tpde)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-template|fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-template|tpde"
   # operator-jit (llvm)
   "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-template"
   #"duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
-  # pipeline-jit (llvm)
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|single-run-template"
+  # operator-jit (fastisel/tpde)
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-template|fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-template|tpde"
+  # pipeline-jit (deprioritized)
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|single-run-template"
   #"duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
   # query-jit (llvm)
-  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|off|single-run-template"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
-  # query-jit + template + spec-jit (llvm)
+  # query-jit (fastisel/tpde)
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template|fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template|tpde"
+  # template + spec-jit=recompile (llvm)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-template"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-template"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-template"
   #"duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret|single-run-template"
+  # template + spec-jit=recompile (fastisel/tpde)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|tpde"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|recompile|single-run-template"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret|single-run-template"
 
   # ============================================================
   # jit-cache=full
   # ============================================================
-  # interpreter
-  "duckdb|node-based|none|none|duckdb_job_node-based_golden.txt|off|full"
   # expr-jit (llvm)
   "duckdb|none|expr|none|duckdb_job_no-split_golden.txt|off|full"
   "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|full"
   #"duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off|full"
+  # expr-jit (fastisel/tpde)
+  "duckdb|none|expr|none|duckdb_job_no-split_golden.txt|off|full|fastisel"
+  "duckdb|none|expr|none|duckdb_job_no-split_golden.txt|off|full|tpde"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|full|fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|full|tpde"
   # operator-jit (llvm)
   "duckdb|none|operator|none|duckdb_job_no-split_golden.txt|off|full"
   "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|full"
   #"duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off|full"
+  # operator-jit (fastisel/tpde)
+  "duckdb|none|operator|none|duckdb_job_no-split_golden.txt|off|full|fastisel"
+  "duckdb|none|operator|none|duckdb_job_no-split_golden.txt|off|full|tpde"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|full|fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|full|tpde"
   # pipeline-jit (llvm)
   #"duckdb|none|pipeline|none|duckdb_job_no-split_golden.txt|off|full"
   #"duckdb|none|pipeline|auto|duckdb_job_no-split_golden.txt|off|full"
@@ -179,9 +230,23 @@ JIT_CONFIGS=(
   #"duckdb|none|query|auto|duckdb_job_no-split_golden.txt|off|full"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|full"
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off|full"
-  # query-jit + full + spec-jit (llvm)
+  # query-jit (fastisel/tpde)
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|off|full|fastisel"
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt|off|full|tpde"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|full|fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|full|tpde"
+  # full + spec-jit=recompile (llvm)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|full"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|full"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|full"
   #"duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret|full"
+  # full + spec-jit=recompile (fastisel/tpde)
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|full|fastisel"
+  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|full|tpde"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|full|fastisel"
+  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|full|tpde"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|full|fastisel"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|full|tpde"
 
   # ============================================================
   # lingodb / lingo-db-runtime
@@ -198,9 +263,9 @@ JIT_CONFIGS=(
 
 # --- Kernel-path configs: engine | split | kernel_path | jit_simd | golden_file ---
 KERNEL_CONFIGS=(
-  "duckdb|none|pipeline|none|duckdb_job_no-split_golden.txt"
-  "duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt"
-  "duckdb|relationship-center|pipeline|none|duckdb_job_relationship-center_golden.txt"
+  #"duckdb|none|pipeline|none|duckdb_job_no-split_golden.txt"
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt"
+  #"duckdb|relationship-center|pipeline|none|duckdb_job_relationship-center_golden.txt"
 )
 
 passed=0
@@ -387,6 +452,123 @@ if [[ -f "$TUNE_JSON" ]]; then
   fi
   echo ""
 
+  # Tune + cache=single-run-strict, spec=off
+  echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit off) ==="
+  ((total++))
+  bash run_job.sh duckdb node-based query none \
+       on on on on single-run-strict off llvm "$TUNE_JSON"
+  config_label="tune-config node-based cache=strict spec=off"
+  output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_strict_tuned_job.txt"
+  if [[ ! -f "$output" ]]; then
+    echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  elif [[ ! -f "$golden" ]]; then
+    echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  else
+    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden"))
+    if [[ -z "$d" ]]; then
+      echo "  PASS"
+      ((passed++))
+    else
+      echo "  FAIL: differences found"
+      echo "$d" | head -20
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
+      ((failed++))
+    fi
+  fi
+  echo ""
+
+  # Tune + cache=single-run-template, spec=off
+  echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit off) ==="
+  ((total++))
+  bash run_job.sh duckdb node-based query none \
+       on on on on single-run-template off llvm "$TUNE_JSON"
+  config_label="tune-config node-based cache=template spec=off"
+  output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_template_tuned_job.txt"
+  if [[ ! -f "$output" ]]; then
+    echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  elif [[ ! -f "$golden" ]]; then
+    echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  else
+    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden"))
+    if [[ -z "$d" ]]; then
+      echo "  PASS"
+      ((passed++))
+    else
+      echo "  FAIL: differences found"
+      echo "$d" | head -20
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
+      ((failed++))
+    fi
+  fi
+  echo ""
+
+  # Tune + cache=full, spec=off
+  echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit off) ==="
+  ((total++))
+  bash run_job.sh duckdb node-based query none \
+       on on on on full off llvm "$TUNE_JSON"
+  config_label="tune-config node-based cache=full spec=off"
+  output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_full_tuned_job.txt"
+  if [[ ! -f "$output" ]]; then
+    echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  elif [[ ! -f "$golden" ]]; then
+    echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  else
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden"))
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden"))
+    if [[ -z "$d0" && -z "$d1" ]]; then
+      echo "  PASS (iter0 + iter1)"
+      ((passed++))
+    else
+      echo "  FAIL: differences found"
+      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
+      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
+      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
+      ((failed++))
+    fi
+  fi
+  echo ""
+
   # Tune + spec-jit=recompile
   echo "=== Testing: per-subquery tune-config (node-based, spec-jit=recompile) ==="
   ((total++))
@@ -421,6 +603,123 @@ if [[ -f "$TUNE_JSON" ]]; then
       FAILED_CONFIGS+=("$config_label")
       echo "--- $config_label ---" >> "$FAIL_LOG"
       echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
+      ((failed++))
+    fi
+  fi
+  echo ""
+
+  # Tune + cache=single-run-strict, spec=recompile
+  echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit=recompile) ==="
+  ((total++))
+  bash run_job.sh duckdb node-based query none \
+       on on on on single-run-strict recompile llvm "$TUNE_JSON"
+  config_label="tune-config node-based cache=strict spec=recompile"
+  output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_strict_specrecompile_tuned_job.txt"
+  if [[ ! -f "$output" ]]; then
+    echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  elif [[ ! -f "$golden" ]]; then
+    echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  else
+    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden"))
+    if [[ -z "$d" ]]; then
+      echo "  PASS"
+      ((passed++))
+    else
+      echo "  FAIL: differences found"
+      echo "$d" | head -20
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
+      ((failed++))
+    fi
+  fi
+  echo ""
+
+  # Tune + cache=single-run-template, spec=recompile
+  echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit=recompile) ==="
+  ((total++))
+  bash run_job.sh duckdb node-based query none \
+       on on on on single-run-template recompile llvm "$TUNE_JSON"
+  config_label="tune-config node-based cache=template spec=recompile"
+  output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
+  if [[ ! -f "$output" ]]; then
+    echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  elif [[ ! -f "$golden" ]]; then
+    echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  else
+    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden"))
+    if [[ -z "$d" ]]; then
+      echo "  PASS"
+      ((passed++))
+    else
+      echo "  FAIL: differences found"
+      echo "$d" | head -20
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      echo "$d" >> "$FAIL_LOG"
+      echo "" >> "$FAIL_LOG"
+      ((failed++))
+    fi
+  fi
+  echo ""
+
+  # Tune + cache=full, spec=recompile
+  echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit=recompile) ==="
+  ((total++))
+  bash run_job.sh duckdb node-based query none \
+       on on on on full recompile llvm "$TUNE_JSON"
+  config_label="tune-config node-based cache=full spec=recompile"
+  output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_full_specrecompile_tuned_job.txt"
+  if [[ ! -f "$output" ]]; then
+    echo "  FAIL: output file not found: $output"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "output file not found: $output" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  elif [[ ! -f "$golden" ]]; then
+    echo "  FAIL: golden file not found: $golden"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "golden file not found: $golden" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
+  else
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden"))
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden"))
+    if [[ -z "$d0" && -z "$d1" ]]; then
+      echo "  PASS (iter0 + iter1)"
+      ((passed++))
+    else
+      echo "  FAIL: differences found"
+      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
+      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
+      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
+      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
     fi

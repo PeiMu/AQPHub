@@ -2168,3 +2168,98 @@ Location: src/jit/ir_to_llvm.cpp:253-259.
 | aqp_middleware.cpp:435,713 | ClearObjCache() — skipped for mode 3 |
 | aqp_middleware.cpp:443 | Cross-query prep disabled for replay iterations |
 | param_config.h:105 | jit_cache int: 0=off, 1=strict, 2=template, 3=full |
+
+### §7.3 Bug fix: plan recording for speculative/cross-query paths (2026-06-26)
+
+`--jit-cache=full` plan replay was broken in two cases:
+
+**Bug 1 — spec-jit HIT path:** When spec-jit got a HIT for a subquery,
+`ExecuteSpeculativeAndCreateTempTable` was called instead of
+`ExecuteSQLandCreateTempTable`. The speculative function had no
+`plan_recording_active_` recording, so one subquery entry was missing
+from the cached plan. The code at save time (`cached.final_query =
+buf.back()`) then treated the WRONG entry as the final query, corrupting
+the cached plan structure. Symptom: "Table with name tempN does not
+exist!" errors on the replay iteration.
+
+**Bug 2 — cross-query latency hiding path:** For non-query-jit configs
+with node-based split, the cross-query prep path called
+`ExecuteSpeculativeAndCreateTempTable` for the first subquery, then
+manually recorded the entry in the splitter (ir_query_splitter.cpp
+:2414-2422). After Bug 1's fix added recording inside
+`ExecuteSpeculativeAndCreateTempTable`, this created a double recording —
+first an entry with empty SQL (from inside the function, since sql=""
+was the default parameter), then the correct entry from the splitter.
+Symptom: "No statement to prepare!" on replay iteration for all queries
+after the first (only in benchmark mode with all 113 queries).
+
+Fix: Added `const std::string &sql` parameter + plan recording block to
+`ExecuteSpeculativeAndCreateTempTable` (duckdb_adapter.cpp:2045-2053).
+Both call sites now pass `sub_sql`: spec-jit HIT path
+(ir_query_splitter.cpp:2490) and cross-query prep path (:2387).
+Removed the redundant manual recording from the cross-query path.
+
+Files changed:
+- include/adapters/duckdb_adapter.h — added sql parameter
+- src/adapters/duckdb_adapter.cpp — added sql parameter + recording
+- src/split/ir_query_splitter.cpp — passed sub_sql at both call sites,
+  removed redundant manual recording
+
+## §7.1 Direct CDC scan in query-jit — DEPRIORITIZED
+Date: 2026-06-26
+
+CDC→QjitTable conversion costs 540 ms across 113 JOB queries (measured
+2026-06-20), NOT the 1.5 s originally estimated. More importantly, if
+per-subquery tuning is restricted to query-jit-only configs (§7.4), ALL
+sub-queries produce `QjitTable` directly (`duckdb_adapter.cpp:1635`),
+so NO CDC conversion occurs and this optimization is unnecessary.
+
+§7.1 only matters if mixed-config tuning (interp/expr/pipeline +
+query-jit) is needed. Since query-jit-only tuning saves only 0.11 s
+less than pure TPDE (§7.4 analysis), and the mixed-config tuning's CDC
+cost (540 ms) exceeds its execution savings (429 ms), §7.1 is
+deprioritized in favor of §7.2 and §7.3.
+
+## §7.2 Cross-query latency hiding — COMPLETE
+Date: 2026-06-26
+
+Merged into §7.3. Cross-query latency hiding is now auto-enabled when
+`--jit-cache` mode >= 1.
+
+## §7.3 JIT object cache — COMPLETE
+Date: 2026-06-26
+
+All modes complete (strict, template, full). Plan recording bug fixed
+2026-06-26 (spec-jit + cross-query prep paths missing recording in
+`ExecuteSpeculativeAndCreateTempTable`; see Bug 1/Bug 2 above).
+Key code: ir_to_llvm.cpp:407-493 (TryCacheLoad/pending_cache_key).
+
+## §7.4 Performance analysis: single-run improvement ceiling — REFERENCE
+Date: 2026-06-24
+
+Key result: 20% target NOT achievable in single first run (max 10.3%);
+IS achievable with persistent cache (2nd run with LLVM O2: 4.70 s,
+24.9% improvement).
+
+## Phase 6 — all complete
+Date: 2026-06-24
+
+§6.1–§6.12 all COMPLETE/RESOLVED/DROPPED. Details for each sub-item
+logged above in this file.
+
+## ReplayQueryPlan timer column bug fix
+Date: 2026-06-26
+
+Bug: `ReplayQueryPlan` (ir_query_splitter.cpp) and the none-split replay
+path (aqp_middleware.cpp) wrote execution time into the `jit_compile` CSV
+column and `0.000` into the `execute` column. Since replay does zero
+compilation (only LookupCachedFn + ResolveQjitSources + Run), the
+measured time is purely execution.
+
+Fix: Swapped columns so `jit_compile=0.000` and `execute=measured_time`:
+- ir_query_splitter.cpp:1289 (node-based subquery replay)
+- ir_query_splitter.cpp:1326 (node-based final query replay)
+- aqp_middleware.cpp:305 (none-split replay)
+
+Existing CSV files in measure/job_result/ and the plot directory were
+fixed post-hoc with measure/fix_cache_full_timer_columns.py (29 files).
