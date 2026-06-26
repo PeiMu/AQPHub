@@ -8,11 +8,10 @@ payload_prune=${5:-on}
 prefetch=${6:-on}
 batch_probe=${7:-on}
 skip_hash_cmp=${8:-all}   # off | single | all
-jit_cache=${9:-off}
-spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
-compile_mode=${11:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
+jit_cache=${9:-off}       # off | single-run-strict | single-run-template | full
+spec_jit=${10:-off}       # off | recompile | interpret
+compile_mode=${11:-llvm}   # llvm | fastisel | tpde 
 tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
-hide_latency=${13:-off}   # on | off (--hide-latency-across-queries)
 
 # For lingodb/lingo-db-runtime, the 3rd arg selects the execution mode
 # (llvm | tpde) instead of the DuckDB jit level.
@@ -42,7 +41,6 @@ fi
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
-[[ "$hide_latency"   == "on"  ]] && jit_extra_flags+=" --hide-latency-across-queries"
 
 # Query-jit scans base tables through the storage plan; the binary cache file
 # is built on first use if missing (--storage-plan is auto-enabled by the
@@ -67,7 +65,6 @@ fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
-[[ "$hide_latency"   == "on"  ]] && flag_suffix+="_hidelatency"
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"
@@ -267,6 +264,11 @@ lingodb_flags=""
 if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     db_arg="--in-memory"
     lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv --lingodb-mode=${lingodb_mode}"
+fi
+
+# Clear disk JIT cache for clean cold-start on iter 0
+if [[ "$jit_cache" == "full" ]]; then
+    rm -rf /dev/shm/aqp_jit_cache/
 fi
 
 $cmd_prefix ../build_release/aqp_middleware \

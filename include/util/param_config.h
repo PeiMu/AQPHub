@@ -109,6 +109,9 @@ struct ParamConfig {
   //   3 = full (persistent disk cache, survives process restart)
   // Default OFF so every repeat measures real compile time.
   int jit_cache = 0;
+  // Disk directory for jit-cache=full compiled objects. Empty = default
+  // (/dev/shm/aqp_jit_cache/v1/). Set via --jit-cache-dir=<path>.
+  std::string jit_cache_dir;
   // Compile mode: 0=llvm (full quality LLVM O2), 1=fastisel (LLVM O0+FastISel),
   // 2=tpde (TPDE fast codegen). Set via: --compile-mode=llvm|fastisel|tpde.
   // Spec-jit miss recompile always uses TPDE regardless of this setting.
@@ -123,9 +126,6 @@ struct ParamConfig {
   // TPDE regardless of --compile-mode. Only takes effect for node-based +
   // DuckDB + non-zero jit level.
   int spec_jit = 0;
-  // Cross-query latency hiding: prepare query N+1's first sub-query on a
-  // background thread while query N executes. Only NODE_BASED + DuckDB.
-  bool hide_latency_across_queries = false;
   // Query-jit (--jit-level=query) worker count; 0 = hardware_concurrency.
   // 1 runs the same outlined-morsel code path serially (debug/bisect knob).
   int query_jit_threads = 0;

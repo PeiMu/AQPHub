@@ -1144,6 +1144,27 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
           result.rows.push_back(std::move(row_data));
           result.num_rows++;
         }
+        if (plan_recording_active_) {
+          CachedSubquery entry;
+          entry.is_query_jit = true;
+          entry.cache_key = compiled->replay_cache_key;
+          entry.fn_name = compiled->replay_fn_name;
+          entry.source_cols = std::move(compiled->replay_source_cols);
+          entry.source_tables = std::move(compiled->replay_source_tables);
+          entry.source_is_temp = std::move(compiled->replay_source_is_temp);
+          entry.source_block_skip_cols =
+              std::move(compiled->replay_source_block_skip_cols);
+          entry.step_col_counts =
+              std::move(compiled->replay_step_col_counts);
+          entry.ht_tuple_sizes = compiled->ht_tuple_sizes;
+          entry.ht_key0_offsets = compiled->ht_key0_offsets;
+          entry.agg_descs = compiled->agg_descs;
+          entry.agg_output_cells = compiled->agg_output_cells;
+          entry.out_descs = compiled->out_descs;
+          entry.params_buf = compiled->params_buf;
+          entry.sql = sql;
+          plan_recording_.push_back(std::move(entry));
+        }
         return result;
       }
       // Entry returned an error code: fall through to the interpreter (the
@@ -1181,6 +1202,14 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
         result.num_rows++;
       }
     }
+#ifdef HAVE_LLVM
+    if (plan_recording_active_) {
+      CachedSubquery entry;
+      entry.sql = sql;
+      entry.is_interpreter_fallback = true;
+      plan_recording_.push_back(std::move(entry));
+    }
+#endif
     return result;
   }
 
@@ -1358,6 +1387,13 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       }
     }
   }
+#ifdef HAVE_LLVM
+  if (plan_recording_active_) {
+    CachedSubquery entry;
+    entry.sql = sql;
+    plan_recording_.push_back(std::move(entry));
+  }
+#endif
   return result;
 }
 
@@ -1545,7 +1581,14 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   // Allocate the chunk index and build deduplicated column names BEFORE
   // execution: the speculative-compile hook needs the exact identity the
   // result temp table will have (the real path below reuses the same values).
-  auto data_chunk_index = planner->binder->GenerateTableIndex();
+  // During plan-replay (planner is null), use a monotonic fallback index.
+  duckdb::idx_t data_chunk_index;
+  if (planner) {
+    data_chunk_index = planner->binder->GenerateTableIndex();
+  } else {
+    static std::atomic<duckdb::idx_t> s_replay_idx{100000};
+    data_chunk_index = s_replay_idx.fetch_add(1, std::memory_order_relaxed);
+  }
   intermediate_table_map[data_chunk_index] = temp_table_name;
   temp_table_index_ = data_chunk_index;
 
@@ -1808,6 +1851,40 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     log_file.close();
 
   }
+
+#ifdef HAVE_LLVM
+  if (plan_recording_active_) {
+    CachedSubquery entry;
+    entry.sql = sql;
+    entry.temp_table_name = temp_table_name;
+    entry.types = temp_table_types;
+    if (qjit_stored && qjit_compiled) {
+      entry.is_query_jit = true;
+      entry.cache_key = qjit_compiled->replay_cache_key;
+      entry.fn_name = qjit_compiled->replay_fn_name;
+      entry.source_cols = std::move(qjit_compiled->replay_source_cols);
+      entry.source_tables = std::move(qjit_compiled->replay_source_tables);
+      entry.source_is_temp = std::move(qjit_compiled->replay_source_is_temp);
+      entry.source_block_skip_cols =
+          std::move(qjit_compiled->replay_source_block_skip_cols);
+      entry.step_col_counts = std::move(qjit_compiled->replay_step_col_counts);
+      entry.ht_tuple_sizes = qjit_compiled->ht_tuple_sizes;
+      entry.ht_key0_offsets = qjit_compiled->ht_key0_offsets;
+      entry.agg_descs = qjit_compiled->agg_descs;
+      entry.agg_output_cells = qjit_compiled->agg_output_cells;
+      entry.out_descs = qjit_compiled->out_descs;
+      entry.params_buf = qjit_compiled->params_buf;
+      entry.column_names = qjit_temp_meta_[temp_table_name].column_names;
+    } else {
+      entry.is_interpreter_fallback = !qjit_compiled;
+      const auto &cn = qjit_stored
+          ? qjit_temp_meta_[temp_table_name].column_names
+          : temp_collections_[temp_table_name].column_names;
+      entry.column_names = cn;
+    }
+    plan_recording_.push_back(std::move(entry));
+  }
+#endif
 }
 
 #ifdef HAVE_LLVM
@@ -3299,6 +3376,20 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
   }
   if (!compiled->fn)
     return fallback("compile-failed");
+
+  if (plan_recording_active_) {
+    compiled->replay_cache_key = comp->LastCacheKey();
+    compiled->replay_fn_name = comp->LastEntryName();
+    for (const auto &st : plan.steps) {
+      compiled->replay_source_tables.push_back(st.source_table);
+      compiled->replay_source_is_temp.push_back(st.source_is_temp);
+      compiled->replay_source_block_skip_cols.push_back(st.block_skip_col);
+      compiled->replay_step_col_counts.push_back(st.cols.size());
+      compiled->replay_source_cols.insert(compiled->replay_source_cols.end(),
+                                          st.cols.begin(), st.cols.end());
+    }
+  }
+
   return compiled;
 }
 
@@ -3414,6 +3505,19 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
         payload->plan, &payload->compiled->params_buf);
     if (!payload->compiled->fn)
       return reject("compile-failed");
+
+    // Populate replay fields so plan-cache recording works for spec-jit hits.
+    payload->compiled->replay_cache_key = spec_comp->LastCacheKey();
+    payload->compiled->replay_fn_name = spec_comp->LastEntryName();
+    for (const auto &st : payload->plan.steps) {
+      payload->compiled->replay_source_tables.push_back(st.source_table);
+      payload->compiled->replay_source_is_temp.push_back(st.source_is_temp);
+      payload->compiled->replay_source_block_skip_cols.push_back(st.block_skip_col);
+      payload->compiled->replay_step_col_counts.push_back(st.cols.size());
+      payload->compiled->replay_source_cols.insert(
+          payload->compiled->replay_source_cols.end(),
+          st.cols.begin(), st.cols.end());
+    }
 
     payload->ir = std::move(ir);
     payload->out_types = prepared->GetTypes();
@@ -4080,6 +4184,8 @@ void DuckDBAdapter::EnsureJITCompiler() {
   jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
+  if (!jit_cache_dir_.empty())
+    jit_compiler_->SetDiskCacheDir(jit_cache_dir_);
 }
 
 void DuckDBAdapter::PreCreateCompilers(
@@ -6053,5 +6159,164 @@ void DuckDBAdapter::RegisterExternalTempTable(
   temp_table_types = types;
   chunk_col_names_[data_chunk_index] = col_names;
 }
+
+#ifdef HAVE_LLVM
+std::unordered_map<std::string, CachedQueryPlan> &
+DuckDBAdapter::QueryPlanCache() {
+  static std::unordered_map<std::string, CachedQueryPlan> cache;
+  return cache;
+}
+
+int64_t DuckDBAdapter::ReplayQjitSubquery(const CachedSubquery &sub) {
+  EnsureJITCompiler();
+  if (!jit_compiler_)
+    return -1;
+  if (!qjit_syms_registered_) {
+    RegisterQjitRuntimeSymbols(jit_compiler_.get());
+    qjit_syms_registered_ = true;
+  }
+
+  void *fn = jit_compiler_->LookupCachedFn(sub.cache_key, sub.fn_name);
+  if (!fn) {
+#ifndef NDEBUG
+    fprintf(stderr, "[PLAN-REPLAY] object cache miss for %s\n",
+            sub.temp_table_name.c_str());
+#endif
+    return -1;
+  }
+
+  QjitCompiled compiled;
+  compiled.fn = fn;
+  compiled.ht_tuple_sizes = sub.ht_tuple_sizes;
+  compiled.ht_key0_offsets = sub.ht_key0_offsets;
+  compiled.agg_descs = sub.agg_descs;
+  compiled.agg_output_cells = sub.agg_output_cells;
+  compiled.out_descs = sub.out_descs;
+  compiled.params_buf = sub.params_buf;
+
+  qjit::QjitQueryPlan replay_plan;
+  size_t col_offset = 0;
+  for (size_t k = 0; k < sub.source_tables.size(); k++) {
+    qjit::QjitStep step;
+    step.source_table = sub.source_tables[k];
+    step.source_is_temp = sub.source_is_temp[k];
+    step.block_skip_col = sub.source_block_skip_cols[k];
+    size_t ncols = sub.step_col_counts[k];
+    step.cols.assign(sub.source_cols.begin() + col_offset,
+                     sub.source_cols.begin() + col_offset + ncols);
+    col_offset += ncols;
+    replay_plan.steps.push_back(std::move(step));
+  }
+
+  std::string reason;
+  if (!ResolveQjitSources(replay_plan, compiled, reason)) {
+#ifndef NDEBUG
+    fprintf(stderr, "[PLAN-REPLAY] resolve failed: %s for %s\n",
+            reason.c_str(), sub.temp_table_name.c_str());
+#endif
+    return -2;
+  }
+
+  auto qtable = std::make_unique<qjit::QjitTable>(compiled.out_descs,
+                                                    qjit_executor_->NumWorkers());
+  int64_t rows = qjit_executor_->Run(
+      reinterpret_cast<QjitQueryFn>(compiled.fn), compiled.srcs,
+      compiled.ht_tuple_sizes, compiled.agg_descs, compiled.agg_output_cells,
+      *qtable, compiled.ht_key0_offsets, compiled.params_buf);
+  if (rows < 0)
+    return rows;
+
+  {
+    std::unique_lock<std::shared_timed_mutex> wg(temp_state_mutex_);
+    qjit_temps_[sub.temp_table_name] = std::move(qtable);
+    QjitTempMeta meta;
+    meta.column_names = sub.column_names;
+    meta.types = sub.types;
+    meta.has_override_cardinality = true;
+    meta.override_cardinality = static_cast<uint64_t>(rows);
+    qjit_temp_meta_[sub.temp_table_name] = std::move(meta);
+  }
+
+#ifndef NDEBUG
+  fprintf(stderr, "[PLAN-REPLAY] exec label=%s rows=%lld\n",
+          sub.temp_table_name.c_str(), (long long)rows);
+#endif
+  return rows;
+}
+
+QueryResult DuckDBAdapter::ReplayQjitFinal(const CachedSubquery &sub) {
+  EnsureJITCompiler();
+  if (!jit_compiler_)
+    throw std::runtime_error("[PLAN-REPLAY] no JIT compiler for final query");
+  if (!qjit_syms_registered_) {
+    RegisterQjitRuntimeSymbols(jit_compiler_.get());
+    qjit_syms_registered_ = true;
+  }
+
+  void *fn = jit_compiler_->LookupCachedFn(sub.cache_key, sub.fn_name);
+  if (!fn)
+    throw std::runtime_error("[PLAN-REPLAY] object cache miss for final query");
+
+  QjitCompiled compiled;
+  compiled.fn = fn;
+  compiled.ht_tuple_sizes = sub.ht_tuple_sizes;
+  compiled.ht_key0_offsets = sub.ht_key0_offsets;
+  compiled.agg_descs = sub.agg_descs;
+  compiled.agg_output_cells = sub.agg_output_cells;
+  compiled.out_descs = sub.out_descs;
+  compiled.params_buf = sub.params_buf;
+
+  qjit::QjitQueryPlan replay_plan;
+  size_t col_offset = 0;
+  for (size_t k = 0; k < sub.source_tables.size(); k++) {
+    qjit::QjitStep step;
+    step.source_table = sub.source_tables[k];
+    step.source_is_temp = sub.source_is_temp[k];
+    step.block_skip_col = sub.source_block_skip_cols[k];
+    size_t ncols = sub.step_col_counts[k];
+    step.cols.assign(sub.source_cols.begin() + col_offset,
+                     sub.source_cols.begin() + col_offset + ncols);
+    col_offset += ncols;
+    replay_plan.steps.push_back(std::move(step));
+  }
+
+  std::string reason;
+  if (!ResolveQjitSources(replay_plan, compiled, reason))
+    throw std::runtime_error("[PLAN-REPLAY] resolve failed: " + reason);
+
+  qjit::QjitTable qtable(compiled.out_descs, qjit_executor_->NumWorkers());
+  int64_t rows = qjit_executor_->Run(
+      reinterpret_cast<QjitQueryFn>(compiled.fn), compiled.srcs,
+      compiled.ht_tuple_sizes, compiled.agg_descs, compiled.agg_output_cells,
+      qtable, compiled.ht_key0_offsets, compiled.params_buf);
+  if (rows < 0)
+    throw std::runtime_error("[PLAN-REPLAY] run error for final query");
+
+  QueryResult result;
+  result.num_columns = qtable.NumCols();
+  for (size_t i = 0; i < qtable.NumCols(); i++)
+    result.column_names.push_back(qtable.Col(i).name);
+  result.num_rows = 0;
+  for (uint64_t r = 0; r < (uint64_t)rows; r++) {
+    std::vector<std::string> row_data;
+    row_data.reserve(result.num_columns);
+    for (size_t col = 0; col < result.num_columns; col++) {
+      if (!qtable.ValueValid(col, r)) {
+        row_data.emplace_back("NULL");
+      } else if (qtable.Col(col).dtype == AQP_DTYPE_INT32) {
+        row_data.push_back(std::to_string(qtable.GetI32(col, r)));
+      } else if (qtable.Col(col).dtype == AQP_DTYPE_INT64) {
+        row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+      } else {
+        QjitString s = qtable.GetStr(col, r);
+        row_data.emplace_back(qjit::StringData(s), qjit::StringLen(s));
+      }
+    }
+    result.rows.push_back(std::move(row_data));
+    result.num_rows++;
+  }
+  return result;
+}
+#endif
 
 } // namespace middleware

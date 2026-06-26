@@ -682,6 +682,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
           config_.jit_prefetch_row_distance);
       duck->SetBenchmarkMode(config_.benchmark_mode);
       duck->SetJITCache(config_.jit_cache);
+      duck->SetJITCacheDir(config_.jit_cache_dir);
       duck->SetCompileMode(config_.compile_mode);
       duck->SetJITFlags(config_.jit_flags);
       duck->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
@@ -697,6 +698,17 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
               << std::endl;
     return adapter_->ExecuteSQL(sql);
   }
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  if (config_.jit_cache >= 3 && config_.engine == BackendEngine::DUCKDB) {
+    auto &cache = DuckDBAdapter::QueryPlanCache();
+    auto it = cache.find(query_name_);
+    if (it != cache.end())
+      return ReplayQueryPlan(it->second);
+    if (duckdb_adapter_)
+      duckdb_adapter_->BeginPlanRecording();
+  }
+#endif
 
   // === Phase 1: Parse SQL ===
   std::chrono::high_resolution_clock::time_point timer;
@@ -1199,10 +1211,110 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
               << "\n=== End Sub-Query Plan ===" << std::endl;
   }
   
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  if (config_.jit_cache >= 3 && duckdb_adapter_ &&
+      duckdb_adapter_->IsPlanRecording()) {
+    CachedQueryPlan cached;
+    auto &buf = duckdb_adapter_->GetPlanRecording();
+    if (!buf.empty()) {
+      cached.final_query = std::move(buf.back());
+      buf.pop_back();
+      cached.subqueries = std::move(buf);
+    }
+    DuckDBAdapter::QueryPlanCache()[query_name_] = std::move(cached);
+    duckdb_adapter_->EndPlanRecording();
+  }
+#endif
+
   return query_result;
 }
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+
+QueryResult IRQuerySplitter::ReplayQueryPlan(const CachedQueryPlan &cached) {
+  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+  if (!duck)
+    throw std::runtime_error("[PLAN-REPLAY] not a DuckDBAdapter");
+
+  std::chrono::high_resolution_clock::time_point timer;
+
+  // Write timing zeros for skipped phases: parse_sql, preprocess
+  if (config_.enable_timing) {
+    std::ofstream log_file;
+    log_file.open(g_timing_log_name, std::ios_base::app);
+    log_file << "0.000, 0.000, ";
+    log_file.close();
+  }
+
+  for (const auto &sub : cached.subqueries) {
+    if (config_.enable_timing) {
+      // extract=0, gen_sql=0
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << "0.000, 0.000, ";
+      log_file.close();
+      timer = chrono_tic();
+    }
+
+    if (sub.is_query_jit && !sub.is_interpreter_fallback) {
+      int64_t rows = duck->ReplayQjitSubquery(sub);
+      if (rows < 0) {
+        throw std::runtime_error(
+            "[PLAN-REPLAY] replay failed for " + sub.temp_table_name +
+            " rc=" + std::to_string(rows));
+      }
+      if (config_.enable_timing) {
+        auto us = chrono_toc(&timer, "", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        // jit_compile, execute, extra_materialize, update_ir
+        log_file << std::fixed << std::setprecision(3) << (us / 1000.0)
+                 << ", 0.000, 0.000, 0.000, ";
+        log_file.close();
+      }
+    } else {
+      // Interpreter fallback: adapter writes jit_compile + execute +
+      // extra_materialize (3 cols); we only append update_ir.
+      duck->ExecuteSQLandCreateTempTable(sub.sql, sub.temp_table_name,
+                                          config_.enable_update_temp_card);
+      if (config_.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "0.000, ";  // update_ir
+        log_file.close();
+      }
+    }
+  }
+
+  // Final query
+  if (config_.enable_timing) {
+    // gen_final_sql=0
+    std::ofstream log_file;
+    log_file.open(g_timing_log_name, std::ios_base::app);
+    log_file << "0.000, ";
+    log_file.close();
+    timer = chrono_tic();
+  }
+
+  QueryResult result;
+  if (cached.final_query.is_query_jit &&
+      !cached.final_query.is_interpreter_fallback) {
+    result = duck->ReplayQjitFinal(cached.final_query);
+    if (config_.enable_timing) {
+      auto us = chrono_toc(&timer, "", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      // jit_compile_final, execute_final
+      log_file << std::fixed << std::setprecision(3) << (us / 1000.0)
+               << ", 0.000, ";
+      log_file.close();
+    }
+  } else {
+    result = adapter_->ExecuteSQL(cached.final_query.sql);
+  }
+
+  return result;
+}
 
 // ─── Speculative compile helpers ─────────────────────────────────────────────
 
@@ -2274,6 +2386,15 @@ bool IRQuerySplitter::ExecuteOneIteration(
         duck->ExecuteSpeculativeAndCreateTempTable(
             *cqp.prepared, *cqp.bg_conn, temp_table_name,
             config_.enable_update_temp_card);
+        if (duck->IsPlanRecording()) {
+          CachedSubquery entry;
+          entry.sql = sub_sql;
+          entry.temp_table_name = temp_table_name;
+          entry.column_names =
+              duck->GetTempCollectionColumnNames(temp_table_name);
+          entry.types = duck->GetTempCollectionTypes(temp_table_name);
+          duck->GetPlanRecording().push_back(std::move(entry));
+        }
       }
       active_cross_query_prep_->has_qjit = false;
       active_cross_query_prep_->has_prepare = false;

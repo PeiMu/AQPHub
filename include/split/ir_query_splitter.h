@@ -13,6 +13,9 @@
 #ifdef HAVE_DUCKDB
 #include "split/node_based_splitter.h"
 #endif
+#ifdef HAVE_LLVM
+namespace middleware { struct CachedQueryPlan; }
+#endif
 #include "storage/csr_index.h"
 #include "storage/storage_plan.h"
 #include "kernel/sub_query_plan.h"
@@ -148,6 +151,10 @@ public:
 #endif
 
 private:
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  QueryResult ReplayQueryPlan(const CachedQueryPlan &cached);
+#endif
+
   // === IR-based Iterative Split-Execute Loop (all strategies) ===
   QueryResult
   ExecuteSplitLoop(std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir);

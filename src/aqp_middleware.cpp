@@ -263,6 +263,7 @@ void ExecuteSingleQuery(
             config.single_col_int_join_mode);
         duckdb_adp->SetBenchmarkMode(config.benchmark_mode);
         duckdb_adp->SetJITCache(config.jit_cache);
+        duckdb_adp->SetJITCacheDir(config.jit_cache_dir);
         duckdb_adp->SetCompileMode(config.compile_mode);
         duckdb_adp->SetJITProbePrefetchDistances(
             config.jit_prefetch_entry_distance,
@@ -274,35 +275,92 @@ void ExecuteSingleQuery(
       }
 #endif
 
-#if defined(HAVE_LINGODB) && defined(HAVE_DUCKDB)
-      if (config.engine == BackendEngine::LINGODB_RUNTIME) {
-        auto *rt_adapter =
-            dynamic_cast<LingoDBRuntimeAdapter *>(adapter);
-        if (!rt_adapter)
-          throw std::runtime_error(
-              "LINGODB_RUNTIME engine requires LingoDBRuntimeAdapter");
-
-        DuckDBAdapter helper(config.helper_db);
-        helper.ParseSQL(sql);
-        helper.FilterOptimize();
-        auto ir = helper.ConvertPlanToIR();
-        if (!ir)
-          throw std::runtime_error(
-              "[lingo-db-runtime] Failed to convert DuckDB plan to IR");
-
-        if (config.enable_debug_print) {
-          std::string ir_sql =
-              ir_sql_converter::ConvertIRToSQL(*ir, 0);
-          std::cout << "DuckDB-optimized IR SQL:\n"
-                    << ir_sql << std::endl;
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+      bool replay_hit = false;
+      bool was_recording = false;
+      bool is_query_jit = duckdb_adp &&
+                          (config.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+      if (config.jit_cache >= 3 && is_query_jit &&
+          config.engine == BackendEngine::DUCKDB) {
+        std::string qname = get_filename(sql_file_path);
+        auto dot = qname.rfind('.');
+        if (dot != std::string::npos)
+          qname = qname.substr(0, dot);
+        auto &cache = DuckDBAdapter::QueryPlanCache();
+        auto it = cache.find(qname);
+        if (it != cache.end() && it->second.final_query.is_query_jit) {
+          auto &sub = it->second.final_query;
+          if (sub.is_interpreter_fallback) {
+            // No compiled fn — fall through to normal ExecuteSQL
+          } else {
+            auto replay_timer = chrono_tic();
+            query_result = duckdb_adp->ReplayQjitFinal(sub);
+            replay_hit = true;
+            if (config.enable_timing) {
+              auto replay_us =
+                  chrono_toc(&replay_timer, "split=none replay\n", false);
+              std::ofstream log_file;
+              log_file.open(g_timing_log_name, std::ios_base::app);
+              log_file << std::fixed << std::setprecision(3)
+                       << (replay_us / 1000.0) << ", 0.000, ";
+              log_file.close();
+            }
+          }
+        } else {
+          was_recording = true;
+          duckdb_adp->BeginPlanRecording();
         }
-
-        query_result = rt_adapter->ExecuteIRQuery(*ir);
-      } else
-#endif
-      {
-        query_result = adapter->ExecuteSQL(sql);
       }
+      if (!replay_hit) {
+#endif
+#if defined(HAVE_LINGODB) && defined(HAVE_DUCKDB)
+        if (config.engine == BackendEngine::LINGODB_RUNTIME) {
+          auto *rt_adapter =
+              dynamic_cast<LingoDBRuntimeAdapter *>(adapter);
+          if (!rt_adapter)
+            throw std::runtime_error(
+                "LINGODB_RUNTIME engine requires LingoDBRuntimeAdapter");
+
+          DuckDBAdapter helper(config.helper_db);
+          helper.ParseSQL(sql);
+          helper.FilterOptimize();
+          auto ir = helper.ConvertPlanToIR();
+          if (!ir)
+            throw std::runtime_error(
+                "[lingo-db-runtime] Failed to convert DuckDB plan to IR");
+
+          if (config.enable_debug_print) {
+            std::string ir_sql =
+                ir_sql_converter::ConvertIRToSQL(*ir, 0);
+            std::cout << "DuckDB-optimized IR SQL:\n"
+                      << ir_sql << std::endl;
+          }
+
+          query_result = rt_adapter->ExecuteIRQuery(*ir);
+        } else
+#endif
+        {
+          query_result = adapter->ExecuteSQL(sql);
+        }
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+      }
+      if (was_recording && duckdb_adp) {
+        auto &recording = duckdb_adp->GetPlanRecording();
+        std::string qname = get_filename(sql_file_path);
+        auto dot = qname.rfind('.');
+        if (dot != std::string::npos)
+          qname = qname.substr(0, dot);
+        CachedQueryPlan plan;
+        if (!recording.empty()) {
+          plan.final_query = std::move(recording[0]);
+        } else {
+          plan.final_query.sql = sql;
+          plan.final_query.is_interpreter_fallback = true;
+        }
+        DuckDBAdapter::QueryPlanCache()[qname] = std::move(plan);
+        duckdb_adp->EndPlanRecording();
+      }
+#endif
     }
     result.num_rows = query_result.num_rows;
 
@@ -432,7 +490,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-    if (iter > 0 && config.jit_cache)
+    if (iter > 0 && config.jit_cache && config.jit_cache < 3)
       aqp_jit::IrToLlvmCompiler::ClearObjCache();
 #endif
 
@@ -441,9 +499,10 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     std::unique_ptr<ThreadPool> cross_query_pool;
     std::future<std::unique_ptr<CrossQueryPrepResult>> pending_cross_prep;
     DuckDBAdapter *duck_for_cross =
-        config.hide_latency_across_queries &&
+        config.jit_cache >= 1 &&
                 config.strategy == SplitStrategy::NODE_BASED &&
-                config.engine == BackendEngine::DUCKDB
+                config.engine == BackendEngine::DUCKDB &&
+                !(config.jit_cache >= 3 && iter > 0)
             ? dynamic_cast<DuckDBAdapter *>(adapter)
             : nullptr;
     if (duck_for_cross)
@@ -710,7 +769,7 @@ int main(int argc, char **argv) {
       for (int iter = 0; iter < config.repeat_count; iter++) {
         if (iter > 0) {
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-          if (config.jit_cache)
+          if (config.jit_cache && config.jit_cache < 3)
             aqp_jit::IrToLlvmCompiler::ClearObjCache();
 #endif
           if (config.enable_timing)

@@ -391,7 +391,14 @@ public:
 
   void SetCache(int mode);
 
+  void SetDiskCacheDir(const std::string &dir);
+
   static void ClearObjCache();
+
+  void *LookupCachedFn(const std::string &cache_key,
+                       const std::string &fn_name);
+  const std::string &LastCacheKey() const;
+  const std::string &LastEntryName() const;
 
   // Releases all JIT-compiled modules (machine code, IR, symbol-table
   // entries, ExecutionSession state) added since the last reset. The

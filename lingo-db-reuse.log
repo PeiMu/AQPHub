@@ -1963,3 +1963,208 @@ Template compilation is NOT strictly better:
 (param_config.cpp). breakdown_measurement_script.sh measures both
 optimizations together via jit-cache configs. Standalone
 --hide-latency-across-queries flag still works for use without cache.
+
+### §7.3b — Full plan replay (`--jit-cache=full`) — COMPLETE (2026-06-25)
+
+Two-phase implementation:
+- Phase 1: Keep object cache across --repeat iterations (skip ClearObjCache
+  for mode 3). One-line change at aqp_middleware.cpp:435,713.
+- Phase 2: Query plan replay. Iter 0 records CachedSubquery entries
+  (cache_key, fn_name, source infos, HT metadata, output descriptors,
+  params_buf) into a process-global QueryPlanCache. Iter 1+ replays:
+  ResolveQjitSources → LookupCachedFn → QjitExecutor::Run → register
+  temp table. Skips entire middleware pipeline (splitter, SQL gen,
+  DuckDB parse+optimize+prepare, codegen).
+
+Architecture:
+- CachedSubquery/CachedQueryPlan structs in duckdb_adapter.h
+- QueryPlanCache(): static map keyed by query_name
+- BeginPlanRecording/EndPlanRecording: toggle recording during iter 0
+- Recording sites: ExecuteSQLandCreateTempTable (subqueries) and
+  ExecuteSQL (final query) in duckdb_adapter.cpp
+- Cache check: ir_query_splitter.cpp:ExecuteWithSplit entry (line 701-709)
+- Recording assembly: ir_query_splitter.cpp:ExecuteSplitLoop end (1213-1226)
+- Replay loop: ir_query_splitter.cpp:ReplayQueryPlan (line 1233)
+- Cross-query latency hiding disabled for replay iters (aqp_middleware.cpp:443)
+
+Bugs fixed during implementation:
+1. Empty cache keys for spec-jit compiled subqueries: SpeculativeQueryJitCompile
+   never populated replay_cache_key/replay_fn_name. Fixed by copying from
+   spec_comp->LastCacheKey()/LastEntryName() after CompileQuerySteps.
+2. Segfault in ExecuteSQLandCreateTempTable during replay: planner is null
+   after ResetQueryState. Fixed with null guard + atomic fallback index.
+3. Cross-query bg thread interference during replay: PrepareNextQuery
+   conflicted with adapter state. Fixed by disabling cross-query prep
+   when jit_cache >= 3 && iter > 0.
+
+Correctness: 113 JOB queries × 12 configs (all jit levels × simd ×
+spec-jit variants) all pass golden output for both iter 0 and iter 1.
+
+Non-query-jit full cache extension (2026-06-25):
+- Non-query-jit levels (none, expr, operator, pipeline) now supported
+  with --jit-cache=full. Replay replays SQL through
+  ExecuteSQLandCreateTempTable (re-runs DuckDB Prepare+Execute); only
+  the splitter overhead (parse, split, IR extract, SQL gen, update_ir)
+  is saved. Query-jit replay skips the entire middleware pipeline.
+- Bug: ExecuteSpeculativeAndCreateTempTable (cross-query prep path) did
+  not participate in plan recording. When the cross-query latency hiding
+  feature prepared the first subquery of query N+1 on a background
+  connection, that subquery's CachedSubquery entry was missing from the
+  recorded plan. During replay, the plan started from the second
+  subquery, which referenced temp1 that was never created. Fixed by
+  adding recording in the splitter's cross-query HIT path
+  (ir_query_splitter.cpp:2388-2396).
+- Added GetTempCollectionColumnNames/GetTempCollectionTypes accessors
+  to DuckDBAdapter for the recording.
+- 7 new correctness configs (none, expr±simd, operator±simd,
+  pipeline±simd with node-based split).
+- 7 new performance configs in breakdown_measurement_script.sh.
+
+Files modified:
+- include/jit/ir_to_llvm.h (LookupCachedFn, LastCacheKey, LastEntryName)
+- src/jit/ir_to_llvm.cpp (implement above, store cache_key/entry in CompileQuerySteps)
+- include/adapters/duckdb_adapter.h (CachedSubquery, CachedQueryPlan, recording API,
+  ReplayQjitSubquery/ReplayQjitFinal, QjitCompiled replay fields, ResolveQjitSources public,
+  GetTempCollectionColumnNames/GetTempCollectionTypes)
+- src/adapters/duckdb_adapter.cpp (QueryPlanCache, recording, replay, null planner guard)
+- include/split/ir_query_splitter.h (ReplayQueryPlan declaration)
+- src/split/ir_query_splitter.cpp (cache check, recording assembly, ReplayQueryPlan,
+  cross-query HIT recording for non-query-jit)
+- src/aqp_middleware.cpp (disable cross-query for replay iters)
+- measure/run_job.sh (--repeat=2 for full mode)
+- measure/correctness_test.sh (12 full-cache configs, iteration-aware diff)
+- measure/breakdown_measurement_script.sh (19 full-cache performance configs)
+
+### §7.3c — Disk-backed ObjCache + split=none plan replay (2026-06-25)
+
+Two features extending --jit-cache=full:
+
+1. Disk-backed ObjCache: compiled .o files persist to /dev/shm/aqp_jit_cache/v1/
+   (tmpfs, RAM speed, survives process restart, cleared on reboot). File format:
+   <dir>/<16-char-hex-hash>.o, raw ELF bytes. Write via atomic .tmp.PID + rename().
+   On cache miss, TryCacheLoad checks disk after in-memory miss and promotes to
+   in-memory ObjCache. InstallCacheHook writes to disk after LLVM compilation.
+   Optional --jit-cache-dir=<path> overrides default directory.
+   Works for ALL jit levels (none/expr/operator/pipeline/query) × ALL splits.
+
+2. Split=none query-jit plan replay: intercept at aqp_middleware.cpp before
+   adapter->ExecuteSQL(sql). Iter 0 records via BeginPlanRecording(); iter 1+
+   checks QueryPlanCache and calls ReplayQjitFinal() directly, skipping the
+   entire ParseSQL+Optimize+ConvertPlanToIR+AnalyzeQueryJit+BuildExecutionSteps
+   pipeline (~444 ms/iter saved). Non-query-jit split=none benefits only from
+   disk ObjCache (no splitter overhead to skip — the 403 ms is DuckDB
+   Prepare+RegisterJIT cost).
+
+Files modified:
+- src/jit/ir_to_llvm.cpp (disk_cache_dir, TryDiskLoad, WriteToDisk, modify
+  TryCacheLoad + InstallCacheHook, SetDiskCacheDir)
+- include/jit/ir_to_llvm.h (SetDiskCacheDir declaration)
+- include/adapters/duckdb_adapter.h (SetJITCacheDir, jit_cache_dir_ member)
+- src/adapters/duckdb_adapter.cpp (wire disk dir in EnsureJITCompiler)
+- src/aqp_middleware.cpp (split=none cache check/record, pass cache dir)
+- src/split/ir_query_splitter.cpp (pass jit_cache_dir through SetJITCacheDir)
+- include/util/param_config.h (jit_cache_dir member)
+- src/util/param_config.cpp (--jit-cache-dir parsing, default for mode 3)
+- measure/correctness_test.sh (+6 split=none full-cache configs)
+- measure/breakdown_measurement_script.sh (+7 split=none full-cache perf configs)
+
+### §7.4 Performance analysis: single-run improvement ceiling (2026-06-24)
+
+Not an implementation task. Quantitative analysis behind §7.2 and §7.3.
+
+Baseline (TPDE, node-based, 10 warm runs, 113 JOB queries):
+- Overhead: 0.66 s, JIT compile: 0.57 s, Execute: 5.04 s, Total: 6.26 s
+- Single-thread phases: 1.23 s (19.6% of total)
+- Multi-thread phases (12 workers): 5.04 s (80.4%)
+
+Key findings:
+1. Query-jit already uses 12 threads (hardware_concurrency()).
+   QjitWorkerPool spawns 12 persistent workers with morsel-parallel
+   scheduling (query_jit_executor.cpp:15-18). No additional thread
+   parallelism available for execution.
+2. Query-jit-only per-sub-query tuning (picking from TPDE/fastisel/
+   LLVM O2/SIMD per sub-query) saves only 0.11 s over pure TPDE.
+   TPDE wins 641/678 sub-queries; compile cost of LLVM O2 (~12 ms)
+   outweighs its exe savings for most sub-queries.
+3. Mixed-config tuning (interp+query-jit) produces CDC conversion
+   cost (540 ms) that exceeds execution savings (429 ms), making the
+   tuned config 220 ms SLOWER than pure TPDE.
+4. The 20% improvement target (5.01 s) is NOT achievable within a
+   single first run. Maximum single-run savings: pipeline (392 ms) +
+   cache (142 ms) + qjit-only tuning (110 ms) = 644 ms → 5.62 s
+   (10.3% improvement).
+5. The 20% target IS achievable with persistent cache: 2nd run with
+   LLVM O2 cached objects → 4.70 s (24.9% improvement).
+
+Config performance table (node-based, 113 JOB queries):
+
+| Config | Overhead | JIT | Exe | Total |
+|--------|----------|-----|-----|-------|
+| interp | 0.69 s | 0.00 s | 10.32 s | 11.01 s |
+| query_tpde | 0.66 s | 0.57 s | 5.04 s | 6.26 s |
+| query_fastisel | 0.66 s | 1.23 s | 5.37 s | 7.26 s |
+| query_full (LLVM O2) | 0.67 s | 7.55 s | 4.03 s | 12.25 s |
+| tuned (mixed) | 0.73 s | 1.15 s | 4.61 s | 6.48 s |
+
+### Config matrix simplification (2026-06-25)
+
+Simplified the measurement config matrix from 137 to 100 configs.
+
+Dropped dimensions:
+- **simd=auto**: SIMD doesn't help across any JIT level/compile-mode combo.
+  All simd=auto entries commented out in all scripts.
+- **spec-jit=interpret**: recompile (TPDE fallback on miss) should always
+  be >= interpret (no JIT on miss). All interpret entries removed.
+- **interpreter+cache baselines**: interpreter has no JIT, caching is a
+  no-op. Only 2 interpreter configs remain (split=none + node-based,
+  cache=off).
+- **--hide-latency-across-queries CLI flag**: merged into jit_cache >= 1
+  (auto-enabled). Flag removed from param_config, aqp_middleware.cpp,
+  and all measure scripts.
+
+Added:
+- **split=none full-cache**: 3 jit-levels × 3 compile-modes at full cache
+  (was previously only at cache=off).
+
+Final formula (100 configs):
+  2 interpreter
+  + 1 none-split × 3 jit-level × 3 compile-mode × 2 cache(off/full) = 18
+  + 1 node-based × (3 jit-level × 3 compile-mode + 1 tune) × 4 cache × 2 spec(off/recompile) = 80
+
+Pipeline-jit configs remain commented in all scripts (deprioritized).
+
+Cache key includes jit_level + compile_mode (ir_to_llvm.cpp opt_tag),
+so tuned configs with mixed JIT levels/compile-modes see lower cache
+hit rates than uniform configs. Accepted as-is (option 1: just measure).
+
+### LLVM initialization thread-safety fix (2026-06-25)
+
+EnsureLLVMInit() used a plain `static bool` guard — not thread-safe.
+When cross-query latency hiding runs PrepareNextQuery on a background
+thread, both the main thread and bg thread can create IrToLlvmCompiler
+instances concurrently. If both see `llvm_initialized == false`, both
+call InitializeNativeTarget(), registering x86-64 twice. LLVM's
+TargetRegistry::RegisterTarget is documented as not thread-safe.
+Symptom: intermittent "Cannot choose between targets x86-64 and x86-64"
+LLJIT creation error (race window depends on binary layout/timing).
+
+Fix: replaced with `std::call_once(llvm_init_flag, ...)` which
+guarantees exactly-once execution with full thread safety.
+Location: src/jit/ir_to_llvm.cpp:253-259.
+
+### §7.3 Key code locations (moved from CLAUDE.md)
+
+| Location | What it does |
+|----------|-------------|
+| ir_to_llvm.cpp:418-425 | Object cache: ObjCache() static map + ObjCacheMu() mutex |
+| ir_to_llvm.cpp:482-497 | InstallCacheHook: captures ELF .o bytes via ObjTransformLayer |
+| ir_to_llvm.cpp:450-470 | TryCacheLoad: in-memory lookup + jit->addObjectFile() reload |
+| ir_to_llvm.cpp:LookupCachedFn | Plan replay: load cached fn by key+name |
+| ir_to_llvm.cpp:LastCacheKey/LastEntryName | Expose cache key/fn name for plan recording |
+| duckdb_adapter.h:CachedSubquery/CachedQueryPlan | Plan cache structs |
+| duckdb_adapter.cpp:QueryPlanCache() | Process-global plan cache (static map) |
+| duckdb_adapter.cpp:ReplayQjitSubquery/ReplayQjitFinal | Plan replay execution |
+| ir_query_splitter.cpp:ReplayQueryPlan | Replay entry point (skips splitter) |
+| aqp_middleware.cpp:435,713 | ClearObjCache() — skipped for mode 3 |
+| aqp_middleware.cpp:443 | Cross-query prep disabled for replay iterations |
+| param_config.h:105 | jit_cache int: 0=off, 1=strict, 2=template, 3=full |

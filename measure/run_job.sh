@@ -12,7 +12,6 @@ jit_cache=${9:-off}
 spec_jit=${10:-off}       # off | recompile | interpret (--spec-jit mode)
 compile_mode=${11:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
-hide_latency=${13:-off}   # on | off (--hide-latency-across-queries)
 
 # For lingodb/lingo-db-runtime, the 3rd arg selects the execution mode
 # (llvm | tpde) instead of the DuckDB jit level.
@@ -30,6 +29,7 @@ if [[ "$jit_cache" == "on" ]]; then
 elif [[ "$jit_cache" != "off" ]]; then
     jit_extra_flags+=" --jit-cache=${jit_cache}"
 fi
+[[ "$jit_cache" == "full" ]] && jit_extra_flags+=" --repeat=2"
 [[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
@@ -42,7 +42,6 @@ fi
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
-[[ "$hide_latency"   == "on"  ]] && jit_extra_flags+=" --hide-latency-across-queries"
 
 # Build a short suffix for the log filename
 flag_suffix=""
@@ -60,7 +59,6 @@ fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
-[[ "$hide_latency"   == "on"  ]] && flag_suffix+="_hidelatency"
 
 # Storage plan flags. Only query-jit consumes the storage plan (FlatTable
 # scan layer); expr/operator/pipeline run entirely inside DuckDB and never

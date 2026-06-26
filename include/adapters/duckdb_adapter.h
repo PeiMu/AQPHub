@@ -100,6 +100,38 @@ struct QjitTempMeta {
   uint64_t override_cardinality = 0;
 };
 
+#ifdef HAVE_LLVM
+struct CachedSubquery {
+  bool is_query_jit = false;
+  bool is_interpreter_fallback = false;
+
+  std::string cache_key;
+  std::string fn_name;
+  std::vector<qjit::QjitColumnRef> source_cols;
+  std::vector<std::string> source_tables;
+  std::vector<bool> source_is_temp;
+  std::vector<int> source_block_skip_cols;
+  std::vector<size_t> step_col_counts;
+
+  std::vector<uint32_t> ht_tuple_sizes;
+  std::vector<uint32_t> ht_key0_offsets;
+  std::vector<qjit::QjitAggCellDesc> agg_descs;
+  std::vector<int> agg_output_cells;
+  std::vector<qjit::QjitTable::ColumnDesc> out_descs;
+  std::vector<uint8_t> params_buf;
+
+  std::string sql;
+  std::string temp_table_name;
+  std::vector<std::string> column_names;
+  duckdb::vector<duckdb::LogicalType> types;
+};
+
+struct CachedQueryPlan {
+  std::vector<CachedSubquery> subqueries;
+  CachedSubquery final_query;
+};
+#endif
+
 // ReplacementScanData subclass: holds pointer to temp_collections_ map
 struct TempCollectionScanData : public duckdb::ReplacementScanData {
   TempCollectionScanData(
@@ -299,6 +331,7 @@ public:
 
   // JIT object cache mode (--jit-cache=..., default 0=off).
   void SetJITCache(int mode) { jit_cache_ = mode; }
+  void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
 
   // Compile mode (--compile-mode): 0=llvm (full quality), 2=tpde.
   // Must be set before the first compile — the backend is fixed at
@@ -393,6 +426,14 @@ public:
     std::vector<int> agg_output_cells;
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
     std::vector<uint8_t> params_buf; // template cache mode 2: runtime constants
+    // §7.3b plan-replay cache: source info for ResolveQjitSources
+    std::string replay_cache_key;
+    std::string replay_fn_name;
+    std::vector<qjit::QjitColumnRef> replay_source_cols;
+    std::vector<std::string> replay_source_tables;
+    std::vector<bool> replay_source_is_temp;
+    std::vector<int> replay_source_block_skip_cols;
+    std::vector<size_t> replay_step_col_counts;
   };
 
   // Speculative query-jit compile payload: built on the bg pool, consumed on
@@ -468,6 +509,37 @@ public:
   int GetJitSkipHashCmp() const { return jit_skip_hash_cmp_; }
   int GetJitCache() const { return jit_cache_; }
   int GetCompileMode() const { return compile_mode_; }
+
+  bool ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+                          QjitCompiled &compiled, std::string &reason);
+  qjit::QjitExecutor *GetQjitExecutor() { return qjit_executor_.get(); }
+
+  static std::unordered_map<std::string, CachedQueryPlan> &QueryPlanCache();
+  void BeginPlanRecording() {
+    plan_recording_active_ = true;
+    plan_recording_.clear();
+  }
+  void EndPlanRecording() { plan_recording_active_ = false; }
+  bool IsPlanRecording() const { return plan_recording_active_; }
+  std::vector<CachedSubquery> &GetPlanRecording() { return plan_recording_; }
+
+  std::vector<std::string> GetTempCollectionColumnNames(
+      const std::string &name) const {
+    auto it = temp_collections_.find(name);
+    if (it != temp_collections_.end())
+      return it->second.column_names;
+    return {};
+  }
+  duckdb::vector<duckdb::LogicalType> GetTempCollectionTypes(
+      const std::string &name) const {
+    auto it = temp_collections_.find(name);
+    if (it != temp_collections_.end() && it->second.collection)
+      return it->second.collection->Types();
+    return {};
+  }
+
+  int64_t ReplayQjitSubquery(const CachedSubquery &sub);
+  QueryResult ReplayQjitFinal(const CachedSubquery &sub);
 #endif
 
   // NodeBasedSplitter support
@@ -586,6 +658,7 @@ private:
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
   int jit_cache_ = 0;
+  std::string jit_cache_dir_;
   int compile_mode_ = 0;
   CompensateMissAction compensate_miss_action_ = CompensateMissAction::NONE;
   // TPDE compiler for spec-jit miss recompiles. Only created when the main
@@ -646,17 +719,15 @@ private:
   std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>>
       qjit_temps_;
 
+  std::vector<CachedSubquery> plan_recording_;
+  bool plan_recording_active_ = false;
+
   // Output cross-check against the prepared statement (the result
   // authority); fills compiled.out_descs + agg metadata. Shared by the
   // inline (TryCompileQueryJit) and speculative compile paths.
   bool BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
                             duckdb::PreparedStatement &prepared,
                             QjitCompiled &compiled, std::string &reason);
-
-  // Resolve per-step sources (FlatTables / qjit temps). Main thread only —
-  // consumed temps must already be stored. Creates qjit_executor_ lazily.
-  bool ResolveQjitSources(const qjit::QjitQueryPlan &plan,
-                          QjitCompiled &compiled, std::string &reason);
 
   // Bg-compiled spec payload awaiting the next ExecuteSQLandCreateTempTable
   // call (set via SetQjitSpecHit on a spec HIT).
