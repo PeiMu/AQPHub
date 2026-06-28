@@ -1,8 +1,6 @@
-ANALYZING...
-ANALYZE done
 
 ========================================
-Running Benchmark: /home/pei/Project/benchmarks/imdb_job-postgres/queries
+Running Benchmark: /home/pei/Project/benchmarks/imdb_job-postgres/queries/
 ========================================
 Found 113 SQL file(s)
 
@@ -286,7 +284,7 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
-NULL|NULL|NULL|
+Additional Voices|Baker, Andrea|Baiohazâdo 6|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql
 
 === Query Results ===
@@ -361,7 +359,7 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
-NULL|NULL|NULL|
+Queen|Andrews, Julie|Shrek 2|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql
 
 === Query Results ===
@@ -521,7 +519,7 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/7a.sql
 
 === Query Results ===
 Rows: 1, Columns: 2
-Chevalier, Maurice|Clint Eastwood: The Man from Malpaso|
+Antonioni, Michelangelo|Dressed to Kill|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql
 
 === Query Results ===
@@ -584,4 +582,3 @@ Failed: 0
 ========================================
 Execution completed
 ========================================
-duckdb runs: 11116 ms

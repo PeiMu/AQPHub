@@ -2507,6 +2507,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
         // normal execute call resolves sources and runs the compiled fn
         // (jit_compile column ≈ 0 — no Prepare, no codegen on this thread).
         duck->SetQjitSpecHit(std::move(hit_spec->qjit));
+        if (config_.strategy == SplitStrategy::NODE_BASED && executable_ir)
+          duck->SetQjitPendingIR(executable_ir);
         adapter_->ExecuteSQLandCreateTempTable(
             sub_sql, temp_table_name, config_.enable_update_temp_card);
       } else {
@@ -2575,6 +2577,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
         adapter_->ExecuteSQLandCreateTempTable(short_sql, temp_table_name,
                                                config_.enable_update_temp_card);
       } else {
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+        if ((config_.jit_flags & AQP_JIT_QUERY_JIT) &&
+            config_.engine == BackendEngine::DUCKDB &&
+            config_.strategy == SplitStrategy::NODE_BASED &&
+            executable_ir && !spec_hit) {
+          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+          if (duck)
+            duck->SetQjitPendingIR(executable_ir);
+        }
+#endif
         adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
                                                config_.enable_update_temp_card);
       }
@@ -2594,7 +2606,6 @@ bool IRQuerySplitter::ExecuteOneIteration(
     }
     } // end if (!cross_query_hit)
   }
-
   if (config_.enable_tuning)
     LogKernelDecision(tuning_log_file_.c_str(),
                       current_repeat_, iteration_count_, "sub",

@@ -8917,6 +8917,25 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
       FunctionType::get(i8p, {i8p, i32, i64, ht_handle_p}, false));
   FunctionCallee ht_end_fn = mod->getOrInsertFunction(
       "qjit_ht_end", FunctionType::get(void_ty, {i8p, i32, ht_handle_p}, false));
+  // §6.13 fast-path table append handle: {val_cursor, val_limit, null_cursor, null_limit}
+  StructType *TblColHandleTy = StructType::get(C, {i8p, i8p, i8p, i8p});
+  Type *tbl_handle_p = PointerType::getUnqual(TblColHandleTy);
+  FunctionCallee tbl_begin_fn = mod->getOrInsertFunction(
+      "qjit_table_begin",
+      FunctionType::get(void_ty, {i8p, i32, tbl_handle_p, i64}, false));
+  FunctionCallee tbl_col_slow_fn = mod->getOrInsertFunction(
+      "qjit_table_col_slow",
+      FunctionType::get(void_ty, {i8p, i32, i64, tbl_handle_p, i64}, false));
+  FunctionCallee tbl_null_slow_fn = mod->getOrInsertFunction(
+      "qjit_table_null_slow",
+      FunctionType::get(void_ty, {i8p, i32, i64, tbl_handle_p}, false));
+  FunctionCallee tbl_end_fn = mod->getOrInsertFunction(
+      "qjit_table_end",
+      FunctionType::get(void_ty, {i8p, i32, tbl_handle_p, i64, i64}, false));
+  FunctionCallee tbl_str_copy_fn = mod->getOrInsertFunction(
+      "qjit_table_str_copy",
+      FunctionType::get(void_ty, {i8p, i32, i8p, i8p}, false));
+
   FunctionCallee ht_dir_fn = mod->getOrInsertFunction(
       "qjit_ht_dir", FunctionType::get(i8p, {i8p}, false));
   FunctionCallee ht_mask_fn = mod->getOrInsertFunction(
@@ -9080,10 +9099,18 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 
     Value *result = nullptr, *agg_state = nullptr, *sink_ht_ptr = nullptr;
     Value *ht_handle = nullptr;
+    Value *tbl_handles = nullptr, *tbl_row_count = nullptr;
+    uint64_t tbl_ncols = st.outputs.size();
     switch (st.sink) {
     case qjit::QjitStep::Result:
       result = cc.b.CreateLoad(
           i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 8), "result");
+      tbl_handles = cc.b.CreateAlloca(
+          TblColHandleTy, cc.c64((int64_t)tbl_ncols), "tbl_handles");
+      tbl_row_count = cc.b.CreateAlloca(i64, nullptr, "tbl_rows");
+      cc.b.CreateStore(cc.c64(0), tbl_row_count);
+      cc.b.CreateCall(tbl_begin_fn, {result, m_worker, tbl_handles,
+                                     cc.c64((int64_t)tbl_ncols)});
       break;
     case qjit::QjitStep::HtBuild:
       load_ht_ptr(st.sink_ht);
@@ -9460,6 +9487,11 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     cc.b.SetInsertPoint(bb_exit);
     if (ht_handle)
       cc.b.CreateCall(ht_end_fn, {sink_ht_ptr, m_worker, ht_handle});
+    if (tbl_handles) {
+      Value *nrows_final = cc.b.CreateLoad(i64, tbl_row_count, "nrows_final");
+      cc.b.CreateCall(tbl_end_fn, {result, m_worker, tbl_handles,
+                                   cc.c64((int64_t)tbl_ncols), nrows_final});
+    }
     cc.b.CreateRetVoid();
 
     cc.b.SetInsertPoint(bb_body);
@@ -9753,31 +9785,112 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     // ---- sink ----
     switch (st.sink) {
     case qjit::QjitStep::Result: {
+      // §6.13 inline cursor-bump table append (no per-column function calls).
       for (size_t j = 0; j < st.outputs.size(); ++j) {
         const qjit::QjitValueLoc &loc = st.outputs[j];
         Value *col_j = cc.c64((int64_t)j);
+        uint64_t elem_size = (loc.dtype == AQP_DTYPE_VARCHAR) ? 16 : 4;
+        Value *esz = cc.c64((int64_t)elem_size);
+
+        Value *handle_j = cc.b.CreateGEP(TblColHandleTy, tbl_handles,
+                                         cc.c64((int64_t)j), "handle_j");
+        Value *vc_ptr = cc.b.CreateStructGEP(TblColHandleTy, handle_j, 0);
+        Value *vl_ptr = cc.b.CreateStructGEP(TblColHandleTy, handle_j, 1);
+        Value *nc_ptr = cc.b.CreateStructGEP(TblColHandleTy, handle_j, 2);
+        Value *nl_ptr = cc.b.CreateStructGEP(TblColHandleTy, handle_j, 3);
+
+        // Value cursor check: val_cursor + elem_size <= val_limit
+        Value *vc = cc.b.CreateLoad(i8p, vc_ptr, "vc");
+        Value *vc_next = cc.b.CreateGEP(i8, vc, esz, "vc_next");
+        Value *vl = cc.b.CreateLoad(i8p, vl_ptr, "vl");
+        Value *v_fits = cc.b.CreateICmpULE(
+            cc.b.CreatePtrToInt(vc_next, i64),
+            cc.b.CreatePtrToInt(vl, i64), "v_fits");
+        BasicBlock *bb_v_ok = BasicBlock::Create(C, "v_ok", fn);
+        BasicBlock *bb_v_slow = BasicBlock::Create(C, "v_slow", fn);
+        BasicBlock *bb_v_ready = BasicBlock::Create(C, "v_ready", fn);
+        cc.b.CreateCondBr(v_fits, bb_v_ok, bb_v_slow);
+
+        cc.b.SetInsertPoint(bb_v_slow);
+        cc.b.CreateCall(tbl_col_slow_fn,
+                        {result, m_worker, col_j, handle_j, esz});
+        Value *vc_after_slow = cc.b.CreateLoad(i8p, vc_ptr, "vc_s");
+        cc.b.CreateBr(bb_v_ready);
+
+        cc.b.SetInsertPoint(bb_v_ok);
+        cc.b.CreateBr(bb_v_ready);
+
+        cc.b.SetInsertPoint(bb_v_ready);
+        PHINode *vc_use = cc.b.CreatePHI(i8p, 2, "vc_use");
+        vc_use->addIncoming(vc, bb_v_ok);
+        vc_use->addIncoming(vc_after_slow, bb_v_slow);
+
+        // Null cursor check: null_cursor + 1 <= null_limit
+        Value *nc = cc.b.CreateLoad(i8p, nc_ptr, "nc");
+        Value *nc_next = cc.b.CreateGEP(i8, nc, cc.c64(1), "nc_next");
+        Value *nl = cc.b.CreateLoad(i8p, nl_ptr, "nl");
+        Value *n_fits = cc.b.CreateICmpULE(
+            cc.b.CreatePtrToInt(nc_next, i64),
+            cc.b.CreatePtrToInt(nl, i64), "n_fits");
+        BasicBlock *bb_n_ok = BasicBlock::Create(C, "n_ok", fn);
+        BasicBlock *bb_n_slow = BasicBlock::Create(C, "n_slow", fn);
+        BasicBlock *bb_n_ready = BasicBlock::Create(C, "n_ready", fn);
+        cc.b.CreateCondBr(n_fits, bb_n_ok, bb_n_slow);
+
+        cc.b.SetInsertPoint(bb_n_slow);
+        cc.b.CreateCall(tbl_null_slow_fn, {result, m_worker, col_j, handle_j});
+        Value *nc_after_slow = cc.b.CreateLoad(i8p, nc_ptr, "nc_s");
+        cc.b.CreateBr(bb_n_ready);
+
+        cc.b.SetInsertPoint(bb_n_ok);
+        cc.b.CreateBr(bb_n_ready);
+
+        cc.b.SetInsertPoint(bb_n_ready);
+        PHINode *nc_use = cc.b.CreatePHI(i8p, 2, "nc_use");
+        nc_use->addIncoming(nc, bb_n_ok);
+        nc_use->addIncoming(nc_after_slow, bb_n_slow);
+
         Value *valid = loc_valid_i1(loc);
         BasicBlock *bb_val = BasicBlock::Create(C, "out_val", fn);
         BasicBlock *bb_null = BasicBlock::Create(C, "out_null", fn);
-        BasicBlock *bb_join = BasicBlock::Create(C, "out_join", fn);
+        BasicBlock *bb_done = BasicBlock::Create(C, "out_done", fn);
         cc.b.CreateCondBr(valid, bb_val, bb_null);
+
         cc.b.SetInsertPoint(bb_null);
-        cc.b.CreateCall(append_null, {result, m_worker, col_j});
-        cc.b.CreateBr(bb_join);
-        cc.b.SetInsertPoint(bb_val);
-        if (loc.dtype == AQP_DTYPE_VARCHAR) {
-          cc.b.CreateCall(append_str,
-                          {result, m_worker, col_j, loc_value_str(loc)});
-        } else if (loc.dtype == AQP_DTYPE_INT32) {
-          cc.b.CreateCall(append_i32,
-                          {result, m_worker, col_j, loc_value_i32(loc)});
+        // Zero-fill the value slot
+        if (elem_size == 4) {
+          cc.b.CreateStore(ConstantInt::get(i32, 0),
+                           cc.b.CreateBitCast(vc_use, PointerType::getUnqual(i32)));
         } else {
-          return nullptr; // BuildExecutionSteps only emits INT32/VARCHAR
+          auto *i128 = Type::getIntNTy(C, 128);
+          cc.b.CreateStore(ConstantInt::get(i128, 0),
+                           cc.b.CreateBitCast(vc_use, PointerType::getUnqual(i128)));
         }
-        cc.b.CreateBr(bb_join);
-        cc.b.SetInsertPoint(bb_join);
+        cc.b.CreateStore(ConstantInt::get(i8, 1), nc_use);
+        cc.b.CreateBr(bb_done);
+
+        cc.b.SetInsertPoint(bb_val);
+        if (loc.dtype == AQP_DTYPE_INT32) {
+          cc.b.CreateStore(loc_value_i32(loc),
+                           cc.b.CreateBitCast(vc_use, PointerType::getUnqual(i32)));
+        } else {
+          // VARCHAR: copy the 16-byte QjitString slot, then deep-copy via str_copy
+          Value *src_str = loc_value_str(loc);
+          cc.b.CreateCall(tbl_str_copy_fn, {result, m_worker, vc_use, src_str});
+        }
+        cc.b.CreateStore(ConstantInt::get(i8, 0), nc_use);
+        cc.b.CreateBr(bb_done);
+
+        cc.b.SetInsertPoint(bb_done);
+        // Advance cursors
+        Value *vc_adv = cc.b.CreateGEP(i8, vc_use, esz);
+        cc.b.CreateStore(vc_adv, vc_ptr);
+        Value *nc_adv = cc.b.CreateGEP(i8, nc_use, cc.c64(1));
+        cc.b.CreateStore(nc_adv, nc_ptr);
       }
-      cc.b.CreateCall(finish_row, {result, m_worker});
+      // Increment row counter (replaces finish_row call)
+      Value *rc = cc.b.CreateLoad(i64, tbl_row_count, "rc");
+      cc.b.CreateStore(cc.b.CreateAdd(rc, cc.c64(1)), tbl_row_count);
       cc.b.CreateBr(cont);
       break;
     }

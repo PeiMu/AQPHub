@@ -34,53 +34,75 @@ def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
                 for _ in range(15):
                     try:
                         perf_row = next(reader)
-                        prepare_middleware_time = float(perf_row[0])
-                        read_sql_time = float(perf_row[1])
-                        parse_sql_time = float(perf_row[2])
-                        preprocess_time = float(perf_row[3])
-                        if is_node_based:
-                            convert_plan_to_ir_time = 0.0
+                        if not is_node_based:
+                            # None-split CSV: prepare, read_sql, [jit], exe, show
+                            prepare_middleware_time = float(perf_row[0])
+                            read_sql_time = float(perf_row[1])
+                            if has_jit:
+                                jit_compile_final_time = float(perf_row[2])
+                                final_exe_time = float(perf_row[3])
+                                show_output_time = float(perf_row[4])
+                            else:
+                                jit_compile_final_time = 0.0
+                                final_exe_time = float(perf_row[2])
+                                show_output_time = float(perf_row[3])
+                            row_data = {
+                                "prepare_middleware": prepare_middleware_time,
+                                "read_sql": read_sql_time,
+                                "parse_sql": 0.0,
+                                "preprocess": 0.0,
+                                "convert_plan_to_ir": 0.0,
+                                "groups": [],
+                                "num_executes": 0,
+                                "extra_extract": 0.0,
+                                "generate_final_sub_sql": 0.0,
+                                "jit_compile_final": jit_compile_final_time,
+                                "final_exe": final_exe_time,
+                                "show_output": show_output_time,
+                            }
+                        else:
+                            prepare_middleware_time = float(perf_row[0])
+                            read_sql_time = float(perf_row[1])
+                            parse_sql_time = float(perf_row[2])
+                            preprocess_time = float(perf_row[3])
                             group_values = perf_row[4:-tail_size]
-                        else:
-                            convert_plan_to_ir_time = float(perf_row[4])
-                            group_values = perf_row[5:-tail_size]
 
-                        show_output_time = float(perf_row[-1])
-                        final_exe_time = float(perf_row[-2])
-                        if has_jit:
-                            jit_compile_final_time = float(perf_row[-3])
-                            generate_final_sub_sql_time = float(perf_row[-4])
-                        else:
-                            jit_compile_final_time = 0.0
-                            generate_final_sub_sql_time = float(perf_row[-3])
+                            show_output_time = float(perf_row[-1])
+                            final_exe_time = float(perf_row[-2])
+                            if has_jit:
+                                jit_compile_final_time = float(perf_row[-3])
+                                generate_final_sub_sql_time = float(perf_row[-4])
+                            else:
+                                jit_compile_final_time = 0.0
+                                generate_final_sub_sql_time = float(perf_row[-3])
 
-                        extra_extract = 0.0
-                        if len(group_values) % len(group_columns) != 0:
-                            extra_extract = float(group_values[-1])
-                            group_values = group_values[:-1]
+                            extra_extract = 0.0
+                            if len(group_values) % len(group_columns) != 0:
+                                extra_extract = float(group_values[-1])
+                                group_values = group_values[:-1]
 
-                        groups = []
-                        n = len(group_values) // len(group_columns)
-                        for i in range(n):
-                            g = {}
-                            for j, col in enumerate(group_columns):
-                                g[col] = float(group_values[i * len(group_columns) + j])
-                            groups.append(g)
+                            groups = []
+                            n = len(group_values) // len(group_columns)
+                            for i in range(n):
+                                g = {}
+                                for j, col in enumerate(group_columns):
+                                    g[col] = float(group_values[i * len(group_columns) + j])
+                                groups.append(g)
 
-                        row_data = {
-                            "prepare_middleware": prepare_middleware_time,
-                            "read_sql": read_sql_time,
-                            "parse_sql": parse_sql_time,
-                            "preprocess": preprocess_time,
-                            "convert_plan_to_ir": convert_plan_to_ir_time,
-                            "groups": groups,
-                            "num_executes": len(groups),
-                            "extra_extract": extra_extract,
-                            "generate_final_sub_sql": generate_final_sub_sql_time,
-                            "jit_compile_final": jit_compile_final_time,
-                            "final_exe": final_exe_time,
-                            "show_output": show_output_time,
-                        }
+                            row_data = {
+                                "prepare_middleware": prepare_middleware_time,
+                                "read_sql": read_sql_time,
+                                "parse_sql": parse_sql_time,
+                                "preprocess": preprocess_time,
+                                "convert_plan_to_ir": 0.0,
+                                "groups": groups,
+                                "num_executes": len(groups),
+                                "extra_extract": extra_extract,
+                                "generate_final_sub_sql": generate_final_sub_sql_time,
+                                "jit_compile_final": jit_compile_final_time,
+                                "final_exe": final_exe_time,
+                                "show_output": show_output_time,
+                            }
                         perf_rows.append(row_data)
                     except (StopIteration, ValueError, IndexError):
                         break
@@ -330,7 +352,9 @@ def main():
     for label, fname, has_jit in CONFIGS:
         p = os.path.join(base, fname)
         if os.path.exists(p):
-            data[label] = analyze_middleware_breakdown(p, has_jit, is_nb)
+            r = analyze_middleware_breakdown(p, has_jit, is_nb)
+            if r:
+                data[label] = r
 
     if not data:
         print("No CSV files found")

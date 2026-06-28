@@ -468,6 +468,15 @@ public:
     qjit_spec_hit_ = std::move(hit);
   }
 
+  // Pass pre-built IR from SplitIR to skip the redundant ParseSQL+Optimize+
+  // ConvertPlanToIR round-trip in PrepareWithQueryJitAnalysis. The adapter's
+  // plan member must still hold the sub_plan from SplitIR (consumed by
+  // PrepareFromPlan in the fast path). IR is borrowed (non-owning pointer);
+  // caller must keep it alive through ExecuteSQLandCreateTempTable.
+  void SetQjitPendingIR(const ir_sql_converter::AQPStmt *ir) {
+    qjit_pending_ir_ = ir;
+  }
+
   // Spec-jit blocking-wait time charged by the splitter; added to the next
   // jit_compile CSV column write so the timing CSV stays equal to wall time
   // (the wait happens between the splitter's gen-sub-SQL toc and this
@@ -734,6 +743,11 @@ private:
   // call (set via SetQjitSpecHit on a spec HIT).
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
 
+  // Pre-built IR from SplitIR (non-owning). When set, the fast path in
+  // ExecuteSQLandCreateTempTable uses TakePlan+PrepareFromPlan+AnnotateBuildSides
+  // on this IR instead of the full ParseSQL+Optimize+ConvertPlanToIR round-trip.
+  const ir_sql_converter::AQPStmt *qjit_pending_ir_ = nullptr;
+
   // Pending spec-jit wait time (µs) to fold into the next jit_compile CSV
   // column write. See AddSpecWaitTime.
   long spec_wait_extra_us_ = 0;
@@ -779,7 +793,8 @@ private:
   // planner (SimplestJoin::build_child). Walks the physical plan, matches
   // each PhysicalHashJoin to an IR JoinNode via join-condition attrs.
   void AnnotateBuildSides(duckdb::PhysicalOperator &op,
-                          ir_sql_converter::AQPStmt &ir);
+                          ir_sql_converter::AQPStmt &ir,
+                          bool include_chunk_scans = false);
 
   // Query-jit prepare result: the prepared statement (always usable as the
   // interpreter fallback), plus — when analysis succeeded — the fresh-binder

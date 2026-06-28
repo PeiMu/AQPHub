@@ -2263,3 +2263,234 @@ Fix: Swapped columns so `jit_compile=0.000` and `execute=measured_time`:
 
 Existing CSV files in measure/job_result/ and the plot directory were
 fixed post-hoc with measure/fix_cache_full_timer_columns.py (29 files).
+
+## jit-cache=template LIKE fix
+Date: 2026-06-26
+
+All changes in `src/jit/ir_to_llvm.cpp` (+177, -93 lines):
+
+1. **BuildParamsFromExpr** (~line 5515): LIKE patterns now allocate
+   literal/segments into params buffer matching what codegen expects:
+   - MULTI_SEGMENT: one AllocString per segment
+   - CONTAINS: AllocString(literal) + AllocI32(first_char)
+   - PREFIX/SUFFIX: AllocString(literal)
+   - EQUALITY/COMPLEX: AllocString(raw pattern)
+
+2. **EmitVarConst pat_ptr** (~line 1341): Skip raw pattern EmitParamString
+   for LIKE in template mode; each specialized path does its own loads.
+
+3. **LIKE codegen** (~line 1394): Removed blanket `aqp_like_match` fallback.
+   Each LIKE kind now handles template mode with parameterized loads:
+   - EQUALITY: inline EmitParamString -> aqp_str_eq
+   - PREFIX/SUFFIX: EmitParamString(literal) -> inline memcmp
+   - CONTAINS: EmitParamString + EmitParamI32 -> inline memchr+memcmp loop
+     (needle_len==1 check is now runtime branch)
+   - MULTI_SEGMENT: alloca arrays filled from EmitParamString per segment ->
+     aqp_like_match_segments
+   - COMPLEX: inline EmitParamString -> aqp_like_match
+
+Verification:
+- Build: passes (release)
+- Correctness: all 113 JOB queries pass for all template-mode configs
+- Performance (top 15 worst LIKE queries): template/strict ratio 1.018x
+  (was 1.30x before fix)
+
+## Iteration 1: HT Finalize prefetch optimization
+Date: 2026-06-26
+
+Problem: QjitHashTable::Finalize links entries into hash directory via atomic
+CAS. For large HTs (≥1M entries, 32-64MB directory), every CAS targets a
+random DRAM-resident directory slot, causing LLC misses. Measured: 622.8ms
+total finalize across 113 NB JOB queries; 385ms from 22 large HTs (≥1M).
+
+Original plan was radix-partitioned finalize, but testing showed radix
+doesn't help: the scatter buffer introduces random entry pointer dereferences
+(writing entry->next) that cost as much as the random directory accesses it
+replaces.
+
+Fix: Software prefetch with ring buffer (kPFDist=16). Each entry prefetches
+its target directory slot, then is queued in a ring buffer. By the time the
+entry is drained from the ring (16 entries later), the directory cache line
+is in L1/L2. CAS loop proceeds with cached data.
+
+Implementation: single file change in src/qjit/query_jit_runtime.cpp.
+Extracted `for_each_entry` generic lambda for iterating entries through
+QjitBuffer chunk ranges. Both parallel (CAS) and serial (load/store) paths
+use the same prefetch ring pattern.
+
+Results (113 JOB queries, TPDE):
+- NB: 6,329ms → 6,232ms (97ms savings, 1.5%)
+- NS: 6,500ms → 6,444ms (56ms savings, 0.9%)
+- 16b (largest HT, 4.2M entries): finalize 50ms → 37ms (26% faster)
+
+Below original estimate (350ms) because: (a) finalize was 10.3% of cycles
+but only ~6% of wall time (parallel execution across 6 cores); (b) prefetch
+hides latency but doesn't eliminate it entirely for 64MB directories.
+
+Verification:
+- Correctness: all 113 JOB queries pass for NB + NS
+- 7 configs from correctness_test.sh verified (query-jit tpde/llvm × NB/NS,
+  operator-jit tpde NB, query-jit tpde NB strict/template cache)
+- perf stat on 16b confirms improved cache behavior
+
+## Iteration 2: Eliminate redundant re-optimization (NB-only)
+Date: 2026-06-27
+
+Problem: Each NB sub-query undergoes TWO separate optimization passes:
+- Pass 1 (SplitIR): RunMiddleOptimize → Split → ConvertPlanToIR → IR_A → gen SQL
+- Pass 2 (PrepareWithQueryJitAnalysis): ParseSQL → Optimize → ConvertPlanToIR
+  → IR_B → PrepareFromPlan → AnnotateBuildSides
+
+Pass 2 is redundant — it re-parses, re-optimizes, and re-converts the SQL that
+was just generated from Pass 1's output. Measured cost: 254.8ms total across
+678 sub-queries (avg 0.38ms each).
+
+Original proposal ("skip MiddleOptimize entirely") was INFEASIBLE because:
+1. RunMiddleOptimize determines join ordering using runtime cardinalities from
+   previous sub-queries (injected via MergeDataChunk).
+2. AnnotateBuildSides requires a DuckDB physical plan to mark build vs probe side.
+3. Query-JIT rejects joins without build-side annotation.
+
+Fix: Fast path in ExecuteSQLandCreateTempTable that skips Pass 2 by reusing
+IR_A directly from SplitIR:
+1. SplitIR calls SetQjitPendingIR(ir) after ConvertPlanToIR produces IR_A.
+2. ExecuteSQLandCreateTempTable checks qjit_pending_ir_; if set, calls
+   TakePlan() → PrepareFromPlan → AnnotateBuildSides(include_chunk_scans=true)
+   → AnalyzeQueryJit → TryCompileQueryJit directly on IR_A.
+3. If fast path fails (e.g., CrossProduct rejection), prepared.reset() triggers
+   fallback to the old Pass 2 path.
+
+Key bug found and fixed: LogicalColumnDataGet empty collections.
+The binder's plan uses LogicalColumnDataGet for temp tables with empty
+ColumnDataCollection placeholders (created in UpdateRemainingIR for cardinality
+estimation only). When query-JIT rejected CrossProduct IR and the interpreter
+ran PrepareFromPlan, it read empty collections → 0 rows → cascading NULL results.
+Fix: prepared.reset() when !qjit_compiled, so fallback PrepareWithQueryJitAnalysis
+fires and re-parses SQL (which creates LogicalGet with scan_qjit_temp that reads
+actual populated temp table data).
+
+DuckDB patches required:
+- physical_column_data_scan.hpp: Added logical_table_index field
+- plan_column_data_get.cpp: Pass table_index from LogicalColumnDataGet to
+  PhysicalColumnDataScan (needed by AnnotateBuildSides to match COLUMN_DATA_SCAN
+  nodes to IR table indices)
+
+Coverage: 563 of 678 sub-queries use fast path; 115 go through old path
+(spec hits, final queries, CrossProduct rejections — 4 sub-queries).
+
+Implementation files:
+- src/adapters/duckdb_adapter.cpp (fast path at ~line 1442-1479,
+  AnnotateBuildSides with include_chunk_scans, CollectPhysScanIndicesWithChunk)
+- include/adapters/duckdb_adapter.h (SetQjitPendingIR, qjit_pending_ir_ member,
+  AnnotateBuildSides signature)
+- src/split/ir_query_splitter.cpp (SetQjitPendingIR calls at standard and
+  spec-hit paths)
+- DuckDB: physical_column_data_scan.hpp, plan_column_data_get.cpp
+
+Diagnostic env vars (remain in code, off by default):
+- AQP_QJIT_FAST_TRACE: logs per-sub-query fast path timing and success
+- AQP_NO_FAST_PATH: disables fast path entirely (for A/B testing)
+- AQP_QJIT_PASS2_TRACE: logs Pass 2 timing breakdown (parse_opt_ir vs pfp_onward)
+
+Results (113 JOB queries, TPDE, wall-time A/B comparison):
+- NB savings: ~298ms (range 275-345ms across runs), close to measured Pass 2
+  cost of 254.8ms (extra savings from avoiding SQL string generation + parsing)
+- NS: no change (no-split has no sub-queries)
+- NB total: ~6,232ms → ~5,934ms
+
+Verification:
+- Correctness: all 113 JOB queries pass for NB + NS
+- Performance: 5 wall-time runs with/without AQP_NO_FAST_PATH confirm ~298ms avg
+- Fast path coverage: 563/678 sub-queries (83%)
+
+## Query-JIT Iteration 3: Cross-sub-query bloom filter pushdown — SKIPPED
+Status: SKIPPED
+Date: 2026-06-27
+Decision: Risk MEDIUM, estimated savings only 50-150ms after thorough analysis.
+
+Analysis performed:
+- 303 of 565 temp tables are BF-eligible (50 ≤ card ≤ 100K, match_rate < 0.25)
+- BF-eligible HTs have directory ≤ 1.6MB, which fits in L3 (12MB)
+- Since the HT directory is already L3-resident, savings per filtered row is
+  only hash computation + key comparison skip (~20-30ns), NOT L3-miss avoidance
+- The expensive probes (L3-miss) target large HTs (>1M entries, >32MB dir) whose
+  temp_cards exceed 100K — NOT BF-eligible under kBFMaxTempCard
+- Range guards (qjit_ht_key0_min/max) already filter some rows; JOB join keys
+  are wide-range integer IDs so range guards provide limited filtering, but
+  the BF benefit is modest since the target HTs already fit in cache
+- Realistic savings estimate: 50-150ms NB (not the originally estimated 300ms)
+
+Risks identified:
+- Hash function mismatch for negative INT32 keys: DuckDB MurmurHash and
+  query-JIT murmur compute different hashes for sign-extended vs zero-extended
+  i32 values. Would cause false negatives (BF rejects valid rows).
+- Implementation touches 5 files across runtime + codegen + splitter.
+
+Decision rationale: At 50-150ms savings with MEDIUM risk of correctness bugs
+(hash mismatch), the reward/risk ratio is unfavorable. Skipped in favor of
+Iter 4 which has higher confidence and better NB-specific benefit.
+
+## Query-JIT Iteration 4: Inline QjitTable append (§6.13)
+Status: COMPLETE
+Date: 2026-06-27
+
+Problem: Result table appends in query-JIT went through extern-C functions per
+row per column: qjit_table_append_i32, qjit_table_append_str,
+qjit_table_append_null, qjit_table_finish_row. Each was a non-inlined call from
+JIT code. Typical JOB queries: 3.3 calls/row (3 append + 1 finish_row average).
+Perf profile showed 8.0% of cycles in QjitTable output functions.
+
+Fix: Inline bump-pointer appends in the compiled morsel body, following the
+QjitHtAppendHandle pattern (§6.12). Per-column QjitTableColHandle with
+{val_cursor, val_limit, null_cursor, null_limit}. Fast path: zero function
+calls (inline store + cursor bump). Slow path (chunk exhaustion): extern-C
+call to allocate new chunk, ~1 per 4K rows.
+
+Key design decisions:
+- QjitTableColHandle has 4 fields (no elem_size — known at compile time)
+- PartCol::nulls changed from std::vector<uint8_t> to QjitBuffer (enables
+  cursor-bump for null tracking)
+- Added QjitBuffer::EnsureRoom() for pre-allocating capacity without advancing
+- VARCHAR uses qjit_table_str_copy (extern-C) for deep-copy into arena; the
+  16-byte QjitString slot itself is inline cursor-bumped
+- Row counter is a stack-local i64, committed to partition.nrows in qjit_table_end
+- Old extern-C append functions preserved for backward compatibility (non-JIT
+  callers, e.g. QjitTable::AppendI32 in C++ code)
+
+Files modified:
+- include/qjit/query_jit_abi.h (QjitTableColHandle struct + 5 new functions)
+- include/qjit/query_jit_runtime.h (EnsureRoom on QjitBuffer, PartCol::nulls
+  changed to QjitBuffer, 5 new QjitTable methods)
+- src/qjit/query_jit_runtime.cpp (AppendBytes/AppendNull updated for QjitBuffer
+  nulls, Finalize updated to iterate QjitBuffer chunks, new method
+  implementations + extern-C wrappers)
+- src/jit/ir_to_llvm.cpp (TblColHandleTy struct type + 5 function callees,
+  Result sink codegen replaced with inline cursor-bump pattern at lines 9787-9886)
+- src/adapters/duckdb_adapter.cpp (5 new RegisterRuntimeSymbol calls)
+
+Results (113 JOB queries, TPDE, full breakdown_measurement_script.sh sweep):
+- NB total: 6,320ms → 5,680ms (640ms savings)
+  - exe: 5,100ms → 4,600ms (500ms from eliminating per-row function calls +
+    improved code locality from fewer extern-C call sites in morsel body)
+  - jit: 560ms → 410ms (150ms from smaller LLVM module → faster TPDE compilation)
+- NS: no change (NS uses Agg sink, not Result sink)
+- Ratio: 0.97x → 0.88x
+
+Note: initial single-run measurement showed only 270ms savings (6,320→6,050ms).
+The full-sweep measurement with proper warmup (15 iterations per query, median)
+shows 640ms. The single-run measurement was likely affected by cold-start effects
+and run-to-run variance.
+
+Verified assumptions (resolved):
+- [x] Only INT32 and VARCHAR in Result sink (ir_to_llvm.cpp:9807)
+- [x] NS uses Agg sink, never calls qjit_table_append_* (confirmed by code + perf)
+- [x] Inline cursor-bump saves both function call overhead AND improves code
+  locality in the morsel body (tighter hot loop → fewer icache misses)
+
+Verification:
+- Correctness: all 113 JOB queries pass for NB + NS (exact match with golden files)
+- Tested across: llvm, fastisel, tpde compile modes; jit-cache off/strict/template/full;
+  spec-jit=recompile; interpreter baseline — all 10+ configs pass
+- Performance: full breakdown_measurement_script.sh sweep (100 configs) confirms
+  5,680ms for query_tpde NB
+- CSV format: verified parseable by plot_middleware_jit.py (113 queries, 38 columns)

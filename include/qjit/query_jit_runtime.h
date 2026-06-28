@@ -136,6 +136,16 @@ public:
     total_size_ += (c.used - old_used);
   }
 
+  void EnsureRoom(uint64_t bytes) {
+    if (!chunks_.empty()) {
+      auto &c = chunks_.back();
+      if (c.used + bytes <= c.capacity) return;
+    }
+    uint64_t cap = std::max(next_capacity_, bytes);
+    chunks_.push_back({std::make_unique<uint8_t[]>(cap), cap, 0});
+    next_capacity_ = cap + cap / 5;
+  }
+
 private:
   std::vector<Chunk> chunks_;
   uint64_t next_capacity_;
@@ -345,6 +355,14 @@ public:
   void AppendNull(uint32_t worker, size_t col);
   void FinishRow(uint32_t worker) { partitions_[worker].nrows++; }
 
+  void BeginOutput(uint32_t worker, QjitTableColHandle *handles, uint64_t ncols);
+  void ColSlow(uint32_t worker, size_t col, QjitTableColHandle *handle,
+               uint64_t elem_size);
+  void NullSlow(uint32_t worker, size_t col, QjitTableColHandle *handle);
+  void EndOutput(uint32_t worker, QjitTableColHandle *handles, uint64_t ncols,
+                 uint64_t nrows);
+  void StrCopy(uint32_t worker, QjitString *dst, const QjitString *src);
+
   /* Single-threaded: concatenate partitions into flat columns. */
   void Finalize();
 
@@ -379,7 +397,7 @@ public:
 private:
   struct PartCol {
     QjitBuffer values;          /* fixed-size elems or QjitString      */
-    std::vector<uint8_t> nulls; /* 1 byte per appended value, 1=NULL   */
+    QjitBuffer nulls;           /* 1 byte per appended value, 1=NULL   */
   };
   struct Partition {
     std::vector<PartCol> cols;

@@ -16,25 +16,25 @@
 #
 set -e
 
-# ============================================================
-# lingodb LLVM backend
-# ============================================================
-bash ./measure_breakdown_time_job.sh lingodb none llvm && \
-bash ./measure_breakdown_time_job.sh lingodb node-based llvm && \
-
-# ============================================================
-# lingodb TPDE backend
-# ============================================================
-bash ./measure_breakdown_time_job.sh lingodb none tpde && \
-bash ./measure_breakdown_time_job.sh lingodb node-based tpde && \
-
-# ============================================================
-# lingo-db-runtime (DuckDB optimizer + LingoDB JIT runtime)
-# ============================================================
-bash ./measure_breakdown_time_job.sh lingo-db-runtime node-based llvm && \
-bash ./measure_breakdown_time_job.sh lingo-db-runtime node-based tpde && \
-bash ./measure_breakdown_time_job.sh lingo-db-runtime none llvm && \
-bash ./measure_breakdown_time_job.sh lingo-db-runtime none tpde && \
+## ============================================================
+## lingodb LLVM backend
+## ============================================================
+#bash ./measure_breakdown_time_job.sh lingodb none llvm && \
+#bash ./measure_breakdown_time_job.sh lingodb node-based llvm && \
+#
+## ============================================================
+## lingodb TPDE backend
+## ============================================================
+#bash ./measure_breakdown_time_job.sh lingodb none tpde && \
+#bash ./measure_breakdown_time_job.sh lingodb node-based tpde && \
+#
+## ============================================================
+## lingo-db-runtime (DuckDB optimizer + LingoDB JIT runtime)
+## ============================================================
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime node-based llvm && \
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime node-based tpde && \
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime none llvm && \
+#bash ./measure_breakdown_time_job.sh lingo-db-runtime none tpde && \
 
 # ============================================================
 # Interpreter baseline (2 configs)

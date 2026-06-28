@@ -129,11 +129,9 @@ void QjitHashTable::Finalize(QjitWorkerPool *pool) {
   directory_.reset(new std::atomic<uintptr_t>[dir_size]);
   dir_mask_ = dir_size - 1;
 
-  // Flatten fragment chunks into ranges indexable by a global entry index,
-  // so ParallelFor morsels map onto (chunk, offset) spans.
   struct Range {
     uint8_t *base;
-    uint64_t first; // global index of this chunk's first entry
+    uint64_t first;
     uint64_t count;
   };
   std::vector<Range> ranges;
@@ -148,25 +146,7 @@ void QjitHashTable::Finalize(QjitWorkerPool *pool) {
     }
   }
 
-  // §5.5 A+: fold a thread-local key-0 min/max into the shared atomics
-  // (CAS-min/-max — contention is once per ParallelFor lambda invocation).
-  auto merge_key_stats = [&](int64_t lmin, int64_t lmax) {
-    if (lmin > lmax)
-      return; // no entries seen
-    int64_t cur = key0_min_.load(std::memory_order_relaxed);
-    while (lmin < cur &&
-           !key0_min_.compare_exchange_weak(cur, lmin,
-                                            std::memory_order_relaxed)) {
-    }
-    cur = key0_max_.load(std::memory_order_relaxed);
-    while (lmax > cur &&
-           !key0_max_.compare_exchange_weak(cur, lmax,
-                                            std::memory_order_relaxed)) {
-    }
-  };
-
-  auto link = [&](uint64_t begin, uint64_t end) {
-    int64_t lmin = INT64_MAX, lmax = INT64_MIN;
+  auto for_each_entry = [&](uint64_t begin, uint64_t end, auto &&fn) {
     size_t r = std::upper_bound(ranges.begin(), ranges.end(), begin,
                                 [](uint64_t v, const Range &rg) {
                                   return v < rg.first;
@@ -178,50 +158,103 @@ void QjitHashTable::Finalize(QjitWorkerPool *pool) {
       uint64_t stop = std::min(end - rg.first, rg.count);
       for (; off < stop; off++) {
         auto *e = reinterpret_cast<Entry *>(rg.base + off * entry_stride_);
-        if (key0_offset_ >= 0) {
-          int64_t k;
-          std::memcpy(&k, e->Row() + key0_offset_, sizeof(k));
-          if (k < lmin)
-            lmin = k;
-          if (k > lmax)
-            lmax = k;
-        }
-        std::atomic<uintptr_t> &head = directory_[e->hash & dir_mask_];
-        uintptr_t old = head.load(std::memory_order_relaxed);
-        do {
-          e->next = static_cast<Entry *>(bt_decode(old));
-        } while (!head.compare_exchange_weak(
-            old, bt_encode(e, old, e->hash), std::memory_order_release,
-            std::memory_order_relaxed));
+        fn(e);
       }
       i = rg.first + stop;
     }
-    if (key0_offset_ >= 0)
-      merge_key_stats(lmin, lmax);
   };
 
-  // memset is valid pre-publication: std::atomic<Entry*> is lock-free and
-  // pointer-layout (static_assert in DirData); all-zero bytes == nullptr.
   auto zero_dir = [&](uint64_t b, uint64_t e) {
     std::memset(static_cast<void *>(directory_.get() + b), 0,
                 (e - b) * sizeof(std::atomic<uintptr_t>));
   };
 
-  // Below this, pool dispatch costs more than the link walk itself.
   constexpr uint64_t kParallelMin = 4096;
   bool parallel = pool && pool->NumWorkers() > 1 && total >= kParallelMin;
+
   if (parallel) {
-    pool->ParallelFor(dir_size, /*morsel=*/uint64_t(1) << 18,
+    pool->ParallelFor(dir_size, uint64_t(1) << 18,
                       [&](uint64_t b, uint64_t e, uint32_t) { zero_dir(b, e); });
     uint64_t morsel = total / (uint64_t(pool->NumWorkers()) * 8);
     if (morsel < 1024)
       morsel = 1024;
+
+    // Prefetch directory slots ahead to hide DRAM latency.
+    // Entries are sequential (cache-friendly), but directory[hash & mask]
+    // is random (64MB+ for large HTs → guaranteed LLC miss).
+    constexpr int kPFDist = 16;
+    struct PFSlot { uint64_t hash; Entry *entry; };
+
+    auto link = [&](uint64_t begin, uint64_t end) {
+      int64_t lmin = INT64_MAX, lmax = INT64_MIN;
+
+      PFSlot ring[kPFDist];
+      int head = 0, count = 0;
+
+      auto drain_one = [&]() {
+        PFSlot &s = ring[head % kPFDist];
+        std::atomic<uintptr_t> &dir = directory_[s.hash & dir_mask_];
+        uintptr_t old = dir.load(std::memory_order_relaxed);
+        do {
+          s.entry->next = static_cast<Entry *>(bt_decode(old));
+        } while (!dir.compare_exchange_weak(
+            old, bt_encode(s.entry, old, s.hash),
+            std::memory_order_release, std::memory_order_relaxed));
+        head++;
+        count--;
+      };
+
+      for_each_entry(begin, end, [&](Entry *e) {
+        if (key0_offset_ >= 0) {
+          int64_t k;
+          std::memcpy(&k, e->Row() + key0_offset_, sizeof(k));
+          if (k < lmin) lmin = k;
+          if (k > lmax) lmax = k;
+        }
+        // Prefetch the directory slot this entry will write to.
+        __builtin_prefetch(
+            &directory_[e->hash & dir_mask_], 1, 0);
+        ring[(head + count) % kPFDist] = {e->hash, e};
+        count++;
+        if (count == kPFDist)
+          drain_one();
+      });
+      while (count > 0)
+        drain_one();
+
+      if (key0_offset_ >= 0) {
+        if (lmin > lmax) return;
+        int64_t cur = key0_min_.load(std::memory_order_relaxed);
+        while (lmin < cur &&
+               !key0_min_.compare_exchange_weak(cur, lmin,
+                                                std::memory_order_relaxed)) {}
+        cur = key0_max_.load(std::memory_order_relaxed);
+        while (lmax > cur &&
+               !key0_max_.compare_exchange_weak(cur, lmax,
+                                                std::memory_order_relaxed)) {}
+      }
+    };
     pool->ParallelFor(total, morsel,
                       [&](uint64_t b, uint64_t e, uint32_t) { link(b, e); });
-    // ParallelFor's join orders all CAS pushes before any subsequent probe.
   } else {
     zero_dir(0, dir_size);
-    link(0, total);
+    int64_t lmin = INT64_MAX, lmax = INT64_MIN;
+    for_each_entry(0, total, [&](Entry *e) {
+      if (key0_offset_ >= 0) {
+        int64_t k;
+        std::memcpy(&k, e->Row() + key0_offset_, sizeof(k));
+        if (k < lmin) lmin = k;
+        if (k > lmax) lmax = k;
+      }
+      auto &head = directory_[e->hash & dir_mask_];
+      uintptr_t old = head.load(std::memory_order_relaxed);
+      e->next = static_cast<Entry *>(bt_decode(old));
+      head.store(bt_encode(e, old, e->hash), std::memory_order_relaxed);
+    });
+    if (key0_offset_ >= 0) {
+      key0_min_.store(lmin, std::memory_order_relaxed);
+      key0_max_.store(lmax, std::memory_order_relaxed);
+    }
   }
   finalized_ = true;
 
@@ -393,7 +426,7 @@ void QjitTable::AppendBytes(uint32_t worker, size_t col, const void *src) {
   PartCol &pc = partitions_[worker].cols[col];
   uint32_t sz = ElemSize(col);
   std::memcpy(pc.values.Allocate(sz), src, sz);
-  pc.nulls.push_back(0);
+  *pc.nulls.Allocate(1) = 0;
 }
 
 void QjitTable::AppendI32(uint32_t worker, size_t col, int32_t v) {
@@ -419,7 +452,7 @@ void QjitTable::AppendNull(uint32_t worker, size_t col) {
   PartCol &pc = partitions_[worker].cols[col];
   uint32_t sz = ElemSize(col);
   std::memset(pc.values.Allocate(sz), 0, sz);
-  pc.nulls.push_back(1);
+  *pc.nulls.Allocate(1) = 1;
 }
 
 void QjitTable::Finalize() {
@@ -437,16 +470,21 @@ void QjitTable::Finalize() {
     uint64_t row = 0;
     for (const auto &p : partitions_) {
       const PartCol &pc = p.cols[c];
-      assert(pc.nulls.size() == p.nrows && "column appends != FinishRow count");
+      assert(pc.nulls.TotalSize() == p.nrows && "column appends != FinishRow count");
       uint64_t idx = 0;
       for (const auto &chunk : pc.values.Chunks()) {
         std::memcpy(fc.data.data() + (row + idx) * sz, chunk.data.get(),
                     chunk.used);
         idx += chunk.used / sz;
       }
-      for (uint64_t r = 0; r < p.nrows; r++)
-        if (pc.nulls[r])
-          SetRowInvalid(fc.validity.data(), row + r);
+      uint64_t nr = 0;
+      for (const auto &nchunk : pc.nulls.Chunks()) {
+        for (uint64_t b = 0; b < nchunk.used; b++) {
+          if (nchunk.data[b])
+            SetRowInvalid(fc.validity.data(), row + nr);
+          nr++;
+        }
+      }
       row += p.nrows;
     }
   }
@@ -488,6 +526,53 @@ void QjitTable::FillView(QjitTableView *view,
   view->cols = cols->data();
   view->nrows = nrows_;
   view->ncols = cols_.size();
+}
+
+void QjitTable::BeginOutput(uint32_t worker, QjitTableColHandle *handles,
+                            uint64_t ncols) {
+  Partition &p = partitions_[worker];
+  for (uint64_t c = 0; c < ncols; c++) {
+    PartCol &pc = p.cols[c];
+    uint32_t sz = ElemSize(c);
+    pc.values.EnsureRoom(sz);
+    pc.values.BackChunkState(&handles[c].val_cursor, &handles[c].val_limit);
+    pc.nulls.EnsureRoom(1);
+    pc.nulls.BackChunkState(&handles[c].null_cursor, &handles[c].null_limit);
+  }
+}
+
+void QjitTable::ColSlow(uint32_t worker, size_t col,
+                         QjitTableColHandle *handle, uint64_t elem_size) {
+  PartCol &pc = partitions_[worker].cols[col];
+  pc.values.CommitBackChunk(handle->val_cursor);
+  pc.values.Allocate(elem_size);
+  pc.values.BackChunkState(&handle->val_cursor, &handle->val_limit);
+  handle->val_cursor -= elem_size;
+}
+
+void QjitTable::NullSlow(uint32_t worker, size_t col,
+                          QjitTableColHandle *handle) {
+  PartCol &pc = partitions_[worker].cols[col];
+  pc.nulls.CommitBackChunk(handle->null_cursor);
+  pc.nulls.Allocate(1);
+  pc.nulls.BackChunkState(&handle->null_cursor, &handle->null_limit);
+  handle->null_cursor -= 1;
+}
+
+void QjitTable::EndOutput(uint32_t worker, QjitTableColHandle *handles,
+                           uint64_t ncols, uint64_t nrows) {
+  Partition &p = partitions_[worker];
+  for (uint64_t c = 0; c < ncols; c++) {
+    PartCol &pc = p.cols[c];
+    pc.values.CommitBackChunk(handles[c].val_cursor);
+    pc.nulls.CommitBackChunk(handles[c].null_cursor);
+  }
+  p.nrows += nrows;
+}
+
+void QjitTable::StrCopy(uint32_t worker, QjitString *dst,
+                         const QjitString *src) {
+  *dst = partitions_[worker].arena.Copy(*src);
 }
 
 } // namespace qjit
@@ -584,6 +669,34 @@ void qjit_table_append_null(void *table, uint32_t worker_id, uint64_t col) {
 
 void qjit_table_finish_row(void *table, uint32_t worker_id) {
   static_cast<qjit::QjitTable *>(table)->FinishRow(worker_id);
+}
+
+void qjit_table_begin(void *table, uint32_t worker_id,
+                       QjitTableColHandle *handles, uint64_t ncols) {
+  static_cast<qjit::QjitTable *>(table)->BeginOutput(worker_id, handles, ncols);
+}
+
+void qjit_table_col_slow(void *table, uint32_t worker_id, uint64_t col,
+                          QjitTableColHandle *handle, uint64_t elem_size) {
+  static_cast<qjit::QjitTable *>(table)->ColSlow(worker_id, col, handle,
+                                                  elem_size);
+}
+
+void qjit_table_null_slow(void *table, uint32_t worker_id, uint64_t col,
+                           QjitTableColHandle *handle) {
+  static_cast<qjit::QjitTable *>(table)->NullSlow(worker_id, col, handle);
+}
+
+void qjit_table_end(void *table, uint32_t worker_id,
+                     QjitTableColHandle *handles, uint64_t ncols,
+                     uint64_t nrows) {
+  static_cast<qjit::QjitTable *>(table)->EndOutput(worker_id, handles, ncols,
+                                                    nrows);
+}
+
+void qjit_table_str_copy(void *table, uint32_t worker_id,
+                          QjitString *dst, const QjitString *src) {
+  static_cast<qjit::QjitTable *>(table)->StrCopy(worker_id, dst, src);
 }
 
 } // extern "C"

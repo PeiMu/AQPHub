@@ -1439,7 +1439,46 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
         qjit_spec.reset();
       }
     }
-    if (!qjit_compiled) {
+    static const bool trace_fast =
+        std::getenv("AQP_QJIT_FAST_TRACE") != nullptr;
+    static const bool no_fast = std::getenv("AQP_NO_FAST_PATH") != nullptr;
+    if (!qjit_compiled && qjit_pending_ir_ && plan && !no_fast) {
+      auto t_fast = trace_fast ? std::chrono::steady_clock::now()
+                               : std::chrono::steady_clock::time_point{};
+      auto *fast_ir = const_cast<ir_sql_converter::AQPStmt *>(qjit_pending_ir_);
+      qjit_pending_ir_ = nullptr;
+      auto sub_plan = TakePlan();
+      sub_plan->ResolveOperatorTypes();
+      auto plan_types = sub_plan->types;
+      duckdb::vector<duckdb::string> plan_names;
+      for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
+        plan_names.push_back("col" + std::to_string(i));
+      prepared = conn->PrepareFromPlan(std::move(sub_plan),
+                                       std::move(plan_names),
+                                       std::move(plan_types));
+      if (prepared && !prepared->HasError() && prepared->data &&
+          prepared->data->physical_plan) {
+        AnnotateBuildSides(prepared->data->physical_plan->Root(), *fast_ir,
+                           /*include_chunk_scans=*/true);
+        auto analysis = qjit::AnalyzeQueryJit(*fast_ir, temp_table_name);
+        if (miss_action != CompensateMissAction::SKIP_QJIT_ONCE) {
+          qjit_compiled = TryCompileQueryJit(
+              *fast_ir, analysis, *prepared, temp_table_name,
+              /*use_fast=*/miss_action == CompensateMissAction::FAST_ONCE);
+        }
+      }
+      if (!qjit_compiled) {
+        prepared.reset();
+      }
+      if (trace_fast) {
+        auto dt = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t_fast).count();
+        fprintf(stderr, "[AQP-FAST-TIME] label=%s fast_ms=%.3f compiled=%d\n",
+                temp_table_name.c_str(), dt, !!qjit_compiled);
+      }
+    }
+    if (!qjit_compiled && !prepared) {
+      qjit_pending_ir_ = nullptr;
       auto prep = PrepareWithQueryJitAnalysis(sql, temp_table_name);
       prepared = std::move(prep.prepared);
       if (prepared && !prepared->HasError() && prep.ir &&
@@ -2773,6 +2812,7 @@ void DuckDBAdapter::ResetQueryState() {
   temp_table_index_ = 0;
 #ifdef HAVE_LLVM
   jit_pending_ir_ = nullptr;
+  qjit_pending_ir_ = nullptr;
   owned_jit_ir_.reset();
   jit_pending_plan_.reset();
   jit_consumed_ir_filters_.clear();
@@ -2939,6 +2979,20 @@ static void CollectPhysScanIndices(duckdb::PhysicalOperator &op,
     CollectPhysScanIndices(child.get(), out);
 }
 
+static void CollectPhysScanIndicesWithChunk(duckdb::PhysicalOperator &op,
+                                            std::unordered_set<unsigned int> &out) {
+  if (op.type == duckdb::PhysicalOperatorType::TABLE_SCAN) {
+    auto &scan = op.Cast<duckdb::PhysicalTableScan>();
+    out.insert(static_cast<unsigned int>(scan.logical_table_index));
+  } else if (op.type == duckdb::PhysicalOperatorType::COLUMN_DATA_SCAN) {
+    auto &scan = op.Cast<duckdb::PhysicalColumnDataScan>();
+    if (scan.logical_table_index != duckdb::DConstants::INVALID_INDEX)
+      out.insert(static_cast<unsigned int>(scan.logical_table_index));
+  }
+  for (auto &child : op.children)
+    CollectPhysScanIndicesWithChunk(child.get(), out);
+}
+
 // Collect table_index of every ScanNode/ChunkNode in an IR subtree.
 static void CollectIRSourceIndices(const ir_sql_converter::AQPStmt *ir,
                                    std::unordered_set<unsigned int> &out) {
@@ -2994,18 +3048,21 @@ void CollectIRSourceIndicesFiltered(
       out.insert(v);
 }
 
+typedef void (*PhysScanCollector)(duckdb::PhysicalOperator &, std::unordered_set<unsigned int> &);
+
 void AnnotateBuildSidesRec(duckdb::PhysicalOperator &op,
                            ir_sql_converter::AQPStmt &ir,
-                           const std::unordered_set<unsigned int> &universe) {
+                           const std::unordered_set<unsigned int> &universe,
+                           PhysScanCollector collector) {
   for (auto &child : op.children)
-    AnnotateBuildSidesRec(child.get(), ir, universe);
+    AnnotateBuildSidesRec(child.get(), ir, universe, collector);
   if (op.type != duckdb::PhysicalOperatorType::HASH_JOIN ||
       op.children.size() != 2)
     return;
 
   std::unordered_set<unsigned int> probe_set, build_set;
-  CollectPhysScanIndices(op.children[0].get(), probe_set);
-  CollectPhysScanIndices(op.children[1].get(), build_set);
+  collector(op.children[0].get(), probe_set);
+  collector(op.children[1].get(), build_set);
   // Joins against table-index-less sources (e.g. IN-list chunks) cannot be
   // matched by table-index sets; they stay unannotated.
   if (probe_set.empty() || build_set.empty())
@@ -3063,28 +3120,31 @@ void AnnotateBuildSidesRec(duckdb::PhysicalOperator &op,
 // under its children — only the build/probe orientation can differ.
 // Unmatched joins keep build_child = -1 (analysis then rejects).
 void DuckDBAdapter::AnnotateBuildSides(duckdb::PhysicalOperator &op,
-                                       ir_sql_converter::AQPStmt &ir) {
+                                       ir_sql_converter::AQPStmt &ir,
+                                       bool include_chunk_scans) {
+  PhysScanCollector collector = include_chunk_scans
+      ? CollectPhysScanIndicesWithChunk : CollectPhysScanIndices;
   std::unordered_set<unsigned int> universe;
-  CollectPhysScanIndices(op, universe);
-  AnnotateBuildSidesRec(op, ir, universe);
+  collector(op, universe);
+  AnnotateBuildSidesRec(op, ir, universe, collector);
 }
 
 DuckDBAdapter::QueryJitPrep
 DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
                                            const std::string &label) {
+  using SteadyClock = std::chrono::steady_clock;
+  static const bool trace_pass2 =
+      std::getenv("AQP_QJIT_PASS2_TRACE") != nullptr;
+  auto t0 = trace_pass2 ? SteadyClock::now() : SteadyClock::time_point{};
+
   QueryJitPrep prep;
-  // Save the adapter's planning state. The splitter owns planner/plan across
-  // sub-queries (GenerateTableIndex must keep drawing from the ORIGINAL
-  // binder's number space), and intermediate_table_map / chunk_col_names_
-  // describe the original binder's indices. The fresh parse below uses its
-  // own binder whose indices restart at 0, so all its effects on these
-  // members must stay local to this function.
   auto saved_planner = std::move(planner);
   auto saved_plan = std::move(plan);
   auto saved_map = intermediate_table_map;
   auto saved_chunk_names = chunk_col_names_;
 
   std::unique_ptr<duckdb::PreparedStatement> prepared;
+  auto t_before_pfp = t0;
   const char *stage = "parse";
   try {
     ParseSQL(sql);
@@ -3106,6 +3166,8 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
       stage = "convert-ir";
       ir = ConvertPlanToIR();
     }
+    t_before_pfp = trace_pass2 ? SteadyClock::now()
+                              : SteadyClock::time_point{};
     stage = "prepare-from-plan";
     prepared = conn->PrepareFromPlan(TakePlan(), planner->names,
                                      planner->types);
@@ -3137,6 +3199,17 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
     prepared.reset();
   }
 
+  if (trace_pass2) {
+    auto t_end = SteadyClock::now();
+    double total = std::chrono::duration<double, std::milli>(t_end - t0).count();
+    double before_pfp = std::chrono::duration<double, std::milli>(
+        t_before_pfp - t0).count();
+    double pfp_onward = total - before_pfp;
+    fprintf(stderr,
+            "[AQP-PASS2] label=%s total=%.3f parse_opt_ir=%.3f pfp_onward=%.3f\n",
+            label.c_str(), total, before_pfp, pfp_onward);
+  }
+
   planner = std::move(saved_planner);
   plan = std::move(saved_plan);
   intermediate_table_map = std::move(saved_map);
@@ -3152,6 +3225,7 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
     prep.analysis = qjit::QjitAnalysisResult{};
   }
   prep.prepared = std::move(prepared);
+
   return prep;
 }
 
@@ -3304,6 +3378,14 @@ void DuckDBAdapter::RegisterQjitRuntimeSymbols(
                               (void *)&qjit_agg_update_str);
   comp->RegisterRuntimeSymbol("qjit_agg_update_count",
                               (void *)&qjit_agg_update_count);
+  comp->RegisterRuntimeSymbol("qjit_table_begin", (void *)&qjit_table_begin);
+  comp->RegisterRuntimeSymbol("qjit_table_col_slow",
+                              (void *)&qjit_table_col_slow);
+  comp->RegisterRuntimeSymbol("qjit_table_null_slow",
+                              (void *)&qjit_table_null_slow);
+  comp->RegisterRuntimeSymbol("qjit_table_end", (void *)&qjit_table_end);
+  comp->RegisterRuntimeSymbol("qjit_table_str_copy",
+                              (void *)&qjit_table_str_copy);
 }
 
 std::unique_ptr<DuckDBAdapter::QjitCompiled>

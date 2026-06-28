@@ -195,6 +195,30 @@ void qjit_table_append_str(void *table, uint32_t worker_id, uint64_t col,
 void qjit_table_append_null(void *table, uint32_t worker_id, uint64_t col);
 void qjit_table_finish_row(void *table, uint32_t worker_id);
 
+/* §6.13 fast-path table append: per-column cursor/limit handle.
+ * The morsel body stack-allocates an array of ncols handles and calls
+ * qjit_table_begin once at morsel entry. The hot loop then does an inline
+ * cursor bump (val_cursor + elem_size <= val_limit); on the fast path no
+ * function call is needed. FIELD ORDER IS ABI. */
+typedef struct {
+  uint8_t *val_cursor;   /* offset 0: current write position in values buf  */
+  uint8_t *val_limit;    /* offset 8: end of current values chunk           */
+  uint8_t *null_cursor;  /* offset 16: current write position in nulls buf  */
+  uint8_t *null_limit;   /* offset 24: end of current nulls chunk           */
+} QjitTableColHandle;
+
+void qjit_table_begin(void *table, uint32_t worker_id,
+                       QjitTableColHandle *handles, uint64_t ncols);
+void qjit_table_col_slow(void *table, uint32_t worker_id, uint64_t col,
+                          QjitTableColHandle *handle, uint64_t elem_size);
+void qjit_table_null_slow(void *table, uint32_t worker_id, uint64_t col,
+                           QjitTableColHandle *handle);
+void qjit_table_end(void *table, uint32_t worker_id,
+                     QjitTableColHandle *handles, uint64_t ncols,
+                     uint64_t nrows);
+void qjit_table_str_copy(void *table, uint32_t worker_id,
+                          QjitString *dst, const QjitString *src);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
