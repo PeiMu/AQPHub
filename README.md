@@ -7,7 +7,7 @@
 | nlohmann-json | 3.x | `sudo apt install nlohmann-json3-dev` |
 | Ninja (optional) | 1.10+ | `sudo apt install ninja-build` |
 | Python | 3.9+ | `sudo apt install python3` (for analysis scripts in `measure/`) |
-| Boost | 1.83+ | `sudo apt install libboost-context-dev` (required by LingoDB adapter) |
+| Boost | 1.83+ | `sudo apt-get install libboost-context1.83-dev` (required by LingoDB adapter) |
 | Apache Arrow | — | `sudo apt install libarrow-dev` (required by LingoDB adapter) |
 
 Clang-20 and LLVM-20 are required because the JIT compiler and LingoDB adapter depend on LLVM 20 APIs and MLIR 20 dialects.
