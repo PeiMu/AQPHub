@@ -122,7 +122,7 @@ if (LLVM_FOUND)
 
         target_include_directories(aqp_jit_lib PRIVATE
                 ${AQP_TPDE_SOURCE_DIR}/tpde-llvm/include)
-        target_link_libraries(aqp_jit_lib PUBLIC tpde_bundle)
+        target_link_libraries(aqp_jit_lib PUBLIC tpde_bundle -ltinfo)
         target_compile_definitions(aqp_jit_lib PRIVATE AQP_HAVE_TPDE)
         message(STATUS "AQP fast-compile TPDE backend: ENABLED (ExternalProject)")
     else ()
@@ -480,7 +480,7 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
                 Boost::context
                 split_lib
                 util_lib
-                -lpthread -lrt -latomic
+                -lpthread -lrt -latomic -lcurl
         )
 
         message(STATUS "LingoDB adapter: ENABLED (LLVM ${LLVM_PACKAGE_VERSION})")
