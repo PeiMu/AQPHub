@@ -58,6 +58,9 @@ public:
   // Get estimated cost and rows for a query using EXPLAIN
   std::pair<double, double> GetEstimatedCost(const std::string &sql) override;
 
+  // EXPLAIN (ANALYZE, VERBOSE, BUFFERS) plan text for a sub-SQL
+  std::string ExplainAnalyze(const std::string &sql) override;
+
   // Batch EXPLAIN: send multiple EXPLAIN queries in one PQsendQuery round-trip
   std::vector<std::pair<double, double>>
   BatchGetEstimatedCosts(const std::vector<std::string> &sqls) override;

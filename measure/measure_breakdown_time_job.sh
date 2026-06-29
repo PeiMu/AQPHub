@@ -3,46 +3,68 @@
 engine=$1
 split=$2
 jit_level=${3:-none}
-jit_opt=${4:-o1}
-jit_simd=${5:-off}
-fusion_build=${6:-on}
-fusion_probe=${7:-on}
-inline_hash=${8:-on}
-payload_prune=${9:-on}
-prefetch=${10:-on}
-batch_probe=${11:-on}
-cache=${12:-off}
+jit_simd=${4:-off}
+payload_prune=${5:-on}
+prefetch=${6:-on}
+batch_probe=${7:-on}
+skip_hash_cmp=${8:-all}   # off | single | all
+jit_cache=${9:-off}       # off | single-run-strict | single-run-template | full
+spec_jit=${10:-off}       # off | recompile | interpret
+compile_mode=${11:-llvm}   # llvm | fastisel | tpde 
+tune_config=${12:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
+
+# For lingodb/lingo-db-runtime, the 3rd arg selects the execution mode
+# (llvm | tpde) instead of the DuckDB jit level.
+lingodb_mode="llvm"
+if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+    lingodb_mode=${3:-llvm}
+    jit_level=none
+    jit_simd=off
+fi
 
 # Build CLI flags from positional args
 jit_extra_flags=""
-[[ "$fusion_build"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-build"
-[[ "$fusion_probe"  == "off" ]] && jit_extra_flags+=" --no-jit-fusion-probe"
-[[ "$inline_hash"   == "off" ]] && jit_extra_flags+=" --no-jit-inline-hash"
-[[ "$payload_prune" == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
+if [[ "$jit_cache" == "on" ]]; then
+    jit_extra_flags+=" --jit-cache"
+elif [[ "$jit_cache" != "off" ]]; then
+    jit_extra_flags+=" --jit-cache=${jit_cache}"
+fi
+[[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
 elif [[ "$prefetch" != "on" ]]; then
     jit_extra_flags+=" --jit-prefetch=${prefetch}"
 fi
-[[ "$batch_probe" == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
-if [[ "$cache" == "off" ]]; then
-    jit_extra_flags+=" --no-jit-cache"
-elif [[ "$cache" == "on" ]]; then
-    jit_extra_flags+=" --jit-cache"
-else
-    jit_extra_flags+=" --jit-cache=${cache}"
+[[ "$batch_probe"    == "off" ]] && jit_extra_flags+=" --no-jit-batch-probe"
+[[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
+[[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
+[[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
+
+# Query-jit scans base tables through the storage plan; the binary cache file
+# is built on first use if missing (--storage-plan is auto-enabled by the
+# binary for --jit-level=query, kept explicit here for clarity).
+if [[ "$jit_level" == "query" ]]; then
+    jit_extra_flags+=" --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
 fi
 
 # Build a short suffix for the log filename
 flag_suffix=""
-[[ "$fusion_build"  == "off" ]] && flag_suffix+="_nofusbuild"
-[[ "$fusion_probe"  == "off" ]] && flag_suffix+="_nofusprobe"
-[[ "$inline_hash"   == "off" ]] && flag_suffix+="_noinlhash"
-[[ "$payload_prune" == "off" ]] && flag_suffix+="_nopayprune"
-[[ "$prefetch"      == "off" ]] && flag_suffix+="_noprefetch"
+[[ "$payload_prune"  == "off" ]] && flag_suffix+="_nopayprune"
+[[ "$prefetch"       == "off" ]] && flag_suffix+="_noprefetch"
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
-[[ "$batch_probe"   == "off" ]] && flag_suffix+="_nobatchprobe"
-[[ "$cache"         != "off" ]] && flag_suffix+="_cache"
+[[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
+[[ "$skip_hash_cmp"  == "single" ]] && flag_suffix+="_skiphash1"
+[[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
+if [[ "$jit_cache" == "on" ]]; then
+    flag_suffix+="_jitcache"
+elif [[ "$jit_cache" != "off" ]]; then
+    flag_suffix+="_jitcache_${jit_cache//-/_}"
+fi
+[[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
+[[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"
@@ -57,7 +79,7 @@ if [[ "$engine" == "postgres" ]]; then
     db_conn="host=localhost port=5432 dbname=imdb user=pei"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb_132/measure/imdb.db"
+    db_conn="/home/pei/Project/duckdb/measure/imdb.db"
 
 elif [[ "$engine" == "umbra" ]]; then
     db_conn="host=localhost port=15432 user=postgres password=postgres"
@@ -68,6 +90,9 @@ elif [[ "$engine" == "mariadb" ]]; then
 elif [[ "$engine" == "opengauss" ]]; then
     db_conn="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132"
 
+elif [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+    db_conn=""
+
 else
     echo "Unknown engine: $engine"
     exit 1
@@ -76,8 +101,11 @@ fi
 # For node-based split on non-DuckDB backends, pass the DuckDB helper DB
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
-if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb_132/measure/imdb.db"
+if [[ "$engine" == "lingo-db-runtime" ]]; then
+    helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
+    helper_db_arg="--helper-db-path=${helper_db_path}"
+elif [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
+    helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$engine" == "mariadb" ]]; then
     helper_db_path="host=localhost port=5432 dbname=imdb user=pei"
@@ -88,19 +116,30 @@ fi
 # Start / Stop Umbra
 ########################################
 start_umbra() {
-    echo "Starting Umbra docker..."
+    echo "Starting Umbra docker (in-memory via tmpfs)..."
 
     docker run -d \
         --name "$container_name" \
         --network=host \
-        -v umbra-db:/var/db \
+        --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
+        -v "$JOB_PATH/csv":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
         umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db >/dev/null
 
     wait_for_umbra
+    load_umbra_imdb_data
+}
+
+load_umbra_imdb_data() {
+    echo "Loading schema and CSV data into Umbra..."
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$JOB_PATH/schema.sql"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$JOB_PATH/import_umbra_csv.sql"
+    echo "Data loading done."
 }
 
 stop_umbra() {
@@ -174,6 +213,7 @@ wait_for_umbra() {
 ########################################
 rm -f "${log_name}"
 rm -f "job_result/${log_name}"
+rm -f lingodb_compile_time.csv
 
 mkdir -p job_result
 shopt -s nullglob
@@ -218,22 +258,38 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
-for sql in "$dir"/*.sql; do
-  echo "Running benchmark for $sql..." | tee -a "$log_name"
-  for i in $(eval echo {1.."${iteration}"}); do
-      $cmd_prefix ../build_release/aqp_middleware \
-        --engine="${engine}" \
-        --db="${db_conn}" \
-        "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-        --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-        --split="${split}" \
-        --timing \
-        --no-analyze \
-        --jit-level=${jit_level} --jit-opt=${jit_opt} --jit-simd=${jit_simd} \
-        ${jit_extra_flags} \
-        "${sql}"
-  done
-done
+# LingoDB / lingo-db-runtime: in-memory with CSV loading instead of --db
+db_arg="--db=${db_conn}"
+lingodb_flags=""
+if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+    db_arg="--in-memory"
+    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv --lingodb-mode=${lingodb_mode}"
+fi
 
-mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_opt}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"
+# Clear disk JIT cache for clean cold-start on iter 0
+if [[ "$jit_cache" == "full" ]]; then
+    rm -rf /dev/shm/aqp_jit_cache/
+fi
+
+$cmd_prefix ../build_release/aqp_middleware \
+  --engine="${engine}" \
+  ${db_arg} \
+  "${helper_db_arg}" \
+  --schema=$JOB_PATH/schema.sql \
+  --fkeys=$JOB_PATH/fkeys.sql \
+  --split="${split}" \
+  ${lingodb_flags} \
+  --timing \
+  --no-analyze \
+  --repeat=${iteration} \
+  --jit-level=${jit_level} --jit-simd=${jit_simd} \
+  ${jit_extra_flags} \
+  --benchmark \
+  "${dir}"
+
+if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+    mv "${log_name}" job_result/${engine}_${lingodb_mode}_${split}_breakdown_"${log_name}"
+    mv lingodb_compile_time.csv job_result/${engine}_${lingodb_mode}_${split}_compile_time.csv
+else
+    mv "${log_name}" job_result/${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}_breakdown_"${log_name}"
+fi

@@ -11,6 +11,10 @@
 #include <set>
 #include <utility>
 
+#ifdef HAVE_DUCKDB
+#include "duckdb/planner/logical_operator.hpp"
+#endif
+
 namespace middleware {
 
 // Result of extracting a subquery
@@ -55,6 +59,13 @@ struct SubqueryExtraction {
   // SQL or calling UpdateRemainingIR. Used by NodeBasedSplitter to hand the
   // merged final plan back to ExecuteSplitLoop (both early and late terminal).
   bool is_final = false;
+
+#ifdef HAVE_DUCKDB
+  // Pre-built logical plan for this sub-query (node-based only).
+  // When set, ExecuteSQLandCreateTempTable uses PrepareFromPlan instead of
+  // conn->Prepare(sql), skipping redundant parse+optimize.
+  duckdb::unique_ptr<duckdb::LogicalOperator> logical_plan;
+#endif
 };
 
 class AQPSplitter {

@@ -51,3 +51,4 @@ lib*.pc
 *.sql
 
 test
+third_party/tpde_build/

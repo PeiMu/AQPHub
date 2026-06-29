@@ -6,15 +6,12 @@ rm -rf compile.log
 engine=$1
 split=$2
 jit_level=$3
-jit_opt=$4
-jit_simd=$5
-fusion_build=${6:-on}
-fusion_probe=${7:-on}
-inline_hash=${8:-on}
-payload_prune=${9:-on}
-prefetch=${10:-on}
-batch_probe=${11:-on}
-cache=${12:-off}
+jit_simd=$4
+payload_prune=${5:-on}
+prefetch=${6:-on}
+batch_probe=${7:-on}
+skip_hash_cmp=${8:-all}   # off | single | all (legacy: on=all)
+cache=${9:-off}
 
 ########################################
 # Start / Stop PostgreSQL
@@ -35,23 +32,30 @@ rm_pg_log() {
 ########################################
 container_name="umbra_benchmark"
 start_umbra() {
-    echo "Starting Umbra docker..."
+    echo "Starting Umbra docker (in-memory via tmpfs)..."
 
     docker run -d \
         --name "$container_name" \
         --network=host \
-	--cpuset-cpus="0" \
-        -e OMP_NUM_THREADS=1 \
-        -e OMP_THREAD_LIMIT=1 \
-        -e OMP_PROC_BIND=TRUE \
-        -v umbra-db:/var/db \
+        --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
+        -v "$JOB_PATH/csv":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
         umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db >/dev/null
 
     wait_for_umbra
+    load_umbra_imdb_data
+}
+
+load_umbra_imdb_data() {
+    echo "Loading schema and CSV data into Umbra..."
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$JOB_PATH/schema.sql"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$JOB_PATH/import_umbra_csv.sql"
+    echo "Data loading done."
 }
 
 stop_umbra() {
@@ -139,8 +143,7 @@ elif [[ "$engine" == "opengauss" ]]; then
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_opt}" "${jit_simd}" \
-    "${fusion_build}" "${fusion_probe}" "${inline_hash}" "${payload_prune}" \
-    "${prefetch}" "${batch_probe}" "${cache}"
+cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
+    "${payload_prune}" "${prefetch}" "${batch_probe}" "${skip_hash_cmp}" "${cache}"
 
 #mv compile.log job_result/.

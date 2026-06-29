@@ -1,0 +1,23 @@
+diff --git a/tpde-encodegen/src/main.cpp b/tpde-encodegen/src/main.cpp
+index f609a31..71a97f6 100644
+--- a/tpde-encodegen/src/main.cpp
++++ b/tpde-encodegen/src/main.cpp
+@@ -106,18 +106,14 @@ int main(const int argc, char *argv[]) {
+ #endif
+
+   // Required so that our target triple is actually found
+-#if defined(__arm64__) || defined(__aarch64__)
+   LLVMInitializeAArch64TargetInfo();
+   LLVMInitializeAArch64Target();
+   LLVMInitializeAArch64TargetMC();
+   LLVMInitializeAArch64AsmPrinter();
+-#endif
+-#if defined(__x86_64__)
+   LLVMInitializeX86TargetInfo();
+   LLVMInitializeX86Target();
+   LLVMInitializeX86TargetMC();
+   LLVMInitializeX86AsmPrinter();
+-#endif
+
+   std::string error;
+   const llvm::Target *target =

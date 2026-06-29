@@ -6,6 +6,11 @@
 #ifdef HAVE_DUCKDB
 
 #include "split/node_based_splitter.h"
+#include "split/ir_query_splitter.h"
+
+#include "duckdb/planner/operator/logical_column_data_get.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_dummy_scan.hpp"
 
 #include <iostream>
 
@@ -79,6 +84,22 @@ std::unique_ptr<SubqueryExtraction> NodeBasedSplitter::SplitIR(
 
   RunMiddleOptimize();
 
+  // ── Forced terminal: cardinality threshold exceeded on previous iteration.
+  // BLOCK 1 already merged all remaining subqueries back into plan_ and
+  // MiddleOptimize re-optimized. Return the full plan as the final query.
+  if (force_terminal_next_) {
+    force_terminal_next_ = false;
+    plan_ = qs_->Clear(std::move(plan_));
+    terminal_ = true;
+    if (enable_debug_print_)
+      std::cout << "[NodeBased] Forced terminal: returning merged plan.\n";
+    auto extraction =
+        std::make_unique<SubqueryExtraction>(std::set<unsigned int>{});
+    extraction->is_final = true;
+    extraction->sub_ir = TakePlanAsIR();
+    return extraction;
+  }
+
   plan_ = qs_->Clear(std::move(plan_));
   plan_ = qs_->Split(std::move(plan_), true);
   subqueries_ = qs_->GetSubqueries();
@@ -125,8 +146,20 @@ std::unique_ptr<SubqueryExtraction> NodeBasedSplitter::SplitIR(
     extraction->sub_ir = TakePlanAsIR();
     return extraction;
   }
-
   // ── Normal: extract the first subquery group as a sub-plan ─────────────
+  // Check if the subquery being extracted is standalone (no CHUNK_GET nodes,
+  // meaning it doesn't reference any prior temp table results).
+  last_extraction_standalone_ = true;
+  std::function<void(const duckdb::LogicalOperator &)> check_standalone =
+      [&](const duckdb::LogicalOperator &op) {
+        if (op.type == duckdb::LogicalOperatorType::LOGICAL_CHUNK_GET)
+          last_extraction_standalone_ = false;
+        for (auto &child : op.children)
+          if (child)
+            check_standalone(*child);
+      };
+  check_standalone(*subqueries_.front()[0]);
+
   // Save sibling for MergeSibling in UpdateRemainingIR.
   last_sibling_node_ = nullptr;
   if (subqueries_.front().size() > 1)
@@ -212,9 +245,15 @@ NodeBasedSplitter::UpdateRemainingIR(
   if (!external_execution_) {
     collection->Types() = plan_adapter_->temp_table_types;
   }
+  // Copy column statistics from the StoredTempResult for the temp table.
+  duckdb::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats_copy;
+  if (auto *stored = plan_adapter_->GetStoredTempResult(temp_table_name)) {
+    for (auto &s : stored->column_stats) {
+      col_stats_copy.push_back(s ? s->Copy().ToUnique() : nullptr);
+    }
+  }
   sp_->MergeDataChunk(subqueries_, std::move(collection),
-                      temp_table_cardinality);
-
+                      temp_table_cardinality, std::move(col_stats_copy));
   // Merge sibling (parallel-execution path; ENABLE_PARALLEL_EXECUTION=false).
   if (last_sibling_node_) {
     merge_sibling_expr_ =
@@ -226,6 +265,20 @@ NodeBasedSplitter::UpdateRemainingIR(
   sp_->UpdateSubqueriesIndex(subqueries_);
   table_expr_queue_ =
       sp_->UpdateTableExpr(std::move(table_expr_queue_), proj_expr_);
+
+  // ── Cardinality threshold check: flag abort for next SplitIR call.
+  // Only applied when the extracted subquery doesn't reference any prior temp
+  // tables (standalone), preventing abort of beneficial iterative correction.
+  if (last_extraction_standalone_ &&
+      temp_table_cardinality > kSplitCardThreshold &&
+      !subqueries_.empty()) {
+    if (enable_debug_print_) {
+      std::cout << "[NodeBased] Cardinality threshold exceeded: "
+                << temp_table_cardinality << " > " << kSplitCardThreshold
+                << " (standalone subquery). Will abort split on next iteration.\n";
+    }
+    force_terminal_next_ = true;
+  }
 
   // ── Late terminal: only one subquery group remains ──────────────────────
   // UpdateProjHead IS called here (unlike the early-terminal path).
@@ -249,6 +302,203 @@ ir_sql_converter::AQPStmt *NodeBasedSplitter::SelectSubIR(
   // NodeBased selection is driven by DuckDB's subqueries_.front();
   // the full remaining IR represents the sub-IR for the current cluster.
   return ir;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PeekNextSubquery
+// After SplitIR(i) extracts the current group, peek at subqueries_.front() to
+// predict what the next iteration will extract.  The prediction is speculative:
+// the real next SplitIR will MergeSubquery + MiddleOptimize + re-Split, which
+// may produce different groups.
+//
+// The node is BORROWED, not copied (LogicalOperator::Copy crashes on
+// query-split plans, e.g. CHUNK_GET nodes).  GenerateProjHead does not mutate
+// the subquery subtree — it only reads split_index and AddChild()s it — so we
+// pass a placeholder to GenerateProjHead, swap the real node in afterwards,
+// convert to IR (read-only on the plan), and move the node back into
+// subqueries_.front()[0] before returning.
+// ─────────────────────────────────────────────────────────────────────────────
+static bool HasNullChildren(const duckdb::LogicalOperator &op) {
+  for (auto &child : op.children) {
+    if (!child)
+      return true;
+    if (HasNullChildren(*child))
+      return true;
+  }
+  return false;
+}
+
+namespace {
+// Reversible mimic of SubqueryPreparer::MergeToSubquery for the spec chunk:
+// fill the null child slot whose parent's merge_index equals the chunk's
+// split_index, clearing the join's right_projection_map like the real merge
+// does (so the converted IR — and thus the speculative SQL — matches the
+// real next subquery). Everything is restored by RevertSpecChunk.
+struct SpecChunkInjection {
+  duckdb::LogicalOperator *dest = nullptr;
+  size_t child_idx = 0;
+  int saved_merge_index = 0;
+  duckdb::vector<duckdb::idx_t> saved_right_projection_map;
+  bool injected = false;
+};
+
+void InjectSpecChunk(duckdb::unique_ptr<duckdb::LogicalOperator> &dest_op,
+                     duckdb::unique_ptr<duckdb::LogicalOperator> &chunk,
+                     int chunk_split_index, SpecChunkInjection &res) {
+  if (!dest_op)
+    return;
+  for (int idx = static_cast<int>(dest_op->children.size()) - 1; idx > -1;
+       idx--) {
+    if (res.injected)
+      return;
+    auto &child = dest_op->children[idx];
+    if (chunk_split_index == dest_op->merge_index && chunk_split_index != 0) {
+      if (!child) {
+        res.dest = dest_op.get();
+        res.child_idx = static_cast<size_t>(idx);
+        res.saved_merge_index = dest_op->merge_index;
+        dest_op->merge_index = 0;
+        child = std::move(chunk);
+        res.injected = true;
+        if (dest_op->type ==
+            duckdb::LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+          auto &join_op = dest_op->Cast<duckdb::LogicalComparisonJoin>();
+          res.saved_right_projection_map = join_op.right_projection_map;
+          join_op.right_projection_map.clear();
+        }
+        return;
+      }
+      continue;
+    }
+    InjectSpecChunk(child, chunk, chunk_split_index, res);
+  }
+}
+
+void RevertSpecChunk(SpecChunkInjection &res) {
+  if (!res.injected)
+    return;
+  res.dest->children[res.child_idx] = nullptr; // destroys the spec chunk
+  res.dest->merge_index = res.saved_merge_index;
+  if (res.dest->type == duckdb::LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+    auto &join_op = res.dest->Cast<duckdb::LogicalComparisonJoin>();
+    join_op.right_projection_map = std::move(res.saved_right_projection_map);
+  }
+  res.injected = false;
+}
+} // namespace
+
+std::unique_ptr<ir_sql_converter::AQPStmt> NodeBasedSplitter::PeekNextSubquery(
+    duckdb::idx_t spec_chunk_index,
+    const duckdb::vector<duckdb::LogicalType> &chunk_types,
+    duckdb::idx_t est_card) {
+  if (subqueries_.empty())
+    return nullptr;
+
+  auto &slot = subqueries_.front()[0];
+  if (!slot) return nullptr;
+
+  // Inject a speculative CHUNK_GET for the temp table the current iteration
+  // is about to produce, mirroring what MergeDataChunk will do for real in
+  // UpdateRemainingIR. Uses the same chunk index/types the real merge will
+  // use (pre-allocated by the adapter before ExecuteRow).
+  SpecChunkInjection injection;
+  int chunk_split_index = sp_->GetDataChunkSplitIndex();
+  if (chunk_split_index != 0 && HasNullChildren(*slot)) {
+    auto chunk_collection =
+        duckdb::make_uniq<duckdb::ColumnDataCollection>(*ctx_, chunk_types);
+    auto chunk_scan = duckdb::make_uniq<duckdb::LogicalColumnDataGet>(
+        spec_chunk_index, chunk_types, std::move(chunk_collection));
+    chunk_scan->estimated_cardinality = est_card == 0 ? 1 : est_card;
+    chunk_scan->has_estimated_cardinality = true;
+    chunk_scan->split_index = 0; // post-merge state (the real merge zeroes it)
+    duckdb::unique_ptr<duckdb::LogicalOperator> chunk_op =
+        std::move(chunk_scan);
+    InjectSpecChunk(slot, chunk_op, chunk_split_index, injection);
+  }
+  if (HasNullChildren(*slot)) {
+    // Either no matching merge slot in this group (the real chunk merges into
+    // a later group) or more than one unresolved slot — cannot predict.
+    RevertSpecChunk(injection);
+    if (enable_debug_print_)
+      std::cerr
+          << "[NodeBased] PeekNextSubquery: skipped (unresolved null slot)\n";
+    return nullptr;
+  }
+
+  // Run the index rewrites UpdateRemainingIR will perform after execution,
+  // for real (not reverted). Without them the next group's BoundColumnRefs
+  // still reference the just-executed tables' old indexes and IR conversion
+  // fails. They are idempotent: rewritten refs point at the fresh chunk index,
+  // which can never match proj_exprs' old table indexes again, so the real
+  // UpdateSubqueriesIndex/UpdateTableExpr repeats in UpdateRemainingIR are
+  // no-ops (and still rewrite anything MergeSibling adds later).
+  sp_->SetNewTableIndex(spec_chunk_index);
+  sp_->UpdateSubqueriesIndex(subqueries_);
+  table_expr_queue_ =
+      sp_->UpdateTableExpr(std::move(table_expr_queue_), proj_expr_);
+
+  auto saved_proj_exprs = sp_->GetProjExprs();
+  int saved_split_index = sp_->GetDataChunkSplitIndex();
+  // Preserve the adapter's current plan (the sub-plan of iteration i, which
+  // must stay alive while its IR is used for JIT/execution).
+  auto prev_plan = plan_adapter_->TakePlan();
+
+  duckdb::unique_ptr<duckdb::LogicalOperator> sub_plan;
+  std::unique_ptr<ir_sql_converter::AQPStmt> spec_ir;
+  try {
+    // Placeholder keeps the real node out of GenerateProjHead's ownership so
+    // an exception inside it can never destroy the borrowed node.
+    auto placeholder = duckdb::make_uniq<duckdb::LogicalDummyScan>(0);
+    placeholder->split_index = slot->split_index;
+    sub_plan = sp_->GenerateProjHead(plan_, std::move(placeholder),
+                                     table_expr_queue_, proj_expr_,
+                                     merge_sibling_expr_);
+    sub_plan->children[0] = std::move(slot); // borrow the real node
+    sub_plan->ResolveOperatorTypes();
+    plan_adapter_->SetPlan(std::move(sub_plan));
+    spec_ir = plan_adapter_->ConvertPlanToIR();
+    sub_plan = plan_adapter_->TakePlan();
+    slot = std::move(sub_plan->children[0]); // return the borrowed node
+  } catch (const std::exception &e) {
+    if (!sub_plan)
+      sub_plan = plan_adapter_->TakePlan();
+    if (sub_plan && !sub_plan->children.empty() && sub_plan->children[0] &&
+        !slot)
+      slot = std::move(sub_plan->children[0]); // recover the borrowed node
+    spec_ir.reset();
+    if (enable_debug_print_)
+      std::cerr << "[NodeBased] PeekNextSubquery failed: " << e.what() << "\n";
+  }
+
+  // Remove the speculative chunk and restore merge_index /
+  // right_projection_map. The dest node lives on the heap, so the pointer is
+  // valid whether the subtree currently sits in subqueries_ or in sub_plan.
+  RevertSpecChunk(injection);
+
+  sp_->SetProjExprs(std::move(saved_proj_exprs));
+  sp_->SetDataChunkSplitIndex(saved_split_index);
+  plan_adapter_->SetPlan(std::move(prev_plan));
+
+  if (enable_debug_print_ && spec_ir) {
+    std::cout << "[NodeBased] PeekNextSubquery IR:\n";
+    spec_ir->Print();
+  }
+  return spec_ir;
+}
+
+void NodeBasedSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
+  ctx_ = prep.bg_conn->context.get();
+  plan_ = std::move(prep.remaining_plan);
+  qs_ = std::move(prep.qs);
+  sp_ = std::move(prep.sp);
+  reorder_get_ = std::move(prep.reorder_get);
+  subqueries_ = std::move(prep.subqueries);
+  table_expr_queue_ = std::move(prep.table_expr_queue);
+  proj_expr_ = std::move(prep.proj_expr);
+  last_sibling_node_ = std::move(prep.last_sibling_node);
+  merge_sibling_expr_ = prep.merge_sibling_expr;
+  sub_plan_types_ = std::move(prep.sub_plan_types);
+  terminal_ = false;
 }
 
 } // namespace middleware

@@ -28,5 +28,8 @@ public:
 
   // Umbra EXPLAIN JSON: {"plan":{"cardinality":N,...}} (no "Total Cost")
   std::pair<double, double> GetEstimatedCost(const std::string &sql) override;
+
+  // Plain EXPLAIN ANALYZE (Umbra may reject the VERBOSE/BUFFERS options)
+  std::string ExplainAnalyze(const std::string &sql) override;
 };
 } // namespace middleware

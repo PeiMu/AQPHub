@@ -22,6 +22,18 @@ struct QueryResult {
   QueryResult() : num_rows(0), num_columns(0) {}
 };
 
+// Strip trailing ';' and whitespace so an "EXPLAIN ..." prefix produces a
+// single statement. Used by ExplainAnalyze overrides across adapters.
+inline std::string StripSqlTerminator(const std::string &sql) {
+  size_t end = sql.size();
+  while (end > 0 && (sql[end - 1] == ';' || sql[end - 1] == ' ' ||
+                     sql[end - 1] == '\n' || sql[end - 1] == '\r' ||
+                     sql[end - 1] == '\t')) {
+    --end;
+  }
+  return sql.substr(0, end);
+}
+
 class EngineAdapter {
 public:
   EngineAdapter() = default;
@@ -49,6 +61,23 @@ public:
                                             const std::string &temp_table_name,
                                             bool update_temp_card) = 0;
 
+  // Execute IR directly (bypassing SQL generation) and create temp table.
+  // Default: GenerateSQL + ExecuteSQLandCreateTempTable.
+  virtual void ExecuteIRandCreateTempTable(
+      ir_sql_converter::AQPStmt &ir,
+      const std::string &temp_table_name,
+      bool update_temp_card) {
+    std::string sql = GenerateSQL(ir, subquery_index++);
+    ExecuteSQLandCreateTempTable(sql, temp_table_name, update_temp_card);
+  }
+
+  // Execute IR directly and return results (for final query).
+  // Default: GenerateSQL + ExecuteSQL.
+  virtual QueryResult ExecuteIRQuery(ir_sql_converter::AQPStmt &ir) {
+    std::string sql = GenerateSQL(ir, subquery_index++);
+    return ExecuteSQL(sql);
+  }
+
   // Temp table management
   virtual void CreateTempTable(const std::string &table_name,
                                const QueryResult &result) = 0;
@@ -71,6 +100,11 @@ public:
   // Returns {estimated_cost, estimated_rows}
   virtual std::pair<double, double>
   GetEstimatedCost(const std::string &sql) = 0;
+
+  // Return the EXPLAIN ANALYZE plan of a sub-SQL as formatted text (used by
+  // --explain mode to display per-sub-query plans). Default returns "" for
+  // engines that don't implement plan display; overridden per adapter.
+  virtual std::string ExplainAnalyze(const std::string &sql) { return ""; }
 
   // Batch version: evaluate multiple EXPLAIN queries in one round-trip
   // Default implementation calls GetEstimatedCost sequentially (fine for
@@ -107,6 +141,8 @@ public:
   }
 
   virtual void CleanUp() = 0;
+
+  virtual void ResetQueryState() {}
 
   unsigned int subquery_index = 0;
 

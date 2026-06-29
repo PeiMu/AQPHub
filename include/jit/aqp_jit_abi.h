@@ -3,7 +3,7 @@
  * compiler and the DuckDB JIT receiver.
  *
  * MUST stay in sync with:
- *   duckdb_132/src/include/duckdb/execution/aqp_jit.hpp
+ *   duckdb/src/include/duckdb/execution/aqp_jit.hpp
  *
  * Key invariants:
  *   - sel_t in DuckDB is uint32_t  (duckdb/common/typedefs.hpp)
@@ -40,7 +40,19 @@ typedef struct {
   uint32_t count;    /* number of entries written by the compiled expr   */
 } AQPSelView;
 
-/* dtype constants — must match aqp_jit.hpp in DuckDB */
+/* dtype constants — must match aqp_jit.hpp in DuckDB. */
+#ifdef __cplusplus
+static constexpr int32_t AQP_DTYPE_BOOL    = 0;
+static constexpr int32_t AQP_DTYPE_INT8    = 1;
+static constexpr int32_t AQP_DTYPE_INT16   = 2;
+static constexpr int32_t AQP_DTYPE_INT32   = 3;
+static constexpr int32_t AQP_DTYPE_INT64   = 4;
+static constexpr int32_t AQP_DTYPE_FLOAT   = 5;
+static constexpr int32_t AQP_DTYPE_DOUBLE  = 6;
+static constexpr int32_t AQP_DTYPE_VARCHAR = 7;
+static constexpr int32_t AQP_DTYPE_DATE    = 8;
+static constexpr int32_t AQP_DTYPE_OTHER   = 99;
+#else
 #define AQP_DTYPE_BOOL 0
 #define AQP_DTYPE_INT8 1
 #define AQP_DTYPE_INT16 2
@@ -51,6 +63,7 @@ typedef struct {
 #define AQP_DTYPE_VARCHAR 7
 #define AQP_DTYPE_DATE 8
 #define AQP_DTYPE_OTHER 99
+#endif
 
 /* JIT compilation flags — bitmask, composable.
  * Prefixed AQP_JIT_ to avoid collision with DuckDB's enum AQPJITFlags. */
@@ -59,29 +72,39 @@ typedef struct {
   (1u << 0) /* Level 1: individual expression compilation   */
 #define AQP_JIT_OPERATOR                                                       \
   (1u << 1) /* Level 2: full operator compilation            */
+/* Legacy define — kept for source compat; use ParamConfig::kernel_path instead. */
 #define AQP_JIT_PIPELINE                                                       \
-  (1u << 2) /* Level 3: fused pipeline compilation           */
-#define AQP_JIT_SQL                                                            \
-  (1u << 4) /* Level 4: SQL / sub-SQL compilation             */
-#define AQP_JIT_SUBPLAN AQP_JIT_SQL /* Legacy alias                           */
+  (1u << 2) /* (legacy) pipeline kernel — use kernel_path    */
 
-/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE / SQL).
+/* Pipeline-JIT: compile entire probe pipeline as a single function.
+ * Unlike kernel_path=PIPELINE (which routes through PipelineKernel),
+ * this compiles the probe chain directly in the DuckDB execution path. */
+#define AQP_JIT_PIPELINE_JIT (1u << 6)
+
+/* Query-JIT: lingo-db-style runtime. Each sub-query IR is compiled into one
+ * LLVM module / one entry function (build loops + probe pipeline + sink) and
+ * executed by the middleware's own morsel scheduler. DuckDB is used only for
+ * parse/optimize/IR and base-table scans; unsupported sub-queries fall back
+ * to the DuckDB interpreter. Deliberately NOT part of AQP_JIT_LEVEL_MASK:
+ * that mask gates the DuckDB-embedded RegisterJIT path, which query-jit
+ * bypasses entirely (this also keeps spec-jit inactive under query-jit). */
+#define AQP_JIT_QUERY_JIT (1u << 7)
+
+/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE_JIT).
+ * Legacy PIPELINE and QUERY kernel paths are controlled by ParamConfig::kernel_path.
  * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
-#define AQP_JIT_LEVEL_MASK                                                       \
-  (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE | AQP_JIT_SQL)
+#define AQP_JIT_LEVEL_MASK (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT)
 
-/* Legacy aliases (backward compat) */
+/* Legacy defines — kept for source compat; no longer part of AQP_JIT_LEVEL_MASK.
+ * Use ParamConfig::kernel_path instead. */
+#define AQP_JIT_QUERY                                                          \
+  (1u << 4) /* (legacy) query-level kernel — use kernel_path  */
+
+/* Legacy aliases (backward compat — debug prints only) */
 #define AQP_JIT_OPT3                                                           \
-  (1u << 3) /* Use LLVM O3 optimization                     */
+  (1u << 3) /* (legacy, unused)                              */
 #define AQP_JIT_SIMD                                                           \
   (1u << 5) /* Enable explicit SIMD vectorization            */
-
-/* LLVM optimization level — bits 6-7 */
-#define AQP_JIT_OPT_MASK (0x3u << 6)
-#define AQP_JIT_OPT_O0 (0x0u << 6) /* No optimization          */
-#define AQP_JIT_OPT_O1 (0x1u << 6) /* Basic optimization       */
-#define AQP_JIT_OPT_O2 (0x2u << 6) /* Standard optimization    */
-#define AQP_JIT_OPT_O3 (0x3u << 6) /* Aggressive optimization  */
 
 /* SIMD ISA level — bits 8-10 */
 #define AQP_JIT_SIMD_MASK (0x7u << 8)
@@ -120,21 +143,55 @@ typedef int64_t (*AQPPipelineFn)(AQPChunkView *source_chunk,
                                  AQPChunkView *sink_chunk,
                                  void *pipeline_state);
 
-/* Sub-plan context: holds all state for a compiled sub-plan.
- * Managed by the middleware; passed to the coordinator function. */
-typedef struct {
-  void **hash_tables; /* array of AQPHashTable pointers              */
-  uint32_t num_hash_tables;
-  AQPPipelineFn *pipeline_fns; /* array of compiled pipeline functions */
-  uint32_t num_pipelines;
-  void *scratch; /* scratch buffer for intermediate chunks       */
-  uint64_t scratch_size;
-} AQPSubPlanCtx;
+/* Callback for deep-copying a non-inline string_t into a DuckDB Vector's
+ * string heap.  Implemented on the DuckDB side (aqp_jit.cpp).
+ * src_string: pointer to 16-byte source string_t
+ * dst_string: pointer to 16-byte destination string_t (written by callee)
+ * dst_vector: opaque pointer to the output duckdb::Vector
+ */
+typedef void (*AQPCopyStringFn)(const void *src_string,
+                                void *dst_string,
+                                void *dst_vector);
 
-/* Sub-plan level: orchestrates multiple pipelines.
- * The coordinator runs build pipelines, then probe pipelines, manages hash
- * tables. Returns 0 on success, negative on error. */
-typedef int32_t (*AQPSubPlanFn)(AQPSubPlanCtx *ctx);
+/* State passed to pipeline filter functions (not fusion functions).
+ * Provides access to output Vector pointers for safe VARCHAR copying. */
+typedef struct {
+  void **col_vectors;       /* col_vectors[i] = &chunk.data[i] for output col */
+  uint64_t num_cols;
+  AQPCopyStringFn copy_str; /* callback for deep string copy                  */
+} AQPPipelineFilterState;
+
+/**
+ * Hash-join view: exposes DuckDB's JoinHashTable internals to JIT'd probe
+ * code without going through a C++ vtable. Filled at probe time by
+ * physical_hash_join.cpp (DuckDB side) and passed as the
+ * `pipeline_state` argument of a probe-side AQPPipelineFn.
+ *
+ * MUST stay in sync with duckdb::AQPJoinHTView in aqp_jit.hpp.
+ */
+typedef struct {
+  void           *entries;        /* ht_entry_t *               */
+  uint64_t        bitmask;        /* capacity - 1               */
+  uint64_t        use_salt;       /* 1 if capacity > USE_SALT_THRESHOLD (8192) */
+  void           *layout_ptr;     /* opaque shared_ptr<TupleDataLayout>* */
+  uint32_t        tuple_size;     /* total row width in bytes   */
+  uint32_t        pointer_offset; /* offset of next_pointer inside row */
+  const uint64_t *data_offsets;   /* layout->GetOffsets().data() — per-col offsets within row */
+  uint64_t        no_chains;      /* 1 if chains_longer_than_one is false (skip chain walk) */
+  const uint64_t *bf_data;        /* bloom filter bit array (nullptr = no BF)               */
+  uint64_t        bf_bitmask;     /* num_sectors - 1 for BF lookup                          */
+  uint64_t        has_row_validity; /* 1 if rows start with a per-column validity bit prefix */
+} AQPJoinHTView;
+
+/**
+ * Multi-probe state: array of AQPJoinHTView pointers for fused multi-probe
+ * functions. views[0] = innermost HT (probed first), views[num_stages-1] =
+ * outermost. Passed as pipeline_state arg to compiled multi-probe functions.
+ */
+typedef struct {
+  AQPJoinHTView *views[4];
+  uint32_t       num_stages;
+} AQPMultiProbeState;
 
 #ifdef __cplusplus
 } // extern "C"

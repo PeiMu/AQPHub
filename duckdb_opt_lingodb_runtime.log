@@ -1,0 +1,591 @@
+# DuckDB Optimizer + LingoDB Runtime
+
+## Goal
+
+Combine DuckDB's query optimizer with LingoDB's JIT compiler and runtime.
+DuckDB drives join ordering, filter placement, and plan structure via its
+optimizer; the resulting plan is converted to LingoDB's RelAlg MLIR IR
+(bypassing LingoDB's own optimizer), then LingoDB compiles and executes via
+its lowering pipeline (RelAlg → SubOp → DB → Std → LLVM IR → native code).
+
+## Why Not Just Pass SQL to LingoDB?
+
+The existing cross-engine node-based path (used for PostgreSQL/MariaDB)
+converts IR→SQL and sends it to the execution engine. But LingoDB's
+`DefaultQueryOptimizer` runs 18+ RelAlg passes including **DPHyp join
+ordering** on every sub-query it receives. This means LingoDB would
+re-optimize each sub-query independently, potentially choosing different
+join orders than DuckDB decided. We need to **skip LingoDB's optimizer**
+and feed it a pre-built RelAlg plan that preserves DuckDB's optimization
+decisions.
+
+## Architecture
+
+```
+User query
+    │
+    ▼
+DuckDB helper adapter (--helper-db-path=imdb.db)
+    ├─ ParseSQL()                          [ir_query_splitter.cpp:381-382]
+    ├─ FilterOptimize()                    [ir_query_splitter.cpp:407-410]
+    └─ NodeBasedSplitter: MiddleOptimize() + Split()
+           │
+           ▼  (per sub-query iteration)
+    DuckDB logical plan → ConvertPlanToIR() → SimplestIR
+           │
+           ▼
+    IR-to-RelAlg MLIR converter (NEW CODE)
+    ├─ Reads SimplestIR: join tree structure, filter placement, projections, aggregations
+    ├─ Builds relalg::BaseTableOp, relalg::InnerJoinOp, relalg::SelectionOp, etc.
+    ├─ Uses ColumnManager for column tracking (@scope::@col_name)
+    └─ Produces mlir::ModuleOp with complete RelAlg plan
+           │
+           ▼
+    LingoDB execution (optimizer SKIPPED)
+    ├─ config->queryOptimizer = nullptr     [skip DPHyp, pushdown, etc.]
+    ├─ LowerRelAlg → SubOp → DB → Std → LLVM IR → native
+    └─ Execute → collect result as Arrow Table
+           │
+           ▼
+    CreateTempTableFromArrow() in LingoDB catalog     [lingodb_adapter.cpp:252-273]
+    RegisterExternalTempTable() in DuckDB helper      [node_based_splitter.cpp:195]
+           │
+           ▼
+    Next iteration (DuckDB MiddleOptimize with updated cardinality)
+```
+
+## Flags
+
+```bash
+./build_release/aqp_middleware \
+  --engine=lingo-db-runtime \
+  --in-memory \
+  --csv-dir=/path/to/lingo_db_csv \
+  --schema=/path/to/schema.sql \
+  --split=node-based \
+  --helper-db-path="/home/pei/Project/duckdb/measure/imdb.db" \
+  --lingodb-mode=llvm \
+  query.sql
+```
+
+- `--engine=lingo-db-runtime`: NEW enum value. Means "DuckDB optimizes, LingoDB compiles+executes".
+- `--helper-db-path`: DuckDB database file for optimization (already exists for cross-engine node-based).
+- `--split=node-based`: Required (only node-based uses DuckDB's optimizer for planning).
+- `--lingodb-mode=llvm|tpde`: LingoDB backend choice (already exists).
+
+No `--optimizer` or `--estimator` flags needed. The `--estimator` flag is
+unrelated — it only provides cost estimates for FK-based splitters
+(MariaDB+PostgreSQL), NOT query optimization.
+
+## Implementation Plan
+
+### Step 1: Add `--engine=lingo-db-runtime` flag
+
+**Files to modify:**
+- `include/util/param_config.h` — add `LINGODB_RUNTIME` to `BackendEngine` enum (line ~12)
+- `src/util/param_config.cpp:27-45` — add parsing for `"lingo-db-runtime"` in the engine switch
+- `src/util/param_config.cpp` — validation: `lingo-db-runtime` requires `--split=node-based` and
+  `--helper-db-path`
+
+### Step 2: Create `LingoDBRuntimeAdapter` class
+
+**New files:**
+- `include/adapters/lingodb_runtime_adapter.h`
+- `src/adapters/lingodb_runtime_adapter.cpp`
+
+This adapter wraps LingoDB's execution pipeline but replaces the normal
+SQL→parse→optimize flow with direct MLIR construction.
+
+**Key differences from `LingoDBAdapter`:**
+- `LingoDBAdapter::ExecuteSQLandCreateTempTable()` calls `executer->fromData(sql)` which runs
+  LingoDB's full pipeline (SQL frontend → optimizer → lowering → backend).
+- `LingoDBRuntimeAdapter::ExecuteSQLandCreateTempTable()` does NOT accept SQL.
+  Instead it has a new method that accepts SimplestIR (the AQPHub IR) and:
+  1. Converts IR to RelAlg MLIR using the new converter
+  2. Feeds MLIR into LingoDB with optimizer disabled
+  3. Executes via LingoDB's lowering + backend
+
+**What to reuse from LingoDBAdapter:**
+- Session management, scheduler init (`EnsureLingoDBInit`)
+- `CreateTempTableFromArrow()` — temp table registration in LingoDB catalog
+- `SetExecutionMode()` — SPEED vs BASELINE_SPEED
+- `LoadTablesFromCSV()` — base table loading from schema.sql + CSV dir
+- `DropTempTable()`, `TempTableExists()`, `GetTempTableCardinality()`
+
+**What is new:**
+- `ExecuteIR()` or override `ExecuteSQLandCreateTempTable()` to accept IR
+  and convert to MLIR instead of passing SQL
+- The IR-to-RelAlg MLIR converter (core new code, see Step 3)
+
+### Step 3: Implement IR-to-RelAlg MLIR converter
+
+**New file:** `src/adapters/ir_to_relalg.cpp` (and `.h`)
+
+This is the core new code. It converts `AQPStmt` (SimplestIR) to
+`mlir::ModuleOp` containing LingoDB RelAlg operations.
+
+**SimplestIR node types → RelAlg ops mapping:**
+
+| SimplestIR Node | RelAlg MLIR Op | Notes |
+|----------------|----------------|-------|
+| `SimplestScan` | `relalg::BaseTableOp` | Table name from IR, columns from catalog |
+| `SimplestChunk` | `relalg::BaseTableOp` | Temp table — same as base table in LingoDB catalog |
+| `SimplestFilter` | `relalg::SelectionOp` | Predicate in region block |
+| `SimplestJoin` | `relalg::InnerJoinOp` | Join predicate in region block |
+| `SimplestCrossProduct` | `relalg::CrossProductOp` | No predicate |
+| `SimplestAggregate` | `relalg::AggregationOp` | GROUP BY + aggregate functions |
+| `SimplestProjection` | `relalg::ProjectionOp` | Column subset + `relalg::MapOp` for computed cols |
+| `SimplestOrder` | `relalg::SortOp` | Sort specifications |
+| `SimplestLimit` | `relalg::LimitOp` | max_rows attribute |
+
+**Key APIs to use (from LingoDB):**
+
+Column management:
+```cpp
+auto& columnManager = mlirContext->getLoadedDialect<tuples::TupleStreamDialect>()->getColumnManager();
+// Create unique scope for a table
+std::string scope = columnManager.getUniqueScope("table_name");
+// Create column definition (for BaseTableOp)
+auto colDef = columnManager.createDef(scope, col_name);
+colDef.getColumn().type = mlirType; // e.g., builder.getI32Type()
+// Create column reference (for predicates, projections)
+auto colRef = columnManager.createRef(scope, col_name);
+```
+
+Operation creation (following patterns from `sql_mlir_translator.cpp`):
+```cpp
+// BaseTableOp (scan) — sql_mlir_translator.cpp:1200-1213
+std::vector<mlir::NamedAttribute> columns;
+for (each column in table) {
+    auto attrDef = columnManager.createDef(scope, col_name);
+    attrDef.getColumn().type = mlirType;
+    columns.push_back(builder.getNamedAttr(col_name, attrDef));
+}
+auto baseTable = builder.create<relalg::BaseTableOp>(
+    loc, tuples::TupleStreamType::get(ctx), table_name,
+    builder.getDictionaryAttr(columns),
+    lingodb::runtime::DatasourceRestrictionProperty{});
+
+// SelectionOp (filter) — sql_mlir_translator.cpp:475-478
+auto sel = builder.create<relalg::SelectionOp>(
+    loc, tuples::TupleStreamType::get(ctx), inputStream);
+mlir::Block* pred = new mlir::Block;
+pred->addArgument(tuples::TupleType::get(ctx), loc);
+sel.getPredicate().push_back(pred);
+// Build predicate body inside pred block using OpBuilder
+
+// InnerJoinOp — sql_mlir_translator.cpp:1257-1260
+auto joinOp = builder.create<relalg::InnerJoinOp>(
+    loc, tuples::TupleStreamType::get(ctx), leftStream, rightStream);
+mlir::Block* joinPred = new mlir::Block;
+joinPred->addArgument(tuples::TupleType::get(ctx), loc);
+joinOp.getPredicate().push_back(joinPred);
+// Build join condition inside joinPred block
+
+// AggregationOp — sql_mlir_translator.cpp:1574
+auto aggOp = builder.create<relalg::AggregationOp>(
+    loc, tuples::TupleStreamType::get(ctx), inputStream,
+    builder.getArrayAttr(groupByRefs),   // ColumnRefAttr array
+    builder.getArrayAttr(computedDefs));  // ColumnDefAttr array
+// Build aggregation function body in aggOp.getAggrFunc() region
+
+// ProjectionOp — sql_mlir_translator.cpp:457
+auto proj = builder.create<relalg::ProjectionOp>(
+    loc, relalg::SetSemantic::all, inputStream,
+    builder.getArrayAttr(columnRefs));
+```
+
+Predicate expressions inside region blocks:
+```cpp
+// Get column value from tuple (inside a predicate block)
+mlir::Value colVal = predBuilder.create<tuples::GetColumnOp>(
+    loc, colMlirType, columnRef, tupleArg);
+// Compare two columns
+mlir::Value cmpResult = predBuilder.create<db::CmpOp>(
+    loc, db::CmpPredicate::eq, leftVal, rightVal);
+// Return predicate result
+predBuilder.create<tuples::ReturnOp>(loc, cmpResult);
+```
+
+**Required MLIR headers:**
+```cpp
+#include "lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.h"
+#include "lingodb/compiler/Dialect/TupleStream/TupleStreamOps.h"
+#include "lingodb/compiler/Dialect/TupleStream/ColumnManager.h"
+#include "lingodb/compiler/Dialect/DB/IR/DBOps.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+```
+
+**Type mapping (DuckDB → LingoDB MLIR):**
+
+| DuckDB / Schema Type | LingoDB MLIR Type | Notes |
+|----------------------|-------------------|-------|
+| `integer` / INT32 | `builder.getI32Type()` or `db::IntType::int32()` | IMDB uses `integer` |
+| `bigint` / INT64 | `builder.getI64Type()` or `db::IntType::int64()` | DuckDB may promote in aggregates |
+| `text` / `varchar` | `db::StringType::get(ctx)` | |
+| `character varying(N)` | `db::StringType::get(ctx)` | LingoDB has no varchar length |
+| `decimal(p,s)` | `db::DecimalType::get(ctx, p, s)` | Not in IMDB schema |
+
+**IMDB/JOB schema uses only:** `integer`, `text`, `character varying(N)`.
+No DECIMAL, TIMESTAMP, FLOAT, BIGINT in base tables. Aggregates
+(`COUNT(*)`, `MIN(...)`) may produce INT64 — handle this in type mapping.
+
+**Wrapping in a module:**
+
+LingoDB expects a `mlir::ModuleOp` containing a `relalg::QueryOp` with
+a `relalg::QueryReturnOp` that returns a materialized result. Follow
+the pattern from `sql_mlir_translator.cpp:106-116`:
+
+```cpp
+// Create module
+auto moduleOp = mlir::ModuleOp::create(loc);
+mlir::OpBuilder builder(moduleOp.getBodyRegion());
+
+// Create QueryOp
+auto queryOp = builder.create<relalg::QueryOp>(loc, mlir::TypeRange{localTableType}, mlir::ValueRange{});
+mlir::Block* queryBlock = new mlir::Block;
+queryOp.getBody().push_back(queryBlock);
+mlir::OpBuilder queryBuilder(queryBlock);
+
+// ... build RelAlg tree inside queryBlock ...
+
+// Materialize and return
+auto materialize = queryBuilder.create<relalg::MaterializeOp>(
+    loc, localTableType, relalgTree, columnAttrs, columnNames);
+queryBuilder.create<relalg::QueryReturnOp>(loc, materialize);
+```
+
+### Step 4: Execute MLIR with optimizer disabled
+
+In `LingoDBRuntimeAdapter`, create a custom execution config:
+
+```cpp
+auto config = lingodb::execution::createQueryExecutionConfig(exec_mode_, false);
+// ^^^ false = MLIR input (not SQL)
+config->queryOptimizer = nullptr;  // SKIP optimizer
+// loweringSteps remain: RelAlgLoweringStep, SubOpLoweringStep, DefaultImperativeLowering
+// executionBackend remains: LLVM or TPDE based on exec_mode_
+
+config->resultProcessor = lingodb::execution::createTableRetriever(result_table);
+
+auto executer = lingodb::execution::QueryExecuter::createDefaultExecuter(
+    std::move(config), *session_);
+executer->fromData(mlirModuleString);  // Feed the MLIR text
+lingodb::scheduler::awaitEntryTask(
+    std::make_unique<lingodb::execution::QueryExecutionTask>(std::move(executer)));
+```
+
+**How optimizer skip works** (verified in `Execution.cpp:340-357`):
+```cpp
+// In DefaultQueryExecuter::execute():
+if (queryExecutionConfig->queryOptimizer) {  // nullptr check → skips
+    queryOptimizer.optimize(moduleOp);
+}
+for (auto& loweringStep : queryExecutionConfig->loweringSteps) {
+    loweringStep.implement(moduleOp);  // these still run
+}
+```
+
+### Step 5: Wire into IRQuerySplitter execution loop
+
+**File:** `src/split/ir_query_splitter.cpp`
+
+The execution loop at line ~1830 currently does:
+```cpp
+std::string sub_sql = adapter_->GenerateSQL(*executable_ir, ...);
+adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name, ...);
+```
+
+For `lingo-db-runtime`, instead of GenerateSQL → ExecuteSQLandCreateTempTable,
+call the new adapter's IR-based execution path. The adapter receives the
+SimplestIR directly and converts it to RelAlg MLIR internally.
+
+**Option A (cleaner):** Add a new virtual method to `EngineAdapter`:
+```cpp
+virtual void ExecuteIRandCreateTempTable(
+    ir_sql_converter::AQPStmt& ir, const std::string& temp_table_name,
+    bool update_temp_card);
+```
+Default implementation: `GenerateSQL(ir) → ExecuteSQLandCreateTempTable(sql)`.
+`LingoDBRuntimeAdapter` overrides to do IR→MLIR→execute.
+
+**Option B (less invasive):** Check engine type in the splitter loop and
+branch accordingly. Less clean but fewer interface changes.
+
+### Step 6: Register adapter in aqp_middleware.cpp
+
+**File:** `src/aqp_middleware.cpp:116-130`
+
+Add a new case for `BackendEngine::LINGODB_RUNTIME`:
+```cpp
+case BackendEngine::LINGODB_RUNTIME: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
+    auto adapter = std::make_unique<LingoDBRuntimeAdapter>(db_path);
+    adapter->SetExecutionMode(config.lingodb_mode);
+    if (config.in_memory) {
+        adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
+}
+```
+
+Also update the node-based splitter creation in `ir_query_splitter.cpp:91-109`
+to handle `LINGODB_RUNTIME` — it should create a helper DuckDB adapter from
+`helper_db` just like it does for other non-DuckDB engines.
+
+### Step 7: CMakeLists.txt changes
+
+- Add `lingodb_runtime_adapter.cpp` to the build
+- Ensure both `HAVE_DUCKDB` and `HAVE_LINGODB` compile definitions are set
+  when building the runtime adapter
+- Link MLIR dialect libraries for the IR-to-RelAlg converter
+  (RelAlg dialect, TupleStream dialect, DB dialect headers)
+
+## What Already Exists (No Changes Needed)
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| DuckDB helper adapter creation from `helper_db` | `ir_query_splitter.cpp:96-98` | Works |
+| Node-based split with `external_execution_` flag | `node_based_splitter.cpp:191` | Works |
+| `RegisterExternalTempTable()` for DuckDB helper sync | `node_based_splitter.cpp:195` | Works |
+| LingoDB temp table from Arrow Table | `lingodb_adapter.cpp:252-273` | Works |
+| LingoDB optimizer can be disabled (nullptr check) | `Execution.cpp:340` | Works |
+| LingoDB accepts MLIR string via `fromData()` | `Execution.cpp:322-324` with `createMLIRFrontend()` | Works |
+| SimplestIR definition (all node types) | `third_party/IR_SQL_Converter/inc/simplest_ir.h` | Works |
+| DuckDB plan → SimplestIR conversion | `third_party/IR_SQL_Converter/src/duckdb_plan_to_ir.cpp` | Works |
+| Temp table intermediate storage in LingoDB catalog | `lingodb_adapter.cpp:252-273` | Works |
+| `run_job.sh` helper_db wiring for non-DuckDB engines | `measure/run_job.sh:99-101` | Works |
+
+## Potential Issues and Verification Needed
+
+### 1. LingoDB lowering passes on un-optimized RelAlg
+
+LingoDB's optimizer runs passes like `AttachMetaData`, `IntroduceTmp`,
+`ExpandTransitiveEqualities` that may produce IR annotations the lowering
+passes expect. If the lowering crashes on "raw" RelAlg IR (missing
+metadata), you may need to run a minimal subset of optimizer passes — only
+the ones that attach metadata, NOT the plan-changing ones (DPHyp, pushdown).
+
+**How to verify:** Build a minimal RelAlg MLIR module by hand (scan +
+filter + projection), skip the optimizer, and check if lowering succeeds:
+
+```cpp
+auto config = createQueryExecutionConfig(ExecutionMode::SPEED, false);
+config->queryOptimizer = nullptr;
+auto executer = QueryExecuter::createDefaultExecuter(std::move(config), *session_);
+executer->fromData(handCraftedMlirString);
+// If this crashes, check which metadata is missing
+```
+
+If lowering needs metadata, check `AttachMetaData` pass in
+`src/compiler/Dialect/RelAlg/Passes.cpp` — it reads catalog statistics
+(numRows, etc.) and attaches them as attributes. You may need to run
+just this pass, which does NOT change plan structure.
+
+### 2. DuckDB integer promotion in aggregates
+
+DuckDB promotes `SUM(integer)` → `BIGINT` (INT64), `COUNT(*)` → `BIGINT`.
+The IR-to-RelAlg converter must use `builder.getI64Type()` for aggregate
+output columns, not the input column type. Check `SimplestAggregate`
+node's output type information.
+
+### 3. Schema compatibility (VERIFIED: OK for IMDB)
+
+Both DuckDB and LingoDB load from the same `schema.sql` file (line 269 of
+`run_job.sh`). IMDB schema uses only `integer`, `text`, `character
+varying(N)` — all portable types. LingoDB loads via `LoadTablesFromCSV()`
+which executes the same CREATE TABLE statements and loads from CSV. DuckDB
+loads from `imdb.db` (pre-loaded database file with the same schema).
+
+No schema conflict for IMDB/JOB benchmark. For other benchmarks with
+DECIMAL/TIMESTAMP types, the type mapping would need extension.
+
+### 4. Temp table column naming
+
+In the current cross-engine path, temp table columns get names like
+`t_0_col_name` from the IR-to-SQL converter. In the new IR-to-RelAlg path,
+you create `BaseTableOp` directly referencing temp table names in LingoDB's
+catalog. Column names must match what `CreateTempTableFromArrow()` registered.
+
+The Arrow Table returned by LingoDB execution preserves column names from
+the query output. When registered as a temp table, these names become the
+catalog column names. The IR-to-RelAlg converter must use these exact names
+when building `BaseTableOp` for temp table references (`SimplestChunk` nodes).
+
+## Key Code Locations (Reference)
+
+### AQPHub Core
+
+| File | What |
+|------|------|
+| `src/aqp_middleware.cpp:116-130` | LingoDB adapter creation |
+| `src/aqp_middleware.cpp:151-276` | Main query execution entry |
+| `src/split/ir_query_splitter.cpp:91-109` | Node-based splitter + DuckDB helper creation |
+| `src/split/ir_query_splitter.cpp:371-462` | Parse → Pre-Optimize → Convert to IR → Split loop |
+| `src/split/ir_query_splitter.cpp:1830-1985` | Sub-query SQL execution path (where IR→MLIR replaces SQL) |
+| `src/split/node_based_splitter.cpp:180-248` | UpdateRemainingIR with external_execution_ handling |
+| `src/split/node_based_splitter.cpp:195` | RegisterExternalTempTable for DuckDB helper sync |
+| `src/adapters/lingodb_adapter.cpp:155-199` | LingoDB session init, execution mode |
+| `src/adapters/lingodb_adapter.cpp:201-250` | ExecuteSQL / ExecuteSingleSQL |
+| `src/adapters/lingodb_adapter.cpp:252-345` | CreateTempTableFromArrow / ExecuteSQLandCreateTempTable |
+| `src/adapters/lingodb_adapter.cpp:405-474` | LoadTablesFromCSV |
+| `src/util/param_config.cpp:27-108` | CLI flag parsing |
+| `include/util/param_config.h:31-70` | ParamConfig struct |
+| `include/adapters/db_adapter.h:40-70` | EngineAdapter interface |
+
+### SimplestIR (AQPHub's intermediate representation)
+
+| File | What |
+|------|------|
+| `third_party/IR_SQL_Converter/inc/simplest_ir.h` | All IR node class definitions (1633 lines) |
+| `third_party/IR_SQL_Converter/src/duckdb_plan_to_ir.cpp` | DuckDB logical plan → SimplestIR |
+| `third_party/IR_SQL_Converter/src/ir_to_sql.cpp` | SimplestIR → SQL string (reference for how IR is walked) |
+| `third_party/IR_SQL_Converter/inc/cpp_interface.h` | Public API: ConvertDuckDBPlanToIR, ConvertIRToSQL |
+
+### LingoDB Internals
+
+| File | What |
+|------|------|
+| `lingo-db/include/lingodb/execution/Execution.h` | QueryExecutionConfig, QueryExecuter, ExecutionMode |
+| `lingo-db/src/execution/Execution.cpp:276-390` | DefaultQueryExecuter::execute() — the full pipeline |
+| `lingo-db/src/execution/Execution.cpp:399-447` | createQueryExecutionConfig() — config factory |
+| `lingo-db/src/execution/Frontend.cpp` | MLIRFrontend, SQLFrontend |
+| `lingo-db/src/compiler/frontend/sql_mlir_translator.cpp` | Reference: how SQL→RelAlg is built (1842 lines) |
+| `lingo-db/src/compiler/frontend/sql_mlir_translator.cpp:1200-1213` | BaseTableOp creation pattern |
+| `lingo-db/src/compiler/frontend/sql_mlir_translator.cpp:1249-1260` | InnerJoinOp creation pattern |
+| `lingo-db/src/compiler/frontend/sql_mlir_translator.cpp:475-478` | SelectionOp creation pattern |
+| `lingo-db/src/compiler/frontend/sql_mlir_translator.cpp:1574` | AggregationOp creation pattern |
+| `lingo-db/src/compiler/frontend/sql_mlir_translator.cpp:106-116` | QueryOp + MaterializeOp + QueryReturnOp wrapper |
+| `lingo-db/include/lingodb/compiler/Dialect/RelAlg/IR/RelAlgOps.td` | RelAlg op definitions (TableGen) |
+| `lingo-db/include/lingodb/compiler/Dialect/TupleStream/ColumnManager.h` | Column scope/name management |
+| `lingo-db/src/compiler/Dialect/RelAlg/Passes.cpp:17-49` | Optimizer passes (what we skip) |
+
+### DuckDB Physical Plan (how JIT path uses it — reference)
+
+| File | What |
+|------|------|
+| `src/adapters/duckdb_adapter.cpp:4147-5844` | RegisterJITImpl — walks physical plan, matches to IR |
+| `src/adapters/duckdb_adapter.cpp:2909-2982` | AnnotateBuildSides — physical join → IR join matching |
+| `src/adapters/duckdb_adapter.cpp:918-961` | ReOptimizeIR — re-optimize IR with actual cardinalities |
+
+## Repositories
+
+- **AQPHub**: `/home/pei/Project/AQPHub` (branch: `topdown_fix`)
+- **DuckDB (patched)**: `/home/pei/Project/duckdb`
+- **Lingo-db**: `/home/pei/Project/lingo-db`
+- **JOB queries**: `/home/pei/Project/benchmarks/imdb_job-postgres/queries/`
+- **JOB schema**: `/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql`
+- **DuckDB database**: `/home/pei/Project/duckdb/measure/imdb.db`
+- **LingoDB CSV dir**: `/home/pei/Project/benchmarks/imdb_job-postgres/lingo_db_csv`
+
+Build commands:
+```bash
+# Middleware (debug / release)
+cd /home/pei/Project/AQPHub && cmake --build build_debug -j$(nproc)
+cd /home/pei/Project/AQPHub && cmake --build build_release -j$(nproc)
+# DuckDB — the middleware links the PREBUILT libduckdb.so from
+# ${DUCKDB_ROOT}/build/release/src (find_library + dynamic link).
+cd /home/pei/Project/duckdb && cmake --build build/release -j 16
+```
+
+Build hazards:
+- build_debug and build_release share `lib/*.a` outputs. If a debug build
+  poisons the release archive (ASan), rebuild with
+  `--target IR_SQL_Converter_C_static --clean-first`.
+
+## Verification Workflow
+
+### Step 1: Verify optimizer-skip works
+
+Build a hardcoded minimal MLIR string (scan one table, project one column),
+feed it to LingoDB with `queryOptimizer = nullptr`, verify it executes
+without crash and returns correct results.
+
+### Step 2: Single sub-query end-to-end
+
+Take a simple JOB query (e.g., 1a — single join), run with
+`--engine=lingo-db-runtime`, verify the IR-to-RelAlg converter produces
+valid MLIR that LingoDB can lower and execute. Compare result to DuckDB
+golden output.
+
+### Step 3: Multi-iteration query
+
+Run a query with multiple sub-queries (e.g., 13a with node-based split),
+verify temp table creation, DuckDB helper sync, and multi-iteration
+execution all work correctly.
+
+### Step 4: Full JOB correctness
+
+Run all 113 JOB queries, compare against golden files:
+- `measure/duckdb_job_no-split_golden.txt`
+- `measure/duckdb_job_node-based_golden.txt`
+
+### Analysis scripts (measure/*.py)
+- `tune_per_subquery.py [split]` — pick best config per (query, sub-query)
+- `show_all_configs.py [split]` — summary table across all configs
+- `find_top_queries.py [path] [--top=N]` — rank queries by slowest median
+
+---
+
+## Implementation Status: COMPLETE (2026-06-24)
+
+All 113 JOB queries pass with node-based/none splits, llvm/tpde backends
+(4 configs, 452 executions).
+
+Flag: `--engine=lingo-db-runtime`
+
+### Files created
+- `include/adapters/lingodb_runtime_adapter.h`
+- `src/adapters/lingodb_runtime_adapter.cpp`
+
+### Files modified
+- `include/util/param_config.h` (LINGODB_RUNTIME enum)
+- `src/util/param_config.cpp` (flag parsing)
+- `include/adapters/db_adapter.h` (ExecuteIRandCreateTempTable, ExecuteIRQuery virtuals)
+- `include/adapters/lingodb_adapter.h` (private→protected)
+- `src/aqp_middleware.cpp` (adapter creation, none-split path)
+- `src/split/ir_query_splitter.cpp` (execution loop, final query IR path)
+- `CMakeLists.txt` (lingodb_runtime_adapter.cpp in lingodb_adapter library)
+- `measure/correctness_test.sh` (4 RT configs)
+- `measure/breakdown_measurement_script.sh` (4 RT configs)
+
+### Key components
+- **IRToRelAlgConverter**: SimplestIR → MLIR RelAlg conversion
+  - Handles: Scan, Filter, Join, CrossProduct, Projection, Aggregation,
+    OrderBy, Limit, SemiJoin, MarkJoin
+  - Hash join build/probe side swap: DuckDB children[0]=probe/children[1]=build,
+    LingoDB left=build/right=probe. Converter swaps to match conventions.
+  - IS NULL on non-nullable columns: returns constant true/false
+  - Non-nullable temp table columns: null_count()==0 → non-nullable type
+- **IRFrontend**: Custom Frontend implementation for LingoDB execution pipeline
+- **PartialQueryOptimizer**: 24 of 26 LingoDB optimizer passes
+  - Skipped: OptimizeJoinOrderPass (preserve DuckDB's join ordering)
+  - Replaced: DecomposeLambdasPass → DecomposeSelectionsOnly
+    (InnerJoin→CrossProduct causes nested-loop joins via translateNL)
+  - Full pass-by-pass analysis: see `duckdb_opt_lingodb_passes_analysis.md`
+- **DecomposeSelectionsOnly**: Custom MLIR pass that splits AND-ed SelectionOps
+  and multi-column MapOps without touching InnerJoinOps
+- **Cross-product fallback**: hasCrossProduct() check → falls back to SQL path
+
+### Hash join build/probe convention (critical for performance)
+
+DuckDB: children[0]=probe (outer), children[1]=build (inner/hash table)
+
+LingoDB InnerJoinLowering (RelAlgToSubOp.cpp:1333):
+  translateNL(adaptor.getRight(), adaptor.getLeft(), ...)
+  → translateHJ(left=RIGHT, right=LEFT, hashLeft=rightHash, hashRight=leftHash)
+  → InsertOp(right=LEFT) = build hash table from LEFT operand
+  → LookupOp(left=RIGHT) = probe with RIGHT operand
+So: relalg.join %left, %right → left=build, right=probe
+
+SemiJoinLowering (line 1356): translateNL(LEFT, RIGHT, ...) — opposite,
+  so SemiJoin does NOT need the swap.
+
+### Why DecomposeLambdasPass can't be used
+
+1. CrossProductOp lowers to nested-loop join (translateNL → translateNLJ)
+2. prepareForHash() only works on PredicateOperators; CrossProductOp has
+   no predicate region, so hash join can't be set up
+3. Original SQL path works because OptimizeJoinOrderPass re-creates
+   InnerJoinOps with proper hash join setup after join reordering

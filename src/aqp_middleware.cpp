@@ -6,12 +6,16 @@
 
 #include "adapters/db_adapter.h"
 #include "split/ir_query_splitter.h"
+#include "storage/storage_plan.h"
 #include "util/param_config.h"
 #include "util/util.h"
 
 // Include both adapters (conditionally compiled based on availability)
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
+#ifdef HAVE_LLVM
+#include "jit/ir_to_llvm.h"
+#endif
 #endif
 
 #ifdef HAVE_POSTGRES
@@ -30,8 +34,15 @@
 #include "adapters/opengauss_adapter.h"
 #endif
 
+#ifdef HAVE_LINGODB
+#include "adapters/lingodb_adapter.h"
+#include "adapters/lingodb_runtime_adapter.h"
+#endif
+
+#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <vector>
@@ -43,11 +54,16 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
   switch (config.engine) {
 #if defined(HAVE_DUCKDB)
   case BackendEngine::DUCKDB: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
     if (config.enable_debug_print) {
       std::cout << "[AQP Middleware] Creating DuckDB adapter: "
-                << config.db_path_or_connection << std::endl;
+                << db_path << std::endl;
     }
-    return std::make_unique<DuckDBAdapter>(config.db_path_or_connection);
+    auto adapter = std::make_unique<DuckDBAdapter>(db_path);
+    if (config.in_memory) {
+      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
   }
 #endif
 
@@ -101,6 +117,35 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
   }
 #endif
 
+#if defined(HAVE_LINGODB)
+  case BackendEngine::LINGODB: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
+    if (config.enable_debug_print) {
+      std::cout << "[AQP Middleware] Creating LingoDB adapter: "
+                << db_path << std::endl;
+    }
+    auto adapter = std::make_unique<LingoDBAdapter>(db_path);
+    adapter->SetExecutionMode(config.lingodb_mode);
+    if (config.in_memory) {
+      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
+  }
+  case BackendEngine::LINGODB_RUNTIME: {
+    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
+    if (config.enable_debug_print) {
+      std::cout << "[AQP Middleware] Creating LingoDB-Runtime adapter: "
+                << db_path << std::endl;
+    }
+    auto adapter = std::make_unique<LingoDBRuntimeAdapter>(db_path);
+    adapter->SetExecutionMode(config.lingodb_mode);
+    if (config.in_memory) {
+      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
+    }
+    return adapter;
+  }
+#endif
+
   default:
     throw std::runtime_error("Backend engine not available. "
                              "Rebuild with support for " +
@@ -120,8 +165,14 @@ std::string ReadSQLFile(const std::string &file_path) {
 }
 
 // Execute single query with timing and result collection
-void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path,
-                        const ParamConfig &config, TestResult &result) {
+void ExecuteSingleQuery(
+    EngineAdapter *adapter, const std::string &sql_file_path,
+    const ParamConfig &config, TestResult &result,
+    middleware::storage::StoragePlan *storage_plan = nullptr
+#ifdef HAVE_DUCKDB
+    , std::unique_ptr<CrossQueryPrepResult> cross_prep = nullptr
+#endif
+    ) {
   result.query_file = get_filename(sql_file_path);
   result.success = false;
   result.num_rows = 0;
@@ -134,19 +185,32 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
     adapter->enable_timing_ = config.enable_timing;
 
     std::chrono::high_resolution_clock::time_point timer;
-    if (config.enable_timing)
-      timer = chrono_tic();
-    // Read SQL file
-    std::string sql = ReadSQLFile(sql_file_path);
-    if (config.enable_timing) {
-      auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3) << (read_sql_time / 1000.0)
-               << ", ";
-      log_file.close();
+    std::string sql;
+#ifdef HAVE_DUCKDB
+    if (cross_prep && cross_prep->success) {
+      sql = cross_prep->sql;
+      if (config.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "0.000, "; // read_sql placeholder (done by bg thread)
+        log_file.close();
+      }
+    } else {
+#endif
+      if (config.enable_timing)
+        timer = chrono_tic();
+      sql = ReadSQLFile(sql_file_path);
+      if (config.enable_timing) {
+        auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (read_sql_time / 1000.0) << ", ";
+        log_file.close();
+      }
+#ifdef HAVE_DUCKDB
     }
+#endif
 
     if (config.print_sql || config.enable_debug_print) {
       std::cout << "========================================" << std::endl;
@@ -156,16 +220,26 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
     QueryResult query_result;
 
     if (config.NeedsSplit()) {
-      // Execute with split strategy using IRQuerySplitter
       if (config.enable_debug_print) {
         std::cout << "\n=== Execution with Split Strategy: "
                   << config.GetStrategyName() << " ===" << std::endl;
       }
 
-      // Create IRQuerySplitter with the selected strategy
-      IRQuerySplitter splitter(adapter, config);
+      IRQuerySplitter splitter(adapter, config, storage_plan);
 
-      // Execute with split
+      {
+        std::string qname = get_filename(sql_file_path);
+        auto dot = qname.rfind('.');
+        if (dot != std::string::npos)
+          qname = qname.substr(0, dot);
+        splitter.SetQueryName(qname);
+      }
+
+#ifdef HAVE_DUCKDB
+      if (cross_prep)
+        splitter.SetCrossQueryPrep(std::move(cross_prep));
+#endif
+
       query_result = splitter.ExecuteWithSplit(sql);
 
     } else {
@@ -180,15 +254,114 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
       auto *duckdb_adp = dynamic_cast<DuckDBAdapter *>(adapter);
       if (duckdb_adp) {
         duckdb_adp->SetJITFlags(config.jit_flags);
+        duckdb_adp->SetKernelPath(config.kernel_path);
+        duckdb_adp->SetJITDebug(config.enable_debug_print);
         duckdb_adp->SetJITOptFlags(
-            config.jit_fusion_build, config.jit_fusion_probe,
-            config.jit_inline_hash, config.jit_payload_prune,
+            config.jit_payload_prune,
             config.jit_prefetch, config.jit_prefetch_distance,
-            config.jit_batch_probe, config.jit_cache, config.jit_cache_dir);
+            config.jit_batch_probe, config.jit_skip_hash_cmp,
+            config.single_col_int_join_mode);
+        duckdb_adp->SetBenchmarkMode(config.benchmark_mode);
+        duckdb_adp->SetJITCache(config.jit_cache);
+        duckdb_adp->SetJITCacheDir(config.jit_cache_dir);
+        duckdb_adp->SetCompileMode(config.compile_mode);
+        duckdb_adp->SetJITProbePrefetchDistances(
+            config.jit_prefetch_entry_distance,
+            config.jit_prefetch_row_distance);
+        duckdb_adp->SetQueryJit((config.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+                                config.query_jit_threads,
+                                config.query_jit_morsel);
+        duckdb_adp->SetQueryJitStoragePlan(storage_plan);
       }
 #endif
 
-      query_result = adapter->ExecuteSQL(sql);
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+      bool replay_hit = false;
+      bool was_recording = false;
+      bool is_query_jit = duckdb_adp &&
+                          (config.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+      if (config.jit_cache >= 3 && is_query_jit &&
+          config.engine == BackendEngine::DUCKDB) {
+        std::string qname = get_filename(sql_file_path);
+        auto dot = qname.rfind('.');
+        if (dot != std::string::npos)
+          qname = qname.substr(0, dot);
+        auto &cache = DuckDBAdapter::QueryPlanCache();
+        auto it = cache.find(qname);
+        if (it != cache.end() && it->second.final_query.is_query_jit) {
+          auto &sub = it->second.final_query;
+          if (sub.is_interpreter_fallback) {
+            // No compiled fn — fall through to normal ExecuteSQL
+          } else {
+            auto replay_timer = chrono_tic();
+            query_result = duckdb_adp->ReplayQjitFinal(sub);
+            replay_hit = true;
+            if (config.enable_timing) {
+              auto replay_us =
+                  chrono_toc(&replay_timer, "split=none replay\n", false);
+              std::ofstream log_file;
+              log_file.open(g_timing_log_name, std::ios_base::app);
+              // jit_compile=0, execute=measured (replay does no compilation)
+              log_file << std::fixed << std::setprecision(3)
+                       << "0.000, " << (replay_us / 1000.0) << ", ";
+              log_file.close();
+            }
+          }
+        } else {
+          was_recording = true;
+          duckdb_adp->BeginPlanRecording();
+        }
+      }
+      if (!replay_hit) {
+#endif
+#if defined(HAVE_LINGODB) && defined(HAVE_DUCKDB)
+        if (config.engine == BackendEngine::LINGODB_RUNTIME) {
+          auto *rt_adapter =
+              dynamic_cast<LingoDBRuntimeAdapter *>(adapter);
+          if (!rt_adapter)
+            throw std::runtime_error(
+                "LINGODB_RUNTIME engine requires LingoDBRuntimeAdapter");
+
+          DuckDBAdapter helper(config.helper_db);
+          helper.ParseSQL(sql);
+          helper.FilterOptimize();
+          auto ir = helper.ConvertPlanToIR();
+          if (!ir)
+            throw std::runtime_error(
+                "[lingo-db-runtime] Failed to convert DuckDB plan to IR");
+
+          if (config.enable_debug_print) {
+            std::string ir_sql =
+                ir_sql_converter::ConvertIRToSQL(*ir, 0);
+            std::cout << "DuckDB-optimized IR SQL:\n"
+                      << ir_sql << std::endl;
+          }
+
+          query_result = rt_adapter->ExecuteIRQuery(*ir);
+        } else
+#endif
+        {
+          query_result = adapter->ExecuteSQL(sql);
+        }
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+      }
+      if (was_recording && duckdb_adp) {
+        auto &recording = duckdb_adp->GetPlanRecording();
+        std::string qname = get_filename(sql_file_path);
+        auto dot = qname.rfind('.');
+        if (dot != std::string::npos)
+          qname = qname.substr(0, dot);
+        CachedQueryPlan plan;
+        if (!recording.empty()) {
+          plan.final_query = std::move(recording[0]);
+        } else {
+          plan.final_query.sql = sql;
+          plan.final_query.is_interpreter_fallback = true;
+        }
+        DuckDBAdapter::QueryPlanCache()[qname] = std::move(plan);
+        duckdb_adp->EndPlanRecording();
+      }
+#endif
     }
     result.num_rows = query_result.num_rows;
 
@@ -211,7 +384,7 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
           chrono_toc(&timer, "Show output time is\n", false);
       // save time to a file
       std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
+      log_file.open(g_timing_log_name, std::ios_base::app);
       log_file << std::fixed << std::setprecision(3)
                << (show_output_time / 1000.0) << "\n";
       log_file.close();
@@ -226,7 +399,50 @@ void ExecuteSingleQuery(EngineAdapter *adapter, const std::string &sql_file_path
 }
 
 // Run benchmark on all queries in a directory
-int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config) {
+static void MergeIterationLogs(const std::vector<std::string> &iter_files,
+                               const std::string &out_file) {
+  // Per-iteration files have: "Running benchmark for .../Xa.sql...\n" header
+  // then data rows. Merge them so all iterations of the same query are grouped:
+  //   Running benchmark for .../10a.sql...
+  //   <iter0 row>
+  //   <iter1 row>
+  //   ...
+  //   Running benchmark for .../10b.sql...
+  //   ...
+  using Rows = std::vector<std::string>;
+  std::map<std::string, Rows> per_query;       // header -> data rows (ordered)
+  std::vector<std::string> query_order;        // preserve first-seen order
+
+  for (const auto &path : iter_files) {
+    std::ifstream in(path);
+    if (!in.is_open()) continue;
+    std::string cur_header;
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.rfind("Running", 0) == 0) {
+        cur_header = line;
+        if (per_query.find(cur_header) == per_query.end())
+          query_order.push_back(cur_header);
+        continue;
+      }
+      if (!cur_header.empty() && !line.empty())
+        per_query[cur_header].push_back(line);
+    }
+  }
+
+  std::ofstream out(out_file);
+  for (const auto &hdr : query_order) {
+    out << hdr << "\n";
+    for (const auto &row : per_query[hdr])
+      out << row << "\n";
+  }
+
+  for (const auto &path : iter_files)
+    std::remove(path.c_str());
+}
+
+int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
+                 middleware::storage::StoragePlan *storage_plan = nullptr) {
   std::cout << "\n========================================" << std::endl;
   std::cout << "Running Benchmark: " << config.query_path << std::endl;
   std::cout << "========================================" << std::endl;
@@ -247,23 +463,165 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config) {
 
   std::cout << "Found " << sql_files.size() << " SQL file(s)" << std::endl;
 
-  // Run tests on all queries
   std::vector<TestResult> results;
-  results.reserve(sql_files.size());
+  results.reserve(sql_files.size() * config.repeat_count);
 
   int passed = 0;
   int failed = 0;
+  bool first_run = true;
 
-  for (const auto &sql_file : sql_files) {
-    std::cout << "Run " + sql_file << std::endl;
-    TestResult result;
-    ExecuteSingleQuery(adapter, sql_file, config, result);
-    results.push_back(result);
+  std::vector<std::string> iter_log_files;
+  std::vector<std::string> iter_ldb_files;
+  bool is_lingodb = (config.engine == BackendEngine::LINGODB ||
+                     config.engine == BackendEngine::LINGODB_RUNTIME);
 
-    if (result.success) {
-      passed++;
-    } else {
-      failed++;
+  for (int iter = 0; iter < config.repeat_count; iter++) {
+    std::string iter_log = "time_log_iter" + std::to_string(iter) + ".csv";
+    iter_log_files.push_back(iter_log);
+
+    if (config.enable_timing) {
+      g_timing_log_name = iter_log;
+      if (is_lingodb) {
+        std::string ldb_log = "lingodb_compile_iter" + std::to_string(iter) + ".csv";
+        iter_ldb_files.push_back(ldb_log);
+        g_lingodb_compile_log_name = ldb_log;
+      }
+    }
+
+    std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+    if (iter > 0 && config.jit_cache && config.jit_cache < 3)
+      aqp_jit::IrToLlvmCompiler::ClearObjCache();
+#endif
+
+    // §7.2: Cross-query latency hiding — bg thread pool + pending future
+#ifdef HAVE_DUCKDB
+    std::unique_ptr<ThreadPool> cross_query_pool;
+    std::future<std::unique_ptr<CrossQueryPrepResult>> pending_cross_prep;
+    DuckDBAdapter *duck_for_cross =
+        config.jit_cache >= 1 &&
+                config.strategy == SplitStrategy::NODE_BASED &&
+                config.engine == BackendEngine::DUCKDB &&
+                !(config.jit_cache >= 3 && iter > 0)
+            ? dynamic_cast<DuckDBAdapter *>(adapter)
+            : nullptr;
+    if (duck_for_cross)
+      cross_query_pool = std::make_unique<ThreadPool>(1);
+#if defined(HAVE_LLVM)
+    // Ping-pong compilers for Phase 2: bg_prep(N+1) resets one compiler
+    // while ExecuteSingleQuery(N) uses code from the other.
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> cross_compilers[2];
+    int cross_compiler_idx = 0;
+#endif
+#endif
+
+    for (size_t qi = 0; qi < sql_files.size(); qi++) {
+      const auto &sql_file = sql_files[qi];
+      std::cout << "Run " + sql_file << std::endl;
+      if (config.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "Running benchmark for " << sql_file << "...\n";
+        log_file.close();
+        if (is_lingodb) {
+          std::ofstream ldb_log;
+          ldb_log.open(g_lingodb_compile_log_name, std::ios_base::app);
+          ldb_log << "Running benchmark for " << sql_file << "...\n";
+          ldb_log << "frontend, QOpt, lowerRelAlg, lowerSubOp, lowerDB, "
+                     "lowerArrow, lowerToLLVM, toLLVMIR, llvmOptimize, "
+                     "llvmCodeGen, baselineLowering, baselineCodeGen, "
+                     "baselineEmit, executionTime, total\n";
+          ldb_log.close();
+        }
+      }
+
+      std::chrono::high_resolution_clock::time_point timer;
+      if (config.enable_timing)
+        timer = chrono_tic();
+
+      // Consume bg prep from previous query (if any)
+      std::unique_ptr<CrossQueryPrepResult> cross_prep;
+#ifdef HAVE_DUCKDB
+      if (duck_for_cross && pending_cross_prep.valid()) {
+        cross_prep = pending_cross_prep.get();
+        if (!cross_prep || !cross_prep->success) {
+          if (config.enable_debug_print && cross_prep)
+            std::cerr << "[CROSS-QUERY] prep failed: " << cross_prep->error
+                      << "\n";
+          cross_prep.reset();
+        }
+      }
+#endif
+
+      if (!first_run)
+        adapter->ResetQueryState();
+      first_run = false;
+      if (config.enable_timing) {
+        auto reset_time = chrono_toc(&timer, "", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (reset_time / 1000.0) << ", ";
+        log_file.close();
+      }
+
+      // Launch bg prep for next query (before executing current)
+#ifdef HAVE_DUCKDB
+      if (duck_for_cross && qi + 1 < sql_files.size()) {
+        auto &db_ref = duck_for_cross->GetDB();
+        const std::string &next_file = sql_files[qi + 1];
+        bool debug = config.enable_debug_print;
+#if defined(HAVE_LLVM)
+        auto &bg_comp_slot = cross_compilers[cross_compiler_idx];
+        cross_compiler_idx ^= 1;
+        // Resolve effective flags for next query's first sub-query
+        std::string next_qname;
+        {
+          auto sl = next_file.rfind('/');
+          next_qname = (sl != std::string::npos)
+                           ? next_file.substr(sl + 1) : next_file;
+          auto dt = next_qname.rfind('.');
+          if (dt != std::string::npos) next_qname = next_qname.substr(0, dt);
+        }
+        auto [eff_flags, eff_cm] =
+            IRQuerySplitter::ResolveTuneFlags(config, next_qname, 0);
+        pending_cross_prep = cross_query_pool->Submit(
+            [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
+             eff_flags, eff_cm]() {
+              return IRQuerySplitter::PrepareNextQuery(
+                  next_file, db_ref, duck_for_cross, config, bg_comp_slot,
+                  eff_flags, eff_cm);
+            });
+#else
+        pending_cross_prep = cross_query_pool->Submit(
+            [&next_file, &db_ref, duck_for_cross, &config]() {
+              return IRQuerySplitter::PrepareNextQuery(
+                  next_file, db_ref, duck_for_cross, config);
+            });
+#endif
+      }
+#endif
+
+      TestResult result;
+      ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan,
+                         std::move(cross_prep));
+      results.push_back(result);
+
+      if (result.success) {
+        passed++;
+      } else {
+        failed++;
+      }
+    }
+  }
+
+  if (config.enable_timing) {
+    g_timing_log_name = "time_log.csv";
+    MergeIterationLogs(iter_log_files, g_timing_log_name);
+    if (is_lingodb) {
+      g_lingodb_compile_log_name = "lingodb_compile_time.csv";
+      MergeIterationLogs(iter_ldb_files, g_lingodb_compile_log_name);
     }
   }
 
@@ -318,7 +676,9 @@ int main(int argc, char **argv) {
     if ((config.engine == BackendEngine::POSTGRESQL ||
          config.engine == BackendEngine::UMBRA ||
          config.engine == BackendEngine::MARIADB ||
-         config.engine == BackendEngine::OPENGAUSS) &&
+         config.engine == BackendEngine::OPENGAUSS ||
+         config.engine == BackendEngine::LINGODB ||
+         config.engine == BackendEngine::LINGODB_RUNTIME) &&
         !config.schema_path.empty()) {
       if (!ir_sql_converter::InitSchemaParser(config.schema_path)) {
         std::cerr << "Warning: Failed to load schema, column indices will be 0"
@@ -330,25 +690,107 @@ int main(int argc, char **argv) {
     // Create adapter
     auto adapter = CreateAdapter(config);
 
+    // Load storage plan (flat column arrays + CSR indexes) if requested
+    std::unique_ptr<middleware::storage::StoragePlan> storage_plan_ptr;
+    middleware::storage::StoragePlan *storage_plan = nullptr;
+    if (config.enable_storage_plan) {
+      storage_plan_ptr = std::make_unique<middleware::storage::StoragePlan>();
+      // CSR/sorted/inverted indexes are kernel-path-only; query-jit (the only
+      // other storage-plan consumer) reads FlatTable columns exclusively.
+      bool need_indexes = config.kernel_path != KernelPath::NONE;
+      bool loaded_from_cache = false;
+      if (!config.storage_cache_path.empty()) {
+        loaded_from_cache = storage_plan_ptr->LoadFromFile(
+            config.storage_cache_path, /*skip_indexes=*/!need_indexes);
+      }
+      if (!loaded_from_cache) {
+#ifdef HAVE_DUCKDB
+        if (config.engine != BackendEngine::DUCKDB) {
+          throw std::runtime_error(
+              "--storage-plan without a pre-built cache requires --engine=duckdb. "
+              "Build the cache first with: --engine=duckdb --storage-cache=<path>");
+        }
+        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter.get());
+        storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
+        if (need_indexes) {
+          if (!config.fkeys_path.empty()) {
+            storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
+          }
+          storage_plan_ptr->BuildSortedIndices();
+          storage_plan_ptr->BuildInvertedIndices();
+        }
+        // Without indexes SaveToFile writes empty index sections; a later
+        // kernel-path run against this cache rebuilds them (below). Keep
+        // kernel-path and query-jit on separate --storage-cache paths to
+        // avoid repeated rebuilds.
+        if (!config.storage_cache_path.empty()) {
+          storage_plan_ptr->SaveToFile(config.storage_cache_path);
+        }
+#else
+        throw std::runtime_error(
+            "--storage-plan requires a pre-built cache (--storage-cache=<path>)");
+#endif
+      } else if (need_indexes) {
+        // Trimmed cache (built by a query-jit run) detection: rebuild the
+        // index sections kernel-path needs.
+        if (storage_plan_ptr->GetCSRMap().empty() &&
+            !config.fkeys_path.empty()) {
+          storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
+        }
+        if (storage_plan_ptr->GetSortedIndicesMap().empty()) {
+          storage_plan_ptr->BuildSortedIndices();
+        }
+        if (storage_plan_ptr->GetInvertedIndicesMap().empty()) {
+          storage_plan_ptr->BuildInvertedIndices();
+        }
+      }
+      if (config.enable_debug_print) {
+        storage_plan_ptr->PrintSummary();
+      }
+      storage_plan = storage_plan_ptr.get();
+    }
+
     if (config.enable_timing) {
       auto prepare_middleware_time =
           chrono_toc(&timer, "Prepare Middleware time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open("time_log.csv", std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3)
-               << (prepare_middleware_time / 1000.0) << ", ";
-      log_file.close();
+      if (!config.benchmark_mode) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (prepare_middleware_time / 1000.0) << ", ";
+        log_file.close();
+      }
     }
 
     // Execute based on mode
     int return_code = 0;
     if (config.benchmark_mode) {
-      return_code = RunBenchmark(adapter.get(), config);
+      return_code = RunBenchmark(adapter.get(), config, storage_plan);
     } else {
-      TestResult result;
-      ExecuteSingleQuery(adapter.get(), config.query_path, config, result);
-      return_code = result.success ? 0 : 1;
+      for (int iter = 0; iter < config.repeat_count; iter++) {
+        if (iter > 0) {
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+          if (config.jit_cache && config.jit_cache < 3)
+            aqp_jit::IrToLlvmCompiler::ClearObjCache();
+#endif
+          if (config.enable_timing)
+            timer = chrono_tic();
+          adapter->ResetQueryState();
+          if (config.enable_timing) {
+            auto reset_time = chrono_toc(&timer, "", false);
+            std::ofstream log_file;
+            log_file.open(g_timing_log_name, std::ios_base::app);
+            log_file << std::fixed << std::setprecision(3)
+                     << (reset_time / 1000.0) << ", ";
+            log_file.close();
+          }
+        }
+
+        TestResult result;
+        ExecuteSingleQuery(adapter.get(), config.query_path, config, result,
+                           storage_plan);
+        return_code = result.success ? 0 : 1;
+      }
     }
 
     std::cout << "\n========================================" << std::endl;

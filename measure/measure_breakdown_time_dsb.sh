@@ -16,7 +16,7 @@ if [[ "$engine" == "postgres" ]]; then
     db_conn="host=localhost port=5432 dbname=dsb_10 user=postgres"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb_132/measure/dsb_10.db"
+    db_conn="/home/pei/Project/duckdb/measure/dsb_10.db"
 
 elif [[ "$engine" == "umbra" ]]; then
     db_conn="host=localhost port=15432 user=postgres password=postgres"
@@ -36,7 +36,7 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb_132/measure/dsb_10.db"
+    helper_db_path="/home/pei/Project/duckdb/measure/dsb_10.db"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$engine" == "mariadb" ]]; then
     helper_db_path="host=localhost port=5432 dbname=dsb_10 user=postgres"
@@ -47,19 +47,30 @@ fi
 # Start / Stop Umbra
 ########################################
 start_umbra() {
-    echo "Starting Umbra docker..."
+    echo "Starting Umbra docker (in-memory via tmpfs)..."
 
     docker run -d \
         --name "$container_name" \
         --network=host \
-        -v umbra-db:/var/db \
+        --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
+        -v "$DSB_CSV_DIR":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
         umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
 
     wait_for_umbra
+    load_umbra_dsb_data
+}
+
+load_umbra_dsb_data() {
+    echo "Loading schema and CSV data into Umbra..."
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$DSB_SCHEMA"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$DSB_IMPORT_CSV"
+    echo "Data loading done."
 }
 
 stop_umbra() {
@@ -177,20 +188,19 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
-for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
-  echo "Running benchmark for $sql..." | tee -a "$log_name"
-  for i in $(eval echo {1.."${iteration}"}); do
-      $cmd_prefix ../build_release/aqp_middleware \
-        --engine="${engine}" \
-        --db="${db_conn}" \
-        "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
-        --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
-        --split="${split}" \
-        --timing \
-        --no-analyze \
-        "${sql}" 
-  done
+for dsb_dir in "$dir_1" "$dir_2"; do
+  $cmd_prefix ../build_release/aqp_middleware \
+    --engine="${engine}" \
+    --db="${db_conn}" \
+    "${helper_db_arg}" \
+    --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+    --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
+    --split="${split}" \
+    --timing \
+    --no-analyze \
+    --repeat=${iteration} \
+    --benchmark \
+    "${dsb_dir}"
 done
 
 mv "${log_name}" job_result/${engine}_${split}_breakdown_"${log_name}"

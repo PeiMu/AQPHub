@@ -594,6 +594,23 @@ MariaDBAdapter::GetEstimatedCost(const std::string &sql) {
   return {estimated_cost, estimated_rows};
 }
 
+std::string MariaDBAdapter::ExplainAnalyze(const std::string &sql) {
+  // ANALYZE FORMAT=JSON executes the query and reports real (r_rows) stats.
+  // Reuse ExecuteSQL: the result is a single row/column holding the JSON plan.
+  try {
+    QueryResult r = ExecuteSQL("ANALYZE FORMAT=JSON " + StripSqlTerminator(sql));
+    std::string plan_text;
+    for (const auto &row : r.rows) {
+      if (!row.empty())
+        plan_text += row.front();
+      plan_text += "\n";
+    }
+    return plan_text;
+  } catch (const std::exception &e) {
+    return std::string("ANALYZE failed: ") + e.what();
+  }
+}
+
 std::vector<std::pair<double, double>>
 MariaDBAdapter::BatchGetEstimatedCosts(const std::vector<std::string> &sqls) {
   if (sqls.empty()) {

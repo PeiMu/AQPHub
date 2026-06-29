@@ -1,3 +1,6 @@
 [submodule "third_party/IR_SQL_Converter"]
 	path = third_party/IR_SQL_Converter
 	url = git@github.com:PeiMu/IR_SQL_Converter.git
+[submodule "third_party/tpde"]
+	path = third_party/tpde
+	url = https://github.com/lingo-db/tpde.git

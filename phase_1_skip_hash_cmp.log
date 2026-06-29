@@ -1,0 +1,16 @@
+What lingo-db does (lines 2261-2273 of SubOpToControlFlow.cpp):
+
+Lingo-db uses a chained hash table (linked list per bucket). The
+compareHashForLookup flag controls whether, while walking the chain, it compares the stored hash against the probe hash before comparing the actual keys. For single integer keys, it skips this hash comparison because CmpIOp(key_stored, key_probe) is just as cheap as CmpIOp(hash_stored, hash_probe) — both are single integer compares. The condition is: single key, integer type (line 112:
+keyMembers.size() == 1).
+
+What our implementation does (lines 6444-6454 of ir_to_llvm.cpp):
+DuckDB uses an open-addressing hash table. Each slot stores a 64-bit entry where the upper bits are a "salt" (hash tag) and the lower bits are a pointer. Our do_skip_salt skips the salt comparison and jumps directly to key comparison. The condition is: all keys integer (no single-key restriction).
+
+Two critical differences explain why it has no effect:
+1. Different hash table designs, different cost profiles. In lingo-db's chained HT, each chain link is a pointer chase (cache miss), so skipping the hash compare saves one integer compare per chain element traversed. In DuckDB's open-addressing HT, the salt compare (entry | POINTER_MASK == probe_salt) operates on a value already loaded from the entry slot — it's essentially free because entry was loaded for the emptiness check anyway (is_empty = entry == 0). The salt comparison adds zero additional memory accesses — it's a single OR + CMP on an already-loaded register.
+2. Lingo-db's optimization only applies to single-key joins. Line 112: if (keyMembers.size() == 1). Many JOB joins have composite keys(e.g., joining on both movie_id and person_id). Our implementation applies to all-integer keys regardless of key count, but that doesn't matter because the optimization itself is nearly free in DuckDB's HT layout anyway.
+
+The fundamental mismatch: Lingo-db's skip-hash-cmp saves work in a chained hash table where each chain walk involves a pointer dereference plus a hash compare plus a key compare. Skipping the hash compare avoids one compare before the inevitable key compare. In DuckDB's open-addressing table, the salt is embedded in the same 64-bit entry value, so checking it is essentially a single ALU operation on an already-loaded register — skipping it saves ~1 cycle per probe attempt, far below measurement noise.
+
+Conclusion: The optimization is architecturally irrelevant for DuckDB's hash table design. It was correctly implemented, but the expected improvement from lingo-db doesn't transfer because the hash table structures are fundamentally different. The real wins from lingo-db come from the multi-probe pipeline fusion (Phases 2-5), not from this micro-optimization.

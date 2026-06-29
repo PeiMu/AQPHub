@@ -67,6 +67,9 @@ public:
 
   std::string GetStrategyName() const override { return "NodeBased"; }
 
+  // §7.2: Adopt pre-computed split state from a background CrossQueryPrepResult.
+  void InitFromCrossQueryPrep(struct CrossQueryPrepResult &prep);
+
   // AQPSelector interface — DuckDB drives selection internally; return the
   // full remaining IR as-is.
   ir_sql_converter::AQPStmt *
@@ -99,6 +102,13 @@ private:
   bool merge_sibling_expr_ = false;
   bool terminal_ = false;
   bool external_execution_ = false; // true when exec adapter != DuckDB
+  bool last_extraction_standalone_ = false;
+  bool force_terminal_next_ = false;
+
+  // Post-execution cardinality threshold for standalone subquery abort.
+  // If a standalone subquery (no temp table in FROM) produces more rows than
+  // this, abort splitting and run the remainder as a single query.
+  static constexpr uint64_t kSplitCardThreshold = 1000000;
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   // Run MiddleOptimize inside a transaction (matches client_context.cpp).
@@ -110,6 +120,24 @@ private:
   std::unique_ptr<ir_sql_converter::AQPStmt> TakePlanAsIR();
 
   bool enable_debug_print_ = false;
+
+public:
+  // Peek at the next subquery group (speculative — uses current split state
+  // before MiddleOptimize of the next iteration).  Returns IR for the predicted
+  // next sub-query, or nullptr if terminal / empty.  Does NOT consume any
+  // entries from subqueries_ or table_expr_queue_.
+  //
+  // The next group's CHUNK_GET slot is still null at peek time (the real
+  // MergeDataChunk only runs in UpdateRemainingIR, after execution), so a
+  // speculative LogicalColumnDataGet for the temp table the CURRENT iteration
+  // is about to produce is injected with the given chunk index / types /
+  // estimated cardinality, and reverted before returning.
+  std::unique_ptr<ir_sql_converter::AQPStmt>
+  PeekNextSubquery(duckdb::idx_t spec_chunk_index,
+                   const duckdb::vector<duckdb::LogicalType> &chunk_types,
+                   duckdb::idx_t est_card);
+
+  bool HasNextSubquery() const { return subqueries_.size() >= 1; }
 };
 
 } // namespace middleware

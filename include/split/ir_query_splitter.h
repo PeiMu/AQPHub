@@ -13,14 +13,66 @@
 #ifdef HAVE_DUCKDB
 #include "split/node_based_splitter.h"
 #endif
+#ifdef HAVE_LLVM
+namespace middleware { struct CachedQueryPlan; }
+#endif
+#include "storage/csr_index.h"
+#include "storage/storage_plan.h"
+#include "kernel/sub_query_plan.h"
 #include "util/param_config.h"
+#include "util/thread_pool.h"
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+#include "duckdb/main/connection.hpp"
+#include "jit/ir_to_llvm.h"
+#endif
+
 namespace middleware {
+
+#ifdef HAVE_DUCKDB
+struct CrossQueryPrepResult {
+  std::unique_ptr<duckdb::Connection> bg_conn;
+  std::unique_ptr<duckdb::Planner> bg_planner;
+
+  std::string sql;
+  std::string query_name;
+
+  std::unique_ptr<SubqueryExtraction> first_extraction;
+  std::string first_sub_sql;
+
+  duckdb::unique_ptr<duckdb::LogicalOperator> remaining_plan;
+  std::unique_ptr<duckdb::QuerySplit> qs;
+  std::unique_ptr<duckdb::SubqueryPreparer> sp;
+  std::unique_ptr<duckdb::ReorderGet> reorder_get;
+  duckdb::subquery_queue subqueries;
+  duckdb::table_expr_info table_expr_queue;
+  std::vector<duckdb::TableExpr> proj_expr;
+  duckdb::unique_ptr<duckdb::LogicalOperator> last_sibling_node;
+  bool merge_sibling_expr = false;
+  duckdb::vector<duckdb::LogicalType> sub_plan_types;
+
+  // Phase 2: bg-compiled first sub-query
+#if defined(HAVE_LLVM)
+  std::unique_ptr<duckdb::PreparedStatement> prepared;
+  bool has_prepare = false;
+  std::unique_ptr<DuckDBAdapter::QjitSpecCompiled> qjit_spec;
+  bool has_qjit = false;
+#endif
+
+  bool success = false;
+  std::string error;
+  double prep_time_us = 0.0;
+};
+#endif
 
 // Mapping entry for column index updates
 struct ColumnMapping {
@@ -63,8 +115,12 @@ struct TempTableInfo {
 
 class IRQuerySplitter {
 public:
-  IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config);
-  ~IRQuerySplitter() = default;
+  IRQuerySplitter(EngineAdapter *adapter, const ParamConfig &config,
+                  storage::StoragePlan *storage_plan = nullptr);
+  ~IRQuerySplitter();
+
+  // Set query name (without .sql) and load per-subquery tune config if path is set.
+  void SetQueryName(const std::string &name);
 
   // Main entry: Execute query with optional splitting
   QueryResult ExecuteWithSplit(const std::string &sql);
@@ -72,7 +128,33 @@ public:
   // Statistics
   int GetIterationCount() const { return iteration_count_; }
 
+#ifdef HAVE_DUCKDB
+  // §7.2 Cross-query latency hiding
+  void SetCrossQueryPrep(std::unique_ptr<CrossQueryPrepResult> prep) {
+    active_cross_query_prep_ = std::move(prep);
+  }
+#if defined(HAVE_LLVM)
+  static std::unique_ptr<CrossQueryPrepResult>
+  PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
+                   DuckDBAdapter *duck, const ParamConfig &config,
+                   std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+                   uint32_t effective_jit_flags, int effective_compile_mode);
+  // Resolve effective (jit_flags, compile_mode) for a query's sub_idx,
+  // applying tune override if configured. Main thread only.
+  static std::pair<uint32_t, int> ResolveTuneFlags(
+      const ParamConfig &config, const std::string &query_name, int sub_idx);
+#else
+  static std::unique_ptr<CrossQueryPrepResult>
+  PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
+                   DuckDBAdapter *duck, const ParamConfig &config);
+#endif
+#endif
+
 private:
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  QueryResult ReplayQueryPlan(const CachedQueryPlan &cached);
+#endif
+
   // === IR-based Iterative Split-Execute Loop (all strategies) ===
   QueryResult
   ExecuteSplitLoop(std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir);
@@ -116,7 +198,20 @@ private:
   // Check if remaining IR is trivial (just a temp table reference)
   std::string GetTrivialTempTable(ir_sql_converter::AQPStmt *ir) const;
 
+  // Check if SQL references any temp table known to have 0 rows
+  bool SubPlanReferencesEmptyTemp(const std::string &sql) const;
+
+  // Cross-sub-plan optimizations (range pred injection + bloom filter).
+  // Outlined from ExecuteOneIteration to keep the hot path compact for
+  // better instruction cache utilization (expert knowledge #9, #18).
+  // Range preds change the SQL text; bloom filters are side-band (pending in
+  // the adapter), so the spec-check path can skip building them on a HIT.
+  void ApplyCrossSubPlanOptimizations(std::string &sub_sql,
+                                      bool inject_range_preds = true,
+                                      bool build_bloom_filters = true);
+
   EngineAdapter *adapter_;
+  storage::StoragePlan *storage_plan_ = nullptr;
 #ifdef HAVE_DUCKDB
   // Owned helper DuckDB adapter; non-null only when engine != DUCKDB and
   // strategy == NODE_BASED. Null when engine == DUCKDB (adapter_ is the DuckDB
@@ -133,8 +228,55 @@ private:
   int iteration_count_ = 0;
   std::vector<TempTableInfo> temp_tables_;
 
+  // Kernel temp tables (CSR executor results) — owned here
+  std::unordered_map<std::string, std::unique_ptr<storage::FlatTable>>
+      kernel_temps_;
+  // Non-owning view for AnalyzeSubIR
+  std::unordered_map<std::string, const storage::FlatTable *>
+      kernel_temp_ptrs_;
+  // Runtime CSR indexes built on temp table results (built lazily on demand)
+  std::unordered_map<std::string, storage::CSRIndex> runtime_csrs_;
+
+  // Background thread pool (1 worker) for async CSR builds; reusable for other tasks
+  std::unique_ptr<ThreadPool> bg_pool_;
+  std::unordered_map<std::string, std::future<storage::CSRIndex>> async_csrs_;
+
+  // Temp tables known to have 0 rows (INNER JOIN → 0 results guaranteed)
+  std::set<std::string> empty_temp_tables_;
+
+  // Cached integer-column min/max per temp table (immutable once stored);
+  // avoids re-scanning collections on repeated range-pred injection.
+  std::unordered_map<std::string,
+                     std::unordered_map<size_t, std::pair<int64_t, int64_t>>>
+      temp_min_max_cache_;
+
+  // Kernel decision logging (for threshold tuning, --tuning flag)
+  int kernel_log_repeat_idx_ = 0;
+  int current_repeat_ = 0;
+  std::string tuning_log_file_;
+
   // Sub-plan combiner: collected (temp_name, sql) pairs
   std::vector<std::pair<std::string, std::string>> sub_plan_sqls_;
+
+  // Per-subquery tune config: maps sub_idx → tunable flag set.
+  // Loaded from tune JSON for the current query_name_.
+  // Fields with -1 / unset use the global config (no override).
+  struct TuneEntry {
+    std::string config_label;
+    uint32_t jit_flags = 0;
+    bool query_jit = false;
+    int compile_mode = 0;      // 0=llvm, 1=fastisel, 2=tpde
+    bool jit_simd = false;
+    int payload_prune = -1;    // -1=use global, 0=off, 1=on
+    int prefetch = -1;         // -1=use global, 0=off, 1=on
+    int batch_probe = -1;      // -1=use global, 0=off, 1=on
+    int skip_hash_cmp = -1;    // -1=use global, 0=off, 1=on
+  };
+  std::string query_name_;
+  std::unordered_map<int, TuneEntry> tune_entries_;
+  static TuneEntry ParseTuneLabel(const std::string &label);
+  void LoadTuneEntry(int idx, const nlohmann::json &val);
+  void ApplyTuneOverride(int sub_idx);
 
   // Helper: Compute column alias using SQL generator's convention
   std::string ComputeColumnAlias(unsigned int table_idx,
@@ -144,6 +286,124 @@ private:
   std::string BuildCombinedSQL(
       const std::vector<std::pair<std::string, std::string>> &sub_plans,
       const std::string &final_sql) const;
+
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+  struct SpeculativeCompilation {
+    std::future<bool> future;
+    std::string speculative_sql;
+    // Temp table + estimated cardinality the speculative Prepare planned
+    // against. If the actual cardinality diverges, the frozen physical plan
+    // (join sides, HT sizing, parallelism) may be slow — reject the hit.
+    std::string assumed_temp_name;
+    duckdb::idx_t assumed_card = 0;
+    std::unique_ptr<duckdb::Connection> spec_conn;
+    std::unique_ptr<duckdb::PreparedStatement> spec_prepared;
+    // Speculative IR owned here so bg thread can read it safely.
+    std::unique_ptr<ir_sql_converter::AQPStmt> spec_ir;
+    // Phase B relaunch instead BORROWS the next iteration's precomputed
+    // extraction IR. The owning extraction is destroyed at the end of the
+    // iteration it drives, so ExecuteOneIteration must WaitSpecsBorrowingIR
+    // on it first (kernel-path iterations never consult the spec, and a
+    // MISS retires it to zombie_specs_ without waiting).
+    const ir_sql_converter::AQPStmt *borrowed_ir = nullptr;
+    // Bloom filters built on the main thread at launch (same set the inline
+    // path would build); registered into the spec plan by the bg task.
+    std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
+    // Iteration this speculation targets (for cross-repeat miss learning).
+    int target_iter = 0;
+    // Snapshot of temp-table collections taken on the main thread at launch
+    // so the bg RegisterJITImpl can build join bloom filters race-free.
+    DuckDBAdapter::TempCollectionSnapshot temp_snapshot;
+    // Query-jit spec payload (compiled plan + metadata, sources unresolved).
+    // Null on the pipeline-jit spec path and when the bg compile rejected.
+    std::unique_ptr<DuckDBAdapter::QjitSpecCompiled> qjit;
+  };
+  std::unique_ptr<ThreadPool> jit_compile_pool_;
+  std::unique_ptr<SpeculativeCompilation> pending_spec_;
+  // Stale speculations whose bg compile may still be running. Kept alive here
+  // (instead of blocking the main thread on future.wait()) so the bg task's
+  // raw pointer into the SpeculativeCompilation stays valid. Reaped
+  // non-blockingly by RetirePendingSpec; drained (blocking) by DrainSpecs.
+  std::vector<std::unique_ptr<SpeculativeCompilation>> zombie_specs_;
+  // Move pending_spec_ into zombie_specs_ without blocking, then reap any
+  // zombies whose futures are ready.
+  void RetirePendingSpec();
+  // Blocking: wait for any pending/zombie bg compile that borrowed `ir`
+  // (Phase B relaunch) before the IR's owning extraction is destroyed.
+  void WaitSpecsBorrowingIR(const ir_sql_converter::AQPStmt *ir);
+  // Blocking: wait for pending + zombies (end of query / destructor).
+  // charge_wait: charge the blocking time to the adapter's next jit_compile
+  // CSV column (end-of-loop drain — otherwise it falls in an untimed gap
+  // before the final query's timer).
+  void DrainSpecs(bool charge_wait = false);
+  // Long-lived compilers for speculative JIT — reused across iterations to
+  // avoid LLVM LLJIT memory growth from creating/destroying instances.
+  // Two instances, used alternately (ping-pong): on a HIT the next bg compile
+  // is launched WHILE the hit's JIT code is executing, and its ResetModules
+  // must not free that code — so it runs on the other compiler.
+  std::unique_ptr<aqp_jit::IrToLlvmCompiler> spec_compilers_[2];
+  int spec_compiler_idx_ = 0;
+  int spec_hits_ = 0;
+  int spec_misses_ = 0;
+  int spec_card_misses_ = 0;
+  int spec_not_ready_ = 0;
+  int spec_bg_errors_ = 0;
+  // Compensate-jit miss-policy applications this query (trace/summary only).
+  int spec_compensate_fast_ = 0;
+  int spec_compensate_interp_ = 0;
+  // Compensate mode: iteration whose spec launch was skipped (learned miss)
+  // or whose Phase-B validation mispredicted — the check site applies the
+  // miss policy to it even though pending_spec_ is null. One-shot.
+  int spec_learned_miss_iter_ = -1;
+  // Total time this query the main thread blocked on bg-compile futures (µs).
+  long spec_wait_us_ = 0;
+  // Key into the cross-repeat miss-history map (the original query SQL).
+  std::string spec_history_key_;
+
+  // Phase A: peek at next subquery and launch bg Prepare+JIT. Invoked via
+  // the adapter's post-Prepare hook — after Prepare(i) (when the result temp
+  // table's identity is known and registered as a placeholder) and before
+  // ExecuteRow(i), so the bg compile overlaps the whole execution.
+  void LaunchSpeculativeCompile(const std::string &temp_table_name,
+                                duckdb::idx_t chunk_index,
+                                const duckdb::vector<duckdb::LogicalType> &types,
+                                const std::vector<std::string> &col_names,
+                                duckdb::idx_t est_card, bool post_execute);
+  // Phase B: run real SplitIR(i+1) AFTER UpdateRemainingIR to produce
+  // precomputed_extraction_ for the next iteration.
+  void PrecomputeNextExtraction(
+      std::unique_ptr<ir_sql_converter::AQPStmt> &remaining_ir);
+  bool CheckSpeculativeResult(const std::string &actual_sql,
+                              const std::string &temp_table_name);
+  // Extraction pre-computed by PrecomputeNextExtraction (real SplitIR).
+  // If non-null, the next iteration uses it instead of calling SplitIR.
+  std::unique_ptr<SubqueryExtraction> precomputed_extraction_;
+  // Main-thread time (µs) spent in PrecomputeNextExtraction; added to the
+  // NEXT iteration's extract_next_sub-IR timer column so the breakdown CSV
+  // stays complete (the work is that iteration's extraction, done early).
+  double pending_extract_us_ = 0.0;
+#endif
+
+#ifdef HAVE_DUCKDB
+  std::unique_ptr<CrossQueryPrepResult> active_cross_query_prep_;
+
+  // Lazy CSR (7.3b): build FlatTable + CSR from DuckDB ColumnDataCollection
+  // on demand, only when a kernel iteration actually needs the temp.
+  void EnsureKernelTempReady(const std::string &temp_name);
+
+  // Build FlatTable only (no CSR) for pipeline kernel path
+  void EnsureKernelTempReadyNoCsr(const std::string &temp_name);
+
+  // Collect all ChunkNode (temp table) names referenced in an IR tree.
+  static void CollectChunkNames(const ir_sql_converter::AQPStmt *node,
+                                std::set<std::string> &names);
+
+  // Ensure all temps referenced by an IR tree are ready for kernel use.
+  void EnsureReferencedTempsReady(const ir_sql_converter::AQPStmt *ir);
+
+  // FlatTable only (no CSR) for pipeline kernel
+  void EnsureReferencedTempsReadyNoCsr(const ir_sql_converter::AQPStmt *ir);
+#endif
 };
 
 } // namespace middleware

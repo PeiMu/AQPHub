@@ -1,0 +1,252 @@
+LLVM Pass Analysis: LingoDB (/home/pei/Project/lingo-db) vs AQP Middleware
+==============================================
+
+Scope
+-----
+This analysis covers ONLY the JIT compilation paths in ir_to_llvm.cpp:
+  - expr-jit:     CompileExpr, CompileFilter
+  - operator-jit: CompileProjection, CompileAggUpdateDirect,
+                   CompileFilterAggFusion, CompileFilterProbeProjectFusion
+  - pipeline-jit:  CompilePipeline (fused filter+projection)
+
+All 9 call sites of OptimiseModule() are in these Compile* functions.
+
+NOT in scope: ExecutePipelineKernel (src/kernel/pipeline_kernel.cpp).
+The kernel is pure C++ compiled at build time, optimised by GCC/Clang,
+with hand-coded AVX2 hashing and adaptive probe methods.  LLVM passes
+have zero effect on the kernel path.
+
+When running with --kernel-path=pipeline, the kernel handles sub-query
+execution but DuckDB operators still use JIT-compiled functions.  So
+the pass pipeline still matters for --jit-level=operator workloads.
+
+Context
+-------
+Both projects JIT-compile query operators to native code via LLVM ORC JIT.
+The generated LLVM IR is structurally simple: flat loops over column arrays
+with pointer arithmetic, conditionals, and hash computation.
+
+Main compilation paths (CompileFilter, CompilePipeline, CompileFilterAggFusion,
+CompileFilterProbeProjectFusion) use PHI nodes for loop variables -- no
+scalar allocas for SROA to promote.
+
+CompileRangeFilter (ir_to_llvm.cpp:4821-4953) uses scalar allocas but is
+DEAD CODE: zero call sites in the entire codebase (verified 2026-06-05).
+It was added in commit 45638c3 as infrastructure for range predicate
+injection, but the approach was abandoned in favour of SQL-level injection.
+Safe to delete.
+
+The batch_probe_ path in CompileFilterProbeProjectFusion (line 6310-6312)
+emits 2048-element array allocas (hash_arr, htoff_arr, filt_mask).  These
+are too large for SROA/mem2reg to promote.  See "Batch-Probe Array Allocas"
+section below for details.
+
+No auto-vectorisable loop nests.  Runtime function calls (memcmp, aqp_str_eq,
+aqp_ht_probe, etc.) are registered as external JIT symbols -- inliner cannot
+inline them.
+
+LLVM version: 14 (primary), 19 (fallback).  All proposed passes and APIs
+work on LLVM 14+.  No LLVM 20 required.
+
+LingoDB: Hand-Picked 4 Passes
+------------------------------
+File: lingo-db/src/execution/LLVMBackends.cpp:565-581
+
+  static llvm::Error performDefaultLLVMPasses(llvm::Module* module) {
+      llvm::legacy::FunctionPassManager funcPM(module);
+      funcPM.add(llvm::createInstructionCombiningPass());
+      funcPM.add(llvm::createReassociatePass());
+      funcPM.add(llvm::createGVNPass());
+      funcPM.add(llvm::createCFGSimplificationPass());
+      funcPM.doInitialization();
+      for (auto& func : *module) {
+          if (!func.hasOptNone()) funcPM.run(func);
+      }
+      funcPM.doFinalization();
+      return llvm::Error::success();
+  }
+
+Plus CodeGenOptLevel::Default (= O2 for register allocation and instruction
+selection).
+
+AQP Middleware: Full Default Pipeline
+--------------------------------------
+File: src/jit/ir_to_llvm.cpp:4655-4667
+
+  PassBuilder pb;
+  ...
+  ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm_opt);
+  mpm.run(mod, mam);
+
+At O1 this runs ~40 passes; at O2 ~60 passes.
+
+Pass-by-Pass Relevance for JIT'd Query Functions
+-------------------------------------------------
+Verified with opt-14 on representative IR (2026-06-05).
+
+Pass                             In lingo-db?  Relevance
+-------------------------------  ------------  ----------------------------------
+InstCombine                      YES           HIGH - strength-reduces range checks
+                                                (sext+sge+sle+and -> add+ult),
+                                                folds redundant GEPs, canonicalises
+                                                branch conditions
+Reassociate                      YES           MEDIUM - reorders commutative ops for CSE
+GVN                              YES           HIGH - eliminates redundant loads
+                                                (GEP at offset 0 = base pointer), CSE
+SimplifyCFG                      YES           HIGH - dead block elimination, branch
+                                                folding, merges trivial blocks
+SROA                             no            NONE - all live Compile* paths use PHI
+                                                nodes, not scalar allocas.
+                                                CompileRangeFilter has allocas but is
+                                                dead code.  batch_probe_ arrays are
+                                                2048-element -- too large for SROA.
+                                                Verified: SROA produces no change on
+                                                representative IR for all live paths.
+LoopVectorize                    no            NONE - only adds LCSSA PHI form, no
+                                                actual vectorisation.  Blockers: opaque
+                                                runtime calls, data-dependent control
+                                                flow (filter + conditional store).
+                                                Verified with opt-14.
+SLPVectorize                     no            NONE - stores go to different arrays
+                                                (i64, i64, i8) at same index, not
+                                                adjacent elements.  Verified: no change.
+LoopUnroll                       no            NONE - only adds LCSSA form, no actual
+                                                unrolling.  Loop count is runtime-variable
+                                                (nrows).  Verified with opt-14.
+LICM                             no            LOW - column data/validity pointers are
+                                                already loaded before the loop in codegen
+                                                (ir_to_llvm.cpp:1919-1924).  On the
+                                                batch_probe_ array path, LICM hoists
+                                                nrows_m1 computation -- marginal.
+                                                Verified with opt-14.
+Inliner                          no            NONE - runtime calls are external JIT
+                                                symbols (memcmp, aqp_str_eq, aqp_ht_*).
+                                                Inliner cannot inline them regardless.
+LoopRotate                       no            LOW - converts while-loop to do-while,
+                                                saving one branch per iteration.  Branch
+                                                predictor handles the original well (exits
+                                                once per 2048 iterations).  O1 includes
+                                                this; 4-pass pipeline omits it.  Verified:
+                                                adding loop-rotate makes output match O1.
+CorrelatedValuePropagation       no            NONE
+MemCpyOpt                        no            NONE - no memcpy patterns to merge
+DeadStoreElimination             no            NONE - every store is consumed.  Verified.
+TailCallElimination              no            NONE
+JumpThreading                    no            NONE
+ADCE (Aggressive DCE)            no            NONE - little dead code in generated IR
+IndVarSimplify                   no            NONE
+LoopIdiom                        no            NONE
+MergedLoadStoreMotion            no            NONE
+~20 more passes at O2...         no            Negligible for generated query code
+
+Batch-Probe Array Allocas (CompileFilterProbeProjectFusion)
+-----------------------------------------------------------
+batch_probe_ defaults to true (param_config.h:97, passed via
+duckdb_adapter.cpp:2318).  When enabled, 3 stack arrays are emitted:
+
+  hash_arr_buf  = CreateAlloca(i64, 2048)   -- 16 KB
+  htoff_arr_buf = CreateAlloca(i64, 2048)   -- 16 KB
+  filt_mask_buf = CreateAlloca(i8,  2048)   --  2 KB
+
+These implement a two-stage ROF (Reorder + Filter) pattern:
+  Stage 1: filter all rows, compute hash + ht_offset, store to arrays
+  Stage 2: read arrays, software-prefetch, hash table probe
+
+Passes tested against representative two-stage IR (opt-14, 2026-06-05):
+
+  SROA / mem2reg:     NO CHANGE - dynamic-sized array allocas ineligible
+  LoopVectorize:      NO CHANGE - opaque calls block vectorisation
+  SLPVectorize:       NO CHANGE - stores to different arrays
+  DSE:                NO CHANGE - all stage-1 stores read by stage-2
+  MemCpyOpt:          NO CHANGE - no memcpy patterns
+  GVN:                NO CHANGE - no redundant loads (each at unique index)
+  LICM:               MINOR     - hoists nrows_m1 to preheader only
+  InstCombine:        MINOR     - canonicalises alloca form, no perf impact
+  SimplifyCFG (O1):   YES       - merges s1_fail into s1_next (saves 1
+                                  store + 1 block per iteration)
+  LoopRotate (O1):    YES       - converts s1_outer while->do-while
+  ADCE (O1):          YES       - removes dead out_count computation
+
+Conclusion: the 4-pass pipeline (InstCombine, Reassociate, GVN, SimplifyCFG)
+captures the SimplifyCFG benefit on the batch_probe_ path.  LoopRotate and
+ADCE provide marginal additional benefit but are not critical.
+
+No LLVM pass can vectorise the two-stage pattern.  Any vectorisation of
+hash computation or mask stores would require manual SIMD intrinsics at
+the IR generation level (already done in the kernel path via AVX2).
+
+Recommendation
+--------------
+Replace buildPerModuleDefaultPipeline with a custom 4-pass pipeline matching
+lingo-db.  Expected compilation time reduction: 3-5x at O1, 5-8x at O2.
+Execution time should be equivalent (the 4 passes cover everything that
+matters for our IR shape).
+
+Verified with opt-14: O1 output vs 4-pass output differs only in cosmetic
+attributes (nuw flags, function attributes, loop form).  Core IR is identical.
+
+Implementation (new-pass-manager API, works on LLVM 14+):
+
+  static void OptimiseModule(Module &mod, OptLevel opt) {
+    if (opt == OptLevel::O0) return;
+
+    PassBuilder pb;
+    LoopAnalysisManager lam;
+    FunctionAnalysisManager fam;
+    CGSCCAnalysisManager cgam;
+    ModuleAnalysisManager mam;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    FunctionPassManager fpm;
+    fpm.addPass(InstCombinePass());
+    fpm.addPass(ReassociatePass());
+    fpm.addPass(GVNPass());
+    fpm.addPass(SimplifyCFGPass());
+
+    ModulePassManager mpm;
+    mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.run(mod, mam);
+  }
+
+Baseline Measurements (buildPerModuleDefaultPipeline O1, JOB 113 queries x 15 iters)
+-------------------------------------------------------------------------------------
+Measured 2026-06-05. All compilation is CompileFilter only (pipeline/agg/probe_fusion
+are zero at expr-jit and operator-jit levels).
+
+  Configuration                          Total CompileFilter time
+  -------------------------------------  ------------------------
+  none-split,     expr-jit     O1 none   18,210 ms  (4,875 calls)
+  none-split,     operator-jit O1 none   18,254 ms  (4,875 calls)
+  node-based,     expr-jit     O1 none   10,130 ms  (1,395 calls)
+  node-based,     operator-jit O1 none   10,141 ms  (1,395 calls)
+
+Per-call average: ~3.1 ms (none-split, warmup excluded ~3.7 ms first call).
+Data in: measure/job_result/old_perf/*_jit_compile_breakdown.csv
+
+4-Pass Pipeline Results (InstCombine, Reassociate, GVN, SimplifyCFG)
+---------------------------------------------------------------------
+Measured 2026-06-05. Data in: measure/job_result/new_perf/
+
+  Compilation time:
+  Configuration                          Old (ms)    New (ms)    Speedup
+  -------------------------------------  ----------  ----------  -------
+  none-split,     expr-jit     O1 none   18,210      10,990      1.65x
+  none-split,     operator-jit O1 none   18,254      11,010      1.65x
+  node-based,     expr-jit     O1 none   10,130       5,667      1.78x
+  node-based,     operator-jit O1 none   10,141       5,676      1.78x
+
+  Execution time (no regression):
+  Configuration                          Old (ms)    New (ms)    Diff
+  -------------------------------------  ----------  ----------  ------
+  none-split,     expr-jit     O1 none   86,829      86,816      -0.01%
+  none-split,     operator-jit O1 none   86,965      86,638      -0.37%
+  node-based,     expr-jit     O1 none   114,439     111,891     -2.22%
+  node-based,     operator-jit O1 none   114,546     111,625     -2.54%
+
+Conclusion: 1.65-1.78x compilation speedup with zero execution regression.
+Node-based shows ~2.5% total end-to-end improvement (compilation is a
+larger fraction of total time with many sub-queries).

@@ -3,6 +3,14 @@
 #include "jit/aqp_jit_abi.h"
 #include "simplest_ir.h"
 
+namespace qjit {
+struct QjitQueryPlan;
+} // namespace qjit
+
+namespace middleware { namespace storage {
+struct PipelineKernelPlan;
+}} // namespace middleware::storage
+
 // Forward-declare LLVM types to avoid pulling LLVM headers into every TU
 // that includes this header.
 // Note: IRBuilder is a template in LLVM and cannot be forward-declared here;
@@ -30,10 +38,26 @@ class SimplestIsNullExpr;
 class SimplestInExpr;
 } // namespace ir_sql_converter
 
+namespace duckdb { class PhysicalHashJoin; }
+
 namespace aqp_jit {
 
-/* LLVM optimization level — maps to llvm::OptimizationLevel */
-enum class OptLevel { O0, O1, O2, O3 };
+// Opaque handle for an isolated LLVM ORC ResourceTracker.
+// Used to manage lifetime of background-compiled JIT modules independently
+// from the main compilation session's ResetModules() cycle.
+struct JITTrackerHandle {
+  void *ptr = nullptr; // opaque ResourceTrackerSP*
+  ~JITTrackerHandle();
+  JITTrackerHandle() = default;
+  JITTrackerHandle(JITTrackerHandle &&o) noexcept : ptr(o.ptr) { o.ptr = nullptr; }
+  JITTrackerHandle &operator=(JITTrackerHandle &&o) noexcept {
+    if (this != &o) { Reset(); ptr = o.ptr; o.ptr = nullptr; }
+    return *this;
+  }
+  JITTrackerHandle(const JITTrackerHandle &) = delete;
+  JITTrackerHandle &operator=(const JITTrackerHandle &) = delete;
+  void Reset(); // removes tracked modules and frees the handle
+};
 
 /* SIMD ISA selection — determines vector width and available instructions */
 enum class SimdISA { OFF, SSE2, AVX, AVX2, AVX512, AUTO };
@@ -49,6 +73,44 @@ struct ColSchema {
   int32_t dtype; // AQP_DTYPE_* constant
 };
 
+struct ProbeStageInfo {
+  duckdb::PhysicalHashJoin *hj = nullptr;
+  uint64_t eid = 0;
+  std::vector<ColSchema> probe_schema;
+  std::vector<ColSchema> payload_schema;
+  std::vector<int> payload_row_indices;
+  std::vector<int> lhs_output_idxs;
+  std::vector<int> rhs_output_layout_idxs;
+  std::vector<int32_t> lhs_output_dtypes;
+  std::vector<int32_t> rhs_output_dtypes;
+  std::vector<int> lhs_key_chunk_idxs;
+  std::vector<int32_t> lhs_key_dtypes;
+  bool skip_hash_cmp_eligible = false;
+  const ir_sql_converter::AQPStmt *filter_ir = nullptr;
+  const ir_sql_converter::AQPStmt *join_ir = nullptr;
+  bool eligible = false;
+};
+
+
+// Aggregate JIT disabled: JOB has no aggregate-heavy queries (only MIN on
+// VARCHAR).  Saves compilation time.  Re-enable with -DDISABLE_AGG_JIT=0.
+#ifndef DISABLE_AGG_JIT
+#define DISABLE_AGG_JIT 1
+#endif
+
+#if !DISABLE_AGG_JIT
+/**
+ * Aggregate operation descriptor — built from the physical plan.
+ * agg_type: 1=MIN, 2=MAX, 3=SUM, 4=AVG, 5=COUNT, 6=CountStar
+ */
+struct AggOp {
+  int col_idx;           // input chunk column index (-1 for COUNT*)
+  int32_t agg_type;
+  unsigned state_offset; // byte offset in agg_state
+  int32_t dtype;         // AQP_DTYPE_* of the column
+};
+#endif // !DISABLE_AGG_JIT
+
 /**
  * IrToLlvmCompiler
  *
@@ -61,10 +123,20 @@ struct ColSchema {
  *   AQPExprFn fn = compiler.CompileFilter(*filter_node, schema);
  *   // fn is now a native function pointer valid for the lifetime of compiler
  */
+// §6.6 fast-compile backend tier (FASTALL policy). FASTISEL = LLVM
+// CodeGenOptLevel::None + FastISel instruction selection, mid-end passes
+// skipped. TPDE = single-pass TPDE-LLVM backend (falls back to the FASTISEL
+// LLVM path on unsupported IR); requires a build with AQP_HAVE_TPDE.
+// The backend choice changes emitted code, so it is serialized into every
+// §5.1 object-cache key (a process may mix backends across compiler
+// instances, e.g. the planned compensate-jit fast recompile path).
+enum class FastCompileBackend { OFF = 0, FASTISEL = 1, TPDE = 2 };
+
 class IrToLlvmCompiler {
 public:
-  explicit IrToLlvmCompiler(OptLevel opt = OptLevel::O1,
-                            SimdISA simd = SimdISA::OFF);
+  explicit IrToLlvmCompiler(bool debug = false,
+                            SimdISA simd = SimdISA::OFF,
+                            FastCompileBackend fast = FastCompileBackend::OFF);
   ~IrToLlvmCompiler();
 
   // Non-copyable, movable
@@ -79,9 +151,13 @@ public:
    * Level 2+: Compile ALL filter expressions inside a SimplestFilter IR node,
    * fused into a single function with AND semantics.
    * Returns a compiled AQPExprFn, or nullptr on failure.
+   * params_out: if non-null and cache_mode==2, receives the runtime params
+   *   buffer. Caller must set aqp_jit_set_params(buf.data()) before calling
+   *   the compiled function.
    */
   AQPExprFn CompileFilter(const ir_sql_converter::AQPStmt &filter_node,
-                          const std::vector<ColSchema> &schema);
+                          const std::vector<ColSchema> &schema,
+                          std::vector<uint8_t> *params_out = nullptr);
 
   /**
    * Level 1: Compile a single expression into its own function.
@@ -90,6 +166,16 @@ public:
    */
   AQPExprFn CompileExpr(const ir_sql_converter::AQPExpr &expr,
                         const std::vector<ColSchema> &schema);
+
+  /**
+   * Compile a range filter: key >= min_val AND key <= max_val.
+   * Generates a selection-vector function (AQPExprFn) that checks one
+   * integer column against compile-time constant bounds.
+   * chunk_col_idx: position of the key column in the input chunk.
+   * dtype: AQP_DTYPE_INT32 or AQP_DTYPE_INT64.
+   */
+  AQPExprFn CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
+                               int64_t min_val, int64_t max_val);
 
   /**
    * Level 2: Compile a projection operator.
@@ -102,34 +188,13 @@ public:
   AQPOperatorFn CompileProjection(const ir_sql_converter::AQPStmt &proj_node,
                                   const std::vector<ColSchema> &in_schema);
 
-  /**
-   * Level 2: Compile hash join build side.
-   * Generates a function that loops over the input chunk, extracts key
-   * columns (from SimplestHash::hash_keys), and inserts each row into
-   * the portable hash table via aqp_ht_insert.
-   *
-   * Signature: void fn(AQPChunkView *in, void *hash_table)
-   * The hash table must be created by aqp_ht_create before calling.
-   * Payload = full row (all input columns concatenated as raw bytes).
-   *
-   * Returns function pointer, or nullptr on failure.
-   */
-  void *CompileHashBuild(const ir_sql_converter::AQPStmt &hash_node,
-                         const std::vector<ColSchema> &in_schema,
-                         const std::vector<int> &needed_payload_cols = {});
+  // Note: CompileHashBuild and CompileHashProbe (standalone hash-join
+  // operator JIT against the obsolete AQPHashTable) were removed. The active
+  // probe path is CompileFilterProbeProjectFusion below, which targets
+  // DuckDB's JoinHashTable directly. Build is left to DuckDB native; see the
+  // rationale in duckdb_adapter.cpp near the hash-join RegisterJIT block.
 
-  /**
-   * Level 2: Compile hash join probe side.
-   * Generates a function that loops over the probe input chunk, extracts
-   * probe keys (from SimplestJoin::join_conditions), probes the hash table
-   * via aqp_ht_probe, and writes matching row indices to a selection vector.
-   *
-   * Signature: uint64_t fn(AQPChunkView *probe_chunk, void *hash_table,
-   * AQPSelView *sel) Returns count of matching probe rows.
-   */
-  void *CompileHashProbe(const ir_sql_converter::AQPStmt &join_node,
-                         const std::vector<ColSchema> &probe_schema);
-
+#if !DISABLE_AGG_JIT
   /**
    * Level 2: Compile an aggregate operator (ungrouped).
    * Generates a function that loops over the input chunk and updates
@@ -149,6 +214,15 @@ public:
                          const std::vector<ColSchema> &in_schema);
 
   /**
+   * Direct aggregate compilation — builds from AggOp descriptors without IR.
+   * Same signature and state layout as CompileAggUpdate, but resolves columns
+   * entirely from the physical plan.  Preferred over CompileAggUpdate.
+   */
+  void *CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops,
+                               unsigned total_state_size);
+#endif // !DISABLE_AGG_JIT
+
+  /**
    * Level 3: Compile a fused pipeline (Filter → Projection).
    * Generates a single row loop that evaluates filter predicates and,
    * for matching rows, copies projected columns to the output chunk.
@@ -163,8 +237,10 @@ public:
    */
   AQPPipelineFn CompilePipeline(const ir_sql_converter::AQPStmt *filter_node,
                                 const ir_sql_converter::AQPStmt *proj_node,
-                                const std::vector<ColSchema> &in_schema);
+                                const std::vector<ColSchema> &in_schema,
+                                std::vector<uint8_t> *params_out = nullptr);
 
+#if !DISABLE_AGG_JIT
   /**
    * Level 3: Compile Filter + Aggregate fusion.
    * Fused loop: for each row, evaluate filter; if match, update accumulator.
@@ -176,23 +252,12 @@ public:
   void *CompileFilterAggFusion(const ir_sql_converter::AQPStmt *filter_node,
                                const ir_sql_converter::AQPStmt *agg_node,
                                const std::vector<ColSchema> &in_schema);
+#endif // !DISABLE_AGG_JIT
 
-  /**
-   * Level 3: Compile Filter + HashBuild fusion.
-   * Fused loop: for each row, evaluate filter; if match, extract key,
-   * hash inline (FNV-1a), insert into hash table, copy payload.
-   * No intermediate DataChunk between filter and hash build.
-   *
-   * Signature: int64_t fn(AQPChunkView *in, AQPChunkView *, void *ht)
-   * Uses AQPPipelineFn signature. The hash table pointer is passed via
-   * pipeline_state (3rd arg). Returns 0 (no output rows — data is sunk
-   * into the hash table).
-   */
-  void *
-  CompileFilterHashBuildFusion(const ir_sql_converter::AQPStmt *filter_node,
-                               const ir_sql_converter::AQPStmt &hash_node,
-                               const std::vector<ColSchema> &in_schema,
-                               const std::vector<int> &needed_payload_cols = {});
+  // Note: CompileFilterHashBuildFusion was removed alongside
+  // CompileHashBuild. The build path uses DuckDB native; only the build
+  // side's *filter* is JIT'd, via CompilePipeline / dispatch in
+  // physical_filter.cpp.
 
   /**
    * Level 3: Compile Filter + HashProbe + Projection fusion (probe pipeline).
@@ -209,53 +274,177 @@ public:
    * join_node: SimplestJoin with join_conditions defining probe keys.
    * proj_node: may be null (output all probe + payload columns).
    * probe_schema: column layout of the probe input chunk.
-   * payload_schema: column layout of the build-side payload (in the order
-   *   columns were written by CompileHashBuild / fusion). Needed to map
+   * payload_schema: column layout of the build-side payload, in the order
+   *   DuckDB's JoinHashTable lays them out in its row store. Needed to map
    *   projection attrs to payload byte offsets.
    */
+  // payload_row_indices[i] is the row-format column index of payload_schema[i]
+  // within DuckDB's build-side row layout. Required for direct-HT probe:
+  // the JIT'd code reads payload data at view->data_offsets[num_keys + payload_row_indices[i]].
+  //
+  // lhs_output_idxs: indices into probe_schema for LHS output cols, in chunk order.
+  // rhs_output_layout_idxs: indices into HT layout = [keys, payload] for RHS
+  // output cols, in chunk order. Output chunk shape is [lhs cols, rhs cols].
+  // lhs_output_dtypes / rhs_output_dtypes: AQP_DTYPE_* of each output column,
+  // derived from DuckDB's actual chunk schema (NOT from AQP IR's possibly-
+  // reordered schemas). Used for output elem_size — critical when probe/payload
+  // schemas may be out-of-sync with the physical HT layout.
+  // If lhs_output_idxs and rhs_output_layout_idxs are both empty, falls back
+  // to all probe + all payload cols (legacy).
+  // lhs_key_chunk_idxs / lhs_key_dtypes (optional): DuckDB-authoritative LHS
+  // join key positions (from PhysicalComparisonJoin::conditions[i].left as
+  // BoundReferenceExpression::index) and their dtypes. When non-empty, the
+  // JIT uses these directly for key extraction instead of looking up via
+  // AQP IR's (table_idx, col_idx) match against probe_schema — that lookup is
+  // unsafe when AQP IR's probe_schema ordering diverges from DuckDB's
+  // physical chunk ordering even when dtypes happen to coincide.
   void *CompileFilterProbeProjectFusion(
       const ir_sql_converter::AQPStmt *filter_node,
-      const ir_sql_converter::AQPStmt &join_node,
+      const ir_sql_converter::AQPStmt *join_node,
       const ir_sql_converter::AQPStmt *proj_node,
       const std::vector<ColSchema> &probe_schema,
-      const std::vector<ColSchema> &payload_schema);
+      const std::vector<ColSchema> &payload_schema,
+      const std::vector<int> &payload_row_indices,
+      const std::vector<int> &lhs_output_idxs = {},
+      const std::vector<int> &rhs_output_layout_idxs = {},
+      const std::vector<int32_t> &lhs_output_dtypes = {},
+      const std::vector<int32_t> &rhs_output_dtypes = {},
+      const std::vector<int> &lhs_key_chunk_idxs = {},
+      const std::vector<int32_t> &lhs_key_dtypes = {},
+      std::vector<uint8_t> *params_out = nullptr);
 
   /**
-   * Level 4: Compile an entire sub-plan into a coordinator function.
-   * The coordinator orchestrates multiple pipelines:
-   *   1. Identifies pipeline segments from the IR tree
-   *   2. Runs build-side pipelines first (populating hash tables)
-   *   3. Runs probe-side pipelines using the hash tables
-   *
-   * sub_ir: the complete sub-plan IR tree (from ir_query_splitter)
-   * Returns AQPSubPlanFn, or nullptr if the sub-plan is too complex.
+   * Multi-probe fusion: compile the entire probe chain as a single function.
+   * stages[0] = innermost HJ (receives scan input), stages[N-1] = outermost.
+   * Returns function pointer with AQPPipelineFn signature, where pipeline_state
+   * is AQPMultiProbeState*. Returns nullptr on failure.
    */
-  void *CompileSubPlan(const ir_sql_converter::AQPStmt &sub_ir);
+  void *CompileMultiProbeChain(const std::vector<ProbeStageInfo> &stages,
+                              std::vector<uint8_t> *params_out = nullptr);
 
   /**
-   * Level 4: Compile a whole-SQL IR tree (non-split path).
-   * Semantically identical to CompileSubPlan; separated for clarity.
+   * Query-jit (--jit-level=query): compile a whole sub-query plan
+   * (qjit::BuildExecutionSteps) into ONE module with ONE entry function
+   * (QjitQueryFn ABI, query_jit_abi.h):
+   *   entry:  i64 fn(QjitQueryContext *ctx) — per step k:
+   *           qjit_parallel_for over sources[k].nrows with the outlined
+   *           morsel body, then qjit_ht_finalize for HT-build sinks; ret 0.
+   *   morsel (one per step): scan loop with strict-NULL-guarded filters,
+   *           chained-HT probe loops (multi-match backtracking through the
+   *           advance block), and the sink: result appends
+   *           (qjit_table_append_*), HT-row writes (qjit_ht_append), or
+   *           per-worker aggregate updates (qjit_agg_update_*).
+   * Caller must have registered the qjit_* runtime symbols via
+   * RegisterRuntimeSymbol first. Returns the entry fn or nullptr.
    */
-  void *CompileSQL(const ir_sql_converter::AQPStmt &sql_ir);
+  void *CompileQuerySteps(const qjit::QjitQueryPlan &plan,
+                          std::vector<uint8_t> *params_out = nullptr);
 
+  /**
+   * Register one extern "C" runtime symbol (absoluteSymbols) so compiled
+   * modules can call it. Idempotent: re-registering an existing name is a
+   * no-op returning true. Survives ResetModules (no tracker).
+   */
+  bool RegisterRuntimeSymbol(const char *name, void *addr);
+
+  // --- Isolated compilation for background threads ---
+  // Create an isolated tracker. Modules compiled with this tracker are
+  // independent from ResetModules() and survive until the handle is Reset().
+  JITTrackerHandle CreateIsolatedTracker();
+
+  // Compile with an isolated tracker (for background thread use).
+  // The returned function pointer is valid until tracker.Reset() is called.
+  AQPExprFn CompileExpr(const ir_sql_converter::AQPExpr &expr,
+                        const std::vector<ColSchema> &schema,
+                        JITTrackerHandle &tracker);
+  AQPExprFn CompileFilter(const ir_sql_converter::AQPStmt &filter_node,
+                          const std::vector<ColSchema> &schema,
+                          JITTrackerHandle &tracker,
+                          std::vector<uint8_t> *params_out = nullptr);
+  AQPPipelineFn CompilePipeline(const ir_sql_converter::AQPStmt *filter_node,
+                                const ir_sql_converter::AQPStmt *proj_node,
+                                const std::vector<ColSchema> &in_schema,
+                                JITTrackerHandle &tracker,
+                                std::vector<uint8_t> *params_out = nullptr);
   void SetPrefetch(bool enable, int distance = 8) {
     prefetch_ = enable;
     prefetch_distance_ = distance;
   }
 
+  // Phase 6: separate look-ahead distances for the ROF fused-probe path
+  // (CompileFilterProbeProjectFusion). entry_dist prefetches the ht_entry_t
+  // cache line; row_dist prefetches the build-side row reached via the entry.
+  // 0 disables that level. Defaults (24 / 12) are starting values from plan
+  // §10.4. On JOB the impact is small — most probes land in L2/L3 already
+  // because the HT for JOB tables fits in cache — but the knobs are kept
+  // exposed so workloads with larger HTs (TPC-H SF100+, custom warehouse
+  // data) can tune. Use --jit-prefetch-entry-dist=N / --jit-prefetch-row-
+  // dist=N from the CLI.
+  void SetProbePrefetchDistances(int entry_dist, int row_dist) {
+    prefetch_entry_distance_ = entry_dist;
+    prefetch_row_distance_ = row_dist;
+  }
+
   void SetBatchProbe(bool enable) { batch_probe_ = enable; }
 
-  void SetCache(bool enable, const std::string &dir = "");
+  void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
+
+  void SetCache(int mode);
+
+  void SetDiskCacheDir(const std::string &dir);
+
+  static void ClearObjCache();
+
+  void *LookupCachedFn(const std::string &cache_key,
+                       const std::string &fn_name);
+  const std::string &LastCacheKey() const;
+  const std::string &LastEntryName() const;
+
+  // Releases all JIT-compiled modules (machine code, IR, symbol-table
+  // entries, ExecutionSession state) added since the last reset. The
+  // runtime helper symbols (aqp_like_match, memcpy, etc.) survive across
+  // resets because they are registered without a tracker.
+  //
+  // **Caller invariant**: no JIT function pointer obtained from this
+  // compiler may be in use when ResetModules() is called. Pair it with
+  // clearing whatever map holds those pointers (e.g. clear the per-query
+  // AQPJITContext) BEFORE this call. Currently single-threaded; for
+  // future multi-thread dispatch this needs an additional lock that
+  // serialises Reset against dispatch.
+  void ResetModules();
+
+  FastCompileBackend GetFastMode() const { return fast_mode_; }
+  SimdISA GetSimdISA() const { return simd_isa_; }
+
+  struct CodegenTiming {
+    long opt_us = 0;
+    long add_us = 0;
+    long lookup_us = 0;
+  };
+  const CodegenTiming &LastCodegenTiming() const { return last_cg_timing_; }
 
 private:
-  OptLevel opt_level_;
+  bool skip_opt_;
+  FastCompileBackend fast_mode_ = FastCompileBackend::OFF;
   SimdISA simd_isa_;
   bool use_simd_; // derived: true if simd_isa_ != OFF
   bool prefetch_ = false;
   int prefetch_distance_ = 8;
+  // Phase 6: stage-2 look-ahead distances used by
+  // CompileFilterProbeProjectFusion (consumer-side prefetch). entry_distance
+  // targets the ht_entry_t cache line; row_distance targets the build-side
+  // row reached via that entry. Defaults (24 / 12) from plan §10.4; on JOB
+  // the effect is marginal because the HT typically fits in L3 — tune via
+  // SetProbePrefetchDistances or the CLI flags for larger workloads.
+  int prefetch_entry_distance_ = 24;
+  int prefetch_row_distance_ = 12;
   bool batch_probe_ = false;
+  int skip_hash_cmp_ = 2; // 0=off, 1=single-int-key, 2=all-int-keys
+  bool bloom_tag_ = true;
+  int cache_mode_ = 0;  // 0=off, 1=strict, 2=template
   bool cache_enabled_ = false;
-  std::string cache_dir_;
+
+  CodegenTiming last_cg_timing_;
 
   // LLVM state — managed via unique_ptr to avoid including LLVM headers here
   struct Impl;
@@ -263,5 +452,11 @@ private:
 
   // LLVM IR emission helpers (used inside ir_to_llvm.cpp only)
 };
+
+// §7.3 template cache: thread-local params pointer for non-query-jit levels.
+// The caller sets this before invoking the compiled function; compiled code
+// loads constants from it. Query-jit uses QjitUserData instead.
+void aqp_jit_set_params(const uint8_t *p);
+const uint8_t *aqp_jit_get_params();
 
 } // namespace aqp_jit

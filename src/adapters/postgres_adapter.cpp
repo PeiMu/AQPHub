@@ -145,7 +145,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
         chrono_toc(&timer, "Execute sub-SQL time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (execute_sub_sql_time / 1000.0) << ", ";
     log_file.close();
@@ -180,7 +180,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
         chrono_toc(&timer, "Extra materialize time is\n", false);
     // save time to a file
     std::ofstream log_file;
-    log_file.open("time_log.csv", std::ios_base::app);
+    log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();
@@ -332,6 +332,25 @@ PostgreSQLAdapter::GetEstimatedCost(const std::string &sql) {
 
   PQclear(pg_result);
   return {estimated_cost, estimated_rows};
+}
+
+std::string PostgreSQLAdapter::ExplainAnalyze(const std::string &sql) {
+  // Reuse ExecuteSQL: EXPLAIN (ANALYZE, ...) returns one plan line per row in a
+  // single "QUERY PLAN" column. Failures are returned as text (never thrown) so
+  // a plan error can't abort the surrounding split run.
+  try {
+    QueryResult r =
+        ExecuteSQL("EXPLAIN (ANALYZE, VERBOSE, BUFFERS) " + StripSqlTerminator(sql));
+    std::string plan_text;
+    for (const auto &row : r.rows) {
+      if (!row.empty())
+        plan_text += row.front();
+      plan_text += "\n";
+    }
+    return plan_text;
+  } catch (const std::exception &e) {
+    return std::string("EXPLAIN ANALYZE failed: ") + e.what();
+  }
 }
 
 std::vector<std::pair<double, double>>

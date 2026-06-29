@@ -1,0 +1,168 @@
+# Node-Based Split Optimization log
+## Node-Based Split Optimization: Opt-1 + Opt-3 (Opt-5 REVERTED)
+Status: COMPLETE
+Date: 2026-06-29
+Goal: Close the performance gap between node-based split and none-split on JOB.
+
+### Root Cause Analysis
+
+Materialization overhead is NOT the bottleneck (2-6% of total time). The dominant
+cost is subquery execution time — split subqueries produce suboptimal join plans.
+
+Three failure patterns identified:
+- Pattern A (8 queries): Intermediate cardinality explosion. cn JOIN mc WHERE
+  country_code='[us]' produces 1,153,798 rows. DuckDB natively avoids this via
+  cross-boundary join reordering. Split forces materialization.
+- Pattern B (2 queries): Selective predicates deferred to final query (e.g.,
+  name LIKE '%Downey%Robert%' matches 2 rows but is not in early subqueries).
+- Pattern C (1 query): Cumulative overhead of 6+ tiny temp tables exceeds
+  DuckDB's native pipelining advantage.
+
+### Opt-1: Post-Execution Cardinality Threshold (COMPLETE)
+
+After executing a subquery, check actual cardinality. If it exceeds threshold
+(default 1M) AND the subquery is standalone (no temp table in FROM), abort
+splitting and merge all remaining subqueries back into a single final query.
+
+Mechanism: `force_terminal_next_` flag set in UpdateRemainingIR, checked in
+SplitIR after BLOCK 1's MergeSubquery + MiddleOptimize.
+
+Standalone safeguard prevents aborting beneficial iterative correction (e.g.,
+22d's iter-2 produces 893K rows but references temp1, and splitting is 0.53x
+faster there).
+
+Files modified:
+- include/util/param_config.h: Added split_card_threshold = 1000000
+- src/util/param_config.cpp: Added --split-card-threshold=N CLI flag
+- include/split/node_based_splitter.h: Added split_card_threshold_,
+  last_extraction_standalone_, force_terminal_next_ fields
+- src/split/node_based_splitter.cpp: standalone detection in SplitIR (checks
+  for LOGICAL_CHUNK_GET in extracted subquery tree); force_terminal_next_
+  handler after BLOCK 1; threshold check in UpdateRemainingIR
+- third_party/IR_SQL_Converter/inc/duckdb_plan_to_ir.h: Added
+  table_column_names_map_ to fix stale BoundColumnRef alias after
+  MergeSubquery + MiddleOptimize
+- third_party/IR_SQL_Converter/src/duckdb_plan_to_ir.cpp: Populate
+  table_column_names_map_ from LogicalGet::names during ConstructSimplestScan;
+  ResolveColumnName prefers actual table column names over alias
+
+Standalone result: Gap 1.994s → 1.221s (39% reduction).
+
+### Opt-5: Skip 2-Group Splitting (COMPLETE)
+
+After BLOCK 2's Split, if subqueries_.size() == 2, merge both groups back and
+return the full plan as terminal. Only 1 subquery would be extracted before
+final, giving no iterative correction opportunity.
+
+Verified: all 9 two-group queries (3a, 3b, 3c, 5a, 5b, 5c, 6b, 6d, 6f) are
+worse or neutral with splitting (8 slower at avg 1.33x, 1 neutral).
+
+Files modified:
+- src/split/node_based_splitter.cpp: Added size==2 check after BLOCK 2's Split
+
+### Opt-3: Temp Table Column Min/Max Statistics (COMPLETE)
+
+Added per-column min/max statistics to LogicalColumnDataGet so DuckDB's
+StatisticsPropagator can push range filters from temp tables to real table scans.
+
+Files modified (DuckDB):
+- src/include/duckdb/planner/operator/logical_column_data_get.hpp: Added
+  vector<unique_ptr<BaseStatistics>> column_stats field
+- src/include/duckdb/optimizer/query_split/subquery_preparer.hpp: Updated
+  MergeDataChunk signature to accept column_stats
+- src/optimizer/query_split/subquery_preparer.cpp: Stores column_stats into
+  LogicalColumnDataGet::column_stats in MergeDataChunk
+- src/optimizer/statistics/operator/propagate_get.cpp: PropagateStatistics
+  for LogicalColumnDataGet now iterates column_stats and inserts into
+  statistics_map with ColumnBinding keys
+
+Files modified (middleware):
+- src/split/node_based_splitter.cpp: Retrieves StoredTempResult.column_stats,
+  copies them, passes to MergeDataChunk
+
+### Opt-2: Skip First Standalone — INVESTIGATED, NOT FEASIBLE
+
+Pre-execution estimated cardinalities from DuckDB plan tree are raw table sizes
+(e.g., movie_companies always shows 2,609,129), not join result estimates. Both
+beneficial and harmful first subqueries show identical estimates. No simple
+heuristic to distinguish them. Deferred — would require cost-based split
+decisions instead of pipeline-breaker-based splitting.
+
+### Final Results (15 warm runs, mean, plot_middleware_jit.py parser)
+
+- node-based (Opt-1 + Opt-3): 10.631s
+- none-split: 9.684s
+- Gap: +0.947s (+9.8%)
+- Without any opts: 11.273s (+16.4%)
+- Opt-1 + Opt-3 net saving: 626ms (16.4% → 9.8%)
+- Correctness: 113/113 JOB queries pass
+
+Verified:
+- [x] All 113 JOB queries pass correctness (node-based with all opts)
+- [x] CSV timing format unchanged (parser-compatible)
+- [x] All debug prints guarded by enable_debug_print_ or NDEBUG
+- [x] No new unguarded prints added
+- [x] measure/*.sh and measure/*.py scripts unchanged
+
+### Opt-5: REVERTED (2026-06-29)
+
+The 2-group skip caused jit-cache=full correctness failures. Root cause:
+SubqueryPreparer::MergeSubquery uses unordered_map<idx_t, unique_ptr<LogicalOperator>>
+and unordered_set<idx_t> (subquery_preparer.cpp:470-471, 538-539, 569, 610).
+Non-deterministic iteration order produces different expression bindings between
+benchmark iterations, causing JIT cache hash collisions with mismatched types.
+
+Error: "Failed to cast expression to type - expression type mismatch" on query
+10c with jit-cache=full (12 total failures across all jit-cache=full configs).
+
+Attempted fixes:
+1. has_prior_temps_ guard: only apply 2-group skip at initial iteration (no prior
+   temp tables). Passes correctness but regresses performance (+8.5% vs +4.9%).
+   73 queries that hit 2-group at later iterations lose the skip.
+2. Decision: fully revert. Net improvement was only 69ms (measured with 15 warm
+   runs using correct parser). Not worth the complexity or DuckDB-side fix.
+
+Files modified (revert):
+- src/split/node_based_splitter.cpp: Removed 2-group skip block and
+  has_prior_temps_ usage
+- include/split/node_based_splitter.h: Removed has_prior_temps_ field
+
+### Threshold Tuning (2026-06-29)
+
+Tested thresholds: 0 (off), 200K, 500K, 1M.
+Parser: plot_middleware_jit.py:analyze_middleware_breakdown() (mean of 10 warm runs).
+
+Results (15 iterations, 113 JOB queries):
+  none-split:  9684ms = 9.684s
+  thresh_off: 11273ms = 11.273s (+16.4%)
+  thresh_200K: 10786ms = 10.786s (+11.4%)
+  thresh_500K: 10838ms = 10.838s (+11.9%)
+  thresh_1M:  10631ms = 10.631s (+9.8%)
+
+Threshold=1M is optimal: 38 winners (+789ms), 11 losers (-146ms), net +643ms.
+Lower thresholds abort more aggressively but hurt more beneficial splits:
+  200K: 37 winners (+1049ms), 30 losers (-559ms), net +490ms
+  500K: 33 winners (+870ms), 16 losers (-439ms), net +431ms
+
+4 queries hurt by threshold=1M (Category C: was winning, now loses):
+  15c: none=91.8, off=75.5, 1M=119.0 (-43.4ms)
+  15d: none=107.1, off=69.4, 1M=126.8 (-57.3ms)
+  13b: none=51.7, off=51.4, 1M=55.1 (-3.7ms)
+  13c: none=48.5, off=46.6, 1M=51.0 (-4.5ms)
+15c/15d: iter1 produces cn JOIN mc = 1.15M standalone (triggers abort), but
+subsequent iterations successfully reduce via iterative correction (iter2: 1783).
+The standalone guard cannot distinguish these from 8c/9d where 1.15M compounds.
+
+Gap attribution (Opt-1 + Opt-3, 15 warm runs):
+  Threshold-aborted (28 queries):  +806ms
+  2-group initial (9 queries):     +271ms (would need Opt-5 with DuckDB fix)
+  Multi-iteration losers:         +1251ms (inherent split overhead)
+  Winners (NB faster):            -1247ms (iterative correction strength)
+  Net:                             +947ms (+9.8%)
+
+CSV files produced:
+  measure/job_result/duckdb_none_none_off_breakdown_time_log.csv
+  measure/job_result/duckdb_node-based_none_off_thresh_off_breakdown_time_log.csv
+  measure/job_result/duckdb_node-based_none_off_thresh_200000_breakdown_time_log.csv
+  measure/job_result/duckdb_node-based_none_off_thresh_500000_breakdown_time_log.csv
+  measure/job_result/duckdb_node-based_none_off_thresh_1000000_breakdown_time_log.csv
