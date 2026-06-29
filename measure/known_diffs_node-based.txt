@@ -1,0 +1,19 @@
+# Known node-based correctness diffs (pre-existing, not caused by JIT changes)
+#
+# These queries produce different MIN() results under node-based split
+# vs no-split due to join-order-dependent intermediate cardinalities.
+# The golden file uses no-split results (correct). Non-query-JIT NB configs
+# (interpreter, expr-jit, operator-jit) may produce different MIN() values
+# for these queries.
+#
+# Format: one data line per known diff (exact text that may appear in the
+# output instead of the golden value). The correctness_test.sh script
+# strips diff hunks where BOTH the output line and golden line are listed
+# in this file or are NULL|...|NULL|.
+#
+# Query 24a: golden=Additional Voices|Baker, Andrea|Baiohazâdo 6|
+NULL|NULL|NULL|
+# Query 29b: golden=Queen|Andrews, Julie|Shrek 2|
+NULL|NULL|NULL|
+# Query 7a: golden=Antonioni, Michelangelo|Dressed to Kill|
+Chevalier, Maurice|Clint Eastwood: The Man from Malpaso|

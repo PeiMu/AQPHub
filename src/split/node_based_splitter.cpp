@@ -84,6 +84,22 @@ std::unique_ptr<SubqueryExtraction> NodeBasedSplitter::SplitIR(
 
   RunMiddleOptimize();
 
+  // ── Forced terminal: cardinality threshold exceeded on previous iteration.
+  // BLOCK 1 already merged all remaining subqueries back into plan_ and
+  // MiddleOptimize re-optimized. Return the full plan as the final query.
+  if (force_terminal_next_) {
+    force_terminal_next_ = false;
+    plan_ = qs_->Clear(std::move(plan_));
+    terminal_ = true;
+    if (enable_debug_print_)
+      std::cout << "[NodeBased] Forced terminal: returning merged plan.\n";
+    auto extraction =
+        std::make_unique<SubqueryExtraction>(std::set<unsigned int>{});
+    extraction->is_final = true;
+    extraction->sub_ir = TakePlanAsIR();
+    return extraction;
+  }
+
   plan_ = qs_->Clear(std::move(plan_));
   plan_ = qs_->Split(std::move(plan_), true);
   subqueries_ = qs_->GetSubqueries();
@@ -130,8 +146,20 @@ std::unique_ptr<SubqueryExtraction> NodeBasedSplitter::SplitIR(
     extraction->sub_ir = TakePlanAsIR();
     return extraction;
   }
-
   // ── Normal: extract the first subquery group as a sub-plan ─────────────
+  // Check if the subquery being extracted is standalone (no CHUNK_GET nodes,
+  // meaning it doesn't reference any prior temp table results).
+  last_extraction_standalone_ = true;
+  std::function<void(const duckdb::LogicalOperator &)> check_standalone =
+      [&](const duckdb::LogicalOperator &op) {
+        if (op.type == duckdb::LogicalOperatorType::LOGICAL_CHUNK_GET)
+          last_extraction_standalone_ = false;
+        for (auto &child : op.children)
+          if (child)
+            check_standalone(*child);
+      };
+  check_standalone(*subqueries_.front()[0]);
+
   // Save sibling for MergeSibling in UpdateRemainingIR.
   last_sibling_node_ = nullptr;
   if (subqueries_.front().size() > 1)
@@ -217,9 +245,15 @@ NodeBasedSplitter::UpdateRemainingIR(
   if (!external_execution_) {
     collection->Types() = plan_adapter_->temp_table_types;
   }
+  // Copy column statistics from the StoredTempResult for the temp table.
+  duckdb::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats_copy;
+  if (auto *stored = plan_adapter_->GetStoredTempResult(temp_table_name)) {
+    for (auto &s : stored->column_stats) {
+      col_stats_copy.push_back(s ? s->Copy().ToUnique() : nullptr);
+    }
+  }
   sp_->MergeDataChunk(subqueries_, std::move(collection),
-                      temp_table_cardinality);
-
+                      temp_table_cardinality, std::move(col_stats_copy));
   // Merge sibling (parallel-execution path; ENABLE_PARALLEL_EXECUTION=false).
   if (last_sibling_node_) {
     merge_sibling_expr_ =
@@ -231,6 +265,20 @@ NodeBasedSplitter::UpdateRemainingIR(
   sp_->UpdateSubqueriesIndex(subqueries_);
   table_expr_queue_ =
       sp_->UpdateTableExpr(std::move(table_expr_queue_), proj_expr_);
+
+  // ── Cardinality threshold check: flag abort for next SplitIR call.
+  // Only applied when the extracted subquery doesn't reference any prior temp
+  // tables (standalone), preventing abort of beneficial iterative correction.
+  if (last_extraction_standalone_ &&
+      temp_table_cardinality > kSplitCardThreshold &&
+      !subqueries_.empty()) {
+    if (enable_debug_print_) {
+      std::cout << "[NodeBased] Cardinality threshold exceeded: "
+                << temp_table_cardinality << " > " << kSplitCardThreshold
+                << " (standalone subquery). Will abort split on next iteration.\n";
+    }
+    force_terminal_next_ = true;
+  }
 
   // ── Late terminal: only one subquery group remains ──────────────────────
   // UpdateProjHead IS called here (unlike the early-terminal path).

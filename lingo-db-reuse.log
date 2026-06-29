@@ -2,6 +2,7 @@
 # AQP Middleware Pipeline-JIT — Phases 1-5 COMPLETE (2026-06-10)
 # Query-JIT (--jit-level=query) — Phases 0-4 COMPLETE (2026-06-11);
 # Phase 5 (§5.1-5.7 incl. A+ join-filter pushdown) COMPLETE (2026-06-12).
+# Node-Based Split — Opt-1 + Opt-3 COMPLETE; Opt-5 REVERTED (2026-06-29).
 
 ## Phase 1: skip_hash_cmp (lingo-db SpecializeSubOp)
 Status: COMPLETE
@@ -2494,3 +2495,4 @@ Verification:
 - Performance: full breakdown_measurement_script.sh sweep (100 configs) confirms
   5,680ms for query_tpde NB
 - CSV format: verified parseable by plot_middleware_jit.py (113 queries, 38 columns)
+

@@ -102,6 +102,13 @@ private:
   bool merge_sibling_expr_ = false;
   bool terminal_ = false;
   bool external_execution_ = false; // true when exec adapter != DuckDB
+  bool last_extraction_standalone_ = false;
+  bool force_terminal_next_ = false;
+
+  // Post-execution cardinality threshold for standalone subquery abort.
+  // If a standalone subquery (no temp table in FROM) produces more rows than
+  // this, abort splitting and run the remainder as a single query.
+  static constexpr uint64_t kSplitCardThreshold = 1000000;
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   // Run MiddleOptimize inside a transaction (matches client_context.cpp).
