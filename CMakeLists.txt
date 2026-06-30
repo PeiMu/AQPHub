@@ -10,6 +10,11 @@ if (AQP_NPROC EQUAL 0)
 endif ()
 set(AQP_TPDE_PARALLEL_JOBS ${AQP_NPROC} CACHE STRING "Parallel jobs for TPDE build")
 
+# Exclude anaconda prefix from CMake search paths — its libraries (zstd, tinfo,
+# libstdc++) lack version symbols and contaminate RUNPATH.
+list(APPEND CMAKE_IGNORE_PREFIX_PATH "$ENV{CONDA_PREFIX}")
+set(CMAKE_IGNORE_PREFIX_PATH "${CMAKE_IGNORE_PREFIX_PATH}" CACHE STRING "" FORCE)
+
 # Load the full zstd CONFIG package before LLVM: LLVM's Findzstd defines only
 # zstd::libzstd_shared/_static, which makes Arrow's later zstdTargets.cmake
 # include fail with "some (but not all) targets already defined".
@@ -122,7 +127,11 @@ if (LLVM_FOUND)
 
         target_include_directories(aqp_jit_lib PRIVATE
                 ${AQP_TPDE_SOURCE_DIR}/tpde-llvm/include)
-        target_link_libraries(aqp_jit_lib PUBLIC tpde_bundle -ltinfo)
+        find_library(TINFO_LIB tinfo PATHS /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu NO_DEFAULT_PATH)
+        if (NOT TINFO_LIB)
+            find_library(TINFO_LIB tinfo)
+        endif ()
+        target_link_libraries(aqp_jit_lib PUBLIC tpde_bundle ${TINFO_LIB})
         target_compile_definitions(aqp_jit_lib PRIVATE AQP_HAVE_TPDE)
         message(STATUS "AQP fast-compile TPDE backend: ENABLED (ExternalProject)")
     else ()
