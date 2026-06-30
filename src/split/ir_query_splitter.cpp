@@ -1159,6 +1159,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     } else {
       if (!tune_entries_.empty())
         ApplyTuneOverride(iteration_count_);
+      if (config_.engine == BackendEngine::DUCKDB && trivial_temp.empty())
+        ApplyCrossSubPlanOptimizations(final_sql);
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
                   << config_.jit_flags << std::dec << " (";
@@ -2961,7 +2963,7 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
 
   if (!build_bloom_filters) return;
 
-  constexpr uint64_t kBFMaxTempCard = 100000;
+  constexpr uint64_t kBFMaxTempCard = 2000000;
 
   std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
   std::set<std::pair<std::string, std::string>> bf_targets;

@@ -210,6 +210,12 @@ void DuckDBAdapter::RegisterTempCollectionScan() {
       TempCollectionScanFunc, TempCollectionBind, TempCollectionInitGlobal);
   func.cardinality = TempCollectionCardinality;
   func.projection_pushdown = true;
+  // NOTE: Do NOT register TempCollectionStatistics here. While it provides
+  // per-column min/max for numeric temp table columns, DuckDB's optimizer uses
+  // these stats to change join ordering, which causes widespread regressions
+  // (+0.416s across 113 JOB queries). The cardinality callback alone is
+  // sufficient for good plans.
+  // func.statistics_extended = TempCollectionStatistics;
   func.function_info = duckdb::make_shared_ptr<TempCollectionScanInfo>(
       &temp_collections_, &temp_state_mutex_);
 
@@ -1347,12 +1353,30 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     else if (enable_timing_ && !query_jit_ && jit_compiler_)
       WriteJitTimingColumn(0);
 #endif
-    // No JIT registration for this statement: drop any stale JIT context
-    // from previous sub-plan iterations. EIDs are operator memory addresses
-    // which get reused across plans, so leftover compiled fns / bloom
-    // filters would mis-dispatch on this plan.
     GetClientContext()->aqp_jit_context.reset();
-    auto duckdb_result = conn->Query(sql);
+    auto prepared = conn->Prepare(sql);
+    if (prepared->HasError()) {
+      throw std::runtime_error("Query failed: " + prepared->GetError());
+    }
+
+#ifdef HAVE_LLVM
+    if (!pending_bloom_filters_.empty() && prepared->data &&
+        prepared->data->physical_plan) {
+      auto *ctx3 = GetClientContext();
+      if (!ctx3->aqp_jit_context)
+        ctx3->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+      else
+        ctx3->aqp_jit_context->bloom_scan_filters.clear();
+      RegisterBloomFilters(prepared->data->physical_plan->Root(),
+                           GetClientContext(), pending_bloom_filters_);
+      pending_bloom_filters_.clear();
+    }
+#endif
+    if (prepared->data && prepared->data->physical_plan)
+      InjectTempTableJoinStats(prepared->data->physical_plan->Root());
+
+    duckdb::vector<duckdb::Value> bound;
+    auto duckdb_result = prepared->Execute(bound, false);
     if (enable_timing_) {
       auto run_us =
           chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
@@ -1361,7 +1385,6 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     if (duckdb_result->HasError()) {
       throw std::runtime_error("Query failed: " + duckdb_result->GetError());
     }
-    //  auto intermediate_results = std::move(duckdb_result->Collection());
 
     // Get columns
     result.num_columns = duckdb_result->ColumnCount();
@@ -1765,7 +1788,9 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     auto &types = subquery_result->Types();
     col_stats.resize(types.size());
     for (size_t ci = 0; ci < types.size(); ci++) {
-      col_stats[ci] = duckdb::BaseStatistics::CreateEmpty(types[ci]).ToUnique();
+      if (types[ci].IsNumeric()) {
+        col_stats[ci] = duckdb::BaseStatistics::CreateEmpty(types[ci]).ToUnique();
+      }
     }
     duckdb::ColumnDataScanState scan_state;
     subquery_result->InitializeScan(scan_state);
@@ -1777,6 +1802,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       has_rows = true;
       chunk.Flatten();
       for (size_t ci = 0; ci < types.size(); ci++) {
+        if (!col_stats[ci]) continue;
         auto &vec = chunk.data[ci];
         auto &validity = duckdb::FlatVector::Validity(vec);
         bool col_has_null = false;
