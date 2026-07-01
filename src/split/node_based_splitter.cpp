@@ -245,15 +245,8 @@ NodeBasedSplitter::UpdateRemainingIR(
   if (!external_execution_) {
     collection->Types() = plan_adapter_->temp_table_types;
   }
-  // Copy column statistics from the StoredTempResult for the temp table.
-  duckdb::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats_copy;
-  if (auto *stored = plan_adapter_->GetStoredTempResult(temp_table_name)) {
-    for (auto &s : stored->column_stats) {
-      col_stats_copy.push_back(s ? s->Copy().ToUnique() : nullptr);
-    }
-  }
   sp_->MergeDataChunk(subqueries_, std::move(collection),
-                      temp_table_cardinality, std::move(col_stats_copy));
+                      temp_table_cardinality);
   // Merge sibling (parallel-execution path; ENABLE_PARALLEL_EXECUTION=false).
   if (last_sibling_node_) {
     merge_sibling_expr_ =
