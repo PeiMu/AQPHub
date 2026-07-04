@@ -215,7 +215,6 @@ void IRQuerySplitter::LoadTuneEntry(int idx, const nlohmann::json &val) {
     if (v.is_string()) {
       std::string s = v.get<std::string>();
       if (s == "off") e.skip_hash_cmp = 0;
-      else if (s == "single") e.skip_hash_cmp = 1;
       else if (s == "all") e.skip_hash_cmp = 2;
     } else {
       e.skip_hash_cmp = v.get<bool>() ? 2 : 0;

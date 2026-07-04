@@ -98,7 +98,7 @@ struct ParamConfig {
   int jit_prefetch_entry_distance = 24;
   int jit_prefetch_row_distance = 12;
   bool jit_batch_probe = true;
-  int jit_skip_hash_cmp = 0; // 0=off, 1=single-int-key, 2=all-int-keys
+  int jit_skip_hash_cmp = 0; // 0=off, 2=all-int-keys
   // JIT object cache mode:
   //   0 = off (no caching)
   //   1 = single-run-strict (in-memory, exact plan match, cleared between

@@ -10,7 +10,7 @@ jit_simd=$4
 payload_prune=${5:-on}
 prefetch=${6:-on}
 batch_probe=${7:-on}
-skip_hash_cmp=${8:-all}   # off | single | all (legacy: on=all)
+skip_hash_cmp=${8:-all}   # off | all (legacy: on=all)
 cache=${9:-off}
 
 ########################################

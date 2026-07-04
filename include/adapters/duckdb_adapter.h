@@ -662,7 +662,7 @@ private:
   int  jit_prefetch_entry_distance_ = 24;
   int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
-  int  jit_skip_hash_cmp_ = 2; // 0=off, 1=single, 2=all
+  int  jit_skip_hash_cmp_ = 2; // 0=off, 2=all
   bool jit_single_col_int_join_ = true;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
