@@ -1156,8 +1156,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         log_final_exe_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     } else {
+      // Final-query tune key = number of EXECUTED subqueries (matches the
+      // group index tune_per_subquery.py assigns to the final tail).  Do not
+      // use iteration_count_: a threshold-abort split burns one iteration on
+      // terminal discovery without executing a subquery, so iteration_count_
+      // overshoots the key by 1 and the final query keeps stale flags.
       if (!tune_entries_.empty())
-        ApplyTuneOverride(iteration_count_);
+        ApplyTuneOverride(static_cast<int>(temp_tables_.size()));
       if (config_.engine == BackendEngine::DUCKDB && trivial_temp.empty())
         ApplyCrossSubPlanOptimizations(final_sql);
       if (config_.enable_debug_print) {
