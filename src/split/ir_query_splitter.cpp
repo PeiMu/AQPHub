@@ -945,7 +945,19 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
     if (!precomputed_extraction_)
 #endif
-      splitter_->ReorderBeforeSplit(remaining_ir);
+    {
+      // Timed into pending_extract_us_ so the (topdown-only) ReOptimizeIR
+      // round trip shows up in the extract_next_sub-IR column instead of
+      // vanishing between timers.
+      if (config_.enable_timing) {
+        auto reorder_timer = chrono_tic();
+        splitter_->ReorderBeforeSplit(remaining_ir);
+        pending_extract_us_ +=
+            chrono_toc(&reorder_timer, "ReorderBeforeSplit time\n", false);
+      } else {
+        splitter_->ReorderBeforeSplit(remaining_ir);
+      }
+    }
 
     if (!ExecuteOneIteration(remaining_ir)) {
       std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
