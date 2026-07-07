@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 engine=$1
 split=$2
 
@@ -12,20 +15,20 @@ rm -rf temp.csv
 ########################################
 # DB connection
 ########################################
-if [[ "$engine" == "postgres" ]]; then
-    db_conn="host=localhost port=5432 dbname=dsb_10 user=postgres"
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    db_conn="${PG_CONN}"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb/measure/dsb_10.db"
+    db_conn="${DSB_DUCKDB_DB}"
 
 elif [[ "$engine" == "umbra" ]]; then
-    db_conn="host=localhost port=15432 user=postgres password=postgres"
+    db_conn="${UMBRA_CONN}"
 
 elif [[ "$engine" == "mariadb" ]]; then
-    db_conn="host=localhost dbname=dsb_10 user=dsb_10"
+    db_conn="${MARIADB_CONN}"
 
 elif [[ "$engine" == "opengauss" ]]; then
-    db_conn="host=localhost port=7654 dbname=dsb_10 user=dsb_10 password=dsb_10"
+    db_conn="${OPENGAUSS_CONN}"
 
 else
     echo "Unknown engine: $engine"
@@ -36,11 +39,9 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/dsb_10.db"
-    helper_db_arg="--helper-db-path=${helper_db_path}"
+    helper_db_arg="--helper-db-path=${DSB_DUCKDB_DB}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_path="host=localhost port=5432 dbname=dsb_10 user=postgres"
-    helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
+    helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
 fi
 
 rm -f "${log_name}"
@@ -63,11 +64,11 @@ for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
     echo "Running benchmark for ${sql}..."
 
     hyperfine --warmup ${warmup} --runs ${iteration} --export-csv temp.csv \
-    "${cmd_prefix}../build_release/aqp_middleware --engine=${engine} \
+    "${cmd_prefix}${PROJECT}/build_release/aqp_middleware --engine=${engine} \
     --db=\"${db_conn}\" \
     \"${helper_db_arg}\" \
-    --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
-    --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
+    --schema=${DSB_PATH}/scripts/create_tables.sql \
+    --fkeys=${DSB_PATH}/scripts/tpcds_ri_umbra.sql \
     --split=\"${split}\" --no-analyze ${sql}"
     cat temp.csv >> "${log_name}"
 done

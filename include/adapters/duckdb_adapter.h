@@ -568,6 +568,12 @@ public:
   RegisterExternalTempTable(const std::string &temp_name,
                             const duckdb::vector<duckdb::LogicalType> &types,
                             const std::vector<std::string> &col_names);
+  void
+  RegisterExternalTempTableWithIndex(
+      const std::string &temp_name,
+      const duckdb::vector<duckdb::LogicalType> &types,
+      const std::vector<std::string> &col_names,
+      duckdb::idx_t chunk_index);
 
   // Kernel temp table management (CSR executor results)
   void RegisterKernelTemp(const std::string &name,

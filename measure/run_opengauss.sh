@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 mkdir -p job_result/
 rm -rf compile.log
 
@@ -28,7 +31,7 @@ opengauss_start
 # ANALYZE
 ########################################
 echo "ANALYZING..."
-sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_table.sql
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < "${IMDB_BENCH}/analyze_table.sql"
 echo "ANALYZE done"
 
 #dir="$JOB_PATH/opengauss_queries"

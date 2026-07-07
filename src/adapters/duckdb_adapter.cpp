@@ -6256,6 +6256,17 @@ void DuckDBAdapter::RegisterExternalTempTable(
   chunk_col_names_[data_chunk_index] = col_names;
 }
 
+void DuckDBAdapter::RegisterExternalTempTableWithIndex(
+    const std::string &temp_name,
+    const duckdb::vector<duckdb::LogicalType> &types,
+    const std::vector<std::string> &col_names,
+    duckdb::idx_t chunk_index) {
+  intermediate_table_map[chunk_index] = temp_name;
+  temp_table_index_ = chunk_index;
+  temp_table_types = types;
+  chunk_col_names_[chunk_index] = col_names;
+}
+
 #ifdef HAVE_LLVM
 std::unordered_map<std::string, CachedQueryPlan> &
 DuckDBAdapter::QueryPlanCache() {

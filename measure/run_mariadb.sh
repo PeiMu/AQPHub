@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 mkdir -p job_result/
 rm -rf compile.log
 
@@ -28,7 +31,7 @@ mariadb_stop() {
 # ANALYZE
 ########################################
 echo "ANALYZING..."
-mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_mariadb_table.sql
+mariadb -u imdb -D imdb < "${IMDB_BENCH}/analyze_mariadb_table.sql"
 echo "ANALYZE done"
 
 #dir="$JOB_PATH/mariadb_queries"

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 engine=$1
 split=$2
 jit_level=${3:-none}
@@ -75,20 +78,20 @@ iteration=15 # 5 warm up, 10 runs
 ########################################
 # DB connection
 ########################################
-if [[ "$engine" == "postgres" ]]; then
-    db_conn="host=localhost port=5432 dbname=imdb user=pei"
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    db_conn="${PG_CONN}"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb/measure/imdb.db"
+    db_conn="${DUCKDB_DB}"
 
 elif [[ "$engine" == "umbra" ]]; then
-    db_conn="host=localhost port=15432 user=postgres password=postgres"
+    db_conn="${UMBRA_CONN}"
 
 elif [[ "$engine" == "mariadb" ]]; then
-    db_conn="host=localhost dbname=imdb user=imdb"
+    db_conn="${MARIADB_CONN}"
 
 elif [[ "$engine" == "opengauss" ]]; then
-    db_conn="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132"
+    db_conn="${OPENGAUSS_CONN}"
 
 elif [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     db_conn=""
@@ -102,14 +105,11 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$engine" == "lingo-db-runtime" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
-    helper_db_arg="--helper-db-path=${helper_db_path}"
+    helper_db_arg="--helper-db-path=${DUCKDB_DB}"
 elif [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
-    helper_db_arg="--helper-db-path=${helper_db_path}"
+    helper_db_arg="--helper-db-path=${DUCKDB_DB}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_path="host=localhost port=5432 dbname=imdb user=pei"
-    helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
+    helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
 fi
 
 ########################################
@@ -151,15 +151,14 @@ stop_umbra() {
 ########################################
 # Start / Stop PostgreSQL
 ########################################
-Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data
+  ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data -m smart -s
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s
 }
 rm_pg_log() {
-  rm $Project_path/logfile
+  rm -f "${PG_LOG}"
 }
 
 ########################################
@@ -242,9 +241,9 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_mariadb_table.sql
-elif [[ "$engine" == "postgres" ]]; then
-    psql -U pei -d imdb -c "ANALYZE;"
+    mariadb -u imdb -D imdb < "${IMDB_BENCH}/analyze_mariadb_table.sql"
+elif [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    ${PG_BIN}/psql -d "${PG_CONN}" -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
     sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 -c "ANALYZE;"
 fi

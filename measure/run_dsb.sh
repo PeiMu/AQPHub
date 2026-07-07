@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 engine=$1
 split=$2
 log_name=aqp_middleware_${engine}_${split}_dsb.txt
@@ -10,20 +13,20 @@ container_name="umbra_benchmark"
 ########################################
 # DB connection
 ########################################
-if [[ "$engine" == "postgres" ]]; then
-    db_conn="host=localhost port=5432 dbname=dsb_10 user=postgres"
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    db_conn="${PG_CONN}"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb/measure/dsb_10.db"
+    db_conn="${DSB_DUCKDB_DB}"
 
 elif [[ "$engine" == "umbra" ]]; then
-    db_conn="host=localhost port=15432 user=postgres password=postgres"
+    db_conn="${UMBRA_CONN}"
 
 elif [[ "$engine" == "mariadb" ]]; then
-    db_conn="host=localhost dbname=dsb_10 user=dsb_10"
+    db_conn="${MARIADB_CONN}"
 
 elif [[ "$engine" == "opengauss" ]]; then
-    db_conn="host=localhost port=7654 dbname=dsb_10 user=dsb_10 password=dsb_10"
+    db_conn="${OPENGAUSS_CONN}"
 
 else
     echo "Unknown engine: $engine"
@@ -34,11 +37,9 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/dsb_10.db"
-    helper_db_arg="--helper-db-path=${helper_db_path}"
+    helper_db_arg="--helper-db-path=${DSB_DUCKDB_DB}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_path="host=localhost port=5432 dbname=dsb_10 user=postgres"
-    helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
+    helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
 fi
 
 ########################################
@@ -80,15 +81,14 @@ stop_umbra() {
 ########################################
 # Start / Stop PostgreSQL
 ########################################
-Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data
+  ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data -m smart -s
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s
 }
 rm_pg_log() {
-  rm $Project_path/logfile
+  rm -f "${PG_LOG}"
 }
 
 ########################################
@@ -170,7 +170,7 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u dsb_10 -D dsb_10 < /home/pei/Project/benchmarks/dsb-postgres/analyze_mariadb_dsb_table.sql
+    mariadb -u dsb_10 -D dsb_10 < "${DSB_PATH}/analyze_mariadb_dsb_table.sql"
 elif [[ "$engine" == "postgres" ]]; then
     psql -U postgres -d dsb_10 -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
@@ -190,12 +190,12 @@ fi
 for sql in $(find "$dir_1" "$dir_2" -type f -name "*.sql"); do
     echo "Running benchmark for $sql..." | tee -a "$log_name"
 
-    $cmd_prefix ../build_release/aqp_middleware \
+    $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
         --engine="${engine}" \
         --db="${db_conn}" \
         "${helper_db_arg}" \
-        --schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
-        --fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
+        --schema="${DSB_PATH}/scripts/create_tables.sql" \
+        --fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql" \
         --split="${split}" \
         --no-analyze \
         "${sql}" \

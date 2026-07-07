@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 mkdir -p dsb_result/
 rm -rf compile.log
 
@@ -9,15 +12,14 @@ split=$2
 ########################################
 # Start / Stop PostgreSQL
 ########################################
-Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data_18_3
+  ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data_18_3 -m smart -s
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s
 }
 rm_pg_log() {
-  rm $Project_path/logfile
+  rm -f "${PG_LOG}"
 }
 
 ########################################
@@ -128,7 +130,7 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u dsb_10 -D dsb_10 < /home/pei/Project/benchmarks/dsb-postgres/analyze_mariadb_dsb_table.sql
+    mariadb -u dsb_10 -D dsb_10 < "${DSB_PATH}/analyze_mariadb_dsb_table.sql"
 elif [[ "$engine" == "postgres" ]]; then
     psql -U postgres -d dsb_10 -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
@@ -136,6 +138,6 @@ elif [[ "$engine" == "opengauss" ]]; then
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}"
+cd "${SCRIPT_DIR}" && bash ./hyperfine_dsb.sh "${engine}" "${split}"
 
 #mv compile.log job_result/.
