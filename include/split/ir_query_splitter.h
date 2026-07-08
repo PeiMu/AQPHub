@@ -201,6 +201,10 @@ private:
   // Check if SQL references any temp table known to have 0 rows
   bool SubPlanReferencesEmptyTemp(const std::string &sql) const;
 
+  // Walk IR tree and return true iff every join is Inner (or Semi/Anti/Mark,
+  // which also produce empty output from empty input).
+  static bool AllJoinsPropagatEmpty(const ir_sql_converter::AQPStmt *ir);
+
   // Cross-sub-plan optimizations (range pred injection + bloom filter).
   // Outlined from ExecuteOneIteration to keep the hot path compact for
   // better instruction cache utilization (expert knowledge #9, #18).
@@ -243,6 +247,11 @@ private:
 
   // Temp tables known to have 0 rows (INNER JOIN → 0 results guaranteed)
   std::set<std::string> empty_temp_tables_;
+
+  // Early termination: skip remaining splits + final JIT when a temp
+  // returns 0 rows and all joins are inner (empty propagates to output).
+  bool all_inner_joins_ = false;
+  bool early_terminate_ = false;
 
   // Cached integer-column min/max per temp table (immutable once stored);
   // avoids re-scanning collections on repeated range-pred injection.

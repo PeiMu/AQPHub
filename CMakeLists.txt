@@ -154,6 +154,8 @@ add_library(split_lib STATIC
         src/split/foreign_key_extractor.cpp
         src/split/select_sub_ir.cpp
         src/split/fk_based_splitter.cpp
+        src/split/distinct_cache.cpp
+        src/split/ir_join_optimizer.cpp
         src/split/topdown_splitter.cpp
         src/split/node_based_splitter.cpp
         src/split/ir_query_splitter.cpp

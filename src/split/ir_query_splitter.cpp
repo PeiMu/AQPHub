@@ -660,6 +660,9 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   // incrementing across queries so temp table names stay unique)
   temp_tables_.clear();
   sub_plan_sqls_.clear();
+  empty_temp_tables_.clear();
+  all_inner_joins_ = false;
+  early_terminate_ = false;
   for (auto &kv : async_csrs_)
     kv.second.wait();
   async_csrs_.clear();
@@ -899,6 +902,9 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   }
 #endif
 
+  all_inner_joins_ =
+      remaining_ir != nullptr && AllJoinsPropagatEmpty(remaining_ir.get());
+
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   // Phase A wiring: the adapter fires this hook twice per iteration — after
   // Prepare(i) and again after Execute(i). Legacy spec mode launches the bg
@@ -928,6 +934,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   // Also continue if precomputed_extraction_ holds a cached SplitIR result
   // from LaunchSpeculativeCompile — even if the splitter is now terminal.
   auto has_work = [&]() -> bool {
+    if (early_terminate_)
+      return false;
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
     if (precomputed_extraction_)
       return true;
@@ -1033,6 +1041,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::cout << final_sql << std::endl;
     }
   }
+
   // Try kernel MIN aggregate execution path
   QueryResult query_result;
   bool kernel_final_executed = false;
@@ -2649,6 +2658,12 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
   if (cardinality == 0) {
     empty_temp_tables_.insert(temp_table_name);
+    if (all_inner_joins_) {
+      early_terminate_ = true;
+      if (config_.enable_debug_print)
+        std::cerr << "[EARLY-TERM] temp " << temp_table_name
+                  << " returned 0 rows, all joins inner — terminating\n";
+    }
   }
 
   TempTableInfo temp_table =
@@ -2823,6 +2838,24 @@ bool IRQuerySplitter::SubPlanReferencesEmptyTemp(const std::string &sql) const {
       return true;
   }
   return false;
+}
+
+bool IRQuerySplitter::AllJoinsPropagatEmpty(
+    const ir_sql_converter::AQPStmt *ir) {
+  if (!ir) return true;
+  if (ir->GetNodeType() == ir_sql_converter::JoinNode) {
+    auto *join = static_cast<const ir_sql_converter::SimplestJoin *>(ir);
+    auto jt = join->GetSimplestJoinType();
+    if (jt == ir_sql_converter::Left || jt == ir_sql_converter::Right ||
+        jt == ir_sql_converter::Full) {
+      return false;
+    }
+  }
+  for (const auto &child : ir->children) {
+    if (!AllJoinsPropagatEmpty(child.get()))
+      return false;
+  }
+  return true;
 }
 
 // Outlined from ExecuteOneIteration to keep the hot path compact.
@@ -3211,6 +3244,8 @@ void IRQuerySplitter::UpdateNodeIndices(
     auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node);
     if (join) {
       for (auto &cond : join->join_conditions) {
+        if (!cond)
+          continue;
         if (cond->left_attr) {
           auto updated = UpdateAttrIndices(cond->left_attr.get(), temp_table,
                                            old_table_indices);

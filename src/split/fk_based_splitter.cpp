@@ -12,6 +12,125 @@
 
 namespace middleware {
 
+namespace {
+
+// Locate the canonical IN-filter unit wrapping `scan_idx`:
+// Filter[mark qual] -> MarkJoin -> [Scan(scan_idx), Chunk]. Only this exact
+// shape is returned; anything else (bare Mark, filter between Mark and scan)
+// is not safely clonable and the caller falls back to a bare scan.
+const ir_sql_converter::AQPStmt *
+FindMarkUnitForScan(const ir_sql_converter::AQPStmt *node,
+                    unsigned int scan_idx) {
+  if (!node)
+    return nullptr;
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::FilterNode &&
+      !node->children.empty()) {
+    auto *j = dynamic_cast<const ir_sql_converter::SimplestJoin *>(
+        node->children[0].get());
+    if (j &&
+        j->GetSimplestJoinType() == ir_sql_converter::SimplestJoinType::Mark) {
+      bool has_scan = false, has_chunk = false;
+      for (const auto &c : j->children) {
+        if (!c)
+          continue;
+        if (auto *s =
+                dynamic_cast<const ir_sql_converter::SimplestScan *>(c.get()))
+          has_scan = s->GetTableIndex() == scan_idx;
+        else if (c->GetNodeType() ==
+                 ir_sql_converter::SimplestNodeType::ChunkNode)
+          has_chunk = true;
+      }
+      if (has_scan && has_chunk)
+        return node;
+    }
+  }
+  for (const auto &child : node->children) {
+    if (auto *found = FindMarkUnitForScan(child.get(), scan_idx))
+      return found;
+  }
+  return nullptr;
+}
+
+// Deep-clone the Filter->MarkJoin->[Scan,Chunk] unit (the source tree must
+// stay intact for the remaining-IR rebuild). Returns nullptr on any node or
+// expression the cloner does not cover.
+std::unique_ptr<ir_sql_converter::AQPStmt>
+CloneMarkUnit(const ir_sql_converter::AQPStmt *node) {
+  using namespace ir_sql_converter;
+  if (!node)
+    return nullptr;
+
+  std::vector<std::unique_ptr<AQPStmt>> children;
+  for (const auto &c : node->children) {
+    auto cc = CloneMarkUnit(c.get());
+    if (c && !cc)
+      return nullptr;
+    children.push_back(std::move(cc));
+  }
+  std::vector<std::unique_ptr<SimplestAttr>> targets;
+  for (const auto &a : node->target_list)
+    targets.push_back(std::make_unique<SimplestAttr>(*a));
+  std::vector<std::unique_ptr<AQPExpr>> quals;
+  for (const auto &q : node->qual_vec) {
+    auto cq = ir_utils::CloneExpr(q);
+    if (q && !cq)
+      return nullptr;
+    quals.push_back(std::move(cq));
+  }
+  auto base = std::make_unique<AQPStmt>(std::move(children), std::move(targets),
+                                        std::move(quals), node->GetNodeType());
+
+  std::unique_ptr<AQPStmt> out;
+  switch (node->GetNodeType()) {
+  case SimplestNodeType::FilterNode:
+    out = std::make_unique<SimplestFilter>(std::move(base));
+    break;
+  case SimplestNodeType::ScanNode: {
+    auto *s = dynamic_cast<const SimplestScan *>(node);
+    if (!s)
+      return nullptr;
+    out = std::make_unique<SimplestScan>(std::move(base), s->GetTableIndex(),
+                                         s->GetTableName());
+    break;
+  }
+  case SimplestNodeType::ChunkNode: {
+    auto *c = dynamic_cast<const SimplestChunk *>(node);
+    if (!c)
+      return nullptr;
+    out = std::make_unique<SimplestChunk>(std::move(base), c->GetTableIndex(),
+                                          c->GetChunkName(), c->GetContents());
+    break;
+  }
+  case SimplestNodeType::JoinNode: {
+    auto *j = dynamic_cast<const SimplestJoin *>(node);
+    if (!j)
+      return nullptr;
+    std::vector<std::unique_ptr<SimplestVarComparison>> conds;
+    for (const auto &cond : j->join_conditions) {
+      if (!cond || !cond->left_attr || !cond->right_attr)
+        return nullptr;
+      conds.push_back(std::make_unique<SimplestVarComparison>(
+          cond->GetSimplestExprType(),
+          std::make_unique<SimplestAttr>(*cond->left_attr),
+          std::make_unique<SimplestAttr>(*cond->right_attr)));
+    }
+    auto join = std::make_unique<SimplestJoin>(std::move(base),
+                                               std::move(conds),
+                                               j->GetSimplestJoinType());
+    join->SetMarkIndex(j->GetMarkIndex());
+    join->SetBuildChild(j->GetBuildChild());
+    out = std::move(join);
+    break;
+  }
+  default:
+    return nullptr;
+  }
+  out->SetEstimatedCardinality(node->GetEstimatedCardinality());
+  return out;
+}
+
+} // namespace
+
 // ===== FKBasedSplitter Base Class =====
 
 void FKBasedSplitter::Preprocess(
@@ -728,7 +847,12 @@ void FKBasedSplitter::MoveValidJoins(
 
   if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::JoinNode) {
     auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node.get());
-    if (join) {
+    // Mark joins are IN-clause filters whose subtree is preserved intact as a
+    // scan unit (see ExtractMarkJoinSubtree); moving their condition out
+    // would leave a null hole in the preserved subtree and detach the IN
+    // semantics into a bogus relational join.
+    if (join && join->GetSimplestJoinType() !=
+                    ir_sql_converter::SimplestJoinType::Mark) {
       for (auto &cond : join->join_conditions) {
         if (!cond)
           continue;
@@ -987,7 +1111,23 @@ FKBasedSplitter::BuildSubIRForCluster(
   // Step 5: Build the sub-IR tree (left-deep)
   // Clone scan nodes
   std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> scan_nodes;
+  std::vector<unsigned int> scan_node_tables;
   for (auto *scan : scans) {
+    scan_node_tables.push_back(scan->GetTableIndex());
+    // A scan wrapped in a Filter->MarkJoin->Chunk unit is an IN-clause
+    // filter: carry the whole unit, or the IN predicate is silently dropped
+    // (the chunk side is never in the cluster, so neither the Mark condition
+    // nor the marker qual is collected in Steps 2/3). Single-table clusters
+    // keep the bare scan: FetchMissingLeafCardinalities EXPLAINs them for
+    // UNFILTERED base counts.
+    if (cluster_tables.size() > 1) {
+      if (const auto *unit = FindMarkUnitForScan(ir, scan->GetTableIndex())) {
+        if (auto cloned = CloneMarkUnit(unit)) {
+          scan_nodes.push_back(std::move(cloned));
+          continue;
+        }
+      }
+    }
     // Clone the scan node - build manually since AQPStmt has no copy
     // constructor
     std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> empty_children;
@@ -1026,35 +1166,79 @@ FKBasedSplitter::BuildSubIRForCluster(
         std::move(proj_base), 0);
   }
 
-  // Build left-deep tree using CrossProduct for intermediate joins
+  // Build a left-deep tree ordered along join edges, attaching each
+  // condition at the first join where both endpoints are present. Connected
+  // clusters therefore produce real Join nodes; a CrossProduct step only
+  // appears for genuinely disconnected clusters (its conditions surface once
+  // a later table bridges the components).
+  std::vector<bool> node_used(scan_nodes.size(), false);
+  std::vector<bool> cond_used(join_conditions.size(), false);
+  std::set<unsigned int> joined_tables = {scan_node_tables[0]};
+  node_used[0] = true;
   std::unique_ptr<ir_sql_converter::AQPStmt> result =
       std::move(scan_nodes[0]);
 
-  for (size_t i = 1; i < scan_nodes.size(); i++) {
+  auto cond_tables = [&](size_t c) {
+    return std::make_pair(join_conditions[c]->left_attr->GetTableIndex(),
+                          join_conditions[c]->right_attr->GetTableIndex());
+  };
+
+  for (size_t step = 1; step < scan_nodes.size(); step++) {
+    size_t pick = scan_nodes.size();
+    for (size_t i = 0; i < scan_nodes.size() && pick == scan_nodes.size();
+         i++) {
+      if (node_used[i])
+        continue;
+      for (size_t c = 0; c < join_conditions.size(); c++) {
+        if (cond_used[c])
+          continue;
+        auto [lt, rt] = cond_tables(c);
+        if ((lt == scan_node_tables[i] && joined_tables.count(rt)) ||
+            (rt == scan_node_tables[i] && joined_tables.count(lt))) {
+          pick = i;
+          break;
+        }
+      }
+    }
+    if (pick == scan_nodes.size()) { // disconnected: take the first unused
+      for (size_t i = 0; i < scan_nodes.size(); i++)
+        if (!node_used[i]) {
+          pick = i;
+          break;
+        }
+    }
+    node_used[pick] = true;
+    joined_tables.insert(scan_node_tables[pick]);
+
     std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> join_children;
     join_children.push_back(std::move(result));
-    join_children.push_back(std::move(scan_nodes[i]));
-
-    // Create base AQPStmt with empty target_list
+    join_children.push_back(std::move(scan_nodes[pick]));
     std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> empty_attrs;
     auto base_stmt = std::make_unique<ir_sql_converter::AQPStmt>(
         std::move(join_children), std::move(empty_attrs),
         ir_sql_converter::SimplestNodeType::CrossProductNode);
 
-    if (i < scan_nodes.size() - 1) {
-      // Intermediate join: use CrossProduct (no conditions)
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
+        step_conds;
+    for (size_t c = 0; c < join_conditions.size(); c++) {
+      if (cond_used[c])
+        continue;
+      auto [lt, rt] = cond_tables(c);
+      if (joined_tables.count(lt) && joined_tables.count(rt)) {
+        step_conds.push_back(std::move(join_conditions[c]));
+        cond_used[c] = true;
+      }
+    }
+
+    if (step_conds.empty()) {
       result = std::make_unique<ir_sql_converter::SimplestCrossProduct>(
           std::move(base_stmt));
     } else {
-      // Final join: use Join with all conditions
       base_stmt->ChangeNodeType(ir_sql_converter::SimplestNodeType::JoinNode);
       auto join_node = std::make_unique<ir_sql_converter::SimplestJoin>(
           std::move(base_stmt), ir_sql_converter::Inner);
-
-      // Add all join conditions to the final join
-      for (auto &cond : join_conditions) {
+      for (auto &cond : step_conds)
         join_node->join_conditions.push_back(std::move(cond));
-      }
       result = std::move(join_node);
     }
   }
@@ -1626,6 +1810,38 @@ FKBasedSplitter::UpdateRemainingIR(
             << std::endl;
 #endif
 
+  // Step 2b: Union-find over the equalities enforced INSIDE the executed
+  // group. Every join condition whose both sides are executed went into the
+  // sub-IR, so the corresponding temp columns are pairwise equal in every
+  // temp row. Used in Step 5b to drop redundant rewritten conditions.
+  // Must run before MoveValidJoins strips conditions from the old tree.
+  using ColKey = std::pair<unsigned int, unsigned int>;
+  std::map<ColKey, ColKey> uf;
+  std::function<ColKey(ColKey)> find_root = [&](ColKey k) -> ColKey {
+    auto it = uf.find(k);
+    if (it == uf.end() || it->second == k)
+      return k;
+    ColKey r = find_root(it->second);
+    uf[k] = r;
+    return r;
+  };
+  {
+    auto exec_conds = ir_utils::CollectJoinConditions(remaining_ir.get(),
+                                                      executed_table_indices);
+    for (auto &c : exec_conds) {
+      if (!c || c->GetSimplestExprType() != ir_sql_converter::Equal)
+        continue;
+      ColKey a{c->left_attr->GetTableIndex(), c->left_attr->GetColumnIndex()};
+      ColKey b{c->right_attr->GetTableIndex(),
+               c->right_attr->GetColumnIndex()};
+      uf.emplace(a, a);
+      uf.emplace(b, b);
+      ColKey ra = find_root(a), rb = find_root(b);
+      if (ra != rb)
+        uf[ra] = rb;
+    }
+  }
+
   // Step 3: Move join conditions from old IR, filtering out FK-FK joins
   // using current_join_pairs_ (FK-FK pairs already removed by rRj).
   // Must run BEFORE PrepareForNextIteration so indices still match old IR.
@@ -1690,6 +1906,50 @@ FKBasedSplitter::UpdateRemainingIR(
     if (right_executed) {
       rewriteAttr(cond->right_attr);
     }
+  }
+
+  // Step 5b: Dedupe the rewritten conditions. The old IR often equates one
+  // remaining column with SEVERAL columns that were pairwise equated inside
+  // the executed group (transitive equalities the engine optimizer kept);
+  // after rewriting they all target per-row-equal temp columns. Keeping the
+  // copies makes the engine's FilterCombiner re-derive them as column-column
+  // FILTER predicates, which the query-jit compiler cannot compile
+  // (fallback:expr:Unknown on every temp-probe group).
+  {
+    std::set<std::tuple<int, unsigned int, unsigned int, unsigned int,
+                        unsigned int>>
+        seen;
+    std::vector<std::unique_ptr<ir_sql_converter::SimplestVarComparison>>
+        deduped;
+    for (auto &cond : cross_boundary_joins) {
+      if (!cond)
+        continue;
+      ColKey l{cond->left_attr->GetTableIndex(),
+               cond->left_attr->GetColumnIndex()};
+      ColKey r{cond->right_attr->GetTableIndex(),
+               cond->right_attr->GetColumnIndex()};
+      if (cond->GetSimplestExprType() == ir_sql_converter::Equal) {
+        if (l.first == temp_table_index && l.second < column_mappings.size())
+          l = find_root(column_mappings[l.second]);
+        if (r.first == temp_table_index && r.second < column_mappings.size())
+          r = find_root(column_mappings[r.second]);
+        if (r < l)
+          std::swap(l, r);
+      }
+      auto key = std::make_tuple(
+          static_cast<int>(cond->GetSimplestExprType()), l.first, l.second,
+          r.first, r.second);
+      if (!seen.insert(key).second) {
+#ifndef NDEBUG
+        std::cout << "[FKBasedSplitter::UpdateRemainingIR] Dropped redundant "
+                     "cross-boundary condition: "
+                  << cond->Print(false) << std::endl;
+#endif
+        continue;
+      }
+      deduped.push_back(std::move(cond));
+    }
+    cross_boundary_joins = std::move(deduped);
   }
 
   // Step 6: Extract filter conditions for remaining tables using AND-splitting
@@ -1974,6 +2234,25 @@ FKBasedSplitter::UpdateRemainingIR(
         std::move(base_stmt));
   }
 
+  // The original root projection may fan out a deduplicated aggregate into
+  // several output columns (JOB 17a/b/c: two MIN(n.name) columns over one
+  // agg_fn). Dropping it would change the output arity, so clone its target
+  // list and re-add it above the rebuilt Aggregate (8f).
+  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
+      dup_proj_targets;
+  unsigned int dup_proj_index = 0;
+  if (orig_agg && !orig_order && !orig_limit &&
+      remaining_ir->GetNodeType() ==
+          ir_sql_converter::SimplestNodeType::ProjectionNode &&
+      remaining_ir->target_list.size() >
+          orig_agg->agg_fns.size() + orig_agg->groups.size()) {
+    for (const auto &t : remaining_ir->target_list)
+      dup_proj_targets.push_back(
+          std::make_unique<ir_sql_converter::SimplestAttr>(*t));
+    dup_proj_index =
+        remaining_ir->Cast<ir_sql_converter::SimplestProjection>().GetIndex();
+  }
+
   // 8e: Add Projection node on top - move target_list from old IR
   std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> proj_children;
   proj_children.push_back(std::move(result));
@@ -1997,16 +2276,21 @@ FKBasedSplitter::UpdateRemainingIR(
               << "adding Aggregate node" << std::endl;
 #endif
 
-    // Build target_list first (need clones since groups/agg_fns will be moved)
+    // Build target_list first (need clones since groups/agg_fns will be
+    // moved). When the original root projection is re-added on top, leave
+    // the aggregate's target_list empty so the select fields are emitted
+    // only once (by the projection).
     std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
         agg_target_list;
-    for (const auto &grp : orig_agg->groups) {
-      agg_target_list.push_back(
-          std::make_unique<ir_sql_converter::SimplestAttr>(*grp));
-    }
-    for (const auto &fn_pair : orig_agg->agg_fns) {
-      agg_target_list.push_back(
-          std::make_unique<ir_sql_converter::SimplestAttr>(*fn_pair.first));
+    if (dup_proj_targets.empty()) {
+      for (const auto &grp : orig_agg->groups) {
+        agg_target_list.push_back(
+            std::make_unique<ir_sql_converter::SimplestAttr>(*grp));
+      }
+      for (const auto &fn_pair : orig_agg->agg_fns) {
+        agg_target_list.push_back(
+            std::make_unique<ir_sql_converter::SimplestAttr>(*fn_pair.first));
+      }
     }
 
     // Build Aggregate node - move groups and agg_fns directly from old IR
@@ -2021,6 +2305,16 @@ FKBasedSplitter::UpdateRemainingIR(
         std::move(agg_base), std::move(orig_agg->agg_fns),
         std::move(orig_agg->groups), orig_agg->GetAggIndex(),
         orig_agg->GetGroupIndex());
+
+    if (!dup_proj_targets.empty()) {
+      std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> dup_children;
+      dup_children.push_back(std::move(result));
+      auto dup_base = std::make_unique<ir_sql_converter::AQPStmt>(
+          std::move(dup_children), std::move(dup_proj_targets),
+          ir_sql_converter::SimplestNodeType::ProjectionNode);
+      result = std::make_unique<ir_sql_converter::SimplestProjection>(
+          std::move(dup_base), dup_proj_index);
+    }
   }
 
   // 8g: Add OrderBy node if original IR had ORDER BY

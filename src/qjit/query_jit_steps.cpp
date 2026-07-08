@@ -998,7 +998,8 @@ struct PlanBuilder {
              CheckFilterStrict(step, log->right_expr.get());
     }
     default:
-      return Fail(std::string("expr:") + NodeTypeName(e->GetNodeType()));
+      return Fail(std::string("expr:") + NodeTypeName(e->GetNodeType()) + "#" +
+                  std::to_string(static_cast<int>(e->GetNodeType())));
     }
   }
 

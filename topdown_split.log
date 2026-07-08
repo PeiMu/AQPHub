@@ -1,0 +1,113 @@
+# SDS (Stats-Driven Splitter) — Completed Work Log
+
+Moved from CLAUDE.md on 2026-07-08. This file records completed milestones,
+analysis, and reverted experiments for the Phase 2 SDS rewrite of
+`src/split/topdown_splitter.cpp`.
+
+## Session Decisions
+
+- 2026-07-06 late (user-confirmed): Phase 2 = rewrite `topdown_splitter.cpp`
+  (SDS); no DuckDB/node-based changes; EXPLAIN-class engine contact allowed;
+  gate = beat node-based exe 4.58 s.
+
+## Completed Milestones
+
+### M1: Skeleton (COMPLETE, 2026-07-07)
+
+`ir_join_optimizer.{h,cpp}` + rewritten `topdown_splitter.cpp`. Pair-level
+materialization, growth heuristic, fanout guard, big-big ban, no-op demotion,
+probe-locality cost model, column-correlation cost term, engine-validated
+fallback (batched EXPLAIN). 113/113 golden clean.
+
+### M2: Feedback + Parity (COMPLETE, v11 = exe 4.70)
+
+Exact temp cardinality feedback + EXPLAIN-based pair validation for
+temp-involving pairs. Key wins: 14a −14.8ms, 14c −9.4ms, 19d −9.5ms.
+
+### M3: Estimation-Aware Pair Acceptance (COMPLETE, v12 = exe 4.73)
+
+EXPLAIN-validated max-side pairs: when all normal leaf pairs contain the max
+relation (cast_info), temp-involving max-side rejected pairs are tried via
+engine EXPLAIN validation.
+
+Reverted experiments:
+- Fanout-guard relaxation (5% distinct ratio): caused +3.6s regression on
+  7c/22c/28a etc. (ci.person_id 11% distinct but ci×temp still produces
+  1.6M-row outputs from correlation).
+- v13 attempt (>= 3 gate + terminal_3rel threshold): REVERTED, +0.41s exe
+  regression (accepting bad pairs at 3-relation terminal state). Opt#1
+  (relax >= 4 gate to >= 3) and Opt#2 (terminal_3rel kPairEstFloor) tested
+  together; Opt#2 is meaningless without Opt#1 since the >= 4 gate blocks
+  execution at 3 relations. Independent test of Opt#1 alone: inconclusive
+  (user took over measurement, result not recorded here).
+
+## SDS v10b Gap Diagnosis (2026-07-07)
+
+SDS v10b exe 4.74 vs NB 4.58 — gap = +0.16 s (+3.5%), classified:
+- **STOP-TOO-EARLY ~44%** (10c +43ms, 26c +24, 18a +21, 31a +18, 25a +15,
+  31c +11): SDS's tdom model distrusts big×temp pairs (fanout guard) so it
+  stops splitting early; NB splits deeper because it re-runs MiddleOptimize
+  with exact temp stats and the engine picks safe build sides.
+- **BAD-PARTITION ~23%** (11d +34, 30c +21, 26b +15): SDS's tdom model
+  underestimates output cardinality on problematic pairs (12-188× error);
+  the wrong "cheapest" pair is selected and materialized, creating an
+  oversize temp.
+- **MIXED ~33%** (9c +27, 22c +17, 14a +16, 9a +13, 14b +13, 13d +11):
+  combination of mis-estimation and missed boundaries.
+
+Root cause: SDS's uniform-distinct (tdom) model vs DuckDB's engine-internal
+estimator. Verified examples:
+- 14a `info_type(genres) × movie_info`: SDS est=26K, DuckDB EXPLAIN=262K,
+  actual=614K (SDS 23× undershoot).
+- 26c `cast_info × temp`: SDS est=183K, EXPLAIN=2.3K, actual=190K (SDS
+  distrusts but is closer — however EXPLAIN is wrong too).
+- Pipeline-breaker prediction NOT needed for DuckDB: DuckDB always places
+  the smaller input as build side (verified: query_graph_manager.cpp:264).
+- EXPLAIN overhead: 0.3–1 ms in-process per pair (negligible).
+
+## SDS v12 Opportunity Analysis (2026-07-07)
+
+Root cause of the remaining +38ms gap: SDS stops splitting 1-4 iterations
+earlier than NB on 21 gap queries (total addressable: +268ms). The
+`NumRelations >= 4` gate on the engine-validated fallback (line 923) blocks
+fanout-rejected pairs from getting EXPLAIN-validated when only 3 relations
+remain (big_table + temp + one_more). This is the most common terminal
+state for gap queries: 18a final=40.5ms vs NB 2.3ms; 31a final=29.5ms
+vs NB 1.0ms; 25a final=27.7ms vs NB 1.9ms.
+
+SDS actually outperforms NB on 22 other queries (-312ms total) thanks to
+the DP cost model picking better pairs. Net = +38ms.
+
+### Design Opportunity Audit
+
+| Opportunity | Status | Verdict |
+|---|---|---|
+| O1: Cost-based split (vs structural) | **Done** (SDS core) | DP pair selection replaces pipeline-breaker rule |
+| O2: Selective predicate awareness | **No opportunity** | 81/113 queries have LIKE, but SDS already captures DuckDB's est_card (0.2 default). Slow queries' gaps are unrelated to LIKE. Fixing requires per-table full scan (~50-100ms each) |
+| O3: Cardinality-aware ordering | **Done** | DP picks cheapest pair; big-big ban + fanout guard |
+| O4: Reduce MW overhead | **Done** | 0.21s vs NB 0.38s (-45%) |
+| O5: Cross-boundary JFP loss | **No opportunity for SDS-NB gap** | Both splitters share identical BF+range-pred infrastructure; both lose ~232ms to JFP vs unsplit. Gap is boundary quality, not JFP |
+| O6: Adaptive granularity | **Already implemented** | 9 queries skip splitting (≤2 rels). Preprocess overhead 4.8ms total. No further gain |
+| O7: Temp-column distinct feedback | **Small opportunity (5-15ms)** | `GetTempTableDistinctValues` exists (duckdb_adapter.cpp:2302) but SDS doesn't use it |
+| O8: Storage plan structures | **Not applicable** | query-jit uses StoragePlan for FlatTable column data only |
+| O9: Multi-level splitting | **Already implemented, no JOB opportunity** | Zero JOB queries have disconnected join graphs |
+| O10: Speculative planning | **Infeasible for SDS** | spec-jit hard-gated to NODE_BASED; SDS PlanNext depends on exact temp cardinality |
+| O11: Fewer, larger subqueries | **Already tuned, empirically regressive** | v4 tried aggressive growth: +0.4s regression |
+| O12: 2-group pattern | **Already optimal** | No-op demotion (card >= 1e5) backed by empirical evidence |
+
+## Experiment Code Cleanup (2026-07-06)
+
+- P2.0 instrumentation (`AQP_P2_LOG`, P2Q/P2EST/P2ACT/P2TERM/P2JO/P2CPASS,
+  `dbshaker_log_middle_join_order`) DELETED from both repos.
+- P2.c is HARD-CODED (no flag): COLUMN_LIFETIME ×2 / REORDER_FILTER /
+  JOIN_FILTER_PUSHDOWN deleted from `RunBuiltInMiddleOptimizers`.
+
+## SDS v13+ Optimization Plan (2026-07-07, for reference)
+
+| # | Optimization | Mechanism | Est. Impact | Effort | Risk |
+|---|---|---|---|---|---|
+| 1 | Fix `>= 4` gate for rejected_pairs | EXPLAIN-validate fanout-rejected pairs when 3 relations remain | 80-120ms exe | Low (~30 LOC) | Low |
+| 2 | Relax kPairEstFloor for 3-rel case | Use `min(kSplitCardThreshold, temp_card * 10)` instead of `max(temp_card, 1000)` for 3-relation pairs | 20-40ms exe (overlaps #1) | Low (~5 LOC) | Medium |
+| 3 | Exact temp-column distinct feedback | Call GetTempTableDistinctValues after execution, inject into DP model | 5-15ms exe | Low-medium | Low |
+| 4 | Temp min/max cross-boundary filters | Use GetTempTableMinMax to inject range preds on base table scans | 10-30ms exe | Low | Low |
+| 5 | Shape-keyed tuning (P5') | Fix F8 tuner misbinding: canonical plan shape keys | 0ms exe (enables correct tuned configs) | Medium | Low |

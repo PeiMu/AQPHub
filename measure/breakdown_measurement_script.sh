@@ -217,6 +217,108 @@ bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all f
 bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all full recompile tpde && \
 bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all full recompile llvm job_result/tuned_per_subquery_node-based.json && \
 
+# ============================================================
+# topdown: same configs as node-based (no tune yet)
+# (3 level × 3 mode) × 4 cache × 2 spec = 72
+# Outer: spec-jit → cache-tier → { level × mode }
+# ============================================================
+
+# ------------------------------------------------------------
+# spec-jit=off
+# ------------------------------------------------------------
+
+# ---- cache=off, spec=off (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all off off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all off off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all off off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all off off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all off off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all off off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all off off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all off off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all off off tpde && \
+
+# ---- cache=single-run-strict, spec=off (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-strict off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-strict off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-strict off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-strict off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-strict off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-strict off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-strict off tpde && \
+
+# ---- cache=single-run-template, spec=off (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-template off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-template off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-template off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-template off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-template off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-template off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-template off tpde && \
+
+# ---- cache=full, spec=off (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all full off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all full off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all full off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all full off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all full off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all full off tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all full off llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all full off fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all full off tpde && \
+
+# ------------------------------------------------------------
+# spec-jit=recompile
+# ------------------------------------------------------------
+
+# ---- cache=off, spec=recompile (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all off recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all off recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all off recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all off recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all off recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all off recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all off recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all off recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all off recompile tpde && \
+
+# ---- cache=single-run-strict, spec=recompile (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-strict recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-strict recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-strict recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-strict recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-strict recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-strict recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-strict recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-strict recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-strict recompile tpde && \
+
+# ---- cache=single-run-template, spec=recompile (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-template recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-template recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all single-run-template recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-template recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-template recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all single-run-template recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-template recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-template recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all single-run-template recompile tpde && \
+
+# ---- cache=full, spec=recompile (9) ----
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all full recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all full recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown expr none on on on all full recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all full recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all full recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown operator none on on on all full recompile tpde && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all full recompile llvm && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all full recompile fastisel && \
+bash ./measure_breakdown_time_job.sh duckdb topdown query none on on on all full recompile tpde && \
+
 ## ============================================================
 ## pipeline kernel (deprioritized)
 ## ============================================================
