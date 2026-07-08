@@ -136,7 +136,7 @@ def parse_csv(path, hasjit=True, head=4):
 #
 # Flag defaults (matching the global --jit-* defaults when not overridden):
 #   compile_mode=0, simd=False, payload_prune=True, prefetch=True,
-#   batch_probe=True, skip_hash_cmp="all" (or "single"/"off")
+#   batch_probe=True, skip_hash_cmp="all" (or "off")
 #
 # The "config" label must match ParseTuneLabel in ir_query_splitter.cpp.
 # Additional flags (compile_mode, simd, payload_prune, etc.) are read
@@ -218,6 +218,17 @@ def make_configs(split):
              filename=f"duckdb_{split}_query_none_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
+        # ---- query-jit with skip_hash_cmp=off ----
+        dict(label="query_full",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_breakdown_time_log.csv",
+             hasjit=True, flags=dict(skip_hash_cmp="off")),
+        dict(label="query_fastisel",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_fcfastisel_breakdown_time_log.csv",
+             hasjit=True, flags=dict(compile_mode=1, skip_hash_cmp="off")),
+        dict(label="query_tpde",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
+             hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
+
         # ---- query-jit SIMD (ROF two-phase; TPDE excluded — ROF disabled) ----
         # dict(label="query_full_simd",
         #      filename=f"duckdb_{split}_query_auto_breakdown_time_log.csv",
@@ -230,9 +241,6 @@ def make_configs(split):
         # dict(label="pipeline",
         #      filename=f"duckdb_{split}_pipeline_none_nopayprune_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(payload_prune=False)),
-        # dict(label="query_tpde",
-        #      filename=f"duckdb_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
-        #      hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
     ]
 
 

@@ -236,7 +236,7 @@ These flags control individual pipeline/query-level optimizations.
 | `--jit-payload-prune` / `--no-jit-payload-prune` | Hash build payload pruning. Only copies columns referenced downstream into the hash table payload. |
 | `--jit-prefetch` / `--jit-prefetch=<distance>` / `--no-jit-prefetch` | Software prefetching for hash table access. Default distance is 8. |
 | `--jit-batch-probe` / `--no-jit-batch-probe` | Batch/vectorized hash probe (ROF two-stage). |
-| `--jit-skip-hash-cmp` / `--no-jit-skip-hash-cmp` | Skip stored-hash comparison for integer keys. |
+| `--jit-skip-hash-cmp=off\|all` | Skip stored-hash/salt comparison for integer keys (bare flag = all). |
 | `--jit-cache` / `--no-jit-cache` | In-memory compiled-object cache (debug flag, default **off**). |
 
 #### Example
@@ -394,7 +394,7 @@ $4   jit_simd        off / none / auto                          (default: off)
 $5   payload_prune   on / off                                   (default: on)
 $6   prefetch        on / off / <distance>                      (default: on)
 $7   batch_probe     on / off                                   (default: on)
-$8   skip_hash_cmp   on / off                                   (default: on)
+$8   skip_hash_cmp   all / off                                  (default: all)
 $9   jit_cache       off / on                                   (default: off)
 $10  spec_jit        off / recompile / interpret                (default: off)
 $11  compile_mode    off / fastisel / tpde                       (default: off = llvm)
@@ -514,7 +514,7 @@ Different sub-queries within a split query benefit from different JIT configurat
 | payload_prune | on, off | Prune unused payload columns in pipeline-jit |
 | prefetch | on, off | Software prefetch in pipeline-jit probe |
 | batch_probe | on, off | ROF two-stage batch probe in pipeline-jit |
-| skip_hash_cmp | on, off | Skip stored-hash comparison for integer keys |
+| skip_hash_cmp | all, off | Skip stored-hash comparison for integer keys |
 
 #### How to tune
 

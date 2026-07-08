@@ -439,7 +439,7 @@ private:
   int prefetch_entry_distance_ = 24;
   int prefetch_row_distance_ = 12;
   bool batch_probe_ = false;
-  int skip_hash_cmp_ = 2; // 0=off, 1=single-int-key, 2=all-int-keys
+  int skip_hash_cmp_ = 2; // 0=off, 2=all-int-keys
   bool bloom_tag_ = true;
   int cache_mode_ = 0;  // 0=off, 1=strict, 2=template
   bool cache_enabled_ = false;

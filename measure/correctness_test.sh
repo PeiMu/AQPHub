@@ -8,8 +8,8 @@
 # Cache tiers grouped after base configs.
 #
 # Config format:
-#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode]]]
-#   compile_mode defaults to llvm when omitted.
+#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode[|skip_hash_cmp]]]]
+#   compile_mode defaults to llvm, skip_hash_cmp defaults to on(=all) when omitted.
 #
 set -uo pipefail
 
@@ -120,6 +120,20 @@ JIT_CONFIGS=(
   # query-jit spec-jit, fastisel/tpde
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile||fastisel"
   "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile||tpde"
+
+  # ============================================================
+  # query-jit, skip_hash_cmp=off (per-subquery tuning alternative,
+  # see breakdown_measurement_script_shc_off.sh)
+  # ============================================================
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt||||off"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||fastisel|off"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||tpde|off"
+  "duckdb|none|query|none|duckdb_job_no-split_golden.txt||||off"
+  # skip_hash_cmp=off + spec-jit / cache tiers (cache keys embed the mode)
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|||off"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-strict||off"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template||off"
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|full||off"
 
   # ============================================================
   # jit-cache=single-run-strict
@@ -314,15 +328,18 @@ FAIL_LOG="job_result/correctness_failures.log"
 
 # --- Run JIT-level configs via run_job.sh ---
 for entry in "${JIT_CONFIGS[@]}"; do
-  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode <<< "$entry"
+  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
   jit_cache_mode=${jit_cache_mode:-off}
   compile_mode=${compile_mode:-llvm}
-  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} ==="
+  skip_hash_cmp=${skip_hash_cmp:-on}
+  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} ==="
 
   bash run_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
-       on on on on "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}"
+       on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}"
 
+  shc_suffix=""
+  [[ "$skip_hash_cmp" == "off" ]] && shc_suffix="_noskiphashcmp"
   spec_suffix=""
   [[ "$spec_jit_mode" != "off" ]] && spec_suffix="_spec${spec_jit_mode}"
   cache_suffix=""
@@ -336,10 +353,10 @@ for entry in "${JIT_CONFIGS[@]}"; do
   if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
-    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${cache_suffix}${spec_suffix}${fc_suffix}_job.txt"
+    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}_job.txt"
   fi
 
-  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode}"
+  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp}"
 
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"

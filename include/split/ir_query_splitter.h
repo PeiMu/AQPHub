@@ -270,7 +270,7 @@ private:
     int payload_prune = -1;    // -1=use global, 0=off, 1=on
     int prefetch = -1;         // -1=use global, 0=off, 1=on
     int batch_probe = -1;      // -1=use global, 0=off, 1=on
-    int skip_hash_cmp = -1;    // -1=use global, 0=off, 1=on
+    int skip_hash_cmp = -1;    // -1=use global, 0=off, 2=all
   };
   std::string query_name_;
   std::unordered_map<int, TuneEntry> tune_entries_;

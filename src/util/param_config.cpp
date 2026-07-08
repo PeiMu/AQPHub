@@ -208,8 +208,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_batch_probe = false;
     } else if (arg == "--jit-skip-hash-cmp=off") {
       config.jit_skip_hash_cmp = 0;
-    } else if (arg == "--jit-skip-hash-cmp=single") {
-      config.jit_skip_hash_cmp = 1;
     } else if (arg == "--jit-skip-hash-cmp=all") {
       config.jit_skip_hash_cmp = 2;
     } else if (arg == "--jit-skip-hash-cmp") {
@@ -416,8 +414,8 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --[no-]jit-batch-probe           Batch/vectorized "
                "hash probe"
             << std::endl;
-  std::cout << "  --jit-skip-hash-cmp=off|single|all  Skip hash cmp "
-               "for int keys (single=1-key, all=any)"
+  std::cout << "  --jit-skip-hash-cmp=off|all  Skip hash cmp "
+               "for int keys"
             << std::endl;
   std::cout << "  --jit-cache[=MODE]               JIT object cache mode "
                "(default: off)\n"

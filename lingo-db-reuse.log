@@ -2496,3 +2496,360 @@ Verification:
   5,680ms for query_tpde NB
 - CSV format: verified parseable by plot_middleware_jit.py (113 queries, 38 columns)
 
+================================================================================
+Iteration 6: Selective join_order skip — REVERTED (2026-07-01)
+================================================================================
+
+Implemented and verified correct, but A/B test showed no measurable speedup.
+~31ms theoretical savings (within noise). Code reverted.
+Expected was 300-400ms, but only 12.3% of eligible iterations trigger the skip.
+
+Problem: DuckDB's JoinOrderOptimizer (DPccp) runs on every SplitIR() call,
+consuming 491ms across 451 calls (82.6% of all optimizer pass time).
+
+Fix: Skip JOIN_ORDER pass when C_i / E_i is within [0.5, 2.0] threshold.
+Save E_i from 1st Split's front group root node before ReorderTables destroys
+it (creates new LogicalComparisonJoin nodes with estimated_cardinality=0).
+Save C_i = temp_table_cardinality in UpdateRemainingIR. Use DuckDB's
+DBConfig::options.disabled_optimizers with save/restore in RunMiddleOptimize.
+
+Why only JOIN_ORDER needs the skip decision:
+- JOIN_ORDER is the only pass using absolute cardinality values in its additive
+  cost model: cost(J) = card(J) + cost(left) + cost(right) (cost_model.cpp:13-18).
+- BUILD_SIDE_PROBE_SIDE uses row_width * cardinality comparison (~0.3ms total).
+- JOIN_FILTER_PUSHDOWN uses estimated_cardinality <= 500000 threshold (~2.4%).
+- REORDER_FILTER does NOT use cardinality at all.
+- Other 12 passes cost ~9ms total -- always run them.
+
+How E_i is obtained:
+E_i must be saved from the 1st Split's front group, BEFORE ReorderTables.
+After MiddleOptimize, all plan nodes have estimated_cardinality from
+JoinOrderOptimizer (via query_graph_manager.cpp:320-321). But ReorderTables
+(reorder_get.cpp:451,506) decomposes the subquery join tree and rebuilds it
+with make_uniq<LogicalComparisonJoin>(JoinType::INNER), creating new nodes
+with default estimated_cardinality=0. The leaf GET/CHUNK_GET nodes are
+preserved via std::move, but all intermediate join nodes are lost.
+
+Solution: after the 1st Split, save E_i via
+subqueries_.front()[0]->estimated_cardinality (the root node's estimated
+JOIN output). NOT GetEstCard() which returns MAX of children's
+estimated_cardinality (largest input table, e.g., 36M for cast_info).
+
+Why savings are only ~31ms (root causes):
+1. DuckDB's cardinality estimates are wildly inaccurate for JOB:
+   - 52.6% of iterations have C_i/E_i > 10x
+   - Only 38 of 310 eligible iterations (12.3%) have C_i/E_i within [0.5, 2.0]
+   - Distribution: <0.1: 24, 0.1-0.5: 21, 0.5-2.0 (skip): 38, 2.0-10: 64, >10: 163
+2. E_i = 0 truncation: JoinOrderOptimizer stores cardinality as idx_t (uint64_t).
+   When computed cardinality < 1 (common for highly selective sub-queries), it
+   truncates to 0. 55 non-first iterations have E_i = 0, making the skip check
+   impossible (requires last_estimated_cardinality_ > 0).
+
+Blind skip experiment (AQP_SKIP_REOPT=1, skip ALL later iterations):
+- Correctness: all 113 queries pass (identical results, golden-file verified)
+- Performance: net 900ms SLOWER (saved ~400ms extract_IR, lost ~1300ms exe)
+- Root cause: some queries (18a, 31a) get much worse join orders
+- Per-query results:
+  29a: -102ms, 24b: -65ms, 33c: -64ms, 31a: +40ms, 18a: +300ms
+
+Spec-jit compatibility: No conflict. Phase A (PeekNextSubquery) does NOT run
+MiddleOptimize. Phase B (PrecomputeNextExtraction) runs after C_i is known.
+
+Files modified:
+- include/split/node_based_splitter.h (kSkipJoinOrderRatio, E_i/C_i fields)
+- src/split/node_based_splitter.cpp (RunMiddleOptimize skip logic, SplitIR
+  E_i save, UpdateRemainingIR C_i save)
+
+Verified facts (resolved):
+- [x] E_i is lost after BLOCK 2 because ReorderTables creates new join nodes
+  with default estimated_cardinality=0. Leaf nodes preserved via std::move.
+- [x] Only JOIN_ORDER needs the skip decision. Other 12 passes cost ~9ms.
+- [x] Selective skip is compatible with spec-jit (no conflicts with jit_cache,
+  cross_query_prep, or other flags).
+- [x] Cardinality deviation threshold: 2x ratio implemented. Only 12.3% of
+  eligible iterations (38/310) have C_i/E_i within [0.5, 2.0]. Root cause:
+  DuckDB estimates deviate >10x on 52.6% of iterations; E_i=0 (truncation)
+  on 55 iterations.
+
+Verification:
+- Correctness: all 113 JOB queries pass for NB + NS (exact golden-file match)
+- No new unguarded print statements
+- CSV format unchanged (no new columns)
+- measure/*.sh and measure/*.py require no changes
+- A/B performance test: no measurable speedup, slight regression (within noise)
+- Code reverted — not worth the complexity for ~31ms theoretical savings
+
+
+================================================================================
+Iteration 5: Software prefetch via mini-batch probe — REVERTED (2026-07-01)
+================================================================================
+
+Design implemented (after evaluating both candidates):
+- In-loop look-ahead prefetch (NOT the CLAUDE.md mini-batch design): at row i,
+  hash the first all-src probe's keys of row i+D and issue llvm.prefetch on
+  the HT directory slot (D = prefetch_distance_, default 8). Chosen over
+  mini-batch because TPDE O0 codegen punishes loop restructuring; look-ahead
+  needs no buffering.
+- Final form after 5 A/B rounds:
+  1. Emitted just before the FIRST probe (post guards/filters), not at
+     row-body top — avoids issuing prefetches for filtered rows.
+  2. Runtime directory-size gate: only prefetch when dir >= 2M slots (16MB
+     > 12MB L3). 4MB gate (L3/3) measurably hurt 17d/17f (+4..+7ms): dirs
+     between 4-16MB are mostly L3-resident under repeated probing.
+  3. All gate logic hoisted to morsel entry (pf_any/pf_mask invariants);
+     per-row cost = one predictable branch. Without hoisting, TPDE stack
+     traffic cost +10ms on 6f with ZERO prefetches executed.
+  4. Only the FIRST all-src probe prefetched. Prefetching all probes' dirs
+     regressed multi-probe steps (+21ms on 6f NS, two 2-probe steps): rows
+     rejected by probe 1 never reach probe 2 → wasted DRAM bandwidth.
+
+Correctness: all 113 JOB queries pass NB + NS (golden-file match).
+
+Full-sweep results (113 queries, same-session on/off controls):
+- NB: pf=on 5851ms vs pf=off 5810ms → net -41ms (WORSE)
+- NS: pf=on 6561ms vs pf=off 6566ms → neutral
+- Wins concentrated (25-28 queries >1ms): NB 8c -11.5, 16b -9.0, 10c -8.2,
+  17e -5.6; NS 8c -14.6, 16b -9.5, 30a -9.5, 18b -9.4
+- Losses: broad tail +2..+8ms on ~40 queries (18c, 17b/c, 25c, 3a/c, 31a/c;
+  NS 20a/b/c, 26a, 19a/d)
+
+Why the loss tail is untunable (all swept):
+- Gate threshold 512K/2M/8M slots → 18c loss unchanged (~+8ms)
+- Prefetch distance 4/8/16/32 → 18c/20a loss unchanged; 16b needs D>=8
+- Locality NTA/T2/T0 → no effect on losers
+- th=NEVER (code emitted, gate never fires) → losers return to off-arm time,
+  proving the cost is prefetch EXECUTION (traffic), not code overhead
+- No compile-time discriminator: winners (16b/8c/10c) and losers (18c/17b)
+  have IDENTICAL step structure (single all-src probe, guards=1). The
+  difference is runtime guard/probe selectivity + bandwidth saturation,
+  unknown at codegen time (QjitHtDesc carries no cardinality estimate).
+
+Root-cause interpretation: JOB under query-JIT TPDE is not uniformly
+probe-latency-bound. On ~40 queries the 12-thread execution is already
+DRAM-bandwidth-saturated; extra prefetch requests (many wasted on rows that
+guards will reject at row i+D) displace demand traffic. Wins occur only where
+a single huge directory (title/cast_info-scale, >16MB) dominates the runtime
+AND guard selectivity is low (16b, 8c, 10c).
+
+CLAUDE.md premise corrections (verified by measurement):
+- "NB benefits ~2.5x more than NS" is FALSE: NS probes are 96.2% all-src
+  (NB 97.3%) — equally prefetchable. Measured savings symmetric on winners.
+- Estimated ~250ms NB savings is FALSE: actual net is -41ms NB / ~0 NS.
+- Step structure measured: NB 689 probe steps {1:548, 2:117, 3:16, 4:8},
+  NS 717 {1:595, 2:100, 3:19, 4:3}; 100% of first probes are all-src.
+
+Decision: REVERTED (user choice) — net ~zero, complexity not justified.
+Alternative considered (keep code default-off + per-subquery tuning to
+capture the ~40-60ms concentrated wins) was declined.
+
+Files touched and reverted:
+- src/jit/ir_to_llvm.cpp (look-ahead prefetch codegen, gate, cache-key tag)
+- src/qjit/query_jit_steps.cpp (AQP_QJIT_STEP_STATS instrumentation)
+
+================================================================================
+Iteration 6: Sub-query pipelining — INFEASIBLE (2026-07-01)
+================================================================================
+
+Original idea: fuse probe[i] output directly into build[i+1] input to skip
+materialization. This is architecturally impossible because sub-query[i+1]'s
+plan does not exist until after sub-query[i] executes and MiddleOptimize
+re-optimizes the remaining plan with sub-query[i]'s actual cardinality.
+
+Why pipelining fails:
+1. SplitIR(i+1) calls RunMiddleOptimize() which runs DuckDB's
+   JoinOrderOptimizer with the actual cardinality C_i from sub-query[i].
+   This can change join order, split points, and which tables are extracted
+   next.
+2. 28 of 113 JOB queries hit kSplitCardThreshold (>1M rows) and abort
+   splitting entirely — this decision requires knowing C_i.
+3. The materialization cost being targeted is only 16ms total across all
+   113 queries. The real bottleneck is extract_IR (546ms), dominated by
+   JoinOrderOptimizer re-optimization (491ms).
+
+Evidence (18a): With MiddleOptimize, iter 2 produces 122K rows. Without it,
+iter 2 produces 859K rows (7x worse) because the join order from initial
+estimation is suboptimal for the cardinality feedback from iter 1 (460K rows).
+
+What about within a single sub-query? Each sub-query already compiles to a
+single QjitQueryFn with internal steps (build + probe) executed sequentially
+inside the compiled entry function (ir_to_llvm.cpp:10039-10077). There is no
+cross-sub-query materialization boundary within a single compiled function.
+
+================================================================================
+Candidate evaluation: Hugepages/THP for HT directories — DEAD (2026-07-02)
+================================================================================
+
+Hypothesis: HT directory probes (random access into 100MB-1.4GB directories)
+suffer dTLB misses on 4KB pages; 2MB huge pages would cut page-walk cost.
+
+Findings (all verified):
+- System THP config: enabled=[always], defrag=[madvise], shmem_enabled=[never].
+  678 free order-9 blocks — no fragmentation problem.
+- Directory allocation: plain `new std::atomic<uintptr_t>[dir_size]`
+  (query_jit_runtime.cpp:129); no explicit hugepage handling anywhere.
+- Storage cache is fread() into anon heap arrays (storage_plan.cpp LoadCache),
+  NOT mmap'd from /dev/shm — so base-table data is anon memory too.
+- User-shell measurement on 16b NB query-jit TPDE (repeat=40, mid-run):
+  AnonHugePages = 4,536,320 kB (~4.3GB of ~5GB RSS). THP=always is already
+  backing base data + HT directories transparently.
+- User-shell perf on 16b (repeat=10):
+  cycles=110.4B, dtlb_load_misses.walk_pending=359.8M (0.33% of cycles),
+  cycle_activity.stalls_l3_miss=34.6B (31.4% of cycles).
+  TLB walks are a solved non-issue; the bottleneck is pure L3-miss
+  latency/bandwidth, which hugepages do not address.
+
+Measurement-environment trap (baked-in lesson):
+- The Claude Code sandbox shell carries PR_SET_THP_DISABLE
+  (/proc/self/status THP_enabled: 0), inherited by every child process.
+  Sandbox-side measurements showed AnonHugePages=0 and walk_pending=5.3% of
+  cycles (6.09B/114B) — a ~16x overstatement of TLB cost vs the user's real
+  environment (THP_enabled: 1 for systemd, sshd, user bash).
+- Even a plain new[]+memset test in the sandbox got THPeligible: 0 on every
+  VMA. Any THP/hugepage-sensitive measurement MUST be run from a user shell.
+
+Verdict: DROPPED. No implementation. Ceiling in the real environment is
+~0.33% of cycles on the most probe-bound query. Also ratio caveat: hugepages
+is engine-level and would have helped NS's larger HTs at least as much as NB.
+
+================================================================================
+Iteration 7: Split governor — governor E=3 ADOPTED, static gate REJECTED
+(2026-07-02)
+================================================================================
+
+Implementation:
+- --split-governor-exe-ms=E (param_config): after >=2 completed sub-queries
+  with cumulative pure exe < E ms, ForceTerminalNext() makes the next SplitIR
+  return the merged remaining plan as terminal. State (governor_cum_exe_ms_,
+  governor_completed_subs_) lives in IRQuerySplitter, reset per query in
+  ExecuteSplitLoop; fire check at top of ExecuteOneIteration Step 1 (also
+  discards precomputed_extraction_, which was speculated as non-terminal).
+- --split-min-est-rows=N (static gate): on the first SplitIR after
+  MiddleOptimize, SumEstimatedRows over the optimized plan; if <= N set
+  force_terminal_next_ (query runs unsplit). Skipped when cross-query prep
+  already did the first SplitIR (first_split_done_).
+- Pure exe accounting: DuckDBAdapter::GetLastSubExeMs() times ONLY the
+  execute region (QjitExecutor::Run / ExecuteRow) inside
+  ExecuteSQLandCreateTempTable + ExecuteSpeculativeAndCreateTempTable.
+  First attempt used wall clock over Step 2: that adds ~7ms/sub of
+  jit-compile + gen_sql + ApplyCrossSubPlanOptimizations and collapses the
+  cheap-vs-expensive sub separation from 10x to 1.6x — governor never fired
+  at calibrated E. Kernel path falls back to Step-2 wall clock.
+- Fixed latent bug: force_terminal_next_ was never reset in Preprocess; a
+  kSplitCardThreshold fire on a query's final iteration could leak into the
+  next query's first SplitIR.
+- measure_breakdown_time_job.sh: AQP_EXTRA_FLAGS / AQP_FLAG_SUFFIX env vars
+  for ad-hoc flag sweeps. Comparison script: measure/compare_iter7.py.
+
+Measured (fresh 15-iteration sweep, same build, all 113 queries match golden):
+- governor E=3 (ADOPTED, now default ON; =0 disables): fired on 17 queries,
+  delta(fired) = -31.6ms; replication run
+  -32.8ms with the same fired set. 16/17 improve (33c -15.2, 21a -3.7, ...),
+  only 29c +5.9 (15 subs; terminal after 2 cheap subs forfeits later wins).
+- governor E=5: fired on 34, delta(fired) = +20.7ms — REJECTED. Extra fires
+  hit queries whose later subs matter (24b +16.1, 7a +11.9, 10b +10.0).
+- static gate T=34M: gated 46 queries, +60ms on gated set — REJECTED.
+  The retro in-sample +116ms @34M did not replicate. Estimate sums cannot
+  separate winners from losers out-of-sample: 11a (est 8.47M) -2.8ms vs
+  11d (est 8.64M) +41.7ms. Cumulative-delta sweep over the fresh data:
+  best T ~= 8.5M for only -23ms. Gate code REMOVED after the decision.
+- Full-suite noise floor: non-fired queries (identical code path) drifted
+  +34.9 / +37.9ms across runs — single-sweep total deltas below ~40ms are
+  not resolvable; per-fired-query attribution is the reliable measure.
+
+Lessons:
+1. Wall-clock proxies are not interchangeable with component times: the
+   governor calibrated on CSV exe-only needed the adapter's pure exe time.
+2. In-sample threshold tuning on estimate-based features does not survive
+   out-of-sample measurement (gate: +116ms predicted, -97.5ms measured).
+   The runtime-feedback rule (actual exe) replicated; the static-estimate
+   rule did not — same lesson as Iter 6 (estimates deviate >2x on 87.7%).
+3. kSplitCardThreshold and the governor compose as designed: 8c is handled
+   by the too-big threshold before the governor could see 2 subs.
+
+Groundwork analysis (moved from CLAUDE.md; verified 2026-07-02):
+Data: same-session sweep CSVs (median-of-10 warm runs), NB 5,810ms /
+NS 6,566ms (0.885x). CSV group columns verified from writer code:
+0=extract_IR, 1=gen_sql, 2=jit (AnalyzeSubIR incl. compile), 3=exe,
+4=materialize, 5=update_IR.
+
+- Oracle bound (perfect per-query split-or-not decision): 414ms recoverable
+  across 47 losing queries. NB wins 66 queries by 1,170ms — a rule must not
+  forfeit those.
+- Loss decomposition (the 414ms): 282ms middleware overhead (~1.1ms median /
+  1.8ms mean per extra sub-query: extract_IR + gen_sql + materialize +
+  update_IR) + 181ms worse exe − 49ms (NB jit is actually CHEAPER — smaller
+  modules). Losses concentrate in small queries with many subs: 33c (11 subs,
+  15.5ms total exe), 27b (7 subs, 7.3ms exe), 33a (NB 36.7 vs NS 12.9ms).
+
+Rules tested retroactively against the CSVs:
+| Rule | Net saved | Verdict |
+|------|-----------|---------|
+| tables >= 12 -> don't split | +58ms | weak |
+| sum(plan-node est. rows) <= T static gate | +116ms @T=34M, fragile (+8 @20M, +7 @50M) | did NOT replicate out-of-sample |
+| actual NS time < 40ms (oracle proxy) | +211ms | upper bound for any small-query gate |
+| 8c-style growth abort (last sub dominates exe) | fires on 20 winners (-373ms forfeit) vs 8 losers (+71ms) | REJECTED — winners also end with a dominant final sub |
+| runtime governor: terminate after K subs if cum exe < E | K=2,E=3: [-110 optimistic, -4 pessimistic]; K=2,E=5: [-220, +154] | conservative settings safe |
+
+Why K=2, not K=1: the first sub is often a tiny dimension filter even in big
+winning queries (26a: sub1=2.2ms, sub2=24ms, query=76ms). K=1/E=3 is +296ms
+WORSE (pessimistic bound).
+
+Disposition of the other Iter-7-era candidates (verified 2026-07-02):
+- #2 hide extract_IR in background: capped at ~30-60ms. Background SplitIR
+  must speculate on estimated C_i, which is within 2x only 12.3% of the time
+  (Iter 6 wall). PrecomputeNextExtraction already overlaps what can be
+  overlapped after C_i is known; its cost still lands in extract_IR via
+  pending_extract_us_. Cross-query overlap of the first SplitIR is the only
+  different variant (unsized, ~50-150ms guess, benchmark-shaped benefit).
+- #4 scan-side BF: LOW confidence (~50-150ms). BF-eligible HTs are
+  L3-resident and bloom-tagged directories already make misses cheap; plus
+  murmur sign-extension mismatch is a correctness hazard. Stays SKIPPED.
+- #5 hugepages: DEAD — see the standalone postmortem above.
+
+REVERT (2026-07-02, user decision): governor E=3 code REMOVED from the tree.
+Fresh A/B against same-day committed baselines (df31db7, full-sweep script):
+- template-cache config (query tpde jit_cache=single-run-template): total
+  -30.0ms (5,276.6 -> 5,246.6), fired-set -25.4ms across 14 queries (12/14
+  improve, 33c -14.8; 29c +15.4 remains the lone overreach and eats ~60% of
+  the gross win). Replicates the adoption-time -31.6ms fired-set.
+- interp (node-based no-jit): governor fired ZERO times (interp first-2-sub
+  pure exe is 6-9ms per the E=10 probe on 33c, never under the 3ms budget) —
+  sub-query structure identical on all 113 queries. Observed +74.2ms total is
+  broad run-to-run drift (70 slower / 43 faster, median +0.135ms/query,
+  baseline measured inside the long multi-config sweep vs standalone re-run);
+  no mechanism in the changed code (two steady_clock reads per sub-query).
+Rationale: no bug, no design error — behavior exactly as designed — but the
+honest value is ~25-32ms on fired queries only (0.5% of suite, below the
+±35ms noise floor), never visible as a clear total-suite speedup, and not
+worth 85 lines of plumbing (GetLastSubExeMs adapter timing, governor state,
+flag). Reverted: all src/include changes (git checkout to df31db7); KEPT:
+measure_breakdown_time_job.sh AQP_EXTRA_FLAGS/AQP_FLAG_SUFFIX hooks and
+compare_iter7.py (generic A/B tooling).
+If revisited: fix the 29c-style overreach first (a fired query whose later
+subs matter — e.g. require the remaining-plan estimate to be small too), and
+remember interp needs its own threshold (E~10) with unproven economics.
+
+================================================================================
+Verified facts moved from CLAUDE.md (2026-07-02 housekeeping)
+================================================================================
+Facts tied to completed iterations, removed from CLAUDE.md's active list:
+- Only INT32 and VARCHAR appear in the query-JIT Result sink
+  (ir_to_llvm.cpp:9775) — Iter 4 context.
+- Iter 4 full-sweep savings 640ms (500ms exe + 150ms jit): initial single-run
+  measured 270ms; the full sweep with proper warmup shows the larger benefit.
+  Inline cursor-bump eliminates per-row function calls AND reduces LLVM module
+  size -> faster TPDE compilation.
+- Cross-sub-query BF infrastructure exists but is disabled for query-JIT
+  (ir_query_splitter.cpp:1529-1537); BF-eligible temps: 303 of 565 (53.6%),
+  most with L3-resident HTs (Iter 3 analysis, full numbers in the Iter 3
+  section: eligible 50<=card<=100K, 144 too large, 118 too small).
+- Query-JIT probe body emits zero software prefetch; pipeline-JIT has it
+  (distances 24/12, ir_to_llvm.cpp:7431-7494). Adding probe prefetch was
+  net-negative (Iter 5).
+- ROF is intentionally disabled for TPDE: gate use_simd_ && vec_width>1 &&
+  fast_mode_ != TPDE (ir_to_llvm.cpp:9146-9153); TPDE O0 codegen makes the
+  Phase 1 loop 2-3x too slow to pay for the extra pass.
+- SIMD (--jit-simd) does not help JOB (probe-bound, not compute-bound).
+- Sub-query pipelining (fuse probe[i] -> build[i+1]) is infeasible:
+  sub-query[i+1]'s plan depends on MiddleOptimize with C_i from
+  sub-query[i]'s execution; materialization is only 16ms total (Iter 6).
