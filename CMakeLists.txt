@@ -127,6 +127,7 @@ if (LLVM_FOUND)
 
         target_include_directories(aqp_jit_lib PRIVATE
                 ${AQP_TPDE_SOURCE_DIR}/tpde-llvm/include)
+
         find_library(TINFO_LIB tinfo PATHS /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu NO_DEFAULT_PATH)
         if (NOT TINFO_LIB)
             find_library(TINFO_LIB tinfo)
