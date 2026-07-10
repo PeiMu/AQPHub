@@ -68,6 +68,18 @@ struct CrossQueryPrepResult {
   bool has_qjit = false;
 #endif
 
+  // SDS (TOP_DOWN) cross-query prep fields
+  std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
+  std::map<unsigned int, double> td_table_card;
+  std::map<unsigned int, std::string> td_table_index_to_name;
+  unsigned int td_max_table_index = 0;
+  std::map<unsigned int, std::pair<std::string, double>> td_mark_in;
+  std::set<unsigned int> td_mark_locked;
+  std::unordered_map<std::string, double> td_col_distinct_hints;
+  JoinGraph td_join_graph;
+  std::vector<std::pair<unsigned int, unsigned int>> td_current_join_pairs;
+  std::vector<bool> td_is_relationship;
+
   bool success = false;
   std::string error;
   double prep_time_us = 0.0;
@@ -148,6 +160,9 @@ public:
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
                    DuckDBAdapter *duck, const ParamConfig &config);
 #endif
+  static std::unique_ptr<CrossQueryPrepResult>
+  PrepareNextQueryTopDown(const std::string &sql_path, duckdb::DuckDB &db_ref,
+                          DuckDBAdapter *duck, const ParamConfig &config);
 #endif
 
 private:

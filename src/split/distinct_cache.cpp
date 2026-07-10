@@ -134,4 +134,17 @@ double DistinctCache::GetRowCount(EngineAdapter &adapter,
   return rows;
 }
 
+std::map<std::string, double> DistinctCache::GetAllCachedRowCounts() const {
+  std::map<std::string, double> out;
+  const std::string suffix = "\trows:";
+  for (const auto &kv : map_) {
+    if (kv.second > 0.0 && kv.first.size() > suffix.size() &&
+        kv.first.compare(kv.first.size() - suffix.size(), suffix.size(),
+                         suffix) == 0) {
+      out[kv.first.substr(0, kv.first.size() - suffix.size())] = kv.second;
+    }
+  }
+  return out;
+}
+
 } // namespace middleware

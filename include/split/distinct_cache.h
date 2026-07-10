@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <map>
 #include <string>
 #include <unordered_map>
 
@@ -40,6 +41,11 @@ public:
   // Unfiltered row count of a base table (SELECT COUNT(*)), persisted under
   // the column-field tag "rows:". Returns <= 0 on failure.
   double GetRowCount(EngineAdapter &adapter, const std::string &table);
+
+  // Return all cached row counts (from "rows:" entries loaded from file)
+  // without touching the adapter. Used to pre-populate base_count_cache_
+  // on bg-thread TopDownSplitter instances.
+  std::map<std::string, double> GetAllCachedRowCounts() const;
 
   static std::string DefaultPath();
 

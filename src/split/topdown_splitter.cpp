@@ -3,6 +3,7 @@
  */
 
 #include "split/topdown_splitter.h"
+#include "split/ir_query_splitter.h"
 #include "split/ir_utils.h"
 
 #include <algorithm>
@@ -1145,6 +1146,49 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
 #endif
 
   return updated;
+}
+
+#ifdef HAVE_DUCKDB
+void TopDownSplitter::MovePreprocessState(CrossQueryPrepResult &out) {
+  out.td_table_card = std::move(table_card_);
+  out.td_table_index_to_name = std::move(table_index_to_name_);
+  out.td_max_table_index = max_table_index_;
+  out.td_mark_in = std::move(mark_in_);
+  out.td_mark_locked = std::move(mark_locked_);
+  out.td_col_distinct_hints = std::move(col_distinct_hints_);
+  out.td_join_graph = std::move(join_graph_);
+  out.td_current_join_pairs = std::move(current_join_pairs_);
+  out.td_is_relationship = std::move(is_relationship_);
+}
+
+void TopDownSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
+  split_iteration_ = 0;
+  executed_tables_.clear();
+  temp_indices_.clear();
+  planned_for_ = nullptr;
+  planned_splittable_ = false;
+  planned_group_.clear();
+  planned_card_ = 0.0;
+  explain_cache_.clear();
+
+  table_card_ = std::move(prep.td_table_card);
+  table_index_to_name_ = std::move(prep.td_table_index_to_name);
+  max_table_index_ = prep.td_max_table_index;
+  mark_in_ = std::move(prep.td_mark_in);
+  mark_locked_ = std::move(prep.td_mark_locked);
+  col_distinct_hints_ = std::move(prep.td_col_distinct_hints);
+  join_graph_ = std::move(prep.td_join_graph);
+  current_join_pairs_ = std::move(prep.td_current_join_pairs);
+  is_relationship_ = std::move(prep.td_is_relationship);
+}
+#endif
+
+void TopDownSplitter::PrePopulateBaseCountCache() {
+  auto rows = distinct_cache_.GetAllCachedRowCounts();
+  for (auto &kv : rows) {
+    if (base_count_cache_.find(kv.first) == base_count_cache_.end())
+      base_count_cache_[kv.first] = kv.second;
+  }
 }
 
 } // namespace middleware

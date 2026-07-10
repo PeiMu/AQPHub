@@ -25,6 +25,10 @@
 
 namespace middleware {
 
+#ifdef HAVE_DUCKDB
+struct CrossQueryPrepResult;
+#endif
+
 class TopDownSplitter : public FKBasedSplitter {
 public:
   // enable_reorder is accepted for constructor compatibility; SDS never
@@ -39,6 +43,13 @@ public:
   bool IsComplete(const ir_sql_converter::AQPStmt *remaining_ir) override;
 
   std::string GetStrategyName() const override { return "TopDown"; }
+
+#ifdef HAVE_DUCKDB
+  void InitFromCrossQueryPrep(CrossQueryPrepResult &prep);
+  void MovePreprocessState(CrossQueryPrepResult &out);
+#endif
+
+  void PrePopulateBaseCountCache();
 
   std::unique_ptr<ir_sql_converter::AQPStmt> UpdateRemainingIR(
       std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir,

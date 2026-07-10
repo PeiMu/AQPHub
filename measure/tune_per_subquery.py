@@ -21,7 +21,7 @@ Each candidate config is defined by:
 Usage:
   python3 tune_per_subquery.py [split]
 
-  split: node-based (default) | none | relationship-center
+  split: node-based (default) | none | topdown | relationship-center
 
 Candidate configs are defined in CONFIGS below.  Each entry specifies
 the CSV filename, whether it has a jit_compile column, and the flag
@@ -51,7 +51,7 @@ Warm-row selection: drops first 5 runs (warmup), uses last 10 runs.
 Aggregation: arithmetic mean per column (matches plot_middleware_jit.py).
 
 CSV layout (verified):
-  - head columns: 4 for node-based/none, 5 for relationship-center
+  - head columns: 4 for node-based/none, 5 for topdown/relationship-center
   - per iteration group: 6 columns (jit present) or 5 (no jit)
     head + N*group_size + tail = total columns per row
   - warm rows: rows[5:] if len > 6, else rows[1:]
@@ -247,7 +247,7 @@ def make_configs(split):
 def main():
     split = sys.argv[1] if len(sys.argv) > 1 else "node-based"
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_result")
-    head = 5 if split == "relationship-center" else 4
+    head = 5 if split in ("relationship-center", "topdown") else 4
 
     CONFIGS = make_configs(split)
 

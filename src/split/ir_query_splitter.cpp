@@ -644,6 +644,109 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
       std::chrono::duration<double, std::micro>(t1 - t0).count();
   return result;
 }
+
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
+                                         duckdb::DuckDB &db_ref,
+                                         DuckDBAdapter *duck,
+                                         const ParamConfig &config) {
+  bool debug = config.enable_debug_print;
+  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto t0 = std::chrono::high_resolution_clock::now();
+  try {
+    // Read SQL file
+    {
+      std::ifstream f(sql_path);
+      if (!f.is_open()) {
+        result->error = "failed to open " + sql_path;
+        return result;
+      }
+      std::stringstream buf;
+      buf << f.rdbuf();
+      result->sql = buf.str();
+    }
+
+    // Extract query name
+    {
+      auto slash = sql_path.rfind('/');
+      std::string fname =
+          (slash != std::string::npos) ? sql_path.substr(slash + 1) : sql_path;
+      auto dot = fname.rfind('.');
+      if (dot != std::string::npos)
+        fname = fname.substr(0, dot);
+      result->query_name = std::move(fname);
+    }
+
+    // bg connection + Parse + Plan (mirrors DuckDBAdapter::ParseSQL)
+    result->bg_conn = std::make_unique<duckdb::Connection>(db_ref);
+    auto *ctx = result->bg_conn->context.get();
+
+    bool auto_commit = ctx->transaction.IsAutoCommit();
+    if (auto_commit)
+      ctx->transaction.BeginTransaction();
+
+    duckdb::Parser parser(ctx->GetParserOptions());
+    parser.ParseQuery(result->sql);
+    if (parser.statements.empty() ||
+        parser.statements[0]->type !=
+            duckdb::StatementType::SELECT_STATEMENT) {
+      if (auto_commit)
+        ctx->transaction.Commit();
+      result->error = "not a single SELECT statement";
+      return result;
+    }
+
+    result->bg_planner = std::make_unique<duckdb::Planner>(*ctx);
+    result->bg_planner->CreatePlan(std::move(parser.statements[0]));
+    auto plan = std::move(result->bg_planner->plan);
+    if (!plan) {
+      if (auto_commit)
+        ctx->transaction.Commit();
+      result->error = "failed to create logical plan";
+      return result;
+    }
+
+    // FilterOptimize (mirrors DuckDBAdapter::FilterOptimize)
+    if (plan->RequireOptimizer()) {
+      duckdb::Optimizer optimizer(*result->bg_planner->binder, *ctx);
+      plan = optimizer.FilterOptimize(std::move(plan));
+    }
+
+    if (auto_commit)
+      ctx->transaction.Commit();
+
+    // ConvertPlanToIR (SDS needs the full IR upfront)
+    std::unordered_map<unsigned int, std::string> empty_map;
+    result->whole_ir = ir_sql_converter::ConvertDuckDBPlanToIR(
+        *result->bg_planner->binder, *ctx, plan.get(), empty_map, false);
+    if (!result->whole_ir) {
+      result->error = "ConvertDuckDBPlanToIR failed";
+      return result;
+    }
+
+    // Run Preprocess on a bg TopDownSplitter. Pre-populate base_count_cache_
+    // from the file-backed distinct cache so FetchMissingLeafCardinalities
+    // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
+    TopDownSplitter bg_splitter(duck);
+    bg_splitter.PrePopulateBaseCountCache();
+    bg_splitter.Preprocess(result->whole_ir);
+    bg_splitter.MovePreprocessState(*result);
+
+    result->success = true;
+    if (debug)
+      std::cerr << "[CROSS-QUERY-TD] prep OK for " << result->query_name
+                << "\n";
+  } catch (const std::exception &e) {
+    result->error = e.what();
+    if (debug)
+      std::cerr << "[CROSS-QUERY-TD] prep failed: " << e.what() << "\n";
+  }
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  result->prep_time_us =
+      std::chrono::duration<double, std::micro>(t1 - t0).count();
+  return result;
+}
 #endif
 
 QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
@@ -735,12 +838,15 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #ifdef HAVE_DUCKDB
   bool using_cross_query_prep =
       active_cross_query_prep_ && active_cross_query_prep_->success &&
-      config_.strategy == SplitStrategy::NODE_BASED;
+      (config_.strategy == SplitStrategy::NODE_BASED ||
+       config_.strategy == SplitStrategy::TOP_DOWN);
   if (using_cross_query_prep) {
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Phase 1+2: Skipped (cross-query prep)\n";
-    // Inject bg planner so iterations 2+ can use GetBinder()/ConvertPlanToIR()
-    duckdb_adapter_->SetPlanner(std::move(active_cross_query_prep_->bg_planner));
+    if (config_.strategy == SplitStrategy::NODE_BASED) {
+      // Inject bg planner so iterations 2+ can use GetBinder()/ConvertPlanToIR()
+      duckdb_adapter_->SetPlanner(std::move(active_cross_query_prep_->bg_planner));
+    }
     if (config_.enable_timing) {
       std::ofstream log_file;
       log_file.open(g_timing_log_name, std::ios_base::app);
@@ -808,28 +914,41 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
 #ifdef HAVE_DUCKDB
   if (config_.strategy != SplitStrategy::NODE_BASED) {
+    if (using_cross_query_prep &&
+        config_.strategy == SplitStrategy::TOP_DOWN &&
+        active_cross_query_prep_->whole_ir) {
+      if (config_.enable_debug_print)
+        std::cout << "[IRQuerySplitter] Phase 3: Skipped (cross-query prep)\n";
+      whole_ir = std::move(active_cross_query_prep_->whole_ir);
+      if (config_.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "0.000, "; // convert_plan_to_ir placeholder
+        log_file.close();
+      }
+    } else {
 #endif
-    if (config_.enable_timing)
-      timer = chrono_tic();
-    whole_ir = adapter_->ConvertPlanToIR();
-    if (config_.enable_timing) {
-      auto convert_plan_to_ir_time =
-          chrono_toc(&timer, "Convert Plan to IR time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3)
-               << (convert_plan_to_ir_time / 1000.0) << ", ";
-      log_file.close();
-    }
-    if (!whole_ir) {
-      throw std::runtime_error("Failed to convert plan to IR");
-    }
-    if (config_.enable_debug_print) {
-      std::cout << "\n=== Whole IR (before split) ===" << std::endl;
-      whole_ir->Print();
-    }
+      if (config_.enable_timing)
+        timer = chrono_tic();
+      whole_ir = adapter_->ConvertPlanToIR();
+      if (config_.enable_timing) {
+        auto convert_plan_to_ir_time =
+            chrono_toc(&timer, "Convert Plan to IR time is\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (convert_plan_to_ir_time / 1000.0) << ", ";
+        log_file.close();
+      }
+      if (!whole_ir) {
+        throw std::runtime_error("Failed to convert plan to IR");
+      }
+      if (config_.enable_debug_print) {
+        std::cout << "\n=== Whole IR (before split) ===" << std::endl;
+        whole_ir->Print();
+      }
 #ifdef HAVE_DUCKDB
+    }
   }
 #endif
 
@@ -860,15 +979,21 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   std::chrono::high_resolution_clock::time_point timer;
 #ifdef HAVE_DUCKDB
   if (active_cross_query_prep_ && active_cross_query_prep_->success &&
-      config_.strategy == SplitStrategy::NODE_BASED) {
+      (config_.strategy == SplitStrategy::NODE_BASED ||
+       config_.strategy == SplitStrategy::TOP_DOWN)) {
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Preprocess: using cross-query prep\n";
-    auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
-    node_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+    if (config_.strategy == SplitStrategy::NODE_BASED) {
+      auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+      node_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
 #if defined(HAVE_LLVM)
-    precomputed_extraction_ =
-        std::move(active_cross_query_prep_->first_extraction);
+      precomputed_extraction_ =
+          std::move(active_cross_query_prep_->first_extraction);
 #endif
+    } else {
+      auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
+      td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+    }
     if (config_.enable_timing) {
       std::ofstream log_file;
       log_file.open(g_timing_log_name, std::ios_base::app);
@@ -881,6 +1006,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                 << " bg_prep=" << std::fixed << std::setprecision(1)
                 << (prep_us / 1000.0) << "ms\n";
     }
+    if (config_.strategy == SplitStrategy::TOP_DOWN)
+      active_cross_query_prep_.reset();
   } else {
     active_cross_query_prep_.reset();
 #endif

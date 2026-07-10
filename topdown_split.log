@@ -65,18 +65,19 @@ estimator. Verified examples:
   the smaller input as build side (verified: query_graph_manager.cpp:264).
 - EXPLAIN overhead: 0.3–1 ms in-process per pair (negligible).
 
-## SDS v12 Opportunity Analysis (2026-07-07)
+## SDS v12 Opportunity Analysis (2026-07-07, revised 2026-07-08)
 
-Root cause of the remaining +38ms gap: SDS stops splitting 1-4 iterations
-earlier than NB on 21 gap queries (total addressable: +268ms). The
-`NumRelations >= 4` gate on the engine-validated fallback (line 923) blocks
-fanout-rejected pairs from getting EXPLAIN-validated when only 3 relations
-remain (big_table + temp + one_more). This is the most common terminal
-state for gap queries: 18a final=40.5ms vs NB 2.3ms; 31a final=29.5ms
-vs NB 1.0ms; 25a final=27.7ms vs NB 1.9ms.
+Re-measured 2026-07-08 (canonical parser): SDS exe=4.61 vs NB exe=4.59,
+net gap +19ms (+0.4%). Cross-session confidence ±60ms (two runs of
+identical code differed by 118ms exe). Per-query: losses +389ms (53 q),
+wins -370ms (60 q). Key gap queries: 11d +34, 10c +34, 9c +30, 26c +25,
+18a +19, 30c +19, 31a +18. Key wins: 16b -53, 17f -31, 7c -27, 5c -23,
+9d -23. See CLAUDE.md §SDS v12 Gap Diagnosis for full table.
 
-SDS actually outperforms NB on 22 other queries (-312ms total) thanks to
-the DP cost model picking better pairs. Net = +38ms.
+Original v10b analysis (below) is superseded for per-query numbers but
+the root-cause mechanisms remain correct. The `>= 4` gate
+(topdown_splitter.cpp:939) is still the primary STOP-TOO-EARLY cause,
+and base×base EXPLAIN skip (line 770) is the primary LONG-TAIL cause.
 
 ### Design Opportunity Audit
 
@@ -94,6 +95,40 @@ the DP cost model picking better pairs. Net = +38ms.
 | O10: Speculative planning | **Infeasible for SDS** | spec-jit hard-gated to NODE_BASED; SDS PlanNext depends on exact temp cardinality |
 | O11: Fewer, larger subqueries | **Already tuned, empirically regressive** | v4 tried aggressive growth: +0.4s regression |
 | O12: 2-group pattern | **Already optimal** | No-op demotion (card >= 1e5) backed by empirical evidence |
+
+## Opt#1 and O14 Experiments (2026-07-08)
+
+### Opt#1: `>= 4` → `>= 3` gate relaxation
+
+Changed topdown_splitter.cpp:939 from `optimizer.NumRelations() >= 4` to
+`>= 3`. Correctness: 113/113 pass on both topdown+no-jit and topdown+
+query-jit+template configs. Performance:
+- exe: -43ms vs v12 (77 queries improved, 36 regressed)
+- MW: +23ms (deeper splitting → more subquery overhead)
+- JIT: +37ms (more subqueries → more Prepare() calls)
+- **Total: +17ms regression.** DROPPED.
+
+### O14: EXPLAIN-rank all pairs
+
+Removed `if (!has_temp) return true` skip in explain_validate; changed to
+`pick_best()` that collects engine estimates for all pairs (including
+base×base) and picks the one with lowest engine estimate. Also applied to
+noop_cands and max_rejected_cands. Correctness: 113/113 pass. Performance:
+- exe: +97ms vs baseline (4.707 vs ~4.61)
+- MW: ~flat
+- **Total: clear regression.** DROPPED.
+
+Root cause: base×base EXPLAIN shares the same correlation-blind estimation
+errors as the tdom model (e.g. 10c cn×mc: both estimate ~14K, actual 1.15M).
+Re-ranking by EXPLAIN estimate broke the DP ordering that was better
+calibrated for base×base pairs.
+
+### JIT Compile Time Gap Investigation
+
+See CLAUDE.md §JIT Compile Time Gap Investigation for full analysis.
+Summary: +193ms gap is structural — DuckDB Prepare() cost scales with
+subquery size, and SDS's growth heuristic creates larger subqueries.
+Not fixable without disabling growth (which regresses exe +0.4s).
 
 ## Experiment Code Cleanup (2026-07-06)
 
