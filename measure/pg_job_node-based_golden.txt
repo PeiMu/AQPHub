@@ -1,0 +1,1183 @@
+
+========================================
+Running Benchmark: /home/bita/Project/benchmarks/JOB4AQP/queries
+========================================
+Found 113 SQL file(s)
+
+--- Iteration 0 ---
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/10a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Actor|12 Rounds|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/10b.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/10c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Himself|Evil Eyes: Behind the Scenes|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/11a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/11b.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|follows|The Money Man|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/11c.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox Home Entertainment|(1997-2002) (worldwide) (all media)|24|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/11d.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+13th Street|(1954) (UK) (TV)|24|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/12a.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+10th Grade Reunion Films|8.1|3:20|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/12b.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+$10,000|Birdemic: Shock and Terror|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/12c.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+101st Street Productions|7.1|$1.11|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/13a.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Afghanistan:24 June 2012|1.0|00|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/13b.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+501audio|1.8|5 Time Champion|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/13c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+DL Sites|1.8|Champion|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/13d.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Entertainment|1.0|****|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/14a.sql
+embed data
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/14b.sql
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+6.4|Of Dolls and Murder|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/14c.sql
+embed data
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+1.0|$lowdown|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/15a.sql
+NOTICE:  identifier "temp7_28_temp6_26_temp5_24_temp4_22_temp3_20_temp2_18_movie_info_6_info" will be truncated to "temp7_28_temp6_26_temp5_24_temp4_22_temp3_20_temp2_18_movie_inf"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/15b.sql
+NOTICE:  identifier "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id" will be truncated to "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_t"
+NOTICE:  identifier "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id" will be truncated to "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_t"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/15c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+USA:10 April 2001|24: Day Six - Debrief|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/15d.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+06/05: The Sixth of May|06/05|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/16a.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Adams, Stan|Carol Burnett vs. Anthony Perkins|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/16b.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+...|002 agenti segretissimi|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/16c.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|003|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/16d.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|003|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/17a.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Baaca, John|Baaca, John|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/17b.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/17c.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Xainte, Arnaud|Xainte, Arnaud|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/17d.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Abrahamsson, Bertil|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/17e.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+$hort, Too|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/17f.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2X, Benjamin|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/18a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+$1,000|10|40 Days and 40 Nights|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/18b.sql
+same engine
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Horror|8.1|Agorable|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/18c.sql
+embed data
+same engine
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Action|10|?|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/19a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Angeline, Moriah|Blue Harvest|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/19b.sql
+NOTICE:  identifier "temp6_27_temp5_25_temp4_23_temp3_21_temp2_19_temp1_17_title_9_title" will be truncated to "temp6_27_temp5_25_temp4_23_temp3_21_temp2_19_temp1_17_title_9_t"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Jolie, Angelina|Kung Fu Panda|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/19c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Alborg, Ana Esther|About Schmidt|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/19d.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Aaron, Caroline|$9.99|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/1a.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as Indo-British Films Ltd.) (presents)|A Clockwork Orange|1934|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/1b.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as Grosvenor Park) (presents)|Disaster Movie|2008|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/1c.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(co-production)|Intouchables|2011|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/1d.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+(as ApolloMedia)|Disaster Movie|2004|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/20a.sql
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Disaster Movie|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/20b.sql
+same engine
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+Iron Man|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/20c.sql
+same engine
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Abell, Alistair|12 Rounds|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/21a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Der Serienkiller - Klinge des Todes|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/21b.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Hämndens pris|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/21c.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Churchill Films|followed by|Batman Beyond|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/22a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|2.1|12 Rounds|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/22b.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Boll Kino Beteiligungs GmbH & Co. KG|3.0|As Good as Dead|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/22c.sql
+embed data
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.9|10,000 BC|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/22d.sql
+embed data
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribution|1.6|10,000 BC|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/23a.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|The Analysts|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/23b.sql
+NOTICE:  identifier "temp8_32_temp7_30_temp6_28_temp5_26_temp4_24_temp3_22_title_10_title" will be truncated to "temp8_32_temp7_30_temp6_28_temp5_26_temp4_24_temp3_22_title_10_"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/23c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+movie|Dirt Merchant|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/24a.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Additional Voices|Baker, Andrea|Baiohazâdo 6|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/24b.sql
+NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_"
+NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_"
+NOTICE:  identifier "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_"
+NOTICE:  identifier "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_"
+NOTICE:  identifier "temp9_35_temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp9_35_temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Tigress|Jolie, Angelina|Kung Fu Panda 2|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/25a.sql
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_movie_info_idx_5_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_movie_info_idx_5_i"
+same engine
+same engine
+same engine
+embed data
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|10|Abdallah, Damon|1000 Year Sleep|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/25b.sql
+NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_temp1_20_movie_info_4_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_temp1_20_movie_inf"
+same engine
+same engine
+same engine
+embed data
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|138|Campbell, Jeremiah|Vampire Boys|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/25c.sql
+embed data
+same engine
+same engine
+same engine
+embed data
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|10|Aakeson, Kim Fupz|$|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/26a.sql
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_"
+same engine
+same engine
+same engine
+embed data
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Aaron Fleischman|7.1|Acereda, Hermie|3:10 to Yuma|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/26b.sql
+NOTICE:  identifier "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_i"
+NOTICE:  identifier "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_inf"
+NOTICE:  identifier "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_inf"
+NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Bank Manager|8.2|Inception|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/26c.sql
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_"
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+1st Baseman|1.9|12 Rounds|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/27a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Öga för öga|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/27b.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Filmlance International AB|followed by|Öga för öga|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/27c.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Det Danske Filminstitut|followed by|Öga för öga|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/28a.sql
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
+NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_inf"
+NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_title" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_"
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|2.9|(#1.1)|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/28b.sql
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+20th Century Fox|6.6|(#1.1)|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/28c.sql
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
+NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_inf"
+NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_title" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_"
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+01 Distribuzione|1.9|(#1.1)|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/29a.sql
+NOTICE:  identifier "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp7_36_temp6_34_temp5_32_char_name_4_name" will be truncated to "temp11_44_temp10_42_temp9_40_temp7_36_temp6_34_temp5_32_char_na"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_2"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Queen|Andrews, Julie|Shrek 2|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/29b.sql
+NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
+NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_"
+NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_"
+NOTICE:  identifier "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_"
+NOTICE:  identifier "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_"
+NOTICE:  identifier "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_"
+NOTICE:  identifier "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30"
+NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30"
+NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp7_36_temp6_34_temp5_3"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/29c.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+Lola|Andrews, Julie|Hoodwinked!|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/2a.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+008 - Agent wider Willen|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/2b.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+007 in Rio|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/2c.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/2d.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+002 agenti segretissimi|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/30a.sql
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_i"
+NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_info" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_inf"
+NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_11_title" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_11_"
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|100356|Abrams, J.J.|16 Blocks|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/30b.sql
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_movie_info_idx_8_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_movie_info_idx_8_i"
+NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_temp1_23_title_11_title" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_temp1_23_title_11_"
+same engine
+same engine
+same engine
+embed data
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|194782|Shannon, Damian|Freddy vs. Jason|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/30c.sql
+NOTICE:  identifier "temp5_33_temp4_31_temp3_29_temp2_27_temp1_25_movie_info_idx_8_info" will be truncated to "temp5_33_temp4_31_temp3_29_temp2_27_temp1_25_movie_info_idx_8_i"
+same engine
+same engine
+embed data
+same engine
+same engine
+embed data
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|100356|Abernathy, Lewis|$|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/31a.sql
+NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_i"
+NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_i"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_inf"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_inf"
+NOTICE:  identifier "temp8_36_temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp8_36_temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_"
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+embed data
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|1040|Agnew, Jim|2001 Maniacs|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/31b.sql
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_movie_info_idx_7_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_movie_info_idx_7_i"
+NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_10_title" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_10_"
+same engine
+same engine
+same engine
+same engine
+embed data
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Horror|129755|Bousman, Darren Lynn|Saw|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/31c.sql
+NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_i"
+NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_i"
+NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_inf"
+NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_inf"
+NOTICE:  identifier "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_"
+same engine
+same engine
+embed data
+same engine
+same engine
+embed data
+same engine
+same engine
+embed data
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+Action|1008|Abraham, Brad|11:14|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/32a.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/32b.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+alternate language version of|12 oz. Mouse|100 Greatest Cartoons|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/33a.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 6
+495 Productions|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/33b.sql
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_inf"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MTV Netherlands|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/33c.sql
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_"
+NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_inf"
+NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_inf"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_i"
+NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_i"
+NOTICE:  identifier "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_in"
+NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_"
+NOTICE:  identifier "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27"
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 6
+2BE|495 Productions|1.3|1.0|Abenteuer 1900 - Leben im Gutshaus|Abenteuer 1927 - Sommerfrische|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/3a.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+2 Days in New York|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/3b.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+300: Rise of an Empire|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/3c.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+00 Schneider - Jagd auf Nihil Baxter|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/4a.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+5.1|20-seiki shônen: Dai 2 shô - Saigo no kibô|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/4b.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+9.1|Batman: Arkham City|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/4c.sql
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+2.1|00 Schneider - Jagd auf Nihil Baxter|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/5a.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/5b.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/5c.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 1
+114 Days: The Race to Save a Dream|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/6a.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/6b.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|The Avengers 2|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/6c.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/6d.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|Downey Jr., Robert|2008 MTV Movie Awards|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/6e.sql
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/6f.sql
+embed data
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+based-on-comic|$hort, Too|007: Agent Under Fire|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/7a.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Antonioni, Michelangelo|Dressed to Kill|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/7b.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+De Palma, Brian|Dressed to Kill|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/7c.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+50 Cent|Aames has a son, Christopher, with his first wife. Aames met his second wife, 'Maylo McCaslin' (qv), in 1984 on the set of _"Rocky Road" (1985)_ (qv), a cable sitcom in which she starred. They live in rural Olathe, Kansas with their daughter, Harleigh.|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/8a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Bushi no ichibun|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/8b.sql
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+Chambers, Linda|Dragon Ball Z: Shin Budokai|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/8c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+?|****|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/8d.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 2
+100% Birgitta|?|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/9a.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AJ|additional voices|Blue Harvest|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/9b.sql
+same engine
+same engine
+same engine
+same engine
+same engine
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/9c.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+A.B.|2nd Balladeer|Alborg, Ana Esther|(1975-01-20)|
+Run /home/bita/Project/benchmarks/JOB4AQP/queries/9d.sql
+same engine
+
+=== Query Results ===
+Rows: 1, Columns: 4
+?|100-Series Realian|Aaron, Caroline|$15,000.00 Error|
+
+========================================
+Benchmark Summary
+========================================
+Total queries: 113
+Passed: 113
+Failed: 0
+========================================
+
+========================================
+Execution completed
+========================================
