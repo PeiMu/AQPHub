@@ -2834,8 +2834,14 @@ IRQuerySplitter::GetTrivialTempTable(ir_sql_converter::AQPStmt *ir) const {
 
 bool IRQuerySplitter::SubPlanReferencesEmptyTemp(const std::string &sql) const {
   for (const auto &name : empty_temp_tables_) {
-    if (sql.find(name) != std::string::npos)
-      return true;
+    size_t pos = 0;
+    while ((pos = sql.find(name, pos)) != std::string::npos) {
+      size_t end = pos + name.size();
+      bool word_end = end >= sql.size() || !std::isalnum(sql[end]);
+      if (word_end)
+        return true;
+      pos = end;
+    }
   }
   return false;
 }
