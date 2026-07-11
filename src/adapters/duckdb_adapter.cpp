@@ -1872,7 +1872,15 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
 
   // Allocate chunk index + dedup names BEFORE execution (see
   // ExecuteSQLandCreateTempTable) so the hook can launch the next speculation.
-  auto data_chunk_index = planner->binder->GenerateTableIndex();
+  // planner can be null here (SDS cross-query prep skips ParseSQL): use the
+  // same monotonic fallback as ExecuteSQLandCreateTempTable's replay path.
+  duckdb::idx_t data_chunk_index;
+  if (planner) {
+    data_chunk_index = planner->binder->GenerateTableIndex();
+  } else {
+    static std::atomic<duckdb::idx_t> s_spec_idx{200000};
+    data_chunk_index = s_spec_idx.fetch_add(1, std::memory_order_relaxed);
+  }
   intermediate_table_map[data_chunk_index] = temp_table_name;
   temp_table_index_ = data_chunk_index;
 
@@ -3011,11 +3019,14 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
 
   std::unique_ptr<duckdb::PreparedStatement> prepared;
   auto t_before_pfp = t0;
+  auto t_parse = t0, t_opt = t0, t_conv = t0;
   const char *stage = "parse";
   try {
     ParseSQL(sql);
+    if (trace_pass2) t_parse = SteadyClock::now();
     stage = "optimize";
     Optimize();
+    if (trace_pass2) t_opt = SteadyClock::now();
     // Fresh binder ⇒ temp-table scans got fresh indices; rebuild the maps
     // so ConvertPlanToIR resolves ChunkNodes.
     intermediate_table_map.clear();
@@ -3032,6 +3043,7 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
       stage = "convert-ir";
       ir = ConvertPlanToIR();
     }
+    if (trace_pass2) t_conv = SteadyClock::now();
     t_before_pfp = trace_pass2 ? SteadyClock::now()
                               : SteadyClock::time_point{};
     stage = "prepare-from-plan";
@@ -3071,9 +3083,14 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
     double before_pfp = std::chrono::duration<double, std::milli>(
         t_before_pfp - t0).count();
     double pfp_onward = total - before_pfp;
+    auto ms = [](SteadyClock::time_point a, SteadyClock::time_point b) {
+      return std::chrono::duration<double, std::milli>(b - a).count();
+    };
     fprintf(stderr,
-            "[AQP-PASS2] label=%s total=%.3f parse_opt_ir=%.3f pfp_onward=%.3f\n",
-            label.c_str(), total, before_pfp, pfp_onward);
+            "[AQP-PASS2] label=%s total=%.3f parse_opt_ir=%.3f pfp_onward=%.3f"
+            " parse=%.3f opt=%.3f conv=%.3f\n",
+            label.c_str(), total, before_pfp, pfp_onward,
+            ms(t0, t_parse), ms(t_parse, t_opt), ms(t_opt, t_conv));
   }
 
   planner = std::move(saved_planner);

@@ -137,12 +137,363 @@ Not fixable without disabling growth (which regresses exe +0.4s).
 - P2.c is HARD-CODED (no flag): COLUMN_LIFETIME ×2 / REORDER_FILTER /
   JOIN_FILTER_PUSHDOWN deleted from `RunBuiltInMiddleOptimizers`.
 
-## SDS v13+ Optimization Plan (2026-07-07, for reference)
+## SDS v13+ Optimization Plan (2026-07-07, revised 2026-07-08)
 
-| # | Optimization | Mechanism | Est. Impact | Effort | Risk |
-|---|---|---|---|---|---|
-| 1 | Fix `>= 4` gate for rejected_pairs | EXPLAIN-validate fanout-rejected pairs when 3 relations remain | 80-120ms exe | Low (~30 LOC) | Low |
-| 2 | Relax kPairEstFloor for 3-rel case | Use `min(kSplitCardThreshold, temp_card * 10)` instead of `max(temp_card, 1000)` for 3-relation pairs | 20-40ms exe (overlaps #1) | Low (~5 LOC) | Medium |
-| 3 | Exact temp-column distinct feedback | Call GetTempTableDistinctValues after execution, inject into DP model | 5-15ms exe | Low-medium | Low |
-| 4 | Temp min/max cross-boundary filters | Use GetTempTableMinMax to inject range preds on base table scans | 10-30ms exe | Low | Low |
-| 5 | Shape-keyed tuning (P5') | Fix F8 tuner misbinding: canonical plan shape keys | 0ms exe (enables correct tuned configs) | Medium | Low |
+| # | Optimization | Mechanism | Est. Impact | Effort | Risk | Status |
+|---|---|---|---|---|---|---|
+| 1 | Fix `>= 4` gate (Opt#1 alone) | EXPLAIN-validate fanout-rejected pairs when 3 relations remain | 30-80ms exe | Low | Low-medium | **DROPPED** |
+| 2 | EXPLAIN-rank all pairs (O14) | Remove `!has_temp` skip; rank all pairs by engine estimate | 20-50ms exe | Medium | Medium | **DROPPED** (regression) |
+| 3 | JIT compile time gap | Investigated: not a cache hit rate issue — it's DuckDB Prepare() cost scaling with subquery size | **Not fixable** | N/A | N/A | **INVESTIGATED** |
+| 4 | Empty-temp early termination | Short-circuit split loop when a temp returns 0 rows | 5ms warm / 407ms cold | **DONE** | Low | **DONE** |
+| 5 | SubPlanReferencesEmptyTemp bug fix | Word-boundary check instead of substring match | correctness | **DONE** | None | **DONE** |
+| 6 | Cross-query prep for SDS | Overlap ParseSQL+ConvertIR+Preprocess of query N+1 with Execute of query N | **-160ms MW** | Medium | Low | **DONE** (Phase 2b Step 1) |
+| 7 | Spec-jit for SDS | Background Prepare+compile next subquery during Execute, with est. temp card prediction | -50 to +100ms JIT | High | Medium | **PLANNED** (Phase 2b Step 2) |
+
+DROPPED optimizations (below 30ms noise threshold, redundant, or regressive):
+- Opt#1 (`>= 4` → `>= 3` gate, 2026-07-08): exe -43ms vs v12 baseline,
+  but MW +23ms and JIT +37ms from deeper splitting overhead. Total +17ms
+  regression.
+- O14 (EXPLAIN-rank all pairs, 2026-07-08): base×base EXPLAIN shares the
+  same correlation-blind errors as tdom. Measured exe +97ms regression.
+- Opt#3 (temp-column distinct feedback, 0-8ms): EXPLAIN already handles
+  temp-involving pairs; narrow window.
+- Opt#4 (temp min/max cross-boundary filters, 5-15ms): DuckDB's Optimize()
+  includes JoinFilterPushdown, making middleware-level min/max redundant.
+- Opt#5 (shape-keyed tuning, 0ms exe): infrastructure, no direct gain.
+- Opt#2 (relax kPairEstFloor): v13 combined Opt#1+#2 regressed +0.41s.
+
+Reverted experiments:
+- Opt#1+#2 combined (v13): +0.41s exe regression.
+- Fanout-guard relaxation (5% distinct ratio): +3.6s regression.
+
+## SDS v12 Gap Diagnosis (re-measured 2026-07-08)
+
+SDS exe gap vs NB = +19 ms (+0.4%), cross-session confidence ±60 ms.
+Per-query breakdown (canonical parser, re-measured SDS Jul 8 vs NB Jul 6):
+
+Top losses (SDS worse, >10ms):
+| Query | Gap (ms) | SDS (ms) | NB (ms) | Category |
+|---|---|---|---|---|
+| 11d | +34.1 | 52.7 | 18.6 | BAD-PARTITION |
+| 10c | +33.8 | 185.5 | 151.8 | STOP-TOO-EARLY |
+| 9c | +29.7 | 62.8 | 33.1 | MIXED |
+| 26c | +25.3 | 81.3 | 56.0 | STOP-TOO-EARLY |
+| 18a | +19.3 | 56.7 | 37.4 | STOP-TOO-EARLY |
+| 30c | +18.5 | 68.4 | 49.9 | BAD-PARTITION |
+| 31a | +18.1 | 53.3 | 35.2 | STOP-TOO-EARLY |
+| 22c | +16.5 | 64.1 | 47.7 | MIXED |
+| 26b | +14.9 | 44.9 | 29.9 | BAD-PARTITION |
+| 19a | +10.8 | 81.6 | 70.8 | LONG-TAIL |
+| 25b | +9.8 | 30.3 | 20.4 | LONG-TAIL |
+| 25a | +9.7 | 54.0 | 44.2 | STOP-TOO-EARLY |
+| 20c | +9.7 | 58.5 | 48.8 | LONG-TAIL |
+| 31c | +9.7 | 49.2 | 39.5 | STOP-TOO-EARLY |
+
+Category totals (all 113 queries):
+- STOP-TOO-EARLY ~34% of losses: 10c, 26c, 18a, 31a, 25a, 31c (~131 ms).
+- BAD-PARTITION ~17%: 11d, 30c, 26b (~68 ms).
+- MIXED ~12%: 9c, 22c (~46 ms).
+- LONG-TAIL ~37%: 47 queries with 3-10 ms each (~144 ms).
+
+Top wins (SDS better, <-10ms):
+16b -53, 17f -31, 7c -27, 5c -23, 9d -23, 25c -19, 8b -16, 5a -15,
+8d -14, 33c -9, 17a -8, 19d -8 (total -370 ms over 60 queries).
+
+Totals: losses +389 ms (53 queries), wins -370 ms (60 queries), net +19 ms.
+
+Root causes (code-verified):
+1. `>= 4` gate (topdown_splitter.cpp:939): at 3 relations, fanout-rejected
+   pairs cannot be EXPLAIN-validated.
+2. Base×base EXPLAIN skip (line 770): pairs without temps ranked purely by
+   tdom. EXPLAIN shares correlation-blind errors on base×base.
+3. Tdom estimation limits: correlated filter selectivity produces 12-188×
+   errors.
+
+## JIT Compile Time Gap Investigation (2026-07-08)
+
+SDS sub_jit=400.7ms vs NB sub_jit=207.9ms (+193ms). Final JIT nearly equal
+(+16ms). The gap is entirely from subquery JIT, not final query JIT.
+
+Root cause: DuckDB Prepare() cost, not template cache misses.
+
+Cache key dump analysis (AQP_DUMP_CACHE_KEYS, release build):
+| Metric | SDS | NB |
+|---|---|---|
+| Total compilations/pass | 34.7 | 41.5 |
+| Cache hits/pass | 12.9 (37.3%) | 9.3 (22.5%) |
+| Cache misses/pass | 21.7 | 32.2 |
+| Unique plan shapes | 326 | 483 |
+| Mean steps/plan (miss) | 2.81 | 2.45 |
+| Mean HTs/plan (miss) | 1.80 | 1.40 |
+| Mean plan size (miss) | 479 chars | 369 chars |
+| Per-sub JIT cost | ~1.0 ms | ~0.5 ms |
+| Total subqueries (113 queries) | 524 | 625 |
+
+SDS has FEWER compilations, HIGHER hit rate, FEWER misses — but each
+compilation takes ~2× longer. Growth heuristic creates larger subqueries
+(more tables), making Prepare() ~3× slower per subquery.
+
+Why not fixable: (1) disabling growth → +0.4s exe regression (v4);
+(2) spec-jit gated to NODE_BASED; (3) template canonicalization only
+~40-50ms gain. Spec-jit (Phase 2b Step 2) is the path forward.
+
+## Empty-Temp Early Termination (2026-07-08, DONE)
+
+When a temp returns 0 rows and remaining query uses only inner joins,
+short-circuit the split loop. Final query still executes normally.
+
+Affected JOB queries (SDS v12):
+| Query | Empty temp | Warm saving (ms) | Cold saving (ms) |
+|---|---|---|---|
+| 5a | temp_1 | 1.6 | 173.7 |
+| 5b | temp_1 | 1.4 | 178.5 |
+| 10b | temp_1 | 1.2 | 30.3 |
+| 32a | temp_1 | 1.1 | 21.7 |
+| Total | | 5.3 | 407 |
+
+Implementation: `AllJoinsPropagateEmpty` + `early_terminate_` flag in
+ir_query_splitter.cpp. ~30 LOC. Safety: inner-join-only guard.
+
+Latent bug fixed: `SubPlanReferencesEmptyTemp` substring match
+(`temp_1` false-matching `temp_10`). Fixed to word-boundary check.
+
+## Phase 2b Step 1: Cross-Query Prep for SDS (2026-07-10, DONE)
+
+Overlap ParseSQL + FilterOptimize + ConvertPlanToIR + Preprocess of query
+N+1 with execution of query N. Previously gated to NODE_BASED at
+aqp_middleware.cpp:504.
+
+SDS MW component breakdown (saveable portion, warm avg):
+- parse_sql: 43.6 ms, convert_plan_to_ir: 16.9 ms, preprocess: 106.1 ms
+- Total saveable: 166.7 ms (70.5% of SDS MW 236.6 ms)
+
+Implementation: `PrepareNextQueryTopDown()` static method in
+ir_query_splitter.cpp. Creates bg_conn, runs Parse+Plan+FilterOptimize+
+ConvertDuckDBPlanToIR, then Preprocess on a bg TopDownSplitter.
+`CrossQueryPrepResult` extended with `whole_ir` + preprocess state.
+`TopDownSplitter::InitFromCrossQueryPrep` moves bg state into main splitter.
+Gate at aqp_middleware.cpp:504 extended to include TOP_DOWN.
+
+Thread safety (verified): all caches (base_count_cache_, distinct_cache_)
+are read-only in warm. bg TopDownSplitter pre-populated via
+`PrePopulateBaseCountCache` from main splitter's DistinctCache rows: entries.
+
+Results (canonical parser, warm iters 5-14):
+- MW: 0.07s (was 0.24s) → -170ms (-71%)
+- JIT: 0.53s (≈parity), EXE: 4.61s (≈parity)
+- Total: 5.20s (was 5.37s) → -170ms (-3.2%)
+- SDS total now beats NB total (5.20 vs 5.30, -100ms / -1.9%)
+- 112/113 queries bg prep succeeding; 10a (first query) runs normally
+- Correctness: 113/113 pass, exact golden match
+
+## Phase 2b Step 2: Spec-jit for SDS — INVESTIGATED, NOT VIABLE (2026-07-11)
+
+Goal: speculatively compile the next subquery during current Execute,
+overlapping bg Prepare+TPDE compile with Execute(i) to close the +193 ms
+JIT gap vs NB. Currently gated to NODE_BASED at ir_query_splitter.cpp
+:1043, :1635, :1838, :2664, :2737.
+
+### Proposed mechanism (pre-investigation)
+
+1. Prediction: after launching Execute(i), run PlanNext on a deep-cloned
+   join graph with estimated temp cardinality → BuildSubIRForCluster →
+   GenerateSQL → launch bg Prepare+TPDE compile.
+2. Validation: after Execute(i) returns actual cardinality, re-run PlanNext
+   with actual state → compare SQL. Match → HIT; mismatch → MISS.
+3. Consumption: same as NB (CheckSpeculativeResult, SetQjitSpecHit,
+   compensate_fast TPDE fallback on card_miss).
+
+### Investigation results (2026-07-11)
+
+Ran 17 representative JOB queries (17a, 19a, 25c, 26c, 7c, 16b, 9d, 18c,
+33a, 29a, 14a, 10c, 20a, 22d, 30a, 31a, 32b) through SDS debug build,
+capturing all PlanNext group decisions and UpdateRemainingIR actual
+cardinalities. 68 iterations total, 51 iter→iter transitions analyzed.
+
+Finding 1 — estimation accuracy is poor:
+  Only 21% of iterations have est within 2× of actual (card guard threshold).
+  49% within 5×. Many errors 100-1000× (keyword×movie_keyword: 1241×,
+  complete_cast chains: 1510×, 29a iter 8: 87,480×).
+
+Finding 2 — 75% of transitions are temp-dependent:
+  Of 51 transitions, 38 (75%) have the next group including the current
+  iteration's temp. Only 13 (25%) pick an independent base-table pair.
+  For dependent transitions, the estimated temp cardinality directly affects
+  which group PlanNext picks (the DP tree shape changes).
+
+Finding 3 — the timing gap is fatal (the kill shot):
+  NB spec-jit works because PeekNextSubquery reads from a pre-built subquery
+  queue at PostPrepareHook time (after Prepare(i), before Execute(i)). The
+  bg compile overlaps the ENTIRE Execute(i) window (10-100ms).
+
+  SDS cannot replicate this because:
+  - PlanNext walks the remaining IR tree via CollectRelations/CollectEdges
+    → requires the actual updated IR with temp scan nodes
+  - UpdateRemainingIR runs AFTER Execute(i) → the earliest SDS can know
+    the next subquery is after Execute(i) finishes
+  - Phase B (post-UpdateRemainingIR) bg compile has only ~0.1ms head start
+    before the next iteration's inline Prepare starts
+  - Net savings per hit: ~0.1ms (not ~1.0ms as the pre-investigation
+    theoretical model assumed)
+  - Over 524 subqueries at 100% hit: ~52ms. Realistic (21% card-guard
+    pass, high SQL mismatch): 0-10ms, minus miss overhead → net negative
+
+  BuildSubIRForCluster cannot run on the pre-update IR for dependent
+  transitions (75%) because the temp scan node doesn't exist yet.
+
+Finding 4 — NB spec-jit already regresses in this regime:
+  NB spec-jit measured: JIT +206ms, EXE +155ms = +373ms total regression
+  (tmpl-cache regime). Root cause: card_misses frequent, compensate_fast
+  adds inline TPDE compile, bg thread CPU contention. SDS would have a
+  strictly worse starting position (smaller overlap window + worse
+  prediction accuracy).
+
+### Conclusion
+
+NOT VIABLE. The structural difference between NB and SDS — NB has a
+pre-built subquery queue enabling prediction during Execute, while SDS's
+feedback-adaptive DP requires actual temp cardinality — means the overlap
+window that makes spec-jit valuable does not exist for SDS. The +193ms
+JIT gap is structural (engine Prepare cost scaling with subquery size),
+not recoverable without engine-side changes (e.g., incremental Prepare
+reuse).
+
+## Phase 2b Step 3: First-Subquery Bg-Compile for SDS (2026-07-11, DONE)
+
+Spec-jit for the general case is not viable (Step 2), but iteration 1 is
+the exception: the FIRST split decision per query depends only on
+preprocessed base stats (no temp feedback yet) → 100% deterministic at
+cross-query-prep time. The bg thread can run SplitIR for iteration 1 and
+bg-compile the first sub-SQL exactly like NB's PrepareNextQuery.
+
+### Mechanism
+
+- `PrepareNextQueryTopDown` (ir_query_splitter.cpp): after bg Preprocess,
+  before MovePreprocessState (PlanNext reads table_card_ etc.), run
+  `bg_splitter.SplitIR()` → ConvertIRToSQL → `BgCompileFirstSubquery`.
+  Extraction + split_iteration/executed_tables handed over via
+  `CrossQueryPrepResult` (first_extraction, td_split_iteration,
+  td_executed_tables); consumed in ExecuteSplitLoop as
+  `precomputed_extraction_` (skips ReorderBeforeSplit + SplitIR for iter 1).
+- `BgCompileFirstSubquery`: new shared static helper factored out of NB's
+  PrepareNextQuery inline block. Path A: query-jit via
+  SpeculativeQueryJitCompile; Path B: other jit levels via Prepare +
+  RegisterJITImpl; Path C: interpreter plain Prepare. NB now calls the
+  same helper (behavior unchanged, 113/113 verified).
+- Iteration-1 HIT consumption reuses the existing strategy-agnostic path
+  (~ir_query_splitter.cpp:2580): SetQjitSpecHit + ExecuteSQLandCreateTempTable
+  (Path A) or ExecuteSpeculativeAndCreateTempTable (Path B/C). Writes
+  "0.000, " to generate_sub_sql column — CSV shape unchanged.
+- Bg-thread engine safety: `TopDownSplitter::SetBgMode(true)` makes both
+  `BatchGetEstimatedCosts` EXPLAIN paths in PlanNext throw; the caller
+  catches and aborts the pre-split entirely, so the foreground re-decides
+  with identical inputs (col_distinct_hints_ mutations are idempotent
+  max-accumulations → no state divergence from an aborted attempt).
+- Kill switch: env `AQP_TD_NO_PRESPLIT` disables the pre-split (used for
+  same-session A/B).
+
+### Bug fixed en route
+
+`ExecuteSpeculativeAndCreateTempTable` (duckdb_adapter.cpp:1875) deref'd
+`planner->binder` unguarded. NB always injects a planner via SetPlanner
+(ir_query_splitter.cpp:897, NB-only); SDS never does and ResetQueryState
+nulls it → segfault in the topdown expr-jit run (died after 10a). Fix:
+null-planner guard with the same monotonic table-index fallback as
+ExecuteSQLandCreateTempTable's replay path.
+
+### Results (same-session A/B via AQP_TD_NO_PRESPLIT, canonical parser)
+
+| config | MW | jit | exe | total |
+|---|---|---|---|---|
+| OFF (v12+cqp rerun) | 0.06 | 0.517 | 4.701 | 5.276 |
+| ON (v14) | 0.06 | 0.435 | 4.740 | 5.236 |
+| delta | ≈0 | **-82ms** | +39ms | **-40ms** |
+
+- jit -82ms: first subquery per query compiled in bg (overlaps prev
+  query's Execute).
+- exe +39ms: bg TPDE codegen CPU contention during foreground execution
+  (12-core box, DuckDB saturates cores). Net win -40ms → KEEP.
+- The first ON measurement's apparent +200ms exe was cross-session drift
+  (same-session OFF exe 4.701 vs prior session 4.609; ±60-90ms variance).
+- SDS jit gap to NB narrows from +193ms to ~+100ms.
+- Correctness: 113/113 for topdown query-jit tpde tmpl-cache, topdown
+  expr-jit tpde tmpl-cache, and node-based query-jit tpde tmpl-cache
+  (regression check for the Path A/B/C refactor).
+- CSVs: v14 = ..._breakdown_time_log_v14.csv; OFF baseline =
+  ..._v12cqp_rerun.csv.
+
+Synergy note: with jit now cheaper, the dropped Opt#1 (>=4 → >=3 split
+gate; exe -43 / jit +37 / MW +23) tradeoff may flip — revisit in the exe
+outlier investigation.
+
+## Phase 2b Step 4: Kill all SDS qjit fallbacks (2026-07-11, DONE, v15)
+
+Outlier decomposition (task #5) found SDS had 4 query-jit compilation
+fallbacks over the suite (NB: 0/603), all mapping to top loss queries:
+- 10c final: `fallback:join:condition-sides` (ran interpreted, ~136ms)
+- 26c final + 26a/26b temp5: `fallback:expr:Unknown#8`
+
+Root causes and fixes (middleware compiler only, no splitter/DuckDB
+changes; NB shares the code but never produced these shapes):
+
+1. **VarComparisonNode filters** (expr:Unknown#8 = SimplestNodeType 8).
+   SDS-specific: folding two joined tables into one temp turns their join
+   predicate into a same-row col=col FILTER qual (e.g. 26c temp4
+   `movie_keyword_9_movie_id = temp3_..._movie_info_idx_8_movie_id`).
+   The Analyzer whitelist accepted it but per-step CheckFilterStrict did
+   not. Fix:
+   - query_jit_steps.cpp CheckFilterStrict: accept VarComparisonNode when
+     both attrs are INT32 (ExpectedDtype) and op ∈ {=,<>,<,>,<=,>=};
+     registers both attrs as source cols.
+   - ir_to_llvm.cpp: new EmitVarVar (integer family loads sign-extended
+     to i64, ICmp) + EmitExpr dispatch case with nested
+     EmitNullGuardedLeaf on BOTH columns (NULL on either side → false;
+     qjit has no downstream re-filter).
+   - Cache keys need no change: SerializeExprTemplate falls through to
+     Print(false) (no constants → nothing to parameterize) and
+     BuildParamsFromExpr correctly allocates no params.
+
+2. **Projection-binding blindness** (join:condition-sides). 10c's final
+   plan has a DuckDB compressed-materialization PROJECTION
+   (`__internal_compress_integral_utinyint`) between joins; the join
+   condition above it references the projection's binder index
+   (l=(3,0)char_name.id r=(11,1)person_role_id — 11 = the projection),
+   which CollectTables (scans/chunks only) can't classify → fallback.
+   The converter already erases compress/decompress wrappers
+   (UnwrapToColumnRef), so projection target_list[k] IS the underlying
+   attr. Fix in query_jit_steps.cpp PlanBuilder:
+   - CollectProjRemap pre-pass: (proj table_index, position) → underlying
+     attr, over the whole statement tree.
+   - ThroughProj chain-resolve applied at join-condition classification
+     and at ResolveAttr entry (covers ht keys, probe keys, outputs, agg
+     args). RegisterFilterAttr intentionally NOT remapped: filter exprs
+     are emitted from raw IR pointers, codegen could not follow the remap
+     — the existing source-table check keeps those falling back safely.
+   - Also enriched the condition-sides Fail reason with attr coordinates
+     (debug-only visibility).
+
+### Results
+
+Suite fallback census: SDS 0 fallbacks (was 4). Per-query warm exe
+(v14→v15 CSVs): 10c 191.7→149.2 (−42.4ms), 26a −11.7, 26b −14.4,
+26c −13.0; sum −81.5ms on the fixed queries, others within noise.
+
+Canonical parser totals (cross-session vs v14):
+
+| config | MW | jit | exe | total |
+|---|---|---|---|---|
+| SDS v14 | 0.06 | 0.44 | 4.74 | 5.24 |
+| **SDS v15** | **0.06** | **0.44** | **4.69** | **5.20** |
+| NB (reference) | 0.38 | 0.33 | 4.59 | 5.30 |
+
+- exe −45ms net (−81ms on targets, +6ms jit for the newly compiled
+  statements' codegen, small drift elsewhere).
+- SDS now beats NB by 100ms total; exe gap +100ms, jit gap +110ms.
+- Correctness: 113/113 topdown query-jit tpde tmpl-cache; 113/113
+  node-based query-jit tpde tmpl-cache (shared-compiler regression).
+- CSV archived: ..._breakdown_time_log_v15.csv.
+
+Remaining loss families (documented, no lever): BAD-PARTITION
+(9c/11d tdom correlation blindness, EXPLAIN equally blind) and
+STOP-TOO-EARLY (30c/31a/18a finals with cast_info; no-op→final
+fall-through endangers 9d/18c wins). 22c +8ms is drift.

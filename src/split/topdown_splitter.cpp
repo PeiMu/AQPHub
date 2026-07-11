@@ -11,6 +11,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 namespace middleware {
 
@@ -782,6 +783,8 @@ bool TopDownSplitter::PlanNext(
     if (cache_it != explain_cache_.end()) {
       engine_est = cache_it->second.second;
     } else {
+      if (bg_mode_)
+        throw std::runtime_error("SDS bg-mode: engine EXPLAIN needed");
       auto costs = adapter_->BatchGetEstimatedCosts({sql});
       if (costs.empty())
         return true;
@@ -1007,6 +1010,8 @@ bool TopDownSplitter::PlanNext(
       if (!s.empty() && !explain_cache_.count(s))
         uncached.push_back(s);
     if (!uncached.empty()) {
+      if (bg_mode_)
+        throw std::runtime_error("SDS bg-mode: engine EXPLAIN needed");
       auto costs = adapter_->BatchGetEstimatedCosts(uncached);
       for (size_t i = 0; i < costs.size() && i < uncached.size(); i++)
         explain_cache_[uncached[i]] = costs[i];
@@ -1162,8 +1167,15 @@ void TopDownSplitter::MovePreprocessState(CrossQueryPrepResult &out) {
 }
 
 void TopDownSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
-  split_iteration_ = 0;
-  executed_tables_.clear();
+  // If the bg thread already ran iteration 1's SplitIR, resume as if that
+  // iteration happened here.
+  if (prep.first_extraction) {
+    split_iteration_ = prep.td_split_iteration;
+    executed_tables_ = std::move(prep.td_executed_tables);
+  } else {
+    split_iteration_ = 0;
+    executed_tables_.clear();
+  }
   temp_indices_.clear();
   planned_for_ = nullptr;
   planned_splittable_ = false;

@@ -51,6 +51,12 @@ public:
 
   void PrePopulateBaseCountCache();
 
+  // On the cross-query-prep background thread the engine must not be
+  // contacted (shared connection, main thread may be executing). PlanNext
+  // throws instead of issuing EXPLAINs; the caller aborts the first-sub
+  // prep so the split decision stays identical to the foreground path.
+  void SetBgMode(bool v) { bg_mode_ = v; }
+
   std::unique_ptr<ir_sql_converter::AQPStmt> UpdateRemainingIR(
       std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir,
       const std::set<unsigned int> &executed_table_indices,
@@ -132,6 +138,8 @@ private:
   std::unordered_map<std::string, double> col_distinct_hints_;
 
   DistinctCache distinct_cache_{DistinctCache::DefaultPath()};
+
+  bool bg_mode_ = false;
 };
 
 } // namespace middleware

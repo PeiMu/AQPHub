@@ -387,6 +387,65 @@ static void EnsureCrossCompiler(
   if (need_qjit)
     duck->RegisterQjitRuntimeSymbols(comp.get());
 }
+
+// Phase 2 bg compile of the first sub-query (shared by node-based and SDS
+// cross-query prep). Path A: query-jit full bg compile; Path B: other jit
+// levels Prepare + RegisterJITImpl; Path C: interpreter plain Prepare.
+static void BgCompileFirstSubquery(
+    CrossQueryPrepResult &result, DuckDBAdapter *duck,
+    const ir_sql_converter::AQPStmt &sub_ir,
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+    uint32_t effective_jit_flags, int effective_compile_mode, bool debug) {
+  if (result.first_sub_sql.empty())
+    return;
+  try {
+    bool is_query_jit = (effective_jit_flags & AQP_JIT_QUERY_JIT) != 0;
+    bool has_jit = (effective_jit_flags & AQP_JIT_LEVEL_MASK) != 0;
+    if (is_query_jit) {
+      EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
+                          effective_compile_mode, /*need_qjit=*/true);
+      bg_compiler->ResetModules();
+      std::string label = "cross-" + result.query_name + "-sq0";
+      result.qjit_spec = duck->SpeculativeQueryJitCompile(
+          result.first_sub_sql, label, *result.bg_conn, bg_compiler.get());
+      result.has_qjit = (result.qjit_spec != nullptr);
+      if (debug && result.has_qjit)
+        std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
+    } else if (has_jit) {
+      result.prepared = result.bg_conn->Prepare(result.first_sub_sql);
+      if (result.prepared && !result.prepared->HasError() &&
+          result.prepared->data && result.prepared->data->physical_plan) {
+        EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
+                            effective_compile_mode, /*need_qjit=*/false);
+        bg_compiler->ResetModules();
+        auto *bg_ctx = result.bg_conn->context.get();
+        bg_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        std::unordered_set<const ir_sql_converter::AQPStmt *>
+            consumed_filters, consumed_joins;
+        DuckDBAdapter::TempCollectionSnapshot empty_snapshot;
+        duck->RegisterJITImpl(result.prepared->data->physical_plan->Root(),
+                              sub_ir, bg_ctx, bg_compiler.get(),
+                              consumed_filters, consumed_joins,
+                              &empty_snapshot);
+        if (bg_ctx->aqp_jit_context->flags == 0)
+          bg_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+        result.has_prepare = true;
+        if (debug)
+          std::cerr << "[CROSS-QUERY] Phase 2 path B (jit) OK\n";
+      }
+    } else {
+      result.prepared = result.bg_conn->Prepare(result.first_sub_sql);
+      if (result.prepared && !result.prepared->HasError())
+        result.has_prepare = true;
+      if (debug && result.has_prepare)
+        std::cerr << "[CROSS-QUERY] Phase 2 path C (interp) OK\n";
+    }
+  } catch (const std::exception &e) {
+    if (debug)
+      std::cerr << "[CROSS-QUERY] Phase 2 compile failed: " << e.what()
+                << "\n";
+  }
+}
 #endif
 
 #ifdef HAVE_LLVM
@@ -565,61 +624,9 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
 
 #if defined(HAVE_LLVM)
     // Phase 2: bg compile first sub-query
-    if (!result->first_sub_sql.empty()) {
-      try {
-        bool is_query_jit = (effective_jit_flags & AQP_JIT_QUERY_JIT) != 0;
-        bool has_jit = (effective_jit_flags & AQP_JIT_LEVEL_MASK) != 0;
-        if (is_query_jit) {
-          // Path A: query-jit — full bg compile via SpeculativeQueryJitCompile
-          EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
-                              effective_compile_mode, /*need_qjit=*/true);
-          bg_compiler->ResetModules();
-          std::string label = "cross-" + result->query_name + "-sq0";
-          result->qjit_spec = duck->SpeculativeQueryJitCompile(
-              result->first_sub_sql, label, *result->bg_conn,
-              bg_compiler.get());
-          result->has_qjit = (result->qjit_spec != nullptr);
-          if (debug && result->has_qjit)
-            std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
-        } else if (has_jit) {
-          // Path B: non-query-jit — Prepare + RegisterJITImpl
-          result->prepared = result->bg_conn->Prepare(result->first_sub_sql);
-          if (result->prepared && !result->prepared->HasError() &&
-              result->prepared->data &&
-              result->prepared->data->physical_plan) {
-            EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
-                                effective_compile_mode, /*need_qjit=*/false);
-            bg_compiler->ResetModules();
-            auto *bg_ctx = result->bg_conn->context.get();
-            bg_ctx->aqp_jit_context =
-                duckdb::make_uniq<duckdb::AQPJITContext>();
-            std::unordered_set<const ir_sql_converter::AQPStmt *>
-                consumed_filters, consumed_joins;
-            DuckDBAdapter::TempCollectionSnapshot empty_snapshot;
-            duck->RegisterJITImpl(
-                result->prepared->data->physical_plan->Root(), *sub_ir,
-                bg_ctx, bg_compiler.get(), consumed_filters, consumed_joins,
-                &empty_snapshot);
-            if (bg_ctx->aqp_jit_context->flags == 0)
-              bg_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
-            result->has_prepare = true;
-            if (debug)
-              std::cerr << "[CROSS-QUERY] Phase 2 path B (jit) OK\n";
-          }
-        } else {
-          // Path C: interpreter — just Prepare
-          result->prepared = result->bg_conn->Prepare(result->first_sub_sql);
-          if (result->prepared && !result->prepared->HasError())
-            result->has_prepare = true;
-          if (debug && result->has_prepare)
-            std::cerr << "[CROSS-QUERY] Phase 2 path C (interp) OK\n";
-        }
-      } catch (const std::exception &e) {
-        if (debug)
-          std::cerr << "[CROSS-QUERY] Phase 2 compile failed: " << e.what()
-                    << "\n";
-      }
-    }
+    BgCompileFirstSubquery(*result, duck, *sub_ir, bg_compiler,
+                           effective_jit_flags, effective_compile_mode,
+                           debug);
 #endif
 
     auto extraction =
@@ -645,11 +652,20 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
   return result;
 }
 
+#if defined(HAVE_LLVM)
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQueryTopDown(
+    const std::string &sql_path, duckdb::DuckDB &db_ref, DuckDBAdapter *duck,
+    const ParamConfig &config,
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+    uint32_t effective_jit_flags, int effective_compile_mode) {
+#else
 std::unique_ptr<CrossQueryPrepResult>
 IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
                                          duckdb::DuckDB &db_ref,
                                          DuckDBAdapter *duck,
                                          const ParamConfig &config) {
+#endif
   bool debug = config.enable_debug_print;
   auto result = std::make_unique<CrossQueryPrepResult>();
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -730,6 +746,40 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     TopDownSplitter bg_splitter(duck);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.Preprocess(result->whole_ir);
+
+#if defined(HAVE_LLVM)
+    // Iteration 1's split decision depends only on preprocessed base stats
+    // (no temp feedback yet), so it is deterministic: run it here and
+    // bg-compile the first sub-query like node-based does. Bg mode makes
+    // PlanNext throw instead of contacting the engine (EXPLAIN fallback);
+    // on throw we abort the pre-split so the foreground path decides
+    // identically. Must run BEFORE MovePreprocessState (PlanNext reads
+    // table_card_ etc.).
+    static const bool no_presplit = std::getenv("AQP_TD_NO_PRESPLIT") != nullptr;
+    bg_splitter.SetBgMode(true);
+    try {
+      if (!no_presplit && !bg_splitter.IsComplete(result->whole_ir.get())) {
+        auto extraction = bg_splitter.SplitIR(result->whole_ir.get());
+        if (extraction && extraction->sub_ir) {
+          result->first_sub_sql =
+              ir_sql_converter::ConvertIRToSQL(*extraction->sub_ir, 0);
+          BgCompileFirstSubquery(*result, duck, *extraction->sub_ir,
+                                 bg_compiler, effective_jit_flags,
+                                 effective_compile_mode, debug);
+          result->td_split_iteration = 1;
+          result->td_executed_tables = extraction->executed_table_indices;
+          result->first_extraction = std::move(extraction);
+        }
+      }
+    } catch (const std::exception &e) {
+      result->first_extraction.reset();
+      result->first_sub_sql.clear();
+      if (debug)
+        std::cerr << "[CROSS-QUERY-TD] pre-split aborted: " << e.what()
+                  << "\n";
+    }
+#endif
+
     bg_splitter.MovePreprocessState(*result);
 
     result->success = true;
@@ -993,6 +1043,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     } else {
       auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
       td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+#if defined(HAVE_LLVM)
+      precomputed_extraction_ =
+          std::move(active_cross_query_prep_->first_extraction);
+#endif
     }
     if (config_.enable_timing) {
       std::ofstream log_file;
@@ -1006,8 +1060,17 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                 << " bg_prep=" << std::fixed << std::setprecision(1)
                 << (prep_us / 1000.0) << "ms\n";
     }
-    if (config_.strategy == SplitStrategy::TOP_DOWN)
+    if (config_.strategy == SplitStrategy::TOP_DOWN) {
+      // Keep the prep alive when it carries a bg-compiled first sub-query:
+      // the iteration-1 cross-query HIT path consumes it.
+#if defined(HAVE_LLVM)
+      if (!active_cross_query_prep_->has_qjit &&
+          !active_cross_query_prep_->has_prepare)
+        active_cross_query_prep_.reset();
+#else
       active_cross_query_prep_.reset();
+#endif
+    }
   } else {
     active_cross_query_prep_.reset();
 #endif

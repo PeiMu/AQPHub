@@ -511,6 +511,38 @@ struct PlanBuilder {
     return ((uint64_t)table_index << 32) | column_index;
   }
 
+  // Projection output binding (proj table_index, position) -> underlying
+  // child attr. Mid-plan projections (e.g. DuckDB compressed
+  // materialization) give join conditions / outputs above them the
+  // projection's own binder index, which CollectTables (scans/chunks only)
+  // cannot classify. The converter already erases the compress/decompress
+  // wrappers (UnwrapToColumnRef), so target_list[k] IS the underlying attr.
+  std::unordered_map<uint64_t, const SimplestAttr *> proj_remap_;
+
+  void CollectProjRemap(const AQPStmt &node) {
+    if (node.GetNodeType() == ProjectionNode) {
+      const auto &p = static_cast<const SimplestProjection &>(node);
+      for (size_t k = 0; k < node.target_list.size(); ++k)
+        if (node.target_list[k])
+          proj_remap_.emplace(ColKey(p.GetIndex(), (unsigned)k),
+                              node.target_list[k].get());
+    }
+    for (const auto &c : node.children)
+      if (c)
+        CollectProjRemap(*c);
+  }
+
+  const SimplestAttr *ThroughProj(const SimplestAttr *a) const {
+    for (int hops = 0; a && hops < 8; ++hops) {
+      auto it =
+          proj_remap_.find(ColKey(a->GetTableIndex(), a->GetColumnIndex()));
+      if (it == proj_remap_.end() || it->second == a)
+        break;
+      a = it->second;
+    }
+    return a;
+  }
+
   bool Fail(std::string r) {
     if (reason.empty())
       reason = std::move(r);
@@ -708,8 +740,8 @@ struct PlanBuilder {
             Fail("join:condition-missing-attr");
             return -1;
           }
-          const SimplestAttr *l = cond->left_attr.get();
-          const SimplestAttr *r = cond->right_attr.get();
+          const SimplestAttr *l = ThroughProj(cond->left_attr.get());
+          const SimplestAttr *r = ThroughProj(cond->right_attr.get());
           const SimplestAttr *bk = nullptr, *pk = nullptr;
           bool l_in_b = Contains(build_tables, l->GetTableIndex());
           bool r_in_b = Contains(build_tables, r->GetTableIndex());
@@ -722,7 +754,14 @@ struct PlanBuilder {
             bk = r;
             pk = l;
           } else {
-            Fail("join:condition-sides");
+            Fail("join:condition-sides l=(" +
+                 std::to_string(l->GetTableIndex()) + "," +
+                 std::to_string(l->GetColumnIndex()) + ")" + l->GetColumnName() +
+                 "[b" + std::to_string(l_in_b) + "p" + std::to_string(l_in_p) +
+                 "] r=(" + std::to_string(r->GetTableIndex()) + "," +
+                 std::to_string(r->GetColumnIndex()) + ")" + r->GetColumnName() +
+                 "[b" + std::to_string(r_in_b) + "p" + std::to_string(r_in_p) +
+                 "]");
             return -1;
           }
           // v1: integer keys only (stored sign-extended i64).
@@ -889,9 +928,10 @@ struct PlanBuilder {
 
   bool ResolveAttr(QjitStep &step, size_t op_limit, const SimplestAttr &attr,
                    QjitValueLoc &loc) {
-    return ResolveRef(step, op_limit, attr.GetTableIndex(),
-                      attr.GetColumnIndex(), attr.GetColumnName(),
-                      ExpectedDtype(attr), loc);
+    const SimplestAttr *a = ThroughProj(&attr);
+    return ResolveRef(step, op_limit, a->GetTableIndex(),
+                      a->GetColumnIndex(), a->GetColumnName(),
+                      ExpectedDtype(*a), loc);
   }
 
   // ---- Strict filter-expression whitelist (source columns only) ----
@@ -978,6 +1018,29 @@ struct PlanBuilder {
           return Fail("expr:in-value-type");
       }
       return RegisterFilterAttr(step, *in_e->attr) >= 0;
+    }
+    case VarComparisonNode: {
+      // Same-source col-vs-col comparison (SDS temps fold two joined tables
+      // into one temp, turning the join predicate into a var-var filter).
+      auto *vv = static_cast<const SimplestVarComparison *>(e);
+      if (!vv->left_attr || !vv->right_attr)
+        return Fail("expr:varvar-incomplete");
+      if (ExpectedDtype(*vv->left_attr) != AQP_DTYPE_INT32 ||
+          ExpectedDtype(*vv->right_attr) != AQP_DTYPE_INT32)
+        return Fail("expr:varvar-type");
+      switch (vv->GetSimplestExprType()) {
+      case SimplestExprType::Equal:
+      case SimplestExprType::NotEqual:
+      case SimplestExprType::LessThan:
+      case SimplestExprType::GreaterThan:
+      case SimplestExprType::LessEqual:
+      case SimplestExprType::GreaterEqual:
+        break;
+      default:
+        return Fail("expr:varvar-op");
+      }
+      return RegisterFilterAttr(step, *vv->left_attr) >= 0 &&
+             RegisterFilterAttr(step, *vv->right_attr) >= 0;
     }
     case LogicalExprNode: {
       auto *log = static_cast<const SimplestLogicalExpr *>(e);
@@ -1121,6 +1184,7 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
   out = QjitQueryPlan();
   reason.clear();
   PlanBuilder pb{out, reason};
+  pb.CollectProjRemap(root);
 
   // Peel the root: Projection* [Aggregate]. DuckDB plans `SELECT MIN(..)`
   // as Projection -> Aggregate; the projection only reorders the single

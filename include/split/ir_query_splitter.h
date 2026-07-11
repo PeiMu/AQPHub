@@ -79,6 +79,10 @@ struct CrossQueryPrepResult {
   JoinGraph td_join_graph;
   std::vector<std::pair<unsigned int, unsigned int>> td_current_join_pairs;
   std::vector<bool> td_is_relationship;
+  // Set when the bg thread already ran iteration 1's SplitIR (SDS): the main
+  // splitter must resume as if that iteration happened.
+  int td_split_iteration = 0;
+  std::set<unsigned int> td_executed_tables;
 
   bool success = false;
   std::string error;
@@ -160,9 +164,17 @@ public:
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
                    DuckDBAdapter *duck, const ParamConfig &config);
 #endif
+#if defined(HAVE_LLVM)
+  static std::unique_ptr<CrossQueryPrepResult> PrepareNextQueryTopDown(
+      const std::string &sql_path, duckdb::DuckDB &db_ref, DuckDBAdapter *duck,
+      const ParamConfig &config,
+      std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+      uint32_t effective_jit_flags, int effective_compile_mode);
+#else
   static std::unique_ptr<CrossQueryPrepResult>
   PrepareNextQueryTopDown(const std::string &sql_path, duckdb::DuckDB &db_ref,
                           DuckDBAdapter *duck, const ParamConfig &config);
+#endif
 #endif
 
 private:
