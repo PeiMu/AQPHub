@@ -62,8 +62,8 @@ elif [[ "$jit_cache" != "off" ]]; then
     flag_suffix+="_jitcache_${jit_cache//-/_}"
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
+[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"

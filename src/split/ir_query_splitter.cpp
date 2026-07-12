@@ -69,8 +69,8 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
   // Create the appropriate splitter based on strategy
   switch (config.strategy) {
   case SplitStrategy::TOP_DOWN:
-    splitter_ =
-        std::make_unique<TopDownSplitter>(adapter, config.enable_reorder_get);
+    splitter_ = std::make_unique<TopDownSplitter>(
+        adapter, /*apply_engine_settings=*/true);
     break;
 
   case SplitStrategy::MIN_SUBQUERY:
@@ -743,7 +743,7 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // Run Preprocess on a bg TopDownSplitter. Pre-populate base_count_cache_
     // from the file-backed distinct cache so FetchMissingLeafCardinalities
     // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
-    TopDownSplitter bg_splitter(duck);
+    TopDownSplitter bg_splitter(duck, /*apply_engine_settings=*/false);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.Preprocess(result->whole_ir);
 
@@ -2724,8 +2724,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
         // normal execute call resolves sources and runs the compiled fn
         // (jit_compile column ≈ 0 — no Prepare, no codegen on this thread).
         duck->SetQjitSpecHit(std::move(hit_spec->qjit));
-        if (config_.strategy == SplitStrategy::NODE_BASED && executable_ir)
-          duck->SetQjitPendingIR(executable_ir);
+        // v18: TOP_DOWN subs also hand their IR to the adapter so the
+        // pending-IR fast path (plan constructor) can skip parse/optimize.
+        if ((config_.strategy == SplitStrategy::NODE_BASED ||
+             (config_.strategy == SplitStrategy::TOP_DOWN &&
+              !TopDownSplitter::V17Mode() && !TopDownSplitter::NoPlanCtor())) &&
+            executable_ir)
+          duck->SetQjitPendingIR(
+              executable_ir,
+              /*use_engine_plan=*/config_.strategy ==
+                  SplitStrategy::NODE_BASED);
         adapter_->ExecuteSQLandCreateTempTable(
             sub_sql, temp_table_name, config_.enable_update_temp_card);
       } else {
@@ -2797,11 +2805,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
         if ((config_.jit_flags & AQP_JIT_QUERY_JIT) &&
             config_.engine == BackendEngine::DUCKDB &&
-            config_.strategy == SplitStrategy::NODE_BASED &&
+            (config_.strategy == SplitStrategy::NODE_BASED ||
+             (config_.strategy == SplitStrategy::TOP_DOWN &&
+              !TopDownSplitter::V17Mode() && !TopDownSplitter::NoPlanCtor())) &&
             executable_ir && !spec_hit) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
           if (duck)
-            duck->SetQjitPendingIR(executable_ir);
+            duck->SetQjitPendingIR(
+                executable_ir,
+                /*use_engine_plan=*/config_.strategy ==
+                    SplitStrategy::NODE_BASED);
         }
 #endif
         adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,

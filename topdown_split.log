@@ -497,3 +497,478 @@ Remaining loss families (documented, no lever): BAD-PARTITION
 (9c/11d tdom correlation blindness, EXPLAIN equally blind) and
 STOP-TOO-EARLY (30c/31a/18a finals with cast_info; no-op→final
 fall-through endangers 9d/18c wins). 22c +8ms is drift.
+
+## Version Performance History (moved from CLAUDE.md 2026-07-11)
+
+Warm totals, all 113 JOB queries, canonical parser (plot_middleware_jit.py,
+warm = mean of iters 5–14):
+
+| config (single-run regimes) | MW | jit | exe | total |
+|---|---|---|---|---|
+| **NB** uniform q_tpde + tmpl-cache | 0.38 | 0.33 | 4.59 | **5.30** |
+| NB tuned + tmpl-cache | 0.35 | 0.86 | **4.31** | 5.51 |
+| none-split q_tpde (baseline) | 0.01 | 0.54 | 5.93 | 6.47 |
+| SDS (v12, re-measured) q_tpde + tmpl-cache | 0.24 | 0.52 | 4.61 | 5.37 |
+| SDS (v12+crossprep) q_tpde + tmpl-cache | 0.07 | 0.53 | 4.61 | 5.20 |
+| SDS (v14 OFF baseline, same-session) | 0.06 | 0.52 | 4.70 | 5.28 |
+| SDS (v14 = +first-sub bg-compile) q_tpde + tmpl-cache | 0.06 | 0.44 | 4.74 | 5.24 |
+| **SDS (v15 = +qjit fallback fixes)** q_tpde + tmpl-cache | **0.06** | **0.44** | 4.69 | **5.20** |
+| SDS (v17 = +B2 optimizer trim) | 0.06 | 0.42 | 4.65 | 5.13 |
+| **SDS (v18 = hybrid binary boundaries + plan ctor)** | **0.06** | 0.41 | **4.53** | **5.00** |
+
+NB measured 2026-07-06; SDS v12 re-measured 2026-07-08; v12+crossprep
+measured 2026-07-10; v14 A/B measured 2026-07-11 same-session via
+`AQP_TD_NO_PRESPLIT`. v14 true effect: jit −82 ms, exe +39 ms (bg TPDE
+codegen contention), net −40 ms. v15 (2026-07-11): all 4 SDS qjit
+compilation fallbacks eliminated (VarComparisonNode filter codegen +
+projection-binding remap); targeted exe wins 10c −42/26a −12/26b −14/
+26c −13 ms, suite exe 4.74 → 4.69. Cross-session exe variance ±60–90 ms.
+Version map: v11 = M2 (feedback), v12 = M3 (EXPLAIN-validated max-side
+pairs), +crossprep = Phase 2b Step 1, v14 = Step 3, v15 = Step 4,
+v17 = B2 (session disabled_optimizers; v16 = A3-lite, reverted),
+v18 = Lever C hybrid (binary build-side boundaries + IR→plan ctor).
+
+## Phase 2b Lever A: sampled-probe oracle + A3-lite gate relaxation (2026-07-11)
+
+### A1 diagnostic (decision-point capture, 6 bad queries)
+Debug-build candidate dump on 9c/11d/18a/26c/30c/31a. Findings:
+- 9c iter1 cn(us)×mc: DP est 12,146 → actual 1,153,798 (95× under,
+  BAD-PARTITION; tdom blind to country_code↔company_id correlation).
+- 18a/31a iter1 it2×mi_idx: est 12K → actual 459,925 (38× under).
+- 26c/30c iter1 cc-group: est 40.8 → actual 61,559/17,018 (1509×/417×).
+- ALL five loss queries terminate with a fanout-rejected big×temp pair
+  (cast_info or movie_keyword × final temp). Four (18a/30c/11d/31a) end
+  at 3 remaining relations {big, name, temp} where the engine-validated
+  fallback was gated `NumRelations() >= 4`; 26c reached the fallback but
+  cand_limit = max(temp_card 1261, 1000) rejected engine est 2268
+  (actual 190K — NB materializes it and wins).
+
+### A2 probe oracle (offline, DuckDB CLI, /tmp/sds_a2_*.sql|.out)
+Ground truth via temp reconstructions (t18a=45431, t26c=1261, t30c=14655,
+t31a=1524, t11d=95870 — all exact). Probe formulations tested:
+- `USING SAMPLE 1% (system)`: FAILS — block sampling on clustered join
+  keys returned 0 for mk×t11d (truth 3.2M). Unusable.
+- `USING SAMPLE 1% (bernoulli)` on the large side: accurate (0.1–3.6%,
+  7/7 correct decisions) but costs 41ms (mc) – 1.0s (ci full 36M scan).
+- **sampled-temp-keys** (reservoir 512 rows from temp, join big table,
+  scale by temp_rows/512): essentially exact — with-filter 0.7–8.6% at
+  69–88ms (ci.note IN string filter forces 36M-row note column scan);
+  filter-free 0.1–3.3% at 2–32ms (ci floor 32ms = movie_id column scan;
+  mk 2ms). `COUNT(*) FILTER` variant still 86ms (note column projected).
+- key-sampling from the SMALL side of base×base (9c cn-keys): FAILS
+  under fanout skew (est 171K vs truth 1.15M) — heavy hitters missed.
+**Verdict: accuracy PASS, economics FAIL.** Real per-query recoverable
+exe (v15 CSVs): 11d +35.6, 9c +27.5, 18a +20.5, 30c +19.9, 31a +18.6,
+26c +11.4 ms (134 ms over 6 queries). Accurate probes cost 22–86 ms per
+terminal decision → net ≈ 0 or negative. Runtime sampling probes DROPPED.
+
+### A3-lite (v16): relax terminal EXPLAIN gates instead (no sampling)
+The existing engine-EXPLAIN fallback (~1–3 ms, batched, cached) is
+accurate on these pairs because the engine sees exact temp stats:
+measured est vs actual — 18a 163K/107K, 30c 53K/11.9K, 31a 5.5K/1.6K,
+26c 2268/190K (the one underestimate), 11d 2.55M/3.2M. Two changes in
+topdown_splitter.cpp PlanNext:
+1. Engine-validated fallback gate `NumRelations() >= 4` → `>= 3`
+   (the 3-relation {big, name, temp} terminals become eligible).
+2. Rejected-pair cand_limit: max(temp_card, kPairEstFloor) →
+   kSplitCardThreshold (1M). Expansion beyond the temp card is exactly
+   what NB profitably does; the 1M abort bound still rejects 11d
+   (est 2.55M). kPairEstFloor deleted; rejected_pairs no longer carries
+   the temp cardinality.
+Debug verification: 18a/26c/30c/31a now accept (materialized actuals
+107,339 / 189,738 / 11,863 / 1,556), 11d correctly stays final.
+Correctness: 113/113 vs node-based golden for topdown none-jit AND
+q_tpde+single-run-template. A1 debug candidate dump removed after use.
+
+### A3-lite measurement: NET NEGATIVE — REVERTED (2026-07-11)
+Canonical q_tpde+tmpl-cache suite with the relaxed gates: exe 5.06 s
+(v15: 4.62–4.69). New accepts on previously-clean queries were the
+damage: 7c ci×temp3 engine est 358,816 → actual **1,618,304** (>1M,
+4.5× under; 7c flipped from −28 ms win to +206 ms loss), 22c mk×temp6
+est 954,506 → actual 2,610,972 (+80 ms), 11c mk×temp4 est 222,966 →
+actual 780,776 (+46 ms). Engine EXPLAIN underestimates 3–4.5× exactly
+in the fanout-correlated cases the guard exists for. Worse, the four
+"good" accepts bought nothing: 18a/26c/30c/31a exe FLAT-to-worse
+(+0.3…+7 ms) — materializing big×temp costs a full big-table scan
+while the final query's bloom filters (AQP-BF on ci.movie_id) already
+make the un-materialized join cheap. NB's advantage on these queries
+comes from its iter-1 partitioning, not terminal materialization.
+**Lever A is closed**: sampling probes uneconomical (A2), EXPLAIN-gate
+relaxation counterproductive (A3-lite). Code reverted to v15 semantics
+(git checkout); v16 CSV kept as
+`...fctpde_breakdown_time_log_v16_reverted.csv`; v15 re-measured and
+preserved as `..._v15.csv` (exe 4.62, jit 0.43 — 7c back to 87 ms).
+BAD-PARTITION/STOP-TOO-EARLY are hereby documented as structural
+residue: no middleware-side estimator (tdom, engine EXPLAIN, or
+affordable sampling) distinguishes the profitable materializations
+from the harmful ones at these decision points.
+
+### B1: DuckDB Prepare cost attribution (2026-07-11)
+29c (worst SDS jit delta, 9 sub-SQLs, +3.7 ms vs NB): raw engine
+PREPARE in CLI = 0.35 ms/stmt (~3.2 ms/query-pass); middleware jit
+9.24 ms ⇒ roughly half Prepare, half TPDE codegen + IR re-extraction.
+`SET disabled_optimizers` sweep (30–50 reps): all-off cuts Prepare to
+0.17 ms/stmt (optimizer = 52%), but NO single pass dominates —
+join_order −6%, statistics_propagation −9%, others ≤5%; cost is ~35
+passes × ~5 µs of tree-walk each. A 21-pass "safe subset" (no-ops for
+JOB sub-SQL shapes: CTE/window/LIMIT/GROUP-BY passes +
+compressed_materialization; query_split/reorder_get kept enabled for
+the patched engine) saves ~11% of Prepare ≈ 15–20 ms suite jit.
+
+### B2: session-wide safe disabled_optimizers — DONE, v17 (2026-07-11)
+Implementation: one-time engine-global
+`SET disabled_optimizers='filter_pullup,empty_result_pullup,
+cte_filter_pusher,regex_range,deliminator,unnest_rewriter,
+common_subexpressions,common_aggregate,limit_pushdown,top_n,
+top_n_window_elimination,duplicate_groups,sampling_pushdown,
+materialized_cte,sum_rewriter,late_materialization,cte_inlining,
+common_subplan,join_elimination,window_self_join'` (20 passes, all
+no-ops for JOB sub-SQL shapes), issued once per process from the
+TopDownSplitter ctor. Kill switch: `AQP_TD_NO_OPTSET`.
+Three pitfalls hit and fixed on the way:
+1. **Timed-path CSV corruption**: routing the SET through
+   `adapter->ExecuteSQL` emitted an extra per-row timing column
+   (WriteJitTimingColumn on the non-SELECT path), silently breaking the
+   canonical parser's column attribution (MW 2.6 s / exe 2.4 s garbage).
+   Fix: new untimed `EngineAdapter::ApplyEngineSetting` (default no-op;
+   DuckDB override = raw conn->Query). db_adapter.h + duckdb_adapter.h.
+2. **Bg-thread engine contact**: the cross-query-prep thread constructs
+   a bg TopDownSplitter; the ctor SET would fire on the shared
+   connection mid-execution. Fix: ctor param repurposed as
+   `apply_engine_settings` (bg site passes false;
+   ir_query_splitter.cpp:73/:746). Note disabled_optimizers is a GLOBAL
+   DuckDB setting (DBConfig) — one SET also covers the fresh spec/bg
+   connections, so bg-compiled plans see identical settings.
+3. **compressed_materialization must stay ON**: the B1 safe-subset had
+   it disabled (qjit-binding paranoia, obsolete since v15 Step 4's
+   proj-remap). Disabling it regressed the string-intermediate-heavy
+   15*/16* families ~5–7 ms each (+28 ms cluster). Removed from the
+   list; cluster delta back to +4 ms (noise).
+Same-session A/B (canonical parser, q_tpde + tmpl-cache):
+  ON  MW 0.062 jit 0.418 exe 4.648 total 5.128
+  OFF MW 0.062 jit 0.440 exe 4.661 total 5.163
+⇒ B2 true effect **jit −22 ms, exe neutral (−13 ms, noise), net −35 ms**
+— matches B1's 15–20 ms prediction. Cross-session note: v15 CSV shows
+exe 4.619; this session's OFF run drifts to 4.661 — the drift is
+session-level, not B2.
+Correctness: 113/113 vs node-based golden, topdown none-jit AND
+q_tpde+single-run-template, final binary. CSV row shape unchanged
+(27 cols on 1a, parser-verified).
+CSVs: `..._v17.csv` (= b2ab_on, canonical unsuffixed also updated),
+`..._b2ab_off.csv` (same-session OFF baseline),
+`..._b2a_cmoff.csv` (evidence for pitfall 3).
+Lever B remaining: rest of the jit gap (~90 ms) is per-pass tree-walk
+floor + TPDE codegen — unreachable without engine patches (B3).
+**B3 REJECTED by user (2026-07-11)** — not worth modifying DuckDB.
+Lever B closed at the middleware boundary.
+
+## Lever C diagnostics: what split shape does query-jit like? (2026-07-11)
+
+Question (user, after rejecting B3): which split strategy gives TPDE +
+template-cache faster jit and/or exe? Three diagnostics, no strategy code.
+
+### Methodology
+Debug build (AQP_DUMP_CACHE_KEYS is #ifndef NDEBUG, ir_to_llvm.cpp:8892).
+Per-query runs of all 113 JOB queries under q_tpde + single-run-template
+for BOTH splits, dumping one TSV per query
+(SEQ / HIT / KEY / OPT / PLAN-serialization per qjit compile attempt):
+  /tmp/keys_sds/*.tsv (113 files), /tmp/keys_nb/*.tsv (110 files —
+  20a/20b/20c have NO NB qjit compile attempts at all: MARK/semi-heavy
+  shapes fall back, so NB pays zero jit there).
+C2/C3 attribution from the existing v17 SDS and NB reference CSVs
+(canonical parser groups), matching CSV per-statement jit columns to
+dump SEQ order (matched 107 SDS / 93 NB queries; rest skipped on
+group-count mismatch).
+NOTE: debug build may have poisoned shared lib/*.a — rebuild
+build_release before the next measurement.
+
+### C1: template-cache audit — reuse is a DEAD END
+- Within-run template hits: SDS **0/534**, NB **0/539**. ZERO for both.
+  NB's jit advantage is NOT template reuse — prior hypothesis WRONG.
+- Why: serialized plan templates embed table names (`keyword#1B`,
+  `temp1#1T`), column names, concrete types (3=int, 7=string) and hash
+  layouts (`H{1,8,16|1.0.3@8}`). Every sub-statement in a run differs.
+- Name-agnostic canonicalization (strip table/col names, keep
+  shape+types): within-run hits rise only ~2% (SDS) / 0% (NB) — payload
+  column sets differ per split step even when the join shape matches.
+- Cross-QUERY equivalence classes (illegal to exploit under single-run
+  semantics, measured for completeness): SDS 534→312, NB 539→416.
+⇒ Any "template-normal-form" split design is dead; the cache key is not
+the lever.
+
+### C2: jit-time attribution — the gap is per-SUB-query, not finals
+- Final-query compiles are EQUAL: SDS 1.137 vs NB 1.116 ms/final
+  (suite: 128 vs 126 ms) — even though NB finals are BIGGER.
+- Whole +85 ms jit gap = sub-query statements:
+  SDS 0.703 ms/stmt x 412 stmts vs NB 0.404 ms/stmt x 512 stmts.
+  SDS compiles FEWER but each costs 1.7x more.
+
+### C3: per-sub jit scales with statement size (#relations)
+  ms/stmt by relation count (matched CSV<->dump):
+    rel:   2      3      4      5      6      7
+    SDS  0.522  0.762  1.391  1.039  2.690  2.638
+    NB   0.359  0.528  0.732  0.907   —      —
+- Sub-statement size histograms: SDS mean 2.55 rel (55 stmts >=4 rel);
+  NB mean 2.24 rel (13 stmts >=4 rel). NB never emits >5-rel subs.
+- NB finals mean 3.68 rel (max 13) vs SDS finals 3.03 — yet equal cost
+  (finals are compiled once, dominated by fixed overhead).
+- UNEXPLAINED residual at equal size: 2-rel SDS 0.522 vs NB 0.359
+  ms/stmt (1.45x). Suspects: (a) spec-wait charged into jit column via
+  ConsumeSpecWaitUs, (b) temp payload width (SDS temps carry wider
+  target lists), (c) storage-plan scan-layer differences.
+  → Lever C TODO 1.
+
+### Conclusion (feeds CLAUDE.md §Lever C)
+Query-jit "likes" MANY SMALL statements over few large ones: per-stmt
+compile cost grows superlinearly with relation count, while per-stmt
+fixed cost is small; template reuse contributes nothing either way.
+This validates the user's hybrid: keep SDS middleware (IR-DP order,
+exact-card feedback, cross-query prep, bg-compile, zero fallbacks; MW
+0.06) but emit NB-granularity boundaries — split at each hash-join
+BUILD side of the IR-DP join tree (binary temp x base steps; SEMI/MARK
+not split; 1M abort guard; never materialize big x temp probes per
+Lever A). Expected: jit 0.42→~0.34, MW stays 0.06, exe >= NB
+⇒ target total ~4.95–5.05.
+
+### Lever C TODO 1: 2-rel jit residual — ROOT CAUSE FOUND (2026-07-11)
+Question: why does an SDS 2-rel sub cost 0.522 ms jit vs NB 0.359?
+Suspects (a) spec-wait, (b) temp payload width, (c) storage-plan layer:
+ALL DEAD. Real cause: **the qjit pending-IR fast path is strategy-gated
+to NODE_BASED** (ir_query_splitter.cpp:2727/:2800-2804). NB subs run
+ExecuteSQLandCreateTempTable's fast path (TakePlan + PrepareFromPlan +
+AnnotateBuildSides, duckdb_adapter.cpp:1442-1476 — no parse, no
+optimize, no IR re-extraction); SDS subs fall through to
+PrepareWithQueryJitAnalysis (:3007) = ParseSQL + full Optimize +
+RebuildTempTableIndices + ConvertPlanToIR + PrepareFromPlan, ALL inside
+the jit CSV column.
+
+Evidence (release build, per-query 15-iter runs, warm iters 5-14):
+1. Suspect elimination from matched v17/NB CSVs x key dumps (379/411
+   sub-stmts): pos-0 subs ~0.01 ms in BOTH (bg-compile HIT works;
+   spec-wait dead — also dead by code path: AddSpecWaitTime only fires
+   from spec-jit, which is off). Structure at 2-rel near-identical:
+   cols 6.7 vs 7.1, hash payload 1.59 vs 1.98 (NB WIDER), temp scans
+   0.51 vs 0.64 (NB MORE) — payload/scan-layer dead. Residual persists
+   within structure class: base-only 0.348 vs 0.196, with-temp 0.725
+   vs 0.481.
+2. AQP_QJIT_PASS2_TRACE on SDS 8a (warm): per sub total 0.29-0.39 ms
+   of which parse 0.09-0.16 + optimize 0.12-0.18 = 80-90%; conv ~0.03,
+   PrepareFromPlan ~0.02.
+3. Ablation via existing AQP_NO_FAST_PATH on NB 8a — per-sub jit ms:
+     SDS (slow path): 0.74, 0.99, 0.97, 1.00          final 0.70
+     NB fast        : 0.49, 0.56, 0.41, 0.57, 0.44    final 0.78
+     NB nofast      : 0.77, 0.91, 0.63, 1.03, 0.73    final 0.68
+   NB-nofast reproduces SDS per-sub costs almost exactly; finals equal
+   everywhere — both strategies use the slow path for finals, which is
+   exactly C2's "finals equal" observation.
+
+Suite-level estimate: 412 SDS subs x ~0.25-0.35 ms parse+opt+conv
+= 100-140 ms — the whole +85 ms jit gap is this fast-path asymmetry,
+not statement size per se (size only scales the parse+opt cost).
+
+Bonus observation (common cost, NOT residual): with-temp 2-rel subs
+cost ~2x base-only in BOTH strategies (SDS 0.73/0.35, NB 0.48/0.20)
+— temp-source resolution/chunk-scan annotate; possible separate lever.
+
+Why SDS can't just flip the gate: the fast path needs the engine
+logical plan matching the sub-IR. NB has it (the engine split the
+optimized plan); SDS only has sub-IR + generated SQL — and SDS RELIES
+on the engine's full Optimize for join order INSIDE multi-relation
+clusters. Options feed Lever C TODO 2 (hybrid design): binary
+temp x base subs have trivial join order -> a small closed IR->logical-
+plan constructor makes the fast path available to the hybrid.
+
+### Lever C TODO 2 pre-design verification (2026-07-11, source-confirmed)
+All constructor-feasibility assumptions verified read-only (middleware +
+patched DuckDB tree), no blockers:
+1. PrepareFromPlan (duckdb client_context.cpp:1244-1268) accepts a
+   hand-built LogicalOperator + names/types, skips the optimizer, goes
+   straight to PhysicalPlanGenerator. Plan must be type-resolved
+   (ResolveOperatorTypes).
+2. Temps are in-memory ColumnDataCollections (temp_collections_,
+   replacement scan "scan_temp_collection"/"scan_qjit_temp",
+   duckdb_adapter.cpp:335-391). LogicalColumnDataGet is directly
+   constructible over an existing CDC — NB already does this for spec
+   chunks (node_based_splitter.cpp:400-410) = in-tree precedent.
+3. Base-table LogicalGet: no one-call helper; route = Binder::
+   CreateBinder(context) + bind table ref, then set column_ids +
+   ResolveOperatorTypes. Filter pushdown WITHOUT full Optimize: patched
+   public Optimizer::FilterOptimize (optimizer.cpp:1265) runs only
+   ExpressionRewriter/FilterPullup/FilterPushdown → populates
+   LogicalGet::table_filters (zone maps) on a constructed plan; no
+   hand-built TableFilterSet needed. TableFilter classes cover =,<,>,
+   IN, IS (NOT) NULL, ExpressionFilter for the rest.
+4. Hash join build side = RIGHT child, fixed (plan_comparison_join.
+   cpp:22-63); PrepareFromPlan path runs NO BuildProbeSideOptimizer →
+   constructor orders children itself (build = smaller side, known
+   EXACTLY from temp feedback). estimated_cardinality used for join
+   type thresholds → set it from our exact/DP cards.
+5. LogicalComparisonJoin needs JoinCondition of BoundColumnRefExpression
+   with correct ColumnBindings + projection maps.
+6. qjit fast-path IR contract: temps MUST be ChunkNodes in the IR
+   (BuildExecutionSteps sets source_is_temp only for ChunkNode;
+   positional column resolution from qjit_temps_). SDS's current
+   BuildSubIRForCluster emits plain scans for temps (fk_based_splitter.
+   cpp:959-1294) → the hybrid sub-IR builder must emit ChunkNodes for
+   temp sides. AnnotateBuildSides(include_chunk_scans=true) +
+   AnalyzeQueryJit then work as for NB.
+User decisions locked (2026-07-11): constructor fallback = per-sub SQL
+round trip when shape unsupported; exe hypothesis accepted as
+measure-and-revert risk (kill switch A/B).
+
+## Lever C TODO 3: Hybrid SDS v18 — IMPLEMENTED (2026-07-11, v18)
+
+Design per user-approved plan (binary NB-granularity boundaries + closed
+IR→DuckDB-logical-plan constructor for the qjit pending-IR fast path).
+
+### What changed
+- Phase 0 kill switches (topdown_splitter.h): `AQP_TD_V17` = full v17
+  restore (growth block on, ctor off, fast-path gate NB-only);
+  `AQP_TD_NO_PLANCTOR` = binary boundaries but no ctor/fast path.
+- Phase 1 (topdown_splitter.cpp): the multi-relation GROWTH BLOCK
+  (grow the harvested pair up the optimal join tree) is now v17-only —
+  default v18 emits the bottom-level binary pair from visit_pairs.
+  All gates unchanged (big×big, big×temp fanout, 1M threshold, EXPLAIN
+  validation, component fallback → those groups keep the SQL path).
+- Phase 2 (SplitIR post-processing, v18 only; shared fk_based_splitter
+  untouched): `PushFilterConjunctsToScans` + `WrapTempScansAsChunks`
+  (temp scans → SimplestChunk, required by qjit source_is_temp) +
+  `RenumberRootProjection` + leaf estimated_cardinality stamping from
+  the DP's `table_card_` (exact for temps).
+- Phase 3 (duckdb_adapter.cpp `TryBuildBinaryPlanFromIR` :3317): v1
+  accepted shape = projection over ONE inner equi-join of two
+  scan/chunk leaves with conjunctive constant filters. Base leaf:
+  Binder bind → LogicalGet + patched `Optimizer::FilterOptimize` for
+  table_filters (zone-map parity). Temp leaf: LogicalColumnDataGet
+  over the existing CDC. Join: LogicalComparisonJoin, RIGHT child =
+  build = smaller side by our exact/DP cards. Reject → per-sub SQL
+  round trip (v17 behavior). Hooked INSIDE the fast path; plan output
+  names derived from IR target_list (ComputeColumnAlias mirror).
+- Phase 4 (ir_query_splitter.cpp): `SetQjitPendingIR` un-gated for
+  TOP_DOWN (use_engine_plan=false → ctor path), subject to switches.
+
+### Bugs found & fixed during verification
+1. **Projection-index-0 collision**: BuildSubIRForCluster hardcodes the
+   root projection's table index to 0; qjit's ThroughProj remaps attrs
+   of ANY matching index → base table 0 in the cluster got its attrs
+   misrouted (dtype mismatch, e.g. 8a temp4 expected INT32 where the
+   plan had VARCHAR aka_name.name). BuildQjitOutputDescs' type
+   cross-check masked it as a compile reject; could have been silent
+   wrong data on coincidental type match. Fix: `RenumberRootProjection`
+   rebuilds the sub-IR root SimplestProjection with index =
+   max(leaf table index)+1 (donor ctor; SQL rendering unaffected).
+2. **Wrong hash-join build side**: sub-IR leaves carry
+   estimated_cardinality=0 (FilterOptimize-only IR), so the ctor's
+   smaller-right selection defaulted — 1a temp1 built on movie_info_idx
+   (1.38M) and probed filtered info_type (1 row). Fix: stamp
+   `table_card_` onto sub-IR scan/chunk leaves in SplitIR.
+Also restored a corrupted `flag_suffix` line in
+measure_breakdown_time_job.sh (unconditional `+="${compile_mode}"`
+would have broken all CSV names).
+
+### Constructor accept rate (suite, AQP_QJIT_FAST_TRACE)
+343 fast-path attempts → 263 constructed+compiled (77%); 80 rejects all
+`leaf-not-scan` = mark-join units (7*/9*/14*/22*/25*/28*–31*/33*),
+the designed v1 SQL fallback; ZERO post-construction compile failures.
+Constructed plans verified: table_filters present, build side correct.
+
+### Verification & measurement (2026-07-11)
+- Correctness: 113/113 vs node-based golden, BOTH configs (topdown
+  no-jit; topdown query tpde single-run-template). All measurement runs
+  1695/1695.
+- Warm suite (canonical parser, jit/MW/exe/total):
+  - v18: 0.41 / 0.06 / **4.53** / **5.00**
+  - baseline none-split no-jit: 0.00 / 0.00 / 9.64 / 9.65
+  - topdown no-jit v18: 0.00 / 0.18 / 8.44 / 8.62 (NB no-jit: 9.32)
+- Same-session A/B (identical binary, env switches):
+  - `AQP_TD_V17=1`: 0.41 / 0.06 / 4.60 / 5.06
+  - `AQP_TD_NO_PLANCTOR=1`: 0.44 / 0.06 / 4.61 / 5.12
+  Decomposition: binary boundaries alone cost +30 ms jit (more subs on
+  the SQL path) and are exe-neutral vs v17; the plan ctor recovers the
+  +30 ms jit AND −80 ms exe (exact-card build sides + zone-map
+  table_filters, no engine re-plan drift). v18 net vs same-session v17:
+  −60 ms total, all exe. No exe regression → no revert (plan policy).
+- CSVs: `job_result/..._fctpde_breakdown_time_log_v18.csv` (+
+  `_v18_ab_v17`, `_v18_ab_noplanctor`).
+
+### Status after v18
+SDS 5.00 vs NB 5.30 (−300 ms, 5.7%). Remaining gap to the 20% gate
+(4.24) is engine territory (B3, rejected). Residual jit gap: the 80
+mark-join subs + all finals still pay the SQL round trip; extending the
+ctor to mark-join units / final queries is the next candidate lever.
+
+## NB parity levers: SDS-idea transfer to node-based (2026-07-11/12, CLOSED)
+
+User question post-v18: can NB be sped up with SDS's infrastructure
+ideas WITHOUT changing its split algorithm (e.g. MW reduction)?
+
+### Audit (code-verified)
+Cross-query prep AND first-sub bg-compile ALREADY EXIST for NB — they
+originated there (Track B §7.2): `IRQuerySplitter::PrepareNextQuery`
+(ir_query_splitter.cpp:452) runs parse + FilterOptimize +
+MiddleOptimize + QuerySplit iteration 1 + first-sub
+SpeculativeQueryJitCompile on a bg Connection; dispatched for
+NODE_BASED at aqp_middleware.cpp:597-605, gate `jit_cache >= 1`
+(includes single-run-template). The NB 5.30 baseline already includes
+both; SDS inherited the pattern from NB. NB's remaining MW 0.38 =
+per-iteration ReOptimizeIR re-plans (exact-temp-card DP re-runs,
+inherently sequential) + IR→SQL→parse round trip per iteration.
+
+### B2 optimizer trim for NB — TESTED, NULL RESULT, REVERTED (2026-07-12)
+Only transferable piece: NB's ReOptimizeIR runs the FULL ~35-pass
+Optimize() (duckdb_adapter.cpp:930, split flag temporarily off) once
+per iteration in the MW column; finals pay it again in jit.
+RunOptimizer honors disabled_optimizers (optimizer.cpp:94-99) and the
+setting is DBConfig-GLOBAL (settings.hpp DisabledOptimizersSetting:
+SetGlobal only) → one SET also covers the bg-prep connection.
+Implemented the SDS 20-pass SET in the NodeBasedSplitter ctor (kill
+switch AQP_NB_NO_OPTSET) and verified/measured:
+- Correctness: 113/113 vs NB golden, BOTH configs (node-based none;
+  node-based query tpde single-run-template); measurement runs
+  1695/1695.
+- Split identity: per-row column-count structure of the breakdown CSVs
+  IDENTICAL suite-wide between trim ON and OFF (and vs golden) — the
+  20 passes are no-ops for full JOB queries too; split unchanged.
+- Same-session A/B (canonical parser, jit/MW/exe/total):
+  ON  0.35 / 0.38 / 4.77 / 5.50
+  OFF 0.35 / 0.39 / 4.75 / 5.49
+  → jit ±0, MW −10 ms (noise floor), exe +20 ms (noise; plans
+  identical). Session drift note: this session measures NB ~5.49-5.50
+  vs the historical 5.30; the back-to-back A/B is the valid comparison.
+- Why null vs SDS's −22 ms: SDS's ~500 sub-statements each paid the
+  full Prepare pipeline (the trimmed passes = measurable slice); NB
+  subs use the TakePlan fast path (no Optimize at all), so only ~600
+  re-plans/finals pay it, and there JOIN_ORDER DP dominates so
+  completely that the trimmed tree-walk passes are negligible.
+REVERTED per user decision 2026-07-12 (clean tree; avoid a
+JOB-only-validated global optimizer disable). Evidence CSVs kept:
+`job_result/duckdb_node-based_query_none_jitcache_single_run_template_`
+`fctpde_breakdown_time_log_nbtrim{,_ab_off}.csv`.
+
+**Conclusion: NB has no remaining SDS-transferable overhead lever.**
+Its MW floor is the sequential exact-card re-plan loop — the price of
+its exe advantage; the fair same-infrastructure comparison already
+holds (both strategies share prep/bg-compile/fast-path machinery).
+
+## Gap-Closing Levers — index (summary moved from CLAUDE.md 2026-07-12)
+
+All three levers CLOSED; detailed records in their sections above.
+- **Lever A (probe/gate exe recovery): dead.** A1: all 5 loss queries
+  terminate on a fanout-rejected big×temp pair; iter-1 ests 38–1509×
+  under (tdom correlation blindness). A2 oracle: accurate probes cost
+  22–86 ms/decision vs 11–36 ms recoverable. A3-lite: exe 4.62→5.06,
+  REVERTED (engine EXPLAIN 3–4.5× under on exactly the correlated
+  pairs; correct accepts bought nothing — final-query bloom filters).
+  BAD-PARTITION/STOP-TOO-EARLY = accepted structural residue. (§Lever A)
+- **Lever B (Prepare cost): closed at middleware boundary.** B1: Prepare
+  0.35 ms/stmt, optimizer 52%, no dominator. B2 (v17): engine-global
+  20-pass `SET disabled_optimizers` via untimed ApplyEngineSetting; A/B
+  jit −22 ms, net −35 ms. B3 engine patch REJECTED by user. (§B1/§B2)
+- **Lever C (hybrid split): DONE, v18.** C1: template reuse a dead end
+  (0 within-run hits both splits). C2: gap is per-sub, not finals. C3:
+  per-sub jit scales with #relations. TODO 1: root cause = pending-IR
+  fast path gated to NODE_BASED; SDS paid ParseSQL+Optimize+ConvertPlanToIR
+  per sub in the jit column. TODO 2: design settled (binary build-side
+  boundaries + closed IR→plan constructor; user-approved). TODO 3:
+  implemented → v18, 5.00 total, A/B decomposition v17 5.06 /
+  no-planctor 5.12; kept. (§Lever C diagnostics, §TODO 1/2/3)

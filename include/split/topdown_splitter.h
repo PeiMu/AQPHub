@@ -21,6 +21,7 @@
 #include "split/fk_based_splitter.h"
 #include "split/ir_join_optimizer.h"
 
+#include <cstdlib>
 #include <unordered_map>
 
 namespace middleware {
@@ -31,9 +32,11 @@ struct CrossQueryPrepResult;
 
 class TopDownSplitter : public FKBasedSplitter {
 public:
-  // enable_reorder is accepted for constructor compatibility; SDS never
-  // re-optimizes through the engine.
-  explicit TopDownSplitter(EngineAdapter *adapter, bool enable_reorder = true);
+  // apply_engine_settings: issue the one-time session SET (B2 optimizer
+  // trim) from the ctor. MUST be false when constructing on a background
+  // thread (cross-query prep) — the adapter connection is not thread-safe.
+  explicit TopDownSplitter(EngineAdapter *adapter,
+                           bool apply_engine_settings = true);
 
   void Preprocess(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
 
@@ -64,6 +67,21 @@ public:
       uint64_t temp_table_cardinality,
       const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
       const std::vector<std::string> &column_names) override;
+
+  // v18 hybrid kill switches (same-session A/B, precedent AQP_TD_NO_OPTSET):
+  //  AQP_TD_V17         — full v17 restore: grown multi-relation groups and
+  //                       no pending-IR fast-path handoff.
+  //  AQP_TD_NO_PLANCTOR — v18 binary boundaries but no fast-path handoff
+  //                       (isolates the boundary-change exe effect from the
+  //                       constructor jit effect).
+  static bool V17Mode() {
+    static const bool v = std::getenv("AQP_TD_V17") != nullptr;
+    return v;
+  }
+  static bool NoPlanCtor() {
+    static const bool v = std::getenv("AQP_TD_NO_PLANCTOR") != nullptr;
+    return v;
+  }
 
   // Same standalone-abort threshold as node-based
   // (include/split/node_based_splitter.h): don't materialize a pair whose

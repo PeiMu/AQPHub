@@ -30,9 +30,21 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_filter.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include "jit/aqp_jit_hashtable.h"
 #include "qjit/query_jit_steps.h"
 #include "simplest_ir.h"
@@ -1439,29 +1451,96 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     static const bool trace_fast =
         std::getenv("AQP_QJIT_FAST_TRACE") != nullptr;
     static const bool no_fast = std::getenv("AQP_NO_FAST_PATH") != nullptr;
-    if (!qjit_compiled && qjit_pending_ir_ && plan && !no_fast) {
+    if (!qjit_compiled && qjit_pending_ir_ && !no_fast) {
       auto t_fast = trace_fast ? std::chrono::steady_clock::now()
                                : std::chrono::steady_clock::time_point{};
       auto *fast_ir = const_cast<ir_sql_converter::AQPStmt *>(qjit_pending_ir_);
       qjit_pending_ir_ = nullptr;
-      auto sub_plan = TakePlan();
-      sub_plan->ResolveOperatorTypes();
-      auto plan_types = sub_plan->types;
-      duckdb::vector<duckdb::string> plan_names;
-      for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
-        plan_names.push_back("col" + std::to_string(i));
-      prepared = conn->PrepareFromPlan(std::move(sub_plan),
-                                       std::move(plan_names),
-                                       std::move(plan_types));
-      if (prepared && !prepared->HasError() && prepared->data &&
-          prepared->data->physical_plan) {
-        AnnotateBuildSides(prepared->data->physical_plan->Root(), *fast_ir,
-                           /*include_chunk_scans=*/true);
-        auto analysis = qjit::AnalyzeQueryJit(*fast_ir, temp_table_name);
-        if (miss_action != CompensateMissAction::SKIP_QJIT_ONCE) {
-          qjit_compiled = TryCompileQueryJit(
-              *fast_ir, analysis, *prepared, temp_table_name,
-              /*use_fast=*/miss_action == CompensateMissAction::FAST_ONCE);
+      duckdb::unique_ptr<duckdb::LogicalOperator> sub_plan;
+      bool ctor_plan = false;
+      if (qjit_pending_use_plan_ && plan) {
+        sub_plan = TakePlan();
+      } else {
+        // v18: SDS binary subs carry no engine plan — build it from the IR
+        // directly (skips the per-sub SQL parse+Optimize round trip).
+        // Reject -> sub_plan null -> slow path below (v17 behavior).
+        std::string ctor_reject;
+        sub_plan = TryBuildBinaryPlanFromIR(*fast_ir, ctor_reject);
+        ctor_plan = sub_plan != nullptr;
+        if (!sub_plan && trace_fast) {
+          fprintf(stderr, "[AQP-FAST-TIME] label=%s ctor-reject:%s\n",
+                  temp_table_name.c_str(), ctor_reject.c_str());
+        }
+      }
+      if (sub_plan) {
+#ifndef NDEBUG
+        if (trace_fast) {
+          for (const auto &a : fast_ir->target_list)
+            fprintf(stderr,
+                    "[AQP-FAST-IR] label=%s attr t=%u c=%u name=%s type=%d "
+                    "bw=%d\n",
+                    temp_table_name.c_str(), a->GetTableIndex(),
+                    a->GetColumnIndex(), a->GetColumnName().c_str(),
+                    (int)a->GetType(), (int)a->GetBitWidth());
+          if (ctor_plan)
+            fprintf(stderr, "[AQP-FAST-PLAN] label=%s\n%s\n",
+                    temp_table_name.c_str(), sub_plan->ToString().c_str());
+        }
+#endif
+        sub_plan->ResolveOperatorTypes();
+        auto plan_types = sub_plan->types;
+        duckdb::vector<duckdb::string> plan_names;
+        if (ctor_plan) {
+          // The splitter's remaining SQL references temp columns by
+          // ComputeColumnAlias names ({table}_{index}_{column}); the temp
+          // store takes them from prepared->GetNames() = these plan_names,
+          // so mirror that convention (SQL-path SELECT aliases do the same).
+          std::map<unsigned int, std::string> leaf_names;
+          std::vector<const ir_sql_converter::AQPStmt *> stack{fast_ir};
+          while (!stack.empty()) {
+            auto *n = stack.back();
+            stack.pop_back();
+            if (n->GetNodeType() == ir_sql_converter::ScanNode) {
+              const auto &s = n->Cast<ir_sql_converter::SimplestScan>();
+              leaf_names[s.GetTableIndex()] = s.GetTableName();
+            } else if (n->GetNodeType() == ir_sql_converter::ChunkNode) {
+              const auto &c = n->Cast<ir_sql_converter::SimplestChunk>();
+              leaf_names[c.GetTableIndex()] = c.GetChunkName();
+            }
+            for (const auto &ch : n->children)
+              if (ch)
+                stack.push_back(ch.get());
+          }
+          for (const auto &attr : fast_ir->target_list) {
+            auto it = leaf_names.find(attr->GetTableIndex());
+            if (it != leaf_names.end() && !it->second.empty())
+              plan_names.push_back(it->second + "_" +
+                                   std::to_string(attr->GetTableIndex()) +
+                                   "_" + attr->GetColumnName());
+            else
+              plan_names.push_back("t" +
+                                   std::to_string(attr->GetTableIndex()) +
+                                   "_" + attr->GetColumnName());
+          }
+        }
+        if (plan_names.size() != plan_types.size()) {
+          plan_names.clear();
+          for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
+            plan_names.push_back("col" + std::to_string(i));
+        }
+        prepared = conn->PrepareFromPlan(std::move(sub_plan),
+                                         std::move(plan_names),
+                                         std::move(plan_types));
+        if (prepared && !prepared->HasError() && prepared->data &&
+            prepared->data->physical_plan) {
+          AnnotateBuildSides(prepared->data->physical_plan->Root(), *fast_ir,
+                             /*include_chunk_scans=*/true);
+          auto analysis = qjit::AnalyzeQueryJit(*fast_ir, temp_table_name);
+          if (miss_action != CompensateMissAction::SKIP_QJIT_ONCE) {
+            qjit_compiled = TryCompileQueryJit(
+                *fast_ir, analysis, *prepared, temp_table_name,
+                /*use_fast=*/miss_action == CompensateMissAction::FAST_ONCE);
+          }
         }
       }
       if (!qjit_compiled) {
@@ -3003,6 +3082,487 @@ void DuckDBAdapter::AnnotateBuildSides(duckdb::PhysicalOperator &op,
   AnnotateBuildSidesRec(op, ir, universe, collector);
 }
 
+// ---------------------------------------------------------------------------
+// v18 closed IR->plan constructor (fast-path enabler for SDS binary subs).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+duckdb::ExpressionType
+IrComparisonToDuck(ir_sql_converter::SimplestExprType t) {
+  switch (t) {
+  case ir_sql_converter::Equal:
+    return duckdb::ExpressionType::COMPARE_EQUAL;
+  case ir_sql_converter::NotEqual:
+    return duckdb::ExpressionType::COMPARE_NOTEQUAL;
+  case ir_sql_converter::LessThan:
+    return duckdb::ExpressionType::COMPARE_LESSTHAN;
+  case ir_sql_converter::GreaterThan:
+    return duckdb::ExpressionType::COMPARE_GREATERTHAN;
+  case ir_sql_converter::LessEqual:
+    return duckdb::ExpressionType::COMPARE_LESSTHANOREQUALTO;
+  case ir_sql_converter::GreaterEqual:
+    return duckdb::ExpressionType::COMPARE_GREATERTHANOREQUALTO;
+  default:
+    return duckdb::ExpressionType::INVALID;
+  }
+}
+
+struct CtorLeaf {
+  unsigned int ir_index = 0;
+  bool is_chunk = false;
+  std::string name;
+  const ir_sql_converter::AQPStmt *ir_node = nullptr;
+  duckdb::unique_ptr<duckdb::LogicalOperator> op;
+  duckdb::LogicalGet *get = nullptr;
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> filters;
+  // physical column id -> position in get->column_ids (projection slot)
+  std::unordered_map<duckdb::column_t, duckdb::idx_t> col_pos;
+};
+
+// Map an IR attr onto a leaf's LogicalGet: temps positionally (IR
+// column_index == temp column position, fk_based_splitter contract), base
+// tables BY NAME (IR column_index is a binding position from the ORIGINAL
+// optimized plan, not a catalog id). Registers the column with the get on
+// first use; the binding uses the get's (already IR-overwritten) index.
+bool MapLeafAttr(CtorLeaf &leaf, const ir_sql_converter::SimplestAttr &attr,
+                 duckdb::LogicalType &out_type,
+                 duckdb::ColumnBinding &out_binding) {
+  if (attr.GetTableIndex() != leaf.ir_index)
+    return false;
+  duckdb::column_t col;
+  if (leaf.is_chunk) {
+    col = attr.GetColumnIndex();
+    if (col >= leaf.get->names.size())
+      return false;
+  } else {
+    const auto &names = leaf.get->names;
+    auto it = std::find(names.begin(), names.end(), attr.GetColumnName());
+    if (it == names.end())
+      return false;
+    col = static_cast<duckdb::column_t>(it - names.begin());
+  }
+  auto pos_it = leaf.col_pos.find(col);
+  duckdb::idx_t pos;
+  if (pos_it == leaf.col_pos.end()) {
+    pos = leaf.get->GetColumnIds().size();
+    leaf.get->AddColumnId(col);
+    leaf.col_pos.emplace(col, pos);
+  } else {
+    pos = pos_it->second;
+  }
+  out_type = leaf.get->returned_types[col];
+  out_binding = duckdb::ColumnBinding(leaf.get->table_index, pos);
+  return true;
+}
+
+duckdb::unique_ptr<duckdb::Expression>
+MakeLeafColRef(CtorLeaf &leaf, const ir_sql_converter::SimplestAttr &attr) {
+  duckdb::LogicalType ty;
+  duckdb::ColumnBinding b;
+  if (!MapLeafAttr(leaf, attr, ty, b))
+    return nullptr;
+  return duckdb::make_uniq<duckdb::BoundColumnRefExpression>(
+      attr.GetColumnName(), ty, b);
+}
+
+bool IrConstToValue(const ir_sql_converter::SimplestConstVar &cv,
+                    const duckdb::LogicalType &target, duckdb::Value &out) {
+  duckdb::Value v;
+  switch (cv.GetType()) {
+  case ir_sql_converter::BoolVar:
+    v = duckdb::Value::BOOLEAN(cv.GetBoolValue());
+    break;
+  case ir_sql_converter::IntVar:
+    v = duckdb::Value::BIGINT(cv.GetIntValue());
+    break;
+  case ir_sql_converter::FloatVar:
+    v = duckdb::Value::DOUBLE(cv.GetFloatValue());
+    break;
+  case ir_sql_converter::StringVar:
+    v = duckdb::Value(cv.GetStringValue());
+    break;
+  default: // Date / StringVarArr: no lossless mapping — caller rejects
+    return false;
+  }
+  if (!v.DefaultTryCastAs(target))
+    return false;
+  out = std::move(v);
+  return true;
+}
+
+// Convert one IR conjunct into a bound expression against `leaf`. Returns
+// nullptr when the conjunct does not belong to this leaf or uses a shape
+// outside the v1 whitelist (the caller tries the other leaf, then rejects
+// the whole construction). Stray AddColumnId side effects from failed
+// nested attempts only widen the scan — semantically harmless.
+duckdb::unique_ptr<duckdb::Expression>
+ConvertLeafFilter(CtorLeaf &leaf, const ir_sql_converter::AQPExpr &e,
+                  duckdb::Optimizer &optimizer) {
+  using namespace ir_sql_converter;
+  switch (e.GetNodeType()) {
+  case VarConstComparisonNode: {
+    const auto &c = e.Cast<SimplestVarConstComparison>();
+    if (!c.attr || !c.const_var)
+      return nullptr;
+    auto col = MakeLeafColRef(leaf, *c.attr);
+    if (!col)
+      return nullptr;
+    auto cmp = c.GetSimplestExprType();
+    if (cmp == TextLike || cmp == Text_Not_Like) {
+      // Bind through the real "~~"/"!~~" functions so the expression
+      // rewriter's LIKE->prefix/contains rules see the canonical form.
+      if (col->return_type.id() != duckdb::LogicalTypeId::VARCHAR ||
+          c.const_var->GetType() != StringVar)
+        return nullptr;
+      auto pat = duckdb::make_uniq<duckdb::BoundConstantExpression>(
+          duckdb::Value(c.const_var->GetStringValue()));
+      try {
+        return optimizer.BindScalarFunction(cmp == TextLike ? "~~" : "!~~",
+                                            std::move(col), std::move(pat));
+      } catch (...) {
+        return nullptr;
+      }
+    }
+    auto duck_cmp = IrComparisonToDuck(cmp);
+    if (duck_cmp == duckdb::ExpressionType::INVALID)
+      return nullptr;
+    duckdb::Value v;
+    if (!IrConstToValue(*c.const_var, col->return_type, v))
+      return nullptr;
+    return duckdb::make_uniq<duckdb::BoundComparisonExpression>(
+        duck_cmp, std::move(col),
+        duckdb::make_uniq<duckdb::BoundConstantExpression>(std::move(v)));
+  }
+  case VarComparisonNode: {
+    const auto &c = e.Cast<SimplestVarComparison>();
+    if (!c.left_attr || !c.right_attr)
+      return nullptr;
+    auto duck_cmp = IrComparisonToDuck(c.GetSimplestExprType());
+    if (duck_cmp == duckdb::ExpressionType::INVALID)
+      return nullptr;
+    auto l = MakeLeafColRef(leaf, *c.left_attr);
+    auto r = MakeLeafColRef(leaf, *c.right_attr);
+    if (!l || !r || l->return_type != r->return_type)
+      return nullptr;
+    return duckdb::make_uniq<duckdb::BoundComparisonExpression>(
+        duck_cmp, std::move(l), std::move(r));
+  }
+  case IsNullExprNode: {
+    const auto &c = e.Cast<SimplestIsNullExpr>();
+    if (!c.attr)
+      return nullptr;
+    auto ty = c.GetSimplestExprType();
+    if (ty != NullType && ty != NonNullType)
+      return nullptr;
+    auto col = MakeLeafColRef(leaf, *c.attr);
+    if (!col)
+      return nullptr;
+    auto op = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
+        ty == NullType ? duckdb::ExpressionType::OPERATOR_IS_NULL
+                       : duckdb::ExpressionType::OPERATOR_IS_NOT_NULL,
+        duckdb::LogicalType::BOOLEAN);
+    op->children.push_back(std::move(col));
+    return op;
+  }
+  case InExprNode: {
+    const auto &c = e.Cast<SimplestInExpr>();
+    if (!c.attr || c.values.empty())
+      return nullptr;
+    auto col = MakeLeafColRef(leaf, *c.attr);
+    if (!col)
+      return nullptr;
+    auto col_type = col->return_type;
+    auto op = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
+        c.negated ? duckdb::ExpressionType::COMPARE_NOT_IN
+                  : duckdb::ExpressionType::COMPARE_IN,
+        duckdb::LogicalType::BOOLEAN);
+    op->children.push_back(std::move(col));
+    for (const auto &val : c.values) {
+      duckdb::Value v;
+      if (!val || !IrConstToValue(*val, col_type, v))
+        return nullptr;
+      op->children.push_back(
+          duckdb::make_uniq<duckdb::BoundConstantExpression>(std::move(v)));
+    }
+    return op;
+  }
+  case LogicalExprNode: {
+    const auto &c = e.Cast<SimplestLogicalExpr>();
+    switch (c.GetLogicalOp()) {
+    case LogicalNot: {
+      if (!c.right_expr)
+        return nullptr;
+      auto child = ConvertLeafFilter(leaf, *c.right_expr, optimizer);
+      if (!child)
+        return nullptr;
+      auto op = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
+          duckdb::ExpressionType::OPERATOR_NOT, duckdb::LogicalType::BOOLEAN);
+      op->children.push_back(std::move(child));
+      return op;
+    }
+    case LogicalAnd:
+    case LogicalOr: {
+      if (!c.left_expr || !c.right_expr)
+        return nullptr;
+      auto l = ConvertLeafFilter(leaf, *c.left_expr, optimizer);
+      if (!l)
+        return nullptr;
+      auto r = ConvertLeafFilter(leaf, *c.right_expr, optimizer);
+      if (!r)
+        return nullptr;
+      return duckdb::make_uniq<duckdb::BoundConjunctionExpression>(
+          c.GetLogicalOp() == LogicalAnd
+              ? duckdb::ExpressionType::CONJUNCTION_AND
+              : duckdb::ExpressionType::CONJUNCTION_OR,
+          std::move(l), std::move(r));
+    }
+    default:
+      return nullptr;
+    }
+  }
+  default:
+    return nullptr;
+  }
+}
+
+} // namespace
+
+duckdb::unique_ptr<duckdb::LogicalOperator>
+DuckDBAdapter::TryBuildBinaryPlanFromIR(const ir_sql_converter::AQPStmt &ir,
+                                        std::string &reject_reason) {
+  using namespace ir_sql_converter;
+  // (1) shape: Projection -> [Filter ->] Join(Inner) -> {Scan|Chunk} x2
+  if (ir.GetNodeType() != ProjectionNode || ir.children.size() != 1 ||
+      ir.target_list.empty() || !ir.qual_vec.empty()) {
+    reject_reason = "root-shape";
+    return nullptr;
+  }
+  const AQPStmt *below = ir.children[0].get();
+  const AQPStmt *filter_node = nullptr;
+  if (below && below->GetNodeType() == FilterNode) {
+    if (below->children.size() != 1) {
+      reject_reason = "filter-shape";
+      return nullptr;
+    }
+    filter_node = below;
+    below = below->children[0].get();
+  }
+  if (!below || below->GetNodeType() != JoinNode) {
+    reject_reason = "join-shape";
+    return nullptr;
+  }
+  const auto &join_ir = below->Cast<SimplestJoin>();
+  if (join_ir.GetSimplestJoinType() != Inner ||
+      join_ir.join_conditions.empty() || !below->qual_vec.empty() ||
+      below->children.size() != 2 || !below->children[0] ||
+      !below->children[1]) {
+    reject_reason = "join-shape";
+    return nullptr;
+  }
+
+  // (2) leaves
+  CtorLeaf leaves[2];
+  for (int i = 0; i < 2; i++) {
+    const AQPStmt *leaf_ir = below->children[i].get();
+    auto &leaf = leaves[i];
+    leaf.ir_node = leaf_ir;
+    if (leaf_ir->GetNodeType() == ScanNode) {
+      const auto &scan = leaf_ir->Cast<SimplestScan>();
+      leaf.ir_index = scan.GetTableIndex();
+      leaf.name = scan.GetTableName();
+    } else if (leaf_ir->GetNodeType() == ChunkNode) {
+      const auto &chunk = leaf_ir->Cast<SimplestChunk>();
+      if (chunk.GetChunkName().empty() || !chunk.GetContents().empty()) {
+        reject_reason = "leaf-inline-chunk";
+        return nullptr;
+      }
+      leaf.is_chunk = true;
+      leaf.ir_index = chunk.GetTableIndex();
+      leaf.name = chunk.GetChunkName();
+    } else {
+      reject_reason = "leaf-not-scan";
+      return nullptr;
+    }
+    if (!leaf_ir->children.empty()) {
+      reject_reason = "leaf-has-children";
+      return nullptr;
+    }
+  }
+  if (leaves[0].ir_index == leaves[1].ir_index) {
+    reject_reason = "duplicate-leaf-index";
+    return nullptr;
+  }
+
+  // (3) bind both leaves; temps resolve through the replacement scan.
+  // Binding + FilterOptimize need an active transaction (catalog lookups,
+  // scan statistics) — same Begin/Commit pattern as Optimize()/ParseSQL.
+  struct TxnGuard {
+    duckdb::ClientContext *ctx = nullptr;
+    ~TxnGuard() {
+      if (ctx) {
+        try {
+          ctx->transaction.Commit();
+        } catch (...) {
+        }
+      }
+    }
+  } txn_guard;
+  auto *txn_ctx = GetClientContext();
+  if (txn_ctx->transaction.IsAutoCommit()) {
+    txn_ctx->transaction.BeginTransaction();
+    txn_guard.ctx = txn_ctx;
+  }
+  auto binder = duckdb::Binder::CreateBinder(*conn->context);
+  duckdb::Optimizer optimizer(*binder, *conn->context);
+  for (auto &leaf : leaves) {
+    duckdb::BaseTableRef ref;
+    ref.table_name = leaf.name;
+    // unique alias so two leaves over the same catalog table stay distinct
+    ref.alias = leaf.name + "__ctor" + std::to_string(leaf.ir_index);
+    duckdb::BoundStatement bound;
+    try {
+      bound = binder->Bind(static_cast<duckdb::TableRef &>(ref));
+    } catch (std::exception &ex) {
+      reject_reason = std::string("bind:") + ex.what();
+      return nullptr;
+    }
+    if (!bound.plan ||
+        bound.plan->type != duckdb::LogicalOperatorType::LOGICAL_GET) {
+      reject_reason = "bind-not-get";
+      return nullptr;
+    }
+    leaf.op = std::move(bound.plan);
+    leaf.get = &leaf.op->Cast<duckdb::LogicalGet>();
+    if (!leaf.is_chunk && !leaf.get->GetTable()) {
+      // an unwrapped temp scan (or view) — outside the v1 shape
+      reject_reason = "scan-not-catalog";
+      return nullptr;
+    }
+    // AnnotateBuildSides matches physical scans to IR nodes by table index;
+    // all bindings below are created against the overwritten index.
+    leaf.get->table_index = leaf.ir_index;
+    auto est = leaf.ir_node->GetEstimatedCardinality();
+    if (est > 0)
+      leaf.get->SetEstimatedCardinality(est);
+  }
+
+  // (4) filters: leaf-level qual_vec conjuncts belong to their own leaf;
+  // residual filter-node conjuncts are matched by ownership (strict
+  // per-attr table-index checks make only the owner succeed).
+  for (auto &leaf : leaves) {
+    for (const auto &q : leaf.ir_node->qual_vec) {
+      auto e = ConvertLeafFilter(leaf, *q, optimizer);
+      if (!e) {
+        reject_reason = "leaf-filter";
+        return nullptr;
+      }
+      leaf.filters.push_back(std::move(e));
+    }
+  }
+  if (filter_node) {
+    for (const auto &q : filter_node->qual_vec) {
+      bool converted = false;
+      for (auto &leaf : leaves) {
+        auto e = ConvertLeafFilter(leaf, *q, optimizer);
+        if (e) {
+          leaf.filters.push_back(std::move(e));
+          converted = true;
+          break;
+        }
+      }
+      if (!converted) {
+        reject_reason = "filter-conjunct";
+        return nullptr;
+      }
+    }
+  }
+  for (auto &leaf : leaves) {
+    if (leaf.filters.empty())
+      continue;
+    auto filt = duckdb::make_uniq<duckdb::LogicalFilter>();
+    filt->expressions = std::move(leaf.filters);
+    filt->children.push_back(std::move(leaf.op));
+    leaf.op = std::move(filt);
+  }
+
+  // (5) join: RIGHT child = build side in the PrepareFromPlan path (no
+  // BuildProbeSideOptimizer there) -> put the smaller side right.
+  auto c0 = leaves[0].ir_node->GetEstimatedCardinality();
+  auto c1 = leaves[1].ir_node->GetEstimatedCardinality();
+  int right = (c0 > 0 && c1 > 0 && c0 < c1) ? 0 : 1;
+  int left = 1 - right;
+  auto join =
+      duckdb::make_uniq<duckdb::LogicalComparisonJoin>(duckdb::JoinType::INNER);
+  for (const auto &cond : join_ir.join_conditions) {
+    if (!cond || cond->GetSimplestExprType() != Equal || !cond->left_attr ||
+        !cond->right_attr) {
+      reject_reason = "join-cond";
+      return nullptr;
+    }
+    const SimplestAttr *la = cond->left_attr.get();
+    const SimplestAttr *ra = cond->right_attr.get();
+    if (la->GetTableIndex() == leaves[right].ir_index &&
+        ra->GetTableIndex() == leaves[left].ir_index)
+      std::swap(la, ra);
+    auto lref = MakeLeafColRef(leaves[left], *la);
+    auto rref = MakeLeafColRef(leaves[right], *ra);
+    if (!lref || !rref) {
+      reject_reason = "join-key-map";
+      return nullptr;
+    }
+    if (lref->return_type != rref->return_type) {
+      reject_reason = "join-key-type";
+      return nullptr;
+    }
+    duckdb::JoinCondition jc;
+    jc.left = std::move(lref);
+    jc.right = std::move(rref);
+    jc.comparison = duckdb::ExpressionType::COMPARE_EQUAL;
+    join->conditions.push_back(std::move(jc));
+  }
+  join->children.push_back(std::move(leaves[left].op));
+  join->children.push_back(std::move(leaves[right].op));
+  auto jest = below->GetEstimatedCardinality();
+  if (jest > 0)
+    join->SetEstimatedCardinality(jest);
+
+  // (6) projection: output order = IR target order (temp-store contract)
+  duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> proj_exprs;
+  for (const auto &attr : ir.target_list) {
+    duckdb::unique_ptr<duckdb::Expression> ref;
+    for (auto &leaf : leaves) {
+      ref = MakeLeafColRef(leaf, *attr);
+      if (ref)
+        break;
+    }
+    if (!ref) {
+      reject_reason = "target-map";
+      return nullptr;
+    }
+    proj_exprs.push_back(std::move(ref));
+  }
+  duckdb::idx_t proj_index =
+      std::max(leaves[0].ir_index, leaves[1].ir_index) + 1;
+  auto root = duckdb::make_uniq<duckdb::LogicalProjection>(
+      proj_index, std::move(proj_exprs));
+  root->children.push_back(std::move(join));
+  auto rest = ir.GetEstimatedCardinality();
+  if (rest > 0)
+    root->SetEstimatedCardinality(rest);
+
+  // (7) cheap FilterOptimize: expression rewriter (LIKE->prefix parity) +
+  // filter pushdown (populates LogicalGet::table_filters -> zone maps).
+  duckdb::unique_ptr<duckdb::LogicalOperator> plan_root = std::move(root);
+  try {
+    plan_root = optimizer.FilterOptimize(std::move(plan_root));
+  } catch (std::exception &ex) {
+    reject_reason = std::string("filter-optimize:") + ex.what();
+    return nullptr;
+  }
+  return plan_root;
+}
+
 DuckDBAdapter::QueryJitPrep
 DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
                                            const std::string &label) {
@@ -3184,7 +3744,9 @@ bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
           (dt == AQP_DTYPE_VARCHAR &&
            types[i].id() != duckdb::LogicalTypeId::VARCHAR) ||
           (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_VARCHAR)) {
-        reason = "output:type-mismatch";
+        reason = "output:type-mismatch i=" + std::to_string(i) + " dt=" +
+                 std::to_string(dt) + " plan_type=" + types[i].ToString() +
+                 " name=" + out_name(i);
         return false;
       }
       compiled.out_descs.push_back({dt, out_name(i)});

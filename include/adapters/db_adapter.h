@@ -55,6 +55,11 @@ public:
     return sql;
   }
 
+  // Apply an engine configuration statement (e.g. "SET ...") outside the
+  // timed query path — must not emit timing columns. Default: no-op for
+  // engines without such settings.
+  virtual void ApplyEngineSetting(const std::string &sql) {}
+
   // Execute SQL query
   virtual QueryResult ExecuteSQL(const std::string &sql) = 0;
   virtual void ExecuteSQLandCreateTempTable(const std::string &sql,

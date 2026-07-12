@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -191,9 +192,42 @@ void CollectMarkInfo(
 
 } // namespace
 
-TopDownSplitter::TopDownSplitter(EngineAdapter *adapter, bool /*unused*/)
+TopDownSplitter::TopDownSplitter(EngineAdapter *adapter,
+                                 bool apply_engine_settings)
     : FKBasedSplitter(adapter, BackendEngine::DUCKDB, SplitStrategy::TOP_DOWN,
-                      /*enable_analyze=*/false, /*fkeys_path=*/"") {}
+                      /*enable_analyze=*/false, /*fkeys_path=*/"") {
+  // B2 (2026-07-11): SDS sub-SQLs are simple star joins; ~52% of DuckDB's
+  // Prepare() cost is the optimizer pipeline, spread thinly across passes
+  // that are provable no-ops here (no CTEs, windows, LIMIT, GROUP BY, or
+  // correlated subqueries in JOB sub-SQLs). Disabling them session-wide
+  // trims Prepare ~11% per statement. compressed_materialization stays ON:
+  // disabling it regressed the 15*/16* families ~5-7 ms each (string-heavy
+  // join intermediates), and v15 Step 4's proj-remap already handles its
+  // injected projections in qjit. Setting only — no engine patch. Ignore
+  // failure on engines without the setting.
+  // Skipped for bg-thread construction (apply_engine_settings=false): the
+  // shared adapter connection must not be touched from the prep thread.
+  // Once per process: the setting is engine-global and the ctor runs per
+  // query — repeating it would add ~0.2 ms/query of untracked overhead.
+  // Kill switch for A/B measurement: AQP_TD_NO_OPTSET disables the SET.
+  if (apply_engine_settings && !std::getenv("AQP_TD_NO_OPTSET")) {
+    static bool applied = false;
+    if (!applied) {
+      applied = true;
+      try {
+        adapter->ApplyEngineSetting(
+            "SET disabled_optimizers='filter_pullup,empty_result_pullup,"
+            "cte_filter_pusher,regex_range,deliminator,unnest_rewriter,"
+            "common_subexpressions,common_aggregate,limit_pushdown,top_n,"
+            "top_n_window_elimination,"
+            "duplicate_groups,sampling_pushdown,materialized_cte,sum_rewriter,"
+            "late_materialization,cte_inlining,common_subplan,join_elimination,"
+            "window_self_join'");
+      } catch (...) {
+      }
+    }
+  }
+}
 
 void TopDownSplitter::Preprocess(
     std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {
@@ -854,7 +888,10 @@ bool TopDownSplitter::PlanNext(
   // single pipeline — the engine re-orders inside the group anyway). Big
   // base tables never join a group this way: their pairs stay
   // locality-steered probes, and the global max stays in the final query.
-  if (best) {
+  // v18 hybrid: growth only under AQP_TD_V17 — binary NB-granularity pairs
+  // qualify for the adapter's pending-IR fast path (closed IR->plan
+  // constructor), which removes the per-sub parse+optimize round trip.
+  if (best && V17Mode()) {
     std::function<bool(const JoinTree *)> no_cross =
         [&](const JoinTree *t) -> bool {
       if (!t)
@@ -899,21 +936,21 @@ bool TopDownSplitter::PlanNext(
         break;
       best = anc;
     }
-    // A LARGE no-op pair that growth could not expand stays a pure no-op:
-    // materializing it writes the temp back unreduced (10c ct x temp2
-    // 596K -> 596K, 13d t x temp2 248K -> 248K) while the final query has
-    // to do the same join anyway — go final instead. SMALL no-ops are
-    // still materialized: the write is cheap and shrinking the final
-    // query's relation count protects against engine mis-ordering
-    // (17-family: skipping the 42K t x temp1 no-op cost +19-35 ms in the
-    // 4-relation final).
-    if (noop_selected && best == best_noop && best->card >= 1e5) {
+  }
+  // A LARGE no-op pair that growth could not expand (v18: growth is off, so
+  // any large no-op pair) stays a pure no-op: materializing it writes the
+  // temp back unreduced (10c ct x temp2 596K -> 596K, 13d t x temp2
+  // 248K -> 248K) while the final query has to do the same join anyway —
+  // go final instead. SMALL no-ops are still materialized: the write is
+  // cheap and shrinking the final query's relation count protects against
+  // engine mis-ordering (17-family: skipping the 42K t x temp1 no-op cost
+  // +19-35 ms in the 4-relation final).
+  if (best && noop_selected && best == best_noop && best->card >= 1e5) {
 #ifndef NDEBUG
-      std::cout << "[SDS] PlanNext: unexpandable no-op pair -> final"
-                << std::endl;
+    std::cout << "[SDS] PlanNext: unexpandable no-op pair -> final"
+              << std::endl;
 #endif
-      return false;
-    }
+    return false;
   }
 
   // Fallback: cheapest maximal max-free subtree under the threshold. Covers
@@ -1095,6 +1132,177 @@ bool TopDownSplitter::IsComplete(
   return !planned_splittable_;
 }
 
+// v18: collect the table indices referenced by an expression. Returns false
+// (conservative "don't touch") on any node kind it does not understand.
+static bool CollectExprTables(const ir_sql_converter::AQPExpr *e,
+                              std::set<unsigned int> &tables) {
+  using namespace ir_sql_converter;
+  if (!e)
+    return false;
+  switch (e->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c = dynamic_cast<const SimplestVarConstComparison *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::VarComparisonNode: {
+    auto *c = dynamic_cast<const SimplestVarComparison *>(e);
+    if (!c || !c->left_attr || !c->right_attr)
+      return false;
+    tables.insert(c->left_attr->GetTableIndex());
+    tables.insert(c->right_attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::IsNullExprNode: {
+    auto *c = dynamic_cast<const SimplestIsNullExpr *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::InExprNode: {
+    auto *c = dynamic_cast<const SimplestInExpr *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *c = dynamic_cast<const SimplestLogicalExpr *>(e);
+    if (!c)
+      return false;
+    if (c->GetLogicalOp() != SimplestLogicalOp::LogicalNot &&
+        !CollectExprTables(c->left_expr.get(), tables))
+      return false;
+    return CollectExprTables(c->right_expr.get(), tables);
+  }
+  default:
+    return false;
+  }
+}
+
+// v18: move single-table filter conjuncts from the sub-IR's top filter node
+// onto the owning plain scan leaf's qual_vec. Rationale: the qjit fast path
+// compiles the sub-IR AS IS, and BuildExecutionSteps places above-join
+// filters on the probe spine — a build-side conjunct there references
+// columns that are not live on the spine. NB's fast-path IRs always come
+// from optimized plans (filters pushed onto scans); this restores that
+// invariant. SQL rendering is unchanged (ir_to_sql collects scan qual_vec
+// into WHERE exactly like filter-node quals). Temp scans are skipped (they
+// become ChunkNodes below, and ir_to_sql drops chunk quals); Mark-join
+// units are opaque; anything unassignable stays in the filter node.
+static void PushFilterConjunctsToScans(
+    ir_sql_converter::AQPStmt *root,
+    const std::set<unsigned int> &temp_indices) {
+  using namespace ir_sql_converter;
+  if (!root || root->children.size() != 1 || !root->children[0])
+    return;
+  auto &filt = root->children[0];
+  if (filt->GetNodeType() != SimplestNodeType::FilterNode ||
+      filt->children.size() != 1 || !filt->children[0])
+    return;
+
+  std::map<unsigned int, AQPStmt *> scan_by_table;
+  std::function<void(AQPStmt *)> collect = [&](AQPStmt *n) {
+    if (!n)
+      return;
+    if (n->GetNodeType() == SimplestNodeType::JoinNode) {
+      auto *j = dynamic_cast<const SimplestJoin *>(n);
+      if (j && j->GetSimplestJoinType() == SimplestJoinType::Mark)
+        return; // opaque IN-list unit; leave untouched
+    }
+    if (n->GetNodeType() == SimplestNodeType::ScanNode) {
+      auto *s = dynamic_cast<SimplestScan *>(n);
+      if (s && !temp_indices.count(s->GetTableIndex()))
+        scan_by_table[s->GetTableIndex()] = n;
+      return;
+    }
+    for (auto &c : n->children)
+      collect(c.get());
+  };
+  collect(filt->children[0].get());
+
+  std::vector<std::unique_ptr<AQPExpr>> kept;
+  for (auto &q : filt->qual_vec) {
+    std::set<unsigned int> tables;
+    if (q && CollectExprTables(q.get(), tables) && tables.size() == 1 &&
+        scan_by_table.count(*tables.begin())) {
+      scan_by_table[*tables.begin()]->qual_vec.push_back(std::move(q));
+    } else {
+      kept.push_back(std::move(q));
+    }
+  }
+  filt->qual_vec = std::move(kept);
+  if (filt->qual_vec.empty()) {
+    // Splice the now-empty filter node out of the tree.
+    auto child = std::move(filt->children[0]);
+    root->children[0] = std::move(child);
+  }
+}
+
+// v18: rewrite temp-table SimplestScan leaves as SimplestChunk so the qjit
+// fast path treats them as temps (BuildExecutionSteps sets source_is_temp
+// only for ChunkNode). SQL rendering is unaffected: ir_to_sql renders a
+// named chunk exactly like a table ref. Only qual-free, childless scans are
+// wrapped (ir_to_sql drops a ChunkNode's qual_vec; BuildSubIRForCluster
+// never puts quals on cloned scans, but guard anyway). Mark-unit chunks are
+// untouched (they are already ChunkNodes).
+static void WrapTempScansAsChunks(ir_sql_converter::AQPStmt *node,
+                                  const std::set<unsigned int> &temp_indices) {
+  if (!node)
+    return;
+  for (auto &child : node->children) {
+    if (!child)
+      continue;
+    if (child->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+      auto *scan = dynamic_cast<ir_sql_converter::SimplestScan *>(child.get());
+      if (scan && temp_indices.count(scan->GetTableIndex()) &&
+          child->qual_vec.empty() && child->children.empty()) {
+        unsigned int idx = scan->GetTableIndex();
+        std::string name = scan->GetTableName();
+        // Donor ctor moves target_list + estimated_cardinality into the chunk.
+        child = std::make_unique<ir_sql_converter::SimplestChunk>(
+            std::move(child), idx, name, std::vector<std::string>{});
+        continue;
+      }
+    }
+    WrapTempScansAsChunks(child.get(), temp_indices);
+  }
+}
+
+// v18: BuildSubIRForCluster hardcodes the root projection's table index to
+// 0. When the cluster contains base-table index 0, qjit's projection remap
+// (ThroughProj) misroutes that table's attrs through the projection,
+// producing wrong output dtypes on the fast path (SQL rendering never reads
+// the index, so v17 was unaffected). Rebuild the root with a fresh index
+// above every table index in the subtree.
+static void RenumberRootProjection(
+    std::unique_ptr<ir_sql_converter::AQPStmt> &sub_ir) {
+  using namespace ir_sql_converter;
+  if (!sub_ir || sub_ir->GetNodeType() != SimplestNodeType::ProjectionNode)
+    return;
+  unsigned int max_idx = 0;
+  std::function<void(const AQPStmt *)> walk = [&](const AQPStmt *n) {
+    if (!n)
+      return;
+    if (n->GetNodeType() == SimplestNodeType::ScanNode)
+      max_idx = std::max(
+          max_idx, n->Cast<SimplestScan>().GetTableIndex());
+    else if (n->GetNodeType() == SimplestNodeType::ChunkNode)
+      max_idx = std::max(
+          max_idx, n->Cast<SimplestChunk>().GetTableIndex());
+    for (const auto &c : n->children)
+      walk(c.get());
+  };
+  walk(sub_ir.get());
+  if (sub_ir->Cast<SimplestProjection>().GetIndex() > max_idx)
+    return;
+  sub_ir = std::make_unique<SimplestProjection>(std::move(sub_ir),
+                                                max_idx + 1);
+}
+
 std::unique_ptr<SubqueryExtraction>
 TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
   split_iteration_++;
@@ -1115,6 +1323,40 @@ TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
     std::cerr << "[SDS] SplitIR: BuildSubIRForCluster failed" << std::endl;
     planned_splittable_ = false;
     return nullptr;
+  }
+  if (!V17Mode()) {
+    PushFilterConjunctsToScans(extraction->sub_ir.get(), temp_indices_);
+    WrapTempScansAsChunks(extraction->sub_ir.get(), temp_indices_);
+    RenumberRootProjection(extraction->sub_ir);
+    // The cloned leaves carry no engine estimates (FilterOptimize-only
+    // plan); the fast-path plan constructor picks its build side from leaf
+    // estimated_cardinality, so stamp the DP's effective per-table cards
+    // (exact for temps).
+    std::function<void(ir_sql_converter::AQPStmt *)> stamp =
+        [&](ir_sql_converter::AQPStmt *n) {
+          if (!n)
+            return;
+          unsigned int ti = 0;
+          bool is_leaf = false;
+          if (n->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
+            ti = n->Cast<ir_sql_converter::SimplestScan>().GetTableIndex();
+            is_leaf = true;
+          } else if (n->GetNodeType() ==
+                     ir_sql_converter::SimplestNodeType::ChunkNode) {
+            ti = n->Cast<ir_sql_converter::SimplestChunk>().GetTableIndex();
+            is_leaf = true;
+          }
+          if (is_leaf) {
+            auto it = table_card_.find(ti);
+            if (it != table_card_.end() && it->second >= 1.0)
+              n->SetEstimatedCardinality(
+                  static_cast<uint64_t>(it->second));
+            return;
+          }
+          for (const auto &c : n->children)
+            stamp(c.get());
+        };
+    stamp(extraction->sub_ir.get());
   }
   extraction->estimated_rows = planned_card_;
 
