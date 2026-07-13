@@ -13,6 +13,9 @@
 #ifdef HAVE_DUCKDB
 #include "split/node_based_splitter.h"
 #endif
+#ifdef HAVE_POSTGRES
+#include "adapters/postgres_adapter.h"
+#endif
 #ifdef HAVE_LLVM
 namespace middleware { struct CachedQueryPlan; }
 #endif
@@ -317,6 +320,9 @@ private:
     // Query-jit spec payload (compiled plan + metadata, sources unresolved).
     // Null on the pipeline-jit spec path and when the bg compile rejected.
     std::unique_ptr<DuckDBAdapter::QjitSpecCompiled> qjit;
+#ifdef HAVE_POSTGRES
+    std::unique_ptr<PostgreSQLAdapter::QjitSpecCompiled> pg_qjit;
+#endif
   };
   std::unique_ptr<ThreadPool> jit_compile_pool_;
   std::unique_ptr<SpeculativeCompilation> pending_spec_;
@@ -369,6 +375,14 @@ private:
                                 const duckdb::vector<duckdb::LogicalType> &types,
                                 const std::vector<std::string> &col_names,
                                 duckdb::idx_t est_card, bool post_execute);
+#ifdef HAVE_POSTGRES
+  void LaunchSpeculativeCompilePG(
+      const std::string &temp_table_name,
+      const std::vector<int32_t> &aqp_dtypes,
+      const std::vector<std::string> &col_names,
+      const std::string &explain_json,
+      uint64_t est_card, bool post_execute);
+#endif
   // Phase B: run real SplitIR(i+1) AFTER UpdateRemainingIR to produce
   // precomputed_extraction_ for the next iteration.
   void PrecomputeNextExtraction(

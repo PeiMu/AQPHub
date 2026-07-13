@@ -14,6 +14,9 @@ namespace duckdb {
 class Connection;
 }
 
+struct pg_conn;
+typedef struct pg_conn PGconn;
+
 namespace middleware {
 
 namespace storage {
@@ -23,6 +26,10 @@ public:
   // Load all base tables from DuckDB into flat column arrays.
   // Called once at startup after DuckDB has loaded data.
   void LoadFromDuckDB(duckdb::Connection &conn);
+
+  // Load all base tables from PostgreSQL into flat column arrays.
+  // Called once at startup; results cached via SaveToFile.
+  void LoadFromPostgreSQL(PGconn *conn);
 
   // Build CSR indexes on all FK columns declared in fkeys.sql.
   void BuildCSRIndexes(const std::string &fkeys_path);

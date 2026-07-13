@@ -218,11 +218,15 @@ NodeBasedSplitter::UpdateRemainingIR(
     const std::vector<std::string> &col_names) {
 
   if (external_execution_) {
-    // Execution happened on a non-DuckDB backend; DuckDB never ran
-    // ExecuteSQLandCreateTempTable so GetTempTableIndex() is stale.
-    // Allocate a fresh DuckDB index and register the temp table name.
-    plan_adapter_->RegisterExternalTempTable(temp_table_name, sub_plan_types_,
-                                             col_names);
+    if (preallocated_chunk_index_ != duckdb::DConstants::INVALID_INDEX) {
+      plan_adapter_->RegisterExternalTempTableWithIndex(
+          temp_table_name, sub_plan_types_, col_names,
+          preallocated_chunk_index_);
+      preallocated_chunk_index_ = duckdb::DConstants::INVALID_INDEX;
+    } else {
+      plan_adapter_->RegisterExternalTempTable(temp_table_name, sub_plan_types_,
+                                               col_names);
+    }
   }
 
   // Register the DuckDB-assigned index → temp table name so that
@@ -379,6 +383,11 @@ void RevertSpecChunk(SpecChunkInjection &res) {
   res.injected = false;
 }
 } // namespace
+
+duckdb::idx_t NodeBasedSplitter::PreallocateChunkIndex() {
+  preallocated_chunk_index_ = plan_adapter_->GetBinder().GenerateTableIndex();
+  return preallocated_chunk_index_;
+}
 
 std::unique_ptr<ir_sql_converter::AQPStmt> NodeBasedSplitter::PeekNextSubquery(
     duckdb::idx_t spec_chunk_index,

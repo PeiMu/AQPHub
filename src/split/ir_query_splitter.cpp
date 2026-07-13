@@ -13,6 +13,9 @@
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
 #endif
+#ifdef HAVE_POSTGRES
+#include "adapters/postgres_adapter.h"
+#endif
 
 namespace middleware {
 
@@ -344,6 +347,24 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
           config_.jit_payload_prune, config_.jit_prefetch,
           config_.jit_prefetch_distance, config_.jit_batch_probe,
           config_.jit_skip_hash_cmp, config_.single_col_int_join_mode);
+#endif
+    }
+  }
+#endif
+#ifdef HAVE_POSTGRES
+  if (config_.engine == BackendEngine::POSTGRESQL) {
+    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+    if (pg) {
+#ifdef HAVE_LLVM
+      pg->SetQueryJit(te.query_jit, config_.query_jit_threads,
+                      config_.query_jit_morsel);
+      pg->SetCompileMode(te.compile_mode);
+      pg->SetSkipHashCmp(config_.jit_skip_hash_cmp);
+      pg->SetJitFlags(config_.jit_flags);
+      pg->SetJITCache(config_.jit_cache);
+      pg->SetJITCacheDir(config_.jit_cache_dir);
+      pg->SetJITDebug(config_.enable_debug_print);
+      pg->SetJITPrefetch(config_.jit_prefetch, config_.jit_prefetch_distance);
 #endif
     }
   }
@@ -709,6 +730,25 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     }
   }
 #endif
+#ifdef HAVE_POSTGRES
+  if (config_.engine == BackendEngine::POSTGRESQL) {
+    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+    if (pg) {
+#ifdef HAVE_LLVM
+      pg->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+                      config_.query_jit_threads, config_.query_jit_morsel);
+      pg->SetQueryJitStoragePlan(storage_plan_);
+      pg->SetCompileMode(config_.compile_mode);
+      pg->SetSkipHashCmp(config_.jit_skip_hash_cmp);
+      pg->SetJitFlags(config_.jit_flags);
+      pg->SetJITCache(config_.jit_cache);
+      pg->SetJITCacheDir(config_.jit_cache_dir);
+      pg->SetJITDebug(config_.enable_debug_print);
+      pg->SetJITPrefetch(config_.jit_prefetch, config_.jit_prefetch_distance);
+#endif
+    }
+  }
+#endif
 
   if (!config_.NeedsSplit() || !splitter_) {
     std::cout << "[IRQuerySplitter] No splitting needed, executing directly"
@@ -919,6 +959,26 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                  duckdb::idx_t est_card, bool post_execute) {
             LaunchSpeculativeCompile(temp_name, chunk_index, types, col_names,
                                      est_card, post_execute);
+          });
+    }
+  }
+#endif
+
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+  if (config_.spec_jit != 0 &&
+      config_.strategy == SplitStrategy::NODE_BASED &&
+      config_.engine == BackendEngine::POSTGRESQL &&
+      (config_.jit_flags & AQP_JIT_QUERY_JIT)) {
+    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+    if (pg) {
+      pg->SetPostPrepareHook(
+          [this](const std::string &temp_name,
+                 const std::vector<int32_t> &aqp_dtypes,
+                 const std::vector<std::string> &col_names,
+                 const std::string &explain_json,
+                 uint64_t est_card, bool post_execute) {
+            LaunchSpeculativeCompilePG(temp_name, aqp_dtypes, col_names,
+                                       explain_json, est_card, post_execute);
           });
     }
   }
@@ -1401,6 +1461,50 @@ static void EnsureSpecCompiler(
     duck->RegisterQjitRuntimeSymbols(spec_compiler.get());
 }
 
+#ifdef HAVE_POSTGRES
+static void EnsureSpecCompilerPG(
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &spec_compiler,
+    PostgreSQLAdapter *pg, uint32_t jit_flags, int backend) {
+  aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
+  if (jit_flags & AQP_JIT_SIMD_AVX2)
+    simd = aqp_jit::SimdISA::AVX2;
+  else if (jit_flags & AQP_JIT_SIMD_AVX512)
+    simd = aqp_jit::SimdISA::AVX512;
+  auto want_fast = static_cast<aqp_jit::FastCompileBackend>(backend);
+  if (spec_compiler &&
+      (spec_compiler->GetFastMode() != want_fast ||
+       spec_compiler->GetSimdISA() != simd))
+    spec_compiler.reset();
+  if (!spec_compiler) {
+    spec_compiler = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        pg->GetJitDebug(), simd, want_fast);
+    spec_compiler->SetPrefetch(pg->GetJitPrefetch(),
+                               pg->GetJitPrefetchDistance());
+    spec_compiler->SetSkipHashCmp(pg->GetSkipHashCmp());
+  }
+  pg->RegisterQjitRuntimeSymbols(spec_compiler.get());
+}
+
+static duckdb::LogicalType AqpDtypeToDuckDB(int32_t dt) {
+  switch (dt) {
+  case AQP_DTYPE_INT32:
+    return duckdb::LogicalType::INTEGER;
+  case AQP_DTYPE_INT64:
+    return duckdb::LogicalType::BIGINT;
+  case AQP_DTYPE_VARCHAR:
+    return duckdb::LogicalType::VARCHAR;
+  case AQP_DTYPE_FLOAT:
+    return duckdb::LogicalType::FLOAT;
+  case AQP_DTYPE_DOUBLE:
+    return duckdb::LogicalType::DOUBLE;
+  case AQP_DTYPE_BOOL:
+    return duckdb::LogicalType::BOOLEAN;
+  default:
+    return duckdb::LogicalType::VARCHAR;
+  }
+}
+#endif
+
 void IRQuerySplitter::RetirePendingSpec() {
   if (pending_spec_) {
     if (pending_spec_->future.valid() &&
@@ -1460,6 +1564,10 @@ void IRQuerySplitter::DrainSpecs(bool charge_wait) {
       spec_wait_us_ += wait_us;
       if (auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_))
         duck->AddSpecWaitTime(wait_us);
+#ifdef HAVE_POSTGRES
+      else if (auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_))
+        pg->AddSpecWaitTime(wait_us);
+#endif
     }
   }
 }
@@ -1686,6 +1794,140 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
               << " launched peek-based bg compile\n";
 }
 
+#ifdef HAVE_POSTGRES
+void IRQuerySplitter::LaunchSpeculativeCompilePG(
+    const std::string &temp_table_name,
+    const std::vector<int32_t> &aqp_dtypes,
+    const std::vector<std::string> &col_names,
+    const std::string &explain_json,
+    uint64_t est_card, bool post_execute) {
+  if (config_.spec_jit == 0)
+    return;
+
+  if (!post_execute) {
+    if (config_.enable_debug_print)
+      std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
+                << " temp=" << temp_table_name << " est=" << est_card << "\n";
+  } else {
+    if (config_.enable_debug_print)
+      std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
+                << " temp=" << temp_table_name << " actual=" << est_card
+                << "\n";
+    return;
+  }
+  if (config_.strategy != SplitStrategy::NODE_BASED)
+    return;
+  auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+  if (!pg)
+    return;
+
+  int next_tune_key = iteration_count_;
+  uint32_t spec_jit_flags = config_.jit_flags;
+  auto tune_it = tune_entries_.find(next_tune_key);
+  if (tune_it != tune_entries_.end()) {
+    const auto &te = tune_it->second;
+    uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
+    spec_jit_flags = te.jit_flags | simd_bits;
+    if (te.query_jit)
+      spec_jit_flags |= AQP_JIT_QUERY_JIT;
+  }
+  if (!(spec_jit_flags & AQP_JIT_QUERY_JIT))
+    return;
+
+  {
+    auto hist = g_spec_miss_history.find(spec_history_key_);
+    if (hist != g_spec_miss_history.end() &&
+        hist->second.count(iteration_count_ + 1)) {
+      if (config_.enable_debug_print)
+        std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
+                  << " skipping launch (learned miss for iter "
+                  << iteration_count_ + 1 << ")\n";
+      spec_learned_miss_iter_ = iteration_count_ + 1;
+      return;
+    }
+  }
+
+  RetirePendingSpec();
+
+  auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+  if (!node_splitter || !node_splitter->HasNextSubquery())
+    return;
+
+  duckdb::idx_t chunk_index = node_splitter->PreallocateChunkIndex();
+
+  duckdb::vector<duckdb::LogicalType> types;
+  types.reserve(aqp_dtypes.size());
+  for (int32_t dt : aqp_dtypes)
+    types.push_back(AqpDtypeToDuckDB(dt));
+
+  auto spec_ir =
+      node_splitter->PeekNextSubquery(chunk_index, types,
+                                       est_card == 0 ? 1 : est_card);
+  if (!spec_ir)
+    return;
+  if (HasCrossProduct(spec_ir.get()))
+    return;
+
+  unsigned int spec_sub_plan_id = adapter_->subquery_index;
+  int spec_idx = spec_sub_plan_id;
+  std::string spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
+  if (spec_jit_flags & AQP_JIT_QUERY_JIT)
+    ApplyCrossSubPlanOptimizations(spec_sql, true, false);
+
+  auto spec = std::make_unique<SpeculativeCompilation>();
+  spec->speculative_sql = std::move(spec_sql);
+  spec->assumed_temp_name = temp_table_name;
+  spec->assumed_card = est_card == 0 ? 1 : est_card;
+  spec->target_iter = iteration_count_ + 1;
+  spec->spec_ir = std::move(spec_ir);
+
+  auto *spec_raw = spec.get();
+  std::string label = "spec-iter" + std::to_string(iteration_count_ + 1);
+  std::string ej_copy = explain_json;
+
+  int spec_backend = 0;
+
+  auto &compiler_slot = spec_compilers_[spec_compiler_idx_];
+  spec_compiler_idx_ ^= 1;
+  if (compiler_slot) {
+    auto want_fast = static_cast<aqp_jit::FastCompileBackend>(spec_backend);
+    aqp_jit::SimdISA want_simd = aqp_jit::SimdISA::OFF;
+    if (spec_jit_flags & AQP_JIT_SIMD_AVX2)
+      want_simd = aqp_jit::SimdISA::AVX2;
+    else if (spec_jit_flags & AQP_JIT_SIMD_AVX512)
+      want_simd = aqp_jit::SimdISA::AVX512;
+    if (compiler_slot->GetFastMode() != want_fast ||
+        compiler_slot->GetSimdISA() != want_simd) {
+      for (auto &z : zombie_specs_)
+        if (z->future.valid())
+          z->future.wait();
+      zombie_specs_.clear();
+    }
+  }
+  EnsureSpecCompilerPG(compiler_slot, pg, spec_jit_flags, spec_backend);
+  auto *spec_comp = compiler_slot.get();
+
+  spec->future = jit_compile_pool_->Submit(
+      [spec_raw, pg, spec_comp, label, ej_copy, spec_sub_plan_id]() -> bool {
+        try {
+          spec_comp->ResetModules();
+          spec_raw->pg_qjit = pg->SpeculativeQueryJitCompileFromJSON(
+              spec_raw->speculative_sql, ej_copy, label, spec_sub_plan_id,
+              spec_comp);
+          return spec_raw->pg_qjit != nullptr;
+        } catch (...) {
+          return false;
+        }
+      });
+
+  pending_spec_ = std::move(spec);
+
+  if (config_.enable_debug_print)
+    std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
+              << " launched peek-based bg compile\n";
+}
+#endif
+
 namespace {
 bool NormalizedSqlEquals(const std::string &a, const std::string &b);
 } // namespace
@@ -1701,8 +1943,8 @@ void IRQuerySplitter::PrecomputeNextExtraction(
     return;
   if (config_.strategy != SplitStrategy::NODE_BASED)
     return;
-  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-  if (!duck)
+  if (config_.engine != BackendEngine::DUCKDB &&
+      config_.engine != BackendEngine::POSTGRESQL)
     return;
 
   // Tune look-ahead: the precomputed extraction targets the NEXT iteration
@@ -1982,6 +2224,10 @@ bool IRQuerySplitter::CheckSpeculativeResult(
     // otherwise untimed gap (CSV column sums would undercount wall time).
     if (auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_))
       duck->AddSpecWaitTime(wait_us);
+#ifdef HAVE_POSTGRES
+    else if (auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_))
+      pg->AddSpecWaitTime(wait_us);
+#endif
     if (config_.enable_debug_print)
       std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
                 << " match, waited " << std::fixed << std::setprecision(3)
@@ -2538,6 +2784,21 @@ bool IRQuerySplitter::ExecuteOneIteration(
       // the hook's bg compile used the other ping-pong compiler.
     } else
 #endif
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+    if (spec_hit && config_.engine == BackendEngine::POSTGRESQL) {
+      if (!tune_entries_.empty())
+        ApplyTuneOverride(iteration_count_ - 1);
+      auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+      auto hit_spec = std::move(pending_spec_);
+      if (pg && hit_spec->pg_qjit) {
+        pg->SetQjitSpecHit(std::move(hit_spec->pg_qjit));
+        if (config_.strategy == SplitStrategy::NODE_BASED && executable_ir)
+          pg->SetQjitPendingIR(executable_ir);
+        adapter_->ExecuteSQLandCreateTempTable(
+            sub_sql, temp_table_name, config_.enable_update_temp_card);
+      }
+    } else
+#endif
     {
       if (!tune_entries_.empty())
         ApplyTuneOverride(iteration_count_ - 1);
@@ -2583,6 +2844,25 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
 #endif
 
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+      if (compensate_miss && config_.engine == BackendEngine::POSTGRESQL) {
+        bool comp_fast = config_.spec_jit == 1;
+        if (config_.enable_debug_print)
+          std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
+                    << (comp_fast ? " action=COMPENSATE_FAST\n"
+                                  : " action=COMPENSATE_INTERP\n");
+        if (comp_fast)
+          spec_compensate_fast_++;
+        else
+          spec_compensate_interp_++;
+        if (comp_fast) {
+          auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+          if (pg)
+            pg->SetCompileMode(2); // TPDE
+        }
+      }
+#endif
+
       if (SubPlanReferencesEmptyTemp(sub_sql)) {
         std::string short_sql = sub_sql;
         size_t semi = short_sql.rfind(';');
@@ -2595,14 +2875,24 @@ bool IRQuerySplitter::ExecuteOneIteration(
         adapter_->ExecuteSQLandCreateTempTable(short_sql, temp_table_name,
                                                config_.enable_update_temp_card);
       } else {
-#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+#ifdef HAVE_LLVM
         if ((config_.jit_flags & AQP_JIT_QUERY_JIT) &&
-            config_.engine == BackendEngine::DUCKDB &&
             config_.strategy == SplitStrategy::NODE_BASED &&
             executable_ir && !spec_hit) {
-          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-          if (duck)
-            duck->SetQjitPendingIR(executable_ir);
+#ifdef HAVE_DUCKDB
+          if (config_.engine == BackendEngine::DUCKDB) {
+            auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+            if (duck)
+              duck->SetQjitPendingIR(executable_ir);
+          }
+#endif
+#ifdef HAVE_POSTGRES
+          if (config_.engine == BackendEngine::POSTGRESQL) {
+            auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+            if (pg && !HasCrossProduct(executable_ir))
+              pg->SetQjitPendingIR(executable_ir);
+          }
+#endif
         }
 #endif
         adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,

@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 engine=$1
 split=$2
 jit_level=$3
@@ -41,20 +44,20 @@ rm -rf temp.csv
 ########################################
 # DB connection
 ########################################
-if [[ "$engine" == "postgres" ]]; then
-    db_conn="host=localhost port=5432 dbname=imdb user=pei"
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    db_conn="${PG_CONN}"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb/measure/imdb.db"
+    db_conn="${DUCKDB_DB}"
 
 elif [[ "$engine" == "umbra" ]]; then
-    db_conn="host=localhost port=15432 user=postgres password=postgres"
+    db_conn="${UMBRA_CONN}"
 
 elif [[ "$engine" == "mariadb" ]]; then
-    db_conn="host=localhost dbname=imdb user=imdb"
+    db_conn="${MARIADB_CONN}"
 
 elif [[ "$engine" == "opengauss" ]]; then
-    db_conn="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132"
+    db_conn="${OPENGAUSS_CONN}"
 
 elif [[ "$engine" == "lingodb" ]]; then
     db_conn=""
@@ -68,11 +71,9 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/imdb.db"
-    helper_db_arg="--helper-db-path=${helper_db_path}"
+    helper_db_arg="--helper-db-path=${DUCKDB_DB}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_path="host=localhost port=5432 dbname=imdb user=pei"
-    helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
+    helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
 fi
 
 rm -f "${log_name}"
@@ -103,7 +104,7 @@ for sql in "${dir}"/*.sql; do
     echo "Running benchmark for ${sql}..."
 
     hyperfine --warmup ${warmup} --runs ${iteration} --export-csv temp.csv \
-    "${cmd_prefix}../build_release/aqp_middleware --engine=${engine} \
+    "${cmd_prefix}${PROJECT}/build_release/aqp_middleware --engine=${engine} \
     ${db_arg} \
     \"${helper_db_arg}\" \
     --schema=$JOB_PATH/schema.sql \

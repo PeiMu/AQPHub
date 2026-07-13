@@ -177,6 +177,8 @@ struct QjitQueryPlan {
   // Synthesized filter expressions (mark-join IN-list rewrite) referenced
   // by QjitStepOp::filter; owned here so they outlive codegen.
   std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> owned_exprs;
+  // Non-owning pointer to the IR, used by PG adapter for column name lookup.
+  const ir_sql_converter::AQPStmt *ir = nullptr;
 };
 
 // Strict builder. Returns true and fills `out` when every construct is

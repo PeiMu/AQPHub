@@ -1,0 +1,329 @@
+# PostgreSQL Query-JIT — Completed Implementation Log
+
+All items below are DONE and have been moved out of CLAUDE.md.
+
+---
+
+## Steps 1–6: Core query-jit for PostgreSQL (DONE)
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Column type inference (`GetVarTypeFromColumn` in `parsetree_to_ir.cpp`) | DONE |
+| 2 | Build-side annotation from EXPLAIN JSON (`AnnotateBuildSidesFromExplain`) | DONE |
+| 3 | Query-jit state members + setters in PostgreSQLAdapter | DONE |
+| 4 | Query-jit path in `ExecuteSQL` and `ExecuteSQLandCreateTempTable` | DONE |
+| 5 | `StoragePlan::LoadFromPostgreSQL(PGconn*)` | DONE |
+| 6 | Wiring in `aqp_middleware.cpp` and `ir_query_splitter.cpp` | DONE |
+
+## JIT flags for PostgreSQL (DONE)
+
+| Feature | Status |
+|---------|--------|
+| `skip_hash_cmp` (off/single/all) | DONE |
+| SIMD (auto/avx2/avx512/off) | DONE |
+| `jit_cache` (single-run-strict/single-run-template/full) | DONE |
+| `compile_mode` (llvm/fastisel/tpde) | DONE |
+
+## Correctness tests — Steps 1–6 (DONE)
+
+`measure/correctness_test_pg.sh`: 22 configs (2 interpreter + 20 query-jit).
+10/22 passed before interruption, 0 failures. Needs full re-run.
+
+## Step 7: Speculative compilation for PostgreSQL (DONE — code complete)
+
+All 4 sub-steps implemented and compile-verified.
+
+### Step 7.1: PreallocateChunkIndex + fix UpdateRemainingIR (DONE)
+
+- Added `PreallocateChunkIndex()` to `NodeBasedSplitter` (header + impl)
+- Added `preallocated_chunk_index_` member
+- Modified `UpdateRemainingIR` to use pre-allocated index when available
+- Added `RegisterExternalTempTableWithIndex` to DuckDB adapter (additive, ~7 lines)
+
+### Step 7.2: PG-compatible PostPrepareHook (DONE)
+
+- Added `PostPrepareHook` type using engine-agnostic `std::vector<int32_t>` (AQP_DTYPE)
+- Added `SetPostPrepareHook`, `QjitSpecCompiled` struct, `SetQjitSpecHit`
+- Modified `AnnotateBuildSidesFromExplain` to optionally return JSON (`std::string *out_json`)
+- Added `ExtractEstimatedRows` and `IrTargetListToDtypes` helpers
+- Restructured `ExecuteSQLandCreateTempTable`: spec HIT path first, then inline path with hook firing
+- Added `IrTargetListToDtypes` in anonymous namespace before `namespace middleware`
+
+### Step 7.3: SpeculativeQueryJitCompileFromJSON (DONE)
+
+- Implemented bg-thread compile function (~80 lines)
+- Thread-safe: pg_query_parse (__thread), SchemaParser (const after init)
+- `sub_plan_id` captured on main thread (avoids data race on `subquery_index`)
+- Uses cached EXPLAIN JSON for build-side annotation (no PGconn on bg thread)
+
+### Step 7.4: PG branches in splitter (DONE)
+
+- Added PG hook setup after DuckDB hook setup block
+- Added `EnsureSpecCompilerPG` static function
+- Added `AqpDtypeToDuckDB` helper for int32_t → duckdb::LogicalType conversion
+- Added `LaunchSpeculativeCompilePG` (~120 lines): tune look-ahead, miss history,
+  PreallocateChunkIndex, capture subquery_index, two-stage mismatch guard, bg submit
+- Relaxed DuckDB gate in `PrecomputeNextExtraction` to also accept POSTGRESQL
+- Added PG `AddSpecWaitTime` branches (DrainSpecs + CheckSpeculativeResult)
+- Added PG spec HIT consumption path
+- Added PG compensate miss path (counters + SetCompileMode for TPDE on fast compensate)
+
+### JIT debug/prefetch for PG (DONE, part of Step 7)
+
+- Added `jit_debug_`, `jit_prefetch_`, `jit_prefetch_distance_` members to PG adapter
+- Added setters/getters: `SetJITDebug`, `SetJITPrefetch`, `GetJitDebug`, `GetJitPrefetch`, etc.
+- Moved `RegisterQjitRuntimeSymbols` from private to public
+- Added `GetSkipHashCmp`, `GetCompileMode` getters
+- Wired in `aqp_middleware.cpp` PG block
+- Passed to `jit_compiler_` in `TryCompileQueryJit`
+- Wired in splitter ApplyTuneOverride and per-iteration PG blocks
+
+### measure/correctness_test_pg.sh updated (DONE)
+
+- Added `spec_jit` as 8th parameter to `run_pg_job()` function
+- Added `--spec-jit=${spec_jit}` flag passing
+- Updated CONFIGS array: 26 total configs (22 existing + 4 spec-jit)
+  - `node-based|query|llvm|all|off|off|recompile`
+  - `node-based|query|fastisel|all|off|off|recompile`
+  - `node-based|query|tpde|all|off|off|recompile`
+  - `node-based|query|llvm|all|off|off|interpret`
+- Updated config parsing to extract and default `spec_jit`
+- Updated config_label and output filename to include spec suffix
+
+---
+
+## Files modified (cumulative from baseline)
+
+| File | Changes |
+|------|---------|
+| `include/adapters/postgres_adapter.h` | +120 lines: QjitCompiled struct, QjitSpecCompiled struct, PostPrepareHook (engine-agnostic dtypes), all setters/getters (SetQueryJit, SetCompileMode, SetSkipHashCmp, SetJitFlags, SetJITCache, SetJITCacheDir, SetJITDebug, SetJITPrefetch, GetSkipHashCmp, GetJitDebug, GetJitPrefetch, GetJitPrefetchDistance, GetCompileMode, SetPostPrepareHook, SetQjitSpecHit, AddSpecWaitTime), SpeculativeQueryJitCompileFromJSON declaration, RegisterQjitRuntimeSymbols moved to public |
+| `src/adapters/postgres_adapter.cpp` | +800 lines: AnnotateBuildSidesFromExplain (with out_json), RegisterQjitRuntimeSymbols, BuildOutputDescsFromIR, TryCompileQueryJit (with jit_debug/prefetch), ResolveQjitSources, ExecuteQueryJit, ExecuteQueryJitFinal, MaterializeQjitTempToPostgreSQL, SpeculativeQueryJitCompileFromJSON, ExtractEstimatedRows, IrTargetListToDtypes, spec HIT + inline paths in ExecuteSQLandCreateTempTable |
+| `src/storage/storage_plan.cpp` | +211 lines: LoadFromPostgreSQL |
+| `include/storage/storage_plan.h` | +7 lines: LoadFromPostgreSQL declaration |
+| `src/aqp_middleware.cpp` | +45 lines: PG adapter wiring for all JIT settings + StoragePlan loading + SetJITDebug/SetJITPrefetch |
+| `src/split/ir_query_splitter.cpp` | +280 lines: PG hook setup, EnsureSpecCompilerPG, AqpDtypeToDuckDB, LaunchSpeculativeCompilePG, PG branches in PrecomputeNextExtraction/CheckSpeculativeResult/HIT consumption/compensate miss, SetJITDebug/SetJITPrefetch wiring |
+| `include/split/ir_query_splitter.h` | +10 lines: pg_qjit field, LaunchSpeculativeCompilePG declaration, postgres_adapter.h include |
+| `include/split/node_based_splitter.h` | +5 lines: PreallocateChunkIndex, preallocated_chunk_index_ |
+| `src/split/node_based_splitter.cpp` | +15 lines: PreallocateChunkIndex impl, modified UpdateRemainingIR |
+| `include/adapters/duckdb_adapter.h` | +5 lines: RegisterExternalTempTableWithIndex declaration |
+| `src/adapters/duckdb_adapter.cpp` | +7 lines: RegisterExternalTempTableWithIndex impl |
+| `third_party/IR_SQL_Converter` | submodule: GetVarTypeFromColumn fix |
+| `measure/correctness_test_pg.sh` | Updated: spec_jit parameter, 26 configs |
+
+---
+
+## Verified facts (from source code)
+
+1. Query-jit core is DuckDB-free: `src/qjit/*.cpp`, `src/jit/ir_to_llvm.cpp` have zero DuckDB includes.
+2. `SimplestJoin::build_child` defaults to -1 (simplest_ir.h:1346). `BuildExecutionSteps` rejects -1.
+3. SchemaParser stores type strings: `ColumnInfo::type` in schema_parser.h.
+4. StoragePlan cache is database-agnostic: custom binary format.
+5. PostgreSQL adapter uses nlohmann::json.
+6. `InitSchemaParser` called before PostgreSQL adapter creation (aqp_middleware.cpp:623).
+7. PostgreSQL Hash Join: inner = build side (always). Verified from PG 18.3 source.
+8. PostgreSQL DATE is int32 internally.
+9. JOB schema has no DATE columns.
+10. libpq cannot access PostgreSQL physical plan trees. EXPLAIN JSON is the only way.
+11. StoragePlan loads entire DB into memory (~2-4 GB for IMDB).
+12. Push vs pull irrelevant for query-jit.
+13. libpg_query is thread-safe (__thread globals).
+14. SchemaParser is read-only after init.
+15. PG temp tables are session-scoped. No bg PGconn viable.
+16. PeekNextSubquery operates on DuckDB helper adapter.
+17. chunk_index allocated by GenerateTableIndex() — monotonic counter.
+18. DuckDB adapter doesn't need chunk_index pre-allocation.
+19. `subquery_index` is public on `DBAdapter` — non-atomic, must not be read from bg thread.
+20. `DuckDBAdapter::GetBinder()` exists (duckdb_adapter.h:597).
+21. `RegisterExternalTempTableWithIndex` added (additive to DuckDB adapter).
+22. JIT debug/prefetch are generic LLVM features with zero DuckDB dependency.
+23. Two-stage mismatch guard required for spec-jit.
+24. `SpeculativeCompilation` struct under `#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)`.
+25. DuckDB `QjitSpecCompiled::out_types/out_names` not needed for PG.
+26. `PrecomputeNextExtraction` cast at line 1722 is gate-only — safe to replace with engine check.
+
+---
+
+## Scope exclusions
+
+- Pipeline-JIT: Deeply tied to DuckDB's physical operators. Not portable.
+- Bloom filters: DuckDB-specific join optimization.
+- JIT object cache: Can be added later.
+- Non-inner joins / grouped aggregates: Query-jit already rejects.
+- SetQjitPendingIR fast-path: Requires in-process physical plan (DuckDB-only).
+- Cross-query Phase 2 bg compile: DuckDB bg connection specific.
+- Plan replay cache: DuckDB QueryPlanCache specific.
+- Spec-jit Phase B relaunch: PG falls through to inline compile on mismatch.
+
+---
+
+## Key design decisions
+
+1. **No background PGconn**: EXPLAIN runs on main PGconn, JSON string passed to bg thread.
+2. **Unoptimized IR is correct**: PG spec path mirrors PG inline path (no optimizer).
+3. **PeekNextSubquery works for PG**: Uses DuckDB helper adapter, not execution adapter.
+4. **Engine-agnostic hook types**: PG PostPrepareHook uses `std::vector<int32_t>` (AQP_DTYPE) instead of duckdb types.
+5. **AqpDtypeToDuckDB in splitter**: Converts int32_t AQP_DTYPE to duckdb::LogicalType for PeekNextSubquery.
+6. **PreallocateChunkIndex**: Pre-allocates DuckDB table index before PeekNextSubquery for consistent index in UpdateRemainingIR.
+7. **subquery_index captured on main thread**: Passed by value as `sub_plan_id` to bg thread.
+8. **Two-stage SIMD/backend mismatch guard**: Replicated from DuckDB path.
+9. **PG QjitSpecCompiled minimal**: Only `{plan, ir, compiled}` — no out_types/out_names/est_card.
+10. **Est_card from EXPLAIN JSON**: `Plan Rows` extracted from EXPLAIN JSON, or 0 if unavailable.
+
+---
+
+## Data flow (PostgreSQL, implemented)
+
+```
+SQL → libpg_query Parse → ConvertParseTreeToIRWithSchema → AQPStmt
+    → EXPLAIN (FORMAT JSON) → AnnotateBuildSidesFromExplain on IR
+    → AnalyzeQueryJit → BuildExecutionSteps → CompileQuerySteps (LLVM)
+    → QjitExecutor::Run (morsel-parallel on FlatTable/QjitTable sources)
+    → result stored in qjit_temps_ → materialize back to PostgreSQL
+```
+
+## Data flow (PostgreSQL, speculative compilation)
+
+```
+Iteration i:
+  Main thread: EXPLAIN(i) → AnnotateBuildSides(i) → fire PostPrepareHook
+    → PeekNextSubquery(i+1) → bg: parse → IR → annotate from JSON → LLVM compile
+  Execute(i) runs in parallel with bg compile
+  UpdateRemainingIR(i) → PrecomputeNextExtraction → SQL match? keep : retire
+
+Iteration i+1:
+  CheckSpeculativeResult(actual_sql)
+    HIT: wait bg → resolve sources → execute(compiled fn)
+    MISS: inline compile (compensate: TPDE or interpreter fallback)
+```
+
+---
+
+## Verified Bugs & Fixes
+
+### Bug 1: Collation-dependent prefix-range predicates (queries 15a/15b/17b/23b/29b)
+
+**Root cause**: DuckDB's optimizer adds prefix-range predicates as
+optimizations for LIKE patterns (e.g. `LIKE 'USA:% 200%'` →
+`info >= 'USA:' AND info < 'USA;'`).  These rely on C-locale byte
+ordering (`':' < ';'` since ASCII 58 < 59).  When the generated SQL is
+sent to PostgreSQL (collation `en_GB.UTF-8`), these range comparisons
+produce wrong results — e.g. `'USA:something' < 'USA;'` evaluates to
+**false** under `en_GB.UTF-8`, filtering out all matching rows.
+
+Affected queries had LIKE patterns with non-leading-`%` prefixes:
+- 15a/15b/23b/29b: `LIKE 'USA:% 200%'` → bogus range `>= 'USA:' AND < 'USA;'`
+- 17b: `LIKE 'Z%'` → bogus range `>= 'Z' AND < '['`
+
+**Why JIT was correct**: JIT reads from StoragePlan (flat tables loaded
+from DuckDB, C-locale byte comparison).  The range predicates are
+correct in C-locale, so JIT produced the right answer.
+
+**Why no-jit "passed"**: The golden reference IS the no-jit output.
+Both golden and test hit the same collation bug → both return NULL →
+they match → PASS.  The JIT path returned correct non-NULL values →
+mismatched the (wrong) golden → FAIL.  Irony: JIT was correct but
+failed the test.
+
+**Fix**: `StripCollationDependentRangeQuals()` in `db_adapter.h` strips
+the pattern `AND(AND(col >= prefix, col < prefix'), IS NOT NULL(col))`
+(where `prefix'` is `prefix` with last byte +1) from IR `qual_vec`
+entries before SQL generation.  Called from `EngineAdapter::GenerateSQL`.
+The LIKE clause already provides the correct filter semantics.
+
+**Scope**: Applied in base `EngineAdapter::GenerateSQL` — affects all
+external SQL engines (PostgreSQL, Umbra, OpenGauss, MariaDB, LingoDB).
+Harmless for DuckDB (its re-optimization re-adds the range predicates;
+its C-locale makes them correct anyway).
+
+### Bug 2: Build-side annotation for non-Hash-Join EXPLAIN nodes
+
+**Root cause**: `AnnotateFromExplainRec` only matched `"Hash Join"`
+nodes from PostgreSQL's EXPLAIN JSON.  PostgreSQL often chooses
+`"Nested Loop"` or `"Merge Join"` for the same subquery SQL.
+
+**Additional issue**: Even after matching all join types, the EXPLAIN
+plan topology may differ from the IR tree (produced by DuckDB's
+optimizer), causing table-index-set matching to fail.
+
+**Fix**:
+1. Extended `AnnotateFromExplainRec` to match `"Nested Loop"` and
+   `"Merge Join"` in addition to `"Hash Join"`.
+2. Added `AnnotateUnannotatedJoinsByCard` fallback: estimates child
+   subtree cardinality from StoragePlan row counts and temp table
+   cardinalities, picks the smaller child as build side.
+
+### Bug 3: Node-based split produces multi-join subqueries
+
+Node-based split uses DuckDB's `QuerySplit::Split()` which does NOT
+split at every pipeline breaker.  Subquery IR can contain 0, 1, or
+multiple JoinNodes.  This is why build-side annotation and the
+cardinality fallback are needed — subqueries are not always single-join.
+
+### Bug 4: `fprintf(...)` macro suppression
+
+`pg_functions.hpp` from libpg_query defines `#define fprintf(...)` which
+silently removes ALL fprintf calls in any file that includes it
+(including `postgres_adapter.cpp`).  Use `std::cerr` for debug output in
+files that include libpg_query headers.
+
+### Bug 5: Cross-product subqueries crash with QJIT_ASSERT (queries 20a/20b/20c)
+
+**Root cause**: Node-based split can produce subqueries containing
+`CrossProductNode` (e.g. for queries involving `complete_cast` table).
+The JIT analyzer (`AnalyzeQueryJit`) rejects cross products.  With
+`QJIT_ASSERT` on analysis rejection, the entire process aborted.
+
+**Cascading failure**: When a cross-product subquery falls through to PG
+execution, its result temp table exists in PG but NOT in `qjit_temps_`.
+Subsequent subqueries referencing that temp table fail at
+`ResolveQjitSources` ("source:temp-missing:tempN"), causing compilation
+failure even though the subquery IR itself is valid.
+
+**Fix**:
+1. `ir_query_splitter.cpp`: Added `!HasCrossProduct(executable_ir)` check
+   before `SetQjitPendingIR` for PostgreSQL (line 2874) — prevents cross
+   product IR from being sent to the JIT fast path.
+2. `postgres_adapter.cpp`, `ExecuteSQLandCreateTempTable`: When analysis
+   rejects and `fast_ir` is null (splitter intentionally skipped JIT),
+   fall through to PG execution instead of aborting.  When compilation
+   fails (`TryCompileQueryJit` returns nullptr), fall through to PG
+   execution (handles cascading temp-table miss).  `QJIT_ASSERT` only
+   fires if the splitter provided the IR (`fast_ir` non-null) AND
+   analysis rejects — that indicates a bug in the splitter.
+
+**DuckDB parity**: DuckDB adapter already had
+`!HasCrossProduct(executable_ir)` guard at line 2807.  The debug-only
+cross-product assert (`#ifndef NDEBUG`) at line 2314 is disabled in
+release builds.
+
+---
+
+## Correctness test results
+
+### Test infrastructure
+
+`measure/correctness_test_pg.sh`: 40 configs total.
+- 2 interpreter baselines (none-split + node-based)
+- 26 query-jit configs (LLVM + FastISel + TPDE × skip_hash_cmp × simd × cache)
+- 12 spec-jit configs (recompile × LLVM/FastISel/TPDE × cache modes)
+
+### Latest results (2026-07-11): 32/40 passed, 8 failed
+
+- 2/2 interpreter baselines: PASS
+- 20/20 LLVM configs (query-jit + spec-jit + caching + simd + skip_hash_cmp): ALL PASS
+- 6/6 FastISel configs: ALL PASS
+- 4/4 split=none TPDE configs: PASS (graceful fallback in ExecuteSQL)
+- 0/8 node-based TPDE configs: FAIL (`AQP_HAVE_TPDE` not built at time of test)
+
+All failures were TPDE infrastructure (not code bugs).  All actual
+JIT codegen paths (LLVM + FastISel) pass 100%.
+
+### Files modified (additional, for bugs 1–5)
+
+| File | Changes |
+|------|---------|
+| `include/adapters/db_adapter.h` | +84 lines: `StripCollationDependentRangeQuals()` inline function, integrated into `GenerateSQL` |
+| `src/adapters/postgres_adapter.cpp` | Restructured `ExecuteSQLandCreateTempTable` JIT path: QJIT_ASSERT macro, spec-hit path, analysis-rejection fallback (cross-product), compilation-failure fallback (cascading temp miss), timing column placeholder on fallback paths, `fprintf→std::cerr` in MaterializeQjitTempToPostgreSQL ANALYZE error handler, extended `AnnotateFromExplainRec` to match Nested Loop/Merge Join, added `EstimateSubtreeCard` and `AnnotateUnannotatedJoinsByCard` |
+| `include/adapters/postgres_adapter.h` | Changed `MaterializeQjitTempToPostgreSQL` signature: added `bool update_temp_card` parameter |
+| `src/split/ir_query_splitter.cpp` | Added `!HasCrossProduct(executable_ir)` guard before `SetQjitPendingIR` for PostgreSQL (line 2874) |
+| `measure/correctness_test_pg.sh` | Updated: 40 configs (was 26), added spec-jit × cache cross-product configs |

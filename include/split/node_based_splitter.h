@@ -138,6 +138,11 @@ public:
                    duckdb::idx_t est_card);
 
   bool HasNextSubquery() const { return subqueries_.size() >= 1; }
+
+  duckdb::idx_t PreallocateChunkIndex();
+
+private:
+  duckdb::idx_t preallocated_chunk_index_ = duckdb::DConstants::INVALID_INDEX;
 };
 
 } // namespace middleware
