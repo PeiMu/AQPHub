@@ -6127,6 +6127,7 @@ void DuckDBAdapter::RegisterExternalTempTableWithIndex(
     const duckdb::vector<duckdb::LogicalType> &types,
     const std::vector<std::string> &col_names,
     duckdb::idx_t chunk_index) {
+  assert(chunk_index != duckdb::DConstants::INVALID_INDEX);
   intermediate_table_map[chunk_index] = temp_name;
   temp_table_index_ = chunk_index;
   temp_table_types = types;

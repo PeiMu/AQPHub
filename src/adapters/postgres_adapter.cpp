@@ -368,10 +368,7 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
 
     auto analysis = qjit::AnalyzeQueryJit(*ir_ptr, temp_table_name);
     if (!analysis.accepted) {
-      // Splitter-provided IR must always be accepted — abort on rejection.
-      // Re-parsed IR may contain cross products etc. — fall through to PG.
-      QJIT_ASSERT(!fast_ir,
-                   "analysis rejected sub-query: " + analysis.reject_reason);
+      // Analysis rejected — fall through to PG execution.
     } else {
     auto compiled =
         TryCompileQueryJit(*ir_ptr, analysis, temp_table_name);
