@@ -3263,7 +3263,7 @@ ConvertLeafFilter(CtorLeaf &leaf, const ir_sql_converter::AQPExpr &e,
                        : duckdb::ExpressionType::OPERATOR_IS_NOT_NULL,
         duckdb::LogicalType::BOOLEAN);
     op->children.push_back(std::move(col));
-    return op;
+    return std::move(op);
   }
   case InExprNode: {
     const auto &c = e.Cast<SimplestInExpr>();
@@ -3285,7 +3285,7 @@ ConvertLeafFilter(CtorLeaf &leaf, const ir_sql_converter::AQPExpr &e,
       op->children.push_back(
           duckdb::make_uniq<duckdb::BoundConstantExpression>(std::move(v)));
     }
-    return op;
+    return std::move(op);
   }
   case LogicalExprNode: {
     const auto &c = e.Cast<SimplestLogicalExpr>();
@@ -3299,7 +3299,7 @@ ConvertLeafFilter(CtorLeaf &leaf, const ir_sql_converter::AQPExpr &e,
       auto op = duckdb::make_uniq<duckdb::BoundOperatorExpression>(
           duckdb::ExpressionType::OPERATOR_NOT, duckdb::LogicalType::BOOLEAN);
       op->children.push_back(std::move(child));
-      return op;
+      return std::move(op);
     }
     case LogicalAnd:
     case LogicalOr: {
