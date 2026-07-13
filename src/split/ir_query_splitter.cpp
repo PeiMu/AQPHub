@@ -1944,8 +1944,12 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   if (config_.strategy != SplitStrategy::NODE_BASED)
     return;
   if (config_.engine != BackendEngine::DUCKDB &&
-      config_.engine != BackendEngine::POSTGRESQL)
-    return;
+      config_.engine != BackendEngine::POSTGRESQL) {
+    std::cerr << "[AQP-SPECJIT] FATAL: PrecomputeNextExtraction not "
+                 "implemented for engine " << static_cast<int>(config_.engine)
+              << "\n";
+    std::abort();
+  }
 
   // Tune look-ahead: the precomputed extraction targets the NEXT iteration
   // (1-based: iteration_count_ + 1), whose 0-based tune key = iteration_count_.
@@ -2329,29 +2333,6 @@ bool IRQuerySplitter::ExecuteOneIteration(
     return false;
   }
 
-#ifndef NDEBUG
-  // Assert no CROSS_PRODUCT in sub-IR — cross products are extremely slow
-  // and indicate a bug in split-point selection or IR re-optimization.
-  std::function<bool(const ir_sql_converter::AQPStmt *)> has_cross_product =
-      [&](const ir_sql_converter::AQPStmt *node) -> bool {
-    if (!node) return false;
-    if (node->GetNodeType() ==
-        ir_sql_converter::SimplestNodeType::CrossProductNode)
-      return true;
-    for (const auto &child : node->children)
-      if (has_cross_product(child.get())) return true;
-    return false;
-  };
-  if (has_cross_product(executable_ir)) {
-    std::cerr << "[Iteration " << iteration_count_
-              << "] FATAL: Sub-IR contains CROSS_PRODUCT node!\n";
-    executable_ir->Print();
-    throw std::runtime_error(
-        "Sub-IR contains CROSS_PRODUCT node — aborting to prevent "
-        "catastrophic performance. Check split-point selection or "
-        "ReOptimizeIR.");
-  }
-#endif
 
   if (config_.enable_debug_print) {
     std::cout << "\n=== Sub-IR to Execute ===" << std::endl;
@@ -2889,7 +2870,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_POSTGRES
           if (config_.engine == BackendEngine::POSTGRESQL) {
             auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
-            if (pg && !HasCrossProduct(executable_ir))
+            if (pg)
               pg->SetQjitPendingIR(executable_ir);
           }
 #endif

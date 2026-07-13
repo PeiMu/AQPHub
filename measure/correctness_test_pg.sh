@@ -12,13 +12,9 @@ set -uo pipefail
 # ============================================================
 # Environment — source machine-specific paths from env.sh
 # ============================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
-PROJECT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BENCHMARK="${JOB_PATH}"
-BINARY="${PROJECT}/build_release/aqp_middleware"
-STORAGE_CACHE="/tmp/imdb_storage_plan_pg.cache"
 
 SCHEMA="${BENCHMARK}/schema.sql"
 FKEYS="${BENCHMARK}/fkeys.sql"

@@ -4,6 +4,8 @@
  * strategies
  */
 
+#include <unistd.h>
+
 #include "adapters/db_adapter.h"
 #include "split/ir_query_splitter.h"
 #include "storage/storage_plan.h"
@@ -16,6 +18,10 @@
 #ifdef HAVE_LLVM
 #include "jit/ir_to_llvm.h"
 #endif
+#endif
+
+#ifdef HAVE_LLVM
+#include <llvm/Support/ManagedStatic.h>
 #endif
 
 #ifdef HAVE_POSTGRES
@@ -826,10 +832,17 @@ int main(int argc, char **argv) {
     ir_sql_converter::CleanupSchemaParser();
 #endif
 
-    return return_code;
+    adapter.reset();
+
+#ifdef HAVE_LLVM
+    llvm::llvm_shutdown();
+#endif
+
+    // _exit() skips __cxa_finalize which double-frees inside libLLVM.so.20
+    _exit(return_code);
 
   } catch (const std::exception &e) {
     std::cerr << "\nError: " << e.what() << std::endl;
-    return 1;
+    _exit(1);
   }
 }
