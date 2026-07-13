@@ -4,7 +4,19 @@
 
 #include "adapters/postgres_adapter.h"
 
+#include <cassert>
+#include <cstdlib>
+
 #ifdef HAVE_LLVM
+
+#define QJIT_ASSERT(cond, msg)                                                 \
+  do {                                                                         \
+    if (!(cond)) {                                                             \
+      std::cerr << "[AQP-QJIT] FATAL: " << (msg) << "\n";                     \
+      std::abort();                                                            \
+    }                                                                          \
+  } while (0)
+
 #include "qjit/query_jit_abi.h"
 #include "qjit/query_jit_runtime.h"
 #include "qjit/query_jit_steps.h"
@@ -165,43 +177,38 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
 
   if (query_jit_ && qjit_storage_plan_ && qjit_storage_plan_->IsLoaded() &&
       IsSelectStatement(sql)) {
-    try {
-      ParseSQL(sql);
-      auto ir = ConvertPlanToIR();
-      if (ir) {
-        AnnotateBuildSidesFromExplain(sql, *ir);
-        auto analysis = qjit::AnalyzeQueryJit(*ir, "result");
-        if (analysis.accepted) {
-          auto compiled = TryCompileQueryJit(*ir, analysis, "result");
-          if (compiled) {
+    ParseSQL(sql);
+    auto ir = ConvertPlanToIR();
+    if (ir) {
+      AnnotateBuildSidesFromExplain(sql, *ir);
+      auto analysis = qjit::AnalyzeQueryJit(*ir, "result");
+      if (analysis.accepted) {
+        auto compiled = TryCompileQueryJit(*ir, analysis, "result");
+        if (compiled) {
+          if (enable_timing_) {
+            auto compile_us =
+                chrono_toc(&timer, "qjit final compile time\n", false);
+            std::ofstream log_file;
+            log_file.open(g_timing_log_name, std::ios_base::app);
+            log_file << std::fixed << std::setprecision(3)
+                     << ((compile_us + ConsumeSpecWaitUs()) / 1000.0) << ", ";
+            log_file.close();
+          }
+          auto qjit_result = ExecuteQueryJitFinal(*compiled);
+          if (qjit_result.num_rows >= 0) {
             if (enable_timing_) {
-              auto compile_us =
-                  chrono_toc(&timer, "qjit final compile time\n", false);
+              auto run_us =
+                  chrono_toc(&timer, "qjit final execute time\n", false);
               std::ofstream log_file;
               log_file.open(g_timing_log_name, std::ios_base::app);
               log_file << std::fixed << std::setprecision(3)
-                       << ((compile_us + ConsumeSpecWaitUs()) / 1000.0) << ", ";
+                       << (run_us / 1000.0) << ", ";
               log_file.close();
             }
-            auto qjit_result = ExecuteQueryJitFinal(*compiled);
-            if (qjit_result.num_rows >= 0) {
-              if (enable_timing_) {
-                auto run_us =
-                    chrono_toc(&timer, "qjit final execute time\n", false);
-                std::ofstream log_file;
-                log_file.open(g_timing_log_name, std::ios_base::app);
-                log_file << std::fixed << std::setprecision(3)
-                         << (run_us / 1000.0) << ", ";
-                log_file.close();
-              }
-              return qjit_result;
-            }
+            return qjit_result;
           }
         }
       }
-    } catch (const std::exception &e) {
-      fprintf(stderr, "[AQP-QJIT] reject:exception(%s) label=result\n",
-              e.what());
     }
     if (enable_timing_)
       timer = chrono_tic();
@@ -283,145 +290,138 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
 
 #ifdef HAVE_LLVM
   if (query_jit_ && qjit_storage_plan_ && qjit_storage_plan_->IsLoaded()) {
-    try {
-      // Spec HIT path: bg thread already compiled this sub-query
-      if (qjit_spec_hit_) {
-        auto spec = std::move(qjit_spec_hit_);
-        std::string reason;
-        if (ResolveQjitSources(spec->plan, *spec->compiled, reason)) {
-          if (enable_timing_) {
-            auto compile_us =
-                chrono_toc(&timer, "qjit spec-hit resolve time\n", false);
-            std::ofstream log_file;
-            log_file.open(g_timing_log_name, std::ios_base::app);
-            log_file << std::fixed << std::setprecision(3)
-                     << ((compile_us + ConsumeSpecWaitUs()) / 1000.0) << ", ";
-            log_file.close();
-          }
-          int64_t rows =
-              ExecuteQueryJit(*spec->compiled, temp_table_name);
-          if (rows >= 0) {
-            temp_table_card_[temp_table_name] = rows;
-            if (enable_timing_) {
-              auto execute_us = chrono_toc(
-                  &timer, "qjit execute time\n", false);
-              std::ofstream log_file;
-              log_file.open(g_timing_log_name, std::ios_base::app);
-              log_file << std::fixed << std::setprecision(3)
-                       << (execute_us / 1000.0) << ", ";
-              log_file.close();
-            }
-            MaterializeQjitTempToPostgreSQL(temp_table_name);
-            if (enable_timing_) {
-              auto mat_us = chrono_toc(
-                  &timer, "qjit extra_materialize time\n", false);
-              std::ofstream log_file;
-              log_file.open(g_timing_log_name, std::ios_base::app);
-              log_file << std::fixed << std::setprecision(3)
-                       << (mat_us / 1000.0) << ", ";
-              log_file.close();
-            }
-            if (post_prepare_hook_)
-              post_prepare_hook_(temp_table_name, {}, {}, "", rows, true);
-#ifndef NDEBUG
-            std::cout << "[PostgreSQL] Created temp table (qjit spec-hit): "
-                      << temp_table_name << " (rows=" << rows << ")"
-                      << std::endl;
-#endif
-            return;
-          }
-        }
-#ifndef NDEBUG
-        fprintf(stderr,
-                "[AQP-QJIT] spec-hit resolve failed:%s label=%s\n",
-                reason.c_str(), temp_table_name.c_str());
-#endif
-        if (enable_timing_)
-          timer = chrono_tic();
+    // Spec HIT path: bg thread already compiled this sub-query
+    if (qjit_spec_hit_) {
+      auto spec = std::move(qjit_spec_hit_);
+      std::string reason;
+      QJIT_ASSERT(ResolveQjitSources(spec->plan, *spec->compiled, reason),
+                  "spec-hit resolve failed: " + reason);
+      if (enable_timing_) {
+        auto compile_us =
+            chrono_toc(&timer, "qjit spec-hit resolve time\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << ((compile_us + ConsumeSpecWaitUs()) / 1000.0) << ", ";
+        log_file.close();
       }
-
-      // Fast path: splitter passed the IR directly — skip ParseSQL+ConvertPlanToIR
-      const ir_sql_converter::AQPStmt *fast_ir = qjit_pending_ir_;
-      qjit_pending_ir_ = nullptr;
-      ir_sql_converter::AQPStmt *ir_ptr = nullptr;
-      std::unique_ptr<ir_sql_converter::AQPStmt> ir_owned;
-
-      if (fast_ir) {
-        ir_ptr = const_cast<ir_sql_converter::AQPStmt *>(fast_ir);
-      } else {
-        ParseSQL(sql);
-        ir_owned = ConvertPlanToIR();
-        ir_ptr = ir_owned.get();
+      int64_t rows =
+          ExecuteQueryJit(*spec->compiled, temp_table_name);
+      QJIT_ASSERT(rows >= 0, "spec-hit execution failed");
+      temp_table_card_[temp_table_name] = rows;
+      if (enable_timing_) {
+        auto execute_us = chrono_toc(
+            &timer, "qjit execute time\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (execute_us / 1000.0) << ", ";
+        log_file.close();
       }
-
-      if (ir_ptr) {
-        std::string explain_json;
-        AnnotateBuildSidesFromExplain(sql, *ir_ptr, &explain_json);
-
-        if (post_prepare_hook_) {
-          std::vector<int32_t> dtypes;
-          std::vector<std::string> col_names;
-          IrTargetListToDtypes(*ir_ptr, dtypes, col_names);
-          uint64_t est = ExtractEstimatedRows(explain_json);
-          post_prepare_hook_(temp_table_name, dtypes, col_names,
-                             explain_json, est, false);
-        }
-
-        auto analysis = qjit::AnalyzeQueryJit(*ir_ptr, temp_table_name);
-        if (analysis.accepted) {
-          auto compiled =
-              TryCompileQueryJit(*ir_ptr, analysis, temp_table_name);
-          if (compiled) {
-            if (enable_timing_) {
-              auto compile_us =
-                  chrono_toc(&timer, "qjit compile time\n", false);
-              std::ofstream log_file;
-              log_file.open(g_timing_log_name, std::ios_base::app);
-              log_file << std::fixed << std::setprecision(3)
-                       << ((compile_us + ConsumeSpecWaitUs()) / 1000.0) << ", ";
-              log_file.close();
-            }
-            int64_t rows = ExecuteQueryJit(*compiled, temp_table_name);
-            if (rows >= 0) {
-              temp_table_card_[temp_table_name] = rows;
-              if (enable_timing_) {
-                auto execute_us =
-                    chrono_toc(&timer, "qjit execute time\n", false);
-                std::ofstream log_file;
-                log_file.open(g_timing_log_name, std::ios_base::app);
-                log_file << std::fixed << std::setprecision(3)
-                         << (execute_us / 1000.0) << ", ";
-                log_file.close();
-              }
-              MaterializeQjitTempToPostgreSQL(temp_table_name);
-              if (enable_timing_) {
-                auto mat_us =
-                    chrono_toc(&timer, "qjit extra_materialize time\n",
-                               false);
-                std::ofstream log_file;
-                log_file.open(g_timing_log_name, std::ios_base::app);
-                log_file << std::fixed << std::setprecision(3)
-                         << (mat_us / 1000.0) << ", ";
-                log_file.close();
-              }
-              if (post_prepare_hook_)
-                post_prepare_hook_(temp_table_name, {}, {}, "", rows,
-                                   true);
+      MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
+      if (enable_timing_) {
+        auto mat_us = chrono_toc(
+            &timer, "qjit extra_materialize time\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (mat_us / 1000.0) << ", ";
+        log_file.close();
+      }
+      if (post_prepare_hook_)
+        post_prepare_hook_(temp_table_name, {}, {}, "", rows, true);
 #ifndef NDEBUG
-              std::cout << "[PostgreSQL] Created temp table (qjit): "
-                        << temp_table_name << " (rows=" << rows << ")"
-                        << std::endl;
+      std::cout << "[PostgreSQL] Created temp table (qjit spec-hit): "
+                << temp_table_name << " (rows=" << rows << ")"
+                << std::endl;
 #endif
-              return;
-            }
-          }
-        }
-      }
-    } catch (const std::exception &e) {
-      fprintf(stderr,
-              "[AQP-QJIT] reject:exception(%s) label=%s\n",
-              e.what(), temp_table_name.c_str());
+      return;
     }
+
+    // Fast path: splitter passed the IR directly — skip ParseSQL+ConvertPlanToIR
+    const ir_sql_converter::AQPStmt *fast_ir = qjit_pending_ir_;
+    qjit_pending_ir_ = nullptr;
+    ir_sql_converter::AQPStmt *ir_ptr = nullptr;
+    std::unique_ptr<ir_sql_converter::AQPStmt> ir_owned;
+
+    if (fast_ir) {
+      ir_ptr = const_cast<ir_sql_converter::AQPStmt *>(fast_ir);
+    } else {
+      ParseSQL(sql);
+      ir_owned = ConvertPlanToIR();
+      ir_ptr = ir_owned.get();
+    }
+
+    QJIT_ASSERT(ir_ptr, "IR conversion failed for sub-query");
+
+    std::string explain_json;
+    AnnotateBuildSidesFromExplain(sql, *ir_ptr, &explain_json);
+
+    if (post_prepare_hook_) {
+      std::vector<int32_t> dtypes;
+      std::vector<std::string> col_names;
+      IrTargetListToDtypes(*ir_ptr, dtypes, col_names);
+      uint64_t est = ExtractEstimatedRows(explain_json);
+      post_prepare_hook_(temp_table_name, dtypes, col_names,
+                         explain_json, est, false);
+    }
+
+    auto analysis = qjit::AnalyzeQueryJit(*ir_ptr, temp_table_name);
+    if (!analysis.accepted) {
+      // Splitter-provided IR must always be accepted — abort on rejection.
+      // Re-parsed IR may contain cross products etc. — fall through to PG.
+      QJIT_ASSERT(!fast_ir,
+                   "analysis rejected sub-query: " + analysis.reject_reason);
+    } else {
+    auto compiled =
+        TryCompileQueryJit(*ir_ptr, analysis, temp_table_name);
+    if (!compiled) {
+      // Fall through to PG: missing temp source (cascading from a prior
+      // PG-executed subquery), unsupported IR node, or StoragePlan gap.
+    } else {
+    if (enable_timing_) {
+      auto compile_us =
+          chrono_toc(&timer, "qjit compile time\n", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << ((compile_us + ConsumeSpecWaitUs()) / 1000.0) << ", ";
+      log_file.close();
+    }
+    int64_t rows = ExecuteQueryJit(*compiled, temp_table_name);
+    QJIT_ASSERT(rows >= 0, "execution failed for sub-query");
+    temp_table_card_[temp_table_name] = rows;
+    if (enable_timing_) {
+      auto execute_us =
+          chrono_toc(&timer, "qjit execute time\n", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (execute_us / 1000.0) << ", ";
+      log_file.close();
+    }
+    MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
+    if (enable_timing_) {
+      auto mat_us =
+          chrono_toc(&timer, "qjit extra_materialize time\n",
+                     false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (mat_us / 1000.0) << ", ";
+      log_file.close();
+    }
+    if (post_prepare_hook_)
+      post_prepare_hook_(temp_table_name, {}, {}, "", rows,
+                         true);
+#ifndef NDEBUG
+    std::cout << "[PostgreSQL] Created temp table (qjit): "
+              << temp_table_name << " (rows=" << rows << ")"
+              << std::endl;
+#endif
+    return;
+    } // compiled
+    } // analysis.accepted
     if (enable_timing_) {
       auto reject_us = chrono_toc(&timer, "", false);
       (void)reject_us;
@@ -853,7 +853,8 @@ AnnotateFromExplainRec(
   std::string node_type;
   if (plan_node.contains("Node Type"))
     node_type = plan_node["Node Type"].get<std::string>();
-  if (node_type != "Hash Join")
+  if (node_type != "Hash Join" && node_type != "Nested Loop" &&
+      node_type != "Merge Join")
     return;
   if (!plan_node.contains("Plans"))
     return;
@@ -910,16 +911,57 @@ AnnotateFromExplainRec(
     }
   }
 #ifndef NDEBUG
-  fprintf(stderr,
-          "[AQP-QJIT] AnnotateBuildSidesFromExplain: no IR JoinNode matched "
-          "Hash Join build={");
-  for (auto v : build_set)
-    fprintf(stderr, "%u,", v);
-  fprintf(stderr, "} probe={");
-  for (auto v : probe_set)
-    fprintf(stderr, "%u,", v);
-  fprintf(stderr, "}\n");
+  std::cerr << "[AQP-QJIT] AnnotateFromExplainRec: no IR JoinNode matched "
+            << node_type << "\n";
 #endif
+}
+
+static uint64_t
+EstimateSubtreeCard(const ir_sql_converter::AQPStmt *node,
+                    const storage::StoragePlan *sp,
+                    const std::unordered_map<std::string, int64_t> &temp_card) {
+  if (!node) return 0;
+  auto nt = node->GetNodeType();
+  if (nt == ir_sql_converter::SimplestNodeType::ScanNode) {
+    auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(node);
+    if (sp) {
+      const auto *ft = sp->GetTable(scan->GetTableName());
+      if (ft) return ft->row_count;
+    }
+    return 1000000;
+  }
+  if (nt == ir_sql_converter::SimplestNodeType::ChunkNode) {
+    auto *chunk = static_cast<const ir_sql_converter::SimplestChunk *>(node);
+    auto it = temp_card.find(chunk->GetChunkName());
+    if (it != temp_card.end()) return it->second;
+    return 1000;
+  }
+  uint64_t card = 0;
+  for (const auto &child : node->children) {
+    uint64_t c = EstimateSubtreeCard(child.get(), sp, temp_card);
+    card = (card == 0) ? c : std::min(card, c);
+  }
+  return card;
+}
+
+static void
+AnnotateUnannotatedJoinsByCard(
+    ir_sql_converter::AQPStmt &ir,
+    const storage::StoragePlan *sp,
+    const std::unordered_map<std::string, int64_t> &temp_card) {
+  std::vector<ir_sql_converter::SimplestJoin *> joins;
+  CollectIRJoinNodes(&ir, joins);
+  for (auto *join : joins) {
+    if (join->GetBuildChild() != -1 || join->children.size() != 2)
+      continue;
+    uint64_t c0 = EstimateSubtreeCard(join->children[0].get(), sp, temp_card);
+    uint64_t c1 = EstimateSubtreeCard(join->children[1].get(), sp, temp_card);
+    join->SetBuildChild(c1 <= c0 ? 1 : 0);
+#ifndef NDEBUG
+    std::cerr << "[AQP-QJIT] fallback build-side annotation: c0=" << c0
+              << " c1=" << c1 << " → build=" << join->GetBuildChild() << "\n";
+#endif
+  }
 }
 
 } // anonymous namespace
@@ -965,6 +1007,8 @@ void PostgreSQLAdapter::AnnotateBuildSidesFromExplain(
   BuildTableNameToIndex(&ir, name_to_index);
 
   AnnotateFromExplainRec(explain_json[0]["Plan"], ir, name_to_index);
+
+  AnnotateUnannotatedJoinsByCard(ir, qjit_storage_plan_, temp_table_card_);
 }
 
 // Runtime symbol registration (same as DuckDB adapter)
@@ -1275,7 +1319,7 @@ PostgreSQLAdapter::ExecuteQueryJitFinal(QjitCompiled &compiled) {
 
 // Materialize a QjitTable temp result into PostgreSQL via COPY FROM STDIN
 void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
-    const std::string &name) {
+    const std::string &name, bool update_temp_card) {
   auto it = qjit_temps_.find(name);
   if (it == qjit_temps_.end() || !it->second)
     return;
@@ -1366,6 +1410,19 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
     }
     PQclear(copy_result);
   }
+
+  if (update_temp_card) {
+    std::string analyze_sql = "ANALYZE " + name;
+    PGresult *ar = PQexec(conn, analyze_sql.c_str());
+    if (ar) {
+      if (PQresultStatus(ar) != PGRES_COMMAND_OK) {
+        std::cerr << "[AQP-QJIT] MaterializeQjitTemp: ANALYZE failed: "
+                  << PQerrorMessage(conn) << "\n";
+      }
+      PQclear(ar);
+    }
+  }
+
 #ifndef NDEBUG
   fprintf(stderr,
           "[AQP-QJIT] materialized temp=%s rows=%llu cols=%zu\n",

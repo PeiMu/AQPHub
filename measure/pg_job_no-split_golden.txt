@@ -1,3 +1,4 @@
+/home/bita/Project/AQP_middleware/build_release/aqp_middleware: /home/bita/miniconda3/lib/libtinfo.so.6: no version information available (required by /lib/x86_64-linux-gnu/libedit.so.2)
 
 ========================================
 Running Benchmark: /home/bita/Project/benchmarks/JOB4AQP/queries

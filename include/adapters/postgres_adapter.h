@@ -190,7 +190,8 @@ private:
 
   QueryResult ExecuteQueryJitFinal(QjitCompiled &compiled);
 
-  void MaterializeQjitTempToPostgreSQL(const std::string &name);
+  void MaterializeQjitTempToPostgreSQL(const std::string &name,
+                                       bool update_temp_card);
 
   bool query_jit_ = false;
   int query_jit_threads_ = 0;

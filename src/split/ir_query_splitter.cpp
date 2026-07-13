@@ -2871,7 +2871,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_POSTGRES
           if (config_.engine == BackendEngine::POSTGRESQL) {
             auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
-            if (pg)
+            if (pg && !HasCrossProduct(executable_ir))
               pg->SetQjitPendingIR(executable_ir);
           }
 #endif

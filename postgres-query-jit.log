@@ -168,3 +168,162 @@ All 4 sub-steps implemented and compile-verified.
 8. **Two-stage SIMD/backend mismatch guard**: Replicated from DuckDB path.
 9. **PG QjitSpecCompiled minimal**: Only `{plan, ir, compiled}` — no out_types/out_names/est_card.
 10. **Est_card from EXPLAIN JSON**: `Plan Rows` extracted from EXPLAIN JSON, or 0 if unavailable.
+
+---
+
+## Data flow (PostgreSQL, implemented)
+
+```
+SQL → libpg_query Parse → ConvertParseTreeToIRWithSchema → AQPStmt
+    → EXPLAIN (FORMAT JSON) → AnnotateBuildSidesFromExplain on IR
+    → AnalyzeQueryJit → BuildExecutionSteps → CompileQuerySteps (LLVM)
+    → QjitExecutor::Run (morsel-parallel on FlatTable/QjitTable sources)
+    → result stored in qjit_temps_ → materialize back to PostgreSQL
+```
+
+## Data flow (PostgreSQL, speculative compilation)
+
+```
+Iteration i:
+  Main thread: EXPLAIN(i) → AnnotateBuildSides(i) → fire PostPrepareHook
+    → PeekNextSubquery(i+1) → bg: parse → IR → annotate from JSON → LLVM compile
+  Execute(i) runs in parallel with bg compile
+  UpdateRemainingIR(i) → PrecomputeNextExtraction → SQL match? keep : retire
+
+Iteration i+1:
+  CheckSpeculativeResult(actual_sql)
+    HIT: wait bg → resolve sources → execute(compiled fn)
+    MISS: inline compile (compensate: TPDE or interpreter fallback)
+```
+
+---
+
+## Verified Bugs & Fixes
+
+### Bug 1: Collation-dependent prefix-range predicates (queries 15a/15b/17b/23b/29b)
+
+**Root cause**: DuckDB's optimizer adds prefix-range predicates as
+optimizations for LIKE patterns (e.g. `LIKE 'USA:% 200%'` →
+`info >= 'USA:' AND info < 'USA;'`).  These rely on C-locale byte
+ordering (`':' < ';'` since ASCII 58 < 59).  When the generated SQL is
+sent to PostgreSQL (collation `en_GB.UTF-8`), these range comparisons
+produce wrong results — e.g. `'USA:something' < 'USA;'` evaluates to
+**false** under `en_GB.UTF-8`, filtering out all matching rows.
+
+Affected queries had LIKE patterns with non-leading-`%` prefixes:
+- 15a/15b/23b/29b: `LIKE 'USA:% 200%'` → bogus range `>= 'USA:' AND < 'USA;'`
+- 17b: `LIKE 'Z%'` → bogus range `>= 'Z' AND < '['`
+
+**Why JIT was correct**: JIT reads from StoragePlan (flat tables loaded
+from DuckDB, C-locale byte comparison).  The range predicates are
+correct in C-locale, so JIT produced the right answer.
+
+**Why no-jit "passed"**: The golden reference IS the no-jit output.
+Both golden and test hit the same collation bug → both return NULL →
+they match → PASS.  The JIT path returned correct non-NULL values →
+mismatched the (wrong) golden → FAIL.  Irony: JIT was correct but
+failed the test.
+
+**Fix**: `StripCollationDependentRangeQuals()` in `db_adapter.h` strips
+the pattern `AND(AND(col >= prefix, col < prefix'), IS NOT NULL(col))`
+(where `prefix'` is `prefix` with last byte +1) from IR `qual_vec`
+entries before SQL generation.  Called from `EngineAdapter::GenerateSQL`.
+The LIKE clause already provides the correct filter semantics.
+
+**Scope**: Applied in base `EngineAdapter::GenerateSQL` — affects all
+external SQL engines (PostgreSQL, Umbra, OpenGauss, MariaDB, LingoDB).
+Harmless for DuckDB (its re-optimization re-adds the range predicates;
+its C-locale makes them correct anyway).
+
+### Bug 2: Build-side annotation for non-Hash-Join EXPLAIN nodes
+
+**Root cause**: `AnnotateFromExplainRec` only matched `"Hash Join"`
+nodes from PostgreSQL's EXPLAIN JSON.  PostgreSQL often chooses
+`"Nested Loop"` or `"Merge Join"` for the same subquery SQL.
+
+**Additional issue**: Even after matching all join types, the EXPLAIN
+plan topology may differ from the IR tree (produced by DuckDB's
+optimizer), causing table-index-set matching to fail.
+
+**Fix**:
+1. Extended `AnnotateFromExplainRec` to match `"Nested Loop"` and
+   `"Merge Join"` in addition to `"Hash Join"`.
+2. Added `AnnotateUnannotatedJoinsByCard` fallback: estimates child
+   subtree cardinality from StoragePlan row counts and temp table
+   cardinalities, picks the smaller child as build side.
+
+### Bug 3: Node-based split produces multi-join subqueries
+
+Node-based split uses DuckDB's `QuerySplit::Split()` which does NOT
+split at every pipeline breaker.  Subquery IR can contain 0, 1, or
+multiple JoinNodes.  This is why build-side annotation and the
+cardinality fallback are needed — subqueries are not always single-join.
+
+### Bug 4: `fprintf(...)` macro suppression
+
+`pg_functions.hpp` from libpg_query defines `#define fprintf(...)` which
+silently removes ALL fprintf calls in any file that includes it
+(including `postgres_adapter.cpp`).  Use `std::cerr` for debug output in
+files that include libpg_query headers.
+
+### Bug 5: Cross-product subqueries crash with QJIT_ASSERT (queries 20a/20b/20c)
+
+**Root cause**: Node-based split can produce subqueries containing
+`CrossProductNode` (e.g. for queries involving `complete_cast` table).
+The JIT analyzer (`AnalyzeQueryJit`) rejects cross products.  With
+`QJIT_ASSERT` on analysis rejection, the entire process aborted.
+
+**Cascading failure**: When a cross-product subquery falls through to PG
+execution, its result temp table exists in PG but NOT in `qjit_temps_`.
+Subsequent subqueries referencing that temp table fail at
+`ResolveQjitSources` ("source:temp-missing:tempN"), causing compilation
+failure even though the subquery IR itself is valid.
+
+**Fix**:
+1. `ir_query_splitter.cpp`: Added `!HasCrossProduct(executable_ir)` check
+   before `SetQjitPendingIR` for PostgreSQL (line 2874) — prevents cross
+   product IR from being sent to the JIT fast path.
+2. `postgres_adapter.cpp`, `ExecuteSQLandCreateTempTable`: When analysis
+   rejects and `fast_ir` is null (splitter intentionally skipped JIT),
+   fall through to PG execution instead of aborting.  When compilation
+   fails (`TryCompileQueryJit` returns nullptr), fall through to PG
+   execution (handles cascading temp-table miss).  `QJIT_ASSERT` only
+   fires if the splitter provided the IR (`fast_ir` non-null) AND
+   analysis rejects — that indicates a bug in the splitter.
+
+**DuckDB parity**: DuckDB adapter already had
+`!HasCrossProduct(executable_ir)` guard at line 2807.  The debug-only
+cross-product assert (`#ifndef NDEBUG`) at line 2314 is disabled in
+release builds.
+
+---
+
+## Correctness test results
+
+### Test infrastructure
+
+`measure/correctness_test_pg.sh`: 40 configs total.
+- 2 interpreter baselines (none-split + node-based)
+- 26 query-jit configs (LLVM + FastISel + TPDE × skip_hash_cmp × simd × cache)
+- 12 spec-jit configs (recompile × LLVM/FastISel/TPDE × cache modes)
+
+### Latest results (2026-07-11): 32/40 passed, 8 failed
+
+- 2/2 interpreter baselines: PASS
+- 20/20 LLVM configs (query-jit + spec-jit + caching + simd + skip_hash_cmp): ALL PASS
+- 6/6 FastISel configs: ALL PASS
+- 4/4 split=none TPDE configs: PASS (graceful fallback in ExecuteSQL)
+- 0/8 node-based TPDE configs: FAIL (`AQP_HAVE_TPDE` not built at time of test)
+
+All failures were TPDE infrastructure (not code bugs).  All actual
+JIT codegen paths (LLVM + FastISel) pass 100%.
+
+### Files modified (additional, for bugs 1–5)
+
+| File | Changes |
+|------|---------|
+| `include/adapters/db_adapter.h` | +84 lines: `StripCollationDependentRangeQuals()` inline function, integrated into `GenerateSQL` |
+| `src/adapters/postgres_adapter.cpp` | Restructured `ExecuteSQLandCreateTempTable` JIT path: QJIT_ASSERT macro, spec-hit path, analysis-rejection fallback (cross-product), compilation-failure fallback (cascading temp miss), timing column placeholder on fallback paths, `fprintf→std::cerr` in MaterializeQjitTempToPostgreSQL ANALYZE error handler, extended `AnnotateFromExplainRec` to match Nested Loop/Merge Join, added `EstimateSubtreeCard` and `AnnotateUnannotatedJoinsByCard` |
+| `include/adapters/postgres_adapter.h` | Changed `MaterializeQjitTempToPostgreSQL` signature: added `bool update_temp_card` parameter |
+| `src/split/ir_query_splitter.cpp` | Added `!HasCrossProduct(executable_ir)` guard before `SetQjitPendingIR` for PostgreSQL (line 2874) |
+| `measure/correctness_test_pg.sh` | Updated: 40 configs (was 26), added spec-jit × cache cross-product configs |
