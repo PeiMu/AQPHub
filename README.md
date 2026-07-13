@@ -245,9 +245,9 @@ These flags control individual pipeline/query-level optimizations.
 ./build_release/aqp_middleware \
   --engine=duckdb \
   --db="/home/pei/Project/duckdb/measure/imdb.db" \
-  --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-  --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-  --split=node-based \
+  --schema=$JOB_PATH/schema.sql \
+  --fkeys=$JOB_PATH/fkeys.sql \
+  --split=topdown \
   --jit-level=query --compile-mode=tpde \
   --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache \
   --no-analyze \

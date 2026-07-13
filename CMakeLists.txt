@@ -100,7 +100,6 @@ if (LLVM_FOUND)
                 ${AQP_TPDE_BUILD}/tpde/libtpde.a
                 ${AQP_TPDE_BUILD}/tpde/deps/fadec/libfadec.a
                 ${AQP_TPDE_BUILD}/tpde/deps/disarm/libdisarm64.a
-                ${AQP_TPDE_BUNDLE}
         )
 
         # Link the static archives into a single shared lib with hidden internals.
