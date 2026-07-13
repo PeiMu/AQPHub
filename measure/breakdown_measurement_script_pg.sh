@@ -21,6 +21,8 @@ set -euo pipefail
 # ============================================================
 # Environment — source machine-specific paths from env.sh
 # ============================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
 HELPER_DB="${DUCKDB_DB}"
