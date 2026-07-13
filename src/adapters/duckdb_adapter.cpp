@@ -88,8 +88,6 @@ struct TempCollectionFunctionData : public duckdb::FunctionData {
   bool has_override_cardinality = false;
   uint64_t override_cardinality = 0;
   std::string table_name;
-  // Non-owning pointer to column stats stored in StoredTempResult
-  std::vector<duckdb::BaseStatistics*> column_stats;
 
   duckdb::unique_ptr<duckdb::FunctionData> Copy() const override {
     auto result = duckdb::make_uniq<TempCollectionFunctionData>();
@@ -97,7 +95,6 @@ struct TempCollectionFunctionData : public duckdb::FunctionData {
     result->has_override_cardinality = has_override_cardinality;
     result->override_cardinality = override_cardinality;
     result->table_name = table_name;
-    result->column_stats = column_stats;
     return std::move(result);
   }
 
@@ -291,9 +288,6 @@ duckdb::unique_ptr<duckdb::FunctionData> DuckDBAdapter::TempCollectionBind(
   result->has_override_cardinality = stored.has_override_cardinality;
   result->override_cardinality = stored.override_cardinality;
   result->table_name = table_name;
-  for (auto &stat : stored.column_stats) {
-    result->column_stats.push_back(stat.get());
-  }
   return std::move(result);
 }
 
@@ -335,20 +329,6 @@ DuckDBAdapter::TempCollectionCardinality(
   }
   return duckdb::make_uniq<duckdb::NodeStatistics>(cardinality, cardinality);
 }
-
-#if DUCKDB_VERSION_AT_LEAST(1, 5)
-duckdb::unique_ptr<duckdb::BaseStatistics>
-DuckDBAdapter::TempCollectionStatistics(
-    duckdb::ClientContext &context,
-    duckdb::TableFunctionGetStatisticsInput &input) {
-  auto &data = input.bind_data->Cast<TempCollectionFunctionData>();
-  auto col_idx = input.column_index.GetPrimaryIndex();
-  if (col_idx < data.column_stats.size() && data.column_stats[col_idx]) {
-    return data.column_stats[col_idx]->ToUnique();
-  }
-  return nullptr;
-}
-#endif
 
 // Replacement scan callback
 duckdb::unique_ptr<duckdb::TableRef>
@@ -1347,12 +1327,30 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     else if (enable_timing_ && !query_jit_ && jit_compiler_)
       WriteJitTimingColumn(0);
 #endif
-    // No JIT registration for this statement: drop any stale JIT context
-    // from previous sub-plan iterations. EIDs are operator memory addresses
-    // which get reused across plans, so leftover compiled fns / bloom
-    // filters would mis-dispatch on this plan.
     GetClientContext()->aqp_jit_context.reset();
-    auto duckdb_result = conn->Query(sql);
+    auto prepared = conn->Prepare(sql);
+    if (prepared->HasError()) {
+      throw std::runtime_error("Query failed: " + prepared->GetError());
+    }
+
+#ifdef HAVE_LLVM
+    if (!pending_bloom_filters_.empty() && prepared->data &&
+        prepared->data->physical_plan) {
+      auto *ctx3 = GetClientContext();
+      if (!ctx3->aqp_jit_context)
+        ctx3->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+      else
+        ctx3->aqp_jit_context->bloom_scan_filters.clear();
+      RegisterBloomFilters(prepared->data->physical_plan->Root(),
+                           GetClientContext(), pending_bloom_filters_);
+      pending_bloom_filters_.clear();
+    }
+#endif
+    if (prepared->data && prepared->data->physical_plan)
+      InjectTempTableJoinStats(prepared->data->physical_plan->Root());
+
+    duckdb::vector<duckdb::Value> bound;
+    auto duckdb_result = prepared->Execute(bound, false);
     if (enable_timing_) {
       auto run_us =
           chrono_toc(&timer, "ExecuteSQL::Execute sub-SQL time\n", false);
@@ -1361,7 +1359,6 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     if (duckdb_result->HasError()) {
       throw std::runtime_error("Query failed: " + duckdb_result->GetError());
     }
-    //  auto intermediate_results = std::move(duckdb_result->Collection());
 
     // Get columns
     result.num_columns = duckdb_result->ColumnCount();
@@ -1756,76 +1753,6 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     temp_table_types = subquery_result->Types();
   }
 
-  // Compute per-column statistics before moving the collection
-  std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats;
-#ifdef HAVE_LLVM
-  if (!qjit_stored)
-#endif
-  {
-    auto &types = subquery_result->Types();
-    col_stats.resize(types.size());
-    for (size_t ci = 0; ci < types.size(); ci++) {
-      col_stats[ci] = duckdb::BaseStatistics::CreateEmpty(types[ci]).ToUnique();
-    }
-    duckdb::ColumnDataScanState scan_state;
-    subquery_result->InitializeScan(scan_state);
-    duckdb::DataChunk chunk;
-    chunk.Initialize(*GetClientContext(), types);
-    bool has_rows = false;
-    while (subquery_result->Scan(scan_state, chunk)) {
-      if (chunk.size() == 0) break;
-      has_rows = true;
-      chunk.Flatten();
-      for (size_t ci = 0; ci < types.size(); ci++) {
-        auto &vec = chunk.data[ci];
-        auto &validity = duckdb::FlatVector::Validity(vec);
-        bool col_has_null = false;
-        bool col_has_valid = false;
-        for (duckdb::idx_t r = 0; r < chunk.size(); r++) {
-          if (!validity.RowIsValid(r)) {
-            col_has_null = true;
-            continue;
-          }
-          col_has_valid = true;
-        }
-        if (col_has_null) col_stats[ci]->SetHasNullFast();
-        if (col_has_valid) col_stats[ci]->SetHasNoNullFast();
-
-        auto pt = types[ci].InternalType();
-        switch (pt) {
-        case duckdb::PhysicalType::INT8: {
-          auto *data = duckdb::FlatVector::GetData<int8_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int8_t>(data[r]);
-          break;
-        }
-        case duckdb::PhysicalType::INT16: {
-          auto *data = duckdb::FlatVector::GetData<int16_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int16_t>(data[r]);
-          break;
-        }
-        case duckdb::PhysicalType::INT32: {
-          auto *data = duckdb::FlatVector::GetData<int32_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int32_t>(data[r]);
-          break;
-        }
-        case duckdb::PhysicalType::INT64: {
-          auto *data = duckdb::FlatVector::GetData<int64_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int64_t>(data[r]);
-          break;
-        }
-        default:
-          break;
-        }
-      }
-      chunk.Reset();
-    }
-    (void)has_rows;
-  }
-
   // Store the result. qjit-stored temps keep only binder metadata here
   // (scan_qjit_temp reads rows from qjit_temps_); everything else stores
   // the ColumnDataCollection in temp_collections_ (zero-copy). If a
@@ -1850,14 +1777,12 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
         existing_it->second.is_placeholder) {
       existing_it->second.collection->Combine(*subquery_result);
       existing_it->second.column_names = std::move(column_names);
-      existing_it->second.column_stats = std::move(col_stats);
       existing_it->second.has_override_cardinality = false;
       existing_it->second.is_placeholder = false;
     } else {
       StoredTempResult stored;
       stored.collection = std::move(subquery_result);
       stored.column_names = std::move(column_names);
-      stored.column_stats = std::move(col_stats);
       temp_collections_[temp_table_name] = std::move(stored);
     }
   }
@@ -1992,76 +1917,17 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
   int64_t chunk_size = subquery_result->Count();
   temp_table_types = subquery_result->Types();
 
-  std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> col_stats;
-  {
-    auto &types = subquery_result->Types();
-    col_stats.resize(types.size());
-    for (size_t ci = 0; ci < types.size(); ci++)
-      col_stats[ci] = duckdb::BaseStatistics::CreateEmpty(types[ci]).ToUnique();
-    duckdb::ColumnDataScanState scan_state;
-    subquery_result->InitializeScan(scan_state);
-    duckdb::DataChunk chunk;
-    chunk.Initialize(*spec_conn.context, types);
-    while (subquery_result->Scan(scan_state, chunk)) {
-      if (chunk.size() == 0) break;
-      chunk.Flatten();
-      for (size_t ci = 0; ci < types.size(); ci++) {
-        auto &vec = chunk.data[ci];
-        auto &validity = duckdb::FlatVector::Validity(vec);
-        bool col_has_null = false, col_has_valid = false;
-        for (duckdb::idx_t r = 0; r < chunk.size(); r++) {
-          if (!validity.RowIsValid(r)) { col_has_null = true; continue; }
-          col_has_valid = true;
-        }
-        if (col_has_null) col_stats[ci]->SetHasNullFast();
-        if (col_has_valid) col_stats[ci]->SetHasNoNullFast();
-        auto pt = types[ci].InternalType();
-        switch (pt) {
-        case duckdb::PhysicalType::INT8: {
-          auto *data = duckdb::FlatVector::GetData<int8_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int8_t>(data[r]);
-          break;
-        }
-        case duckdb::PhysicalType::INT16: {
-          auto *data = duckdb::FlatVector::GetData<int16_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int16_t>(data[r]);
-          break;
-        }
-        case duckdb::PhysicalType::INT32: {
-          auto *data = duckdb::FlatVector::GetData<int32_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int32_t>(data[r]);
-          break;
-        }
-        case duckdb::PhysicalType::INT64: {
-          auto *data = duckdb::FlatVector::GetData<int64_t>(vec);
-          for (duckdb::idx_t r = 0; r < chunk.size(); r++)
-            if (validity.RowIsValid(r)) col_stats[ci]->UpdateNumericStats<int64_t>(data[r]);
-          break;
-        }
-        default:
-          break;
-        }
-      }
-      chunk.Reset();
-    }
-  }
-
   auto existing_it = temp_collections_.find(temp_table_name);
   if (existing_it != temp_collections_.end() &&
       existing_it->second.is_placeholder) {
     existing_it->second.collection->Combine(*subquery_result);
     existing_it->second.column_names = std::move(column_names);
-    existing_it->second.column_stats = std::move(col_stats);
     existing_it->second.has_override_cardinality = false;
     existing_it->second.is_placeholder = false;
   } else {
     StoredTempResult stored;
     stored.collection = std::move(subquery_result);
     stored.column_names = std::move(column_names);
-    stored.column_stats = std::move(col_stats);
     temp_collections_[temp_table_name] = std::move(stored);
   }
   temp_table_card_.emplace(temp_table_name, chunk_size);

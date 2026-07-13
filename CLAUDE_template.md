@@ -1,4 +1,6 @@
-# jit-cache=template optimization
+You are a DBMS JIT compilation expert. Your task is to iteratively improve wall time (including execution time, compilation time, and middleware overhead) for the JOB benchmark through JIT-related code changes (the status of the current iteration is in section "## Current Performance"). Especially with split strategy, e.g., node-based split, where we can collect real runtime information to help with JIT code generation and/or better plan. Find whatever information helps, then check how to collect them. Targeting speedup 10x of the query wall runtime (ignore compilation time) with either level of JIT with node-based split, until no optimization can be found or heavy wall time queries take only 1 ms. You can also improve the split strategy. Approach this as Prof. Thomas Neumann or Matthias Jasny would: apply every low-level technique available, leave nothing on the table. Focus on the bottlenecks identified in the tracing output, but also reconsider the overall approach if the remaining gap is large.
+Always check ## Helper Section for optimization techinique.
+When discussion, think in Prof. Thomas Neumann or Matthias Jasny way.
 
 ## Goal
 
@@ -30,11 +32,9 @@
 
 - **AQPHub**: `/home/pei/Project/AQPHub` (branch: `topdown_fix`)
 - **DuckDB (patched)**: `/home/pei/Project/duckdb`
-- **Lingo-db**: `/home/pei/Project/lingo-db`
 - **JOB queries**: `/home/pei/Project/benchmarks/imdb_job-postgres/queries/`
 - **JOB schema**: `/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql`
 - **DuckDB database**: `/home/pei/Project/duckdb/measure/imdb.db`
-- **LingoDB CSV dir**: `/home/pei/Project/benchmarks/imdb_job-postgres/lingo_db_csv`
 
 Build commands:
 ```bash
@@ -53,30 +53,18 @@ Build hazards:
 
 ## Verification Workflow
 
-### Step 1: Verify optimizer-skip works
+### Step 2: Single query end-to-end
 
-Build a hardcoded minimal MLIR string (scan one table, project one column),
-feed it to LingoDB with `queryOptimizer = nullptr`, verify it executes
-without crash and returns correct results.
-
-### Step 2: Single sub-query end-to-end
-
-Take a simple JOB query (e.g., 1a — single join), run with
-`--engine=lingo-db-runtime`, verify the IR-to-RelAlg converter produces
-valid MLIR that LingoDB can lower and execute. Compare result to DuckDB
-golden output.
-
-### Step 3: Multi-iteration query
-
-Run a query with multiple sub-queries (e.g., 13a with node-based split),
-verify temp table creation, DuckDB helper sync, and multi-iteration
-execution all work correctly.
+Take a simple JOB query that related to our changes (e.g., 1a — single join), run with
+`./build_release/aqp_middleware ...` (check reference in measure/run_job.sh). Compare result to DuckDB golden output.
 
 ### Step 4: Full JOB correctness
 
-Run all 113 JOB queries, compare against golden files:
+Run all 113 JOB queries with the correct flags, compare against golden files:
 - `measure/duckdb_job_no-split_golden.txt`
 - `measure/duckdb_job_node-based_golden.txt`
+
+For more flags, check measure/correctness_test.sh.
 
 ### Analysis scripts (measure/*.py)
 - `tune_per_subquery.py [split]` — pick best config per (query, sub-query)
@@ -85,42 +73,14 @@ Run all 113 JOB queries, compare against golden files:
 
 ---
 
-## Implementation Status: DONE
+## Implementation Status: 
 
-All changes in `src/jit/ir_to_llvm.cpp` (+177, -93 lines):
-
-1. **BuildParamsFromExpr** (~line 5515): LIKE patterns now allocate
-   literal/segments into params buffer matching what codegen expects:
-   - MULTI_SEGMENT: one AllocString per segment
-   - CONTAINS: AllocString(literal) + AllocI32(first_char)
-   - PREFIX/SUFFIX: AllocString(literal)
-   - EQUALITY/COMPLEX: AllocString(raw pattern)
-
-2. **EmitVarConst pat_ptr** (~line 1341): Skip raw pattern EmitParamString
-   for LIKE in template mode; each specialized path does its own loads.
-
-3. **LIKE codegen** (~line 1394): Removed blanket `aqp_like_match` fallback.
-   Each LIKE kind now handles template mode with parameterized loads:
-   - EQUALITY: inline EmitParamString → aqp_str_eq
-   - PREFIX/SUFFIX: EmitParamString(literal) → inline memcmp
-   - CONTAINS: EmitParamString + EmitParamI32 → inline memchr+memcmp loop
-     (needle_len==1 check is now runtime branch)
-   - MULTI_SEGMENT: alloca arrays filled from EmitParamString per segment →
-     aqp_like_match_segments
-   - COMPLEX: inline EmitParamString → aqp_like_match
 
 ### Verification
 
 - Build: passes (release)
-- Correctness: all 113 JOB queries pass for all template-mode configs:
-  - `query-jit + single-run-template` (node-based, no-split)
-  - `query-jit + single-run-template + spec-jit=recompile` (node-based)
-  - `expr-jit + single-run-template` (node-based)
-  - `operator-jit + single-run-template` (node-based)
-  - `pipeline-jit + single-run-template` (node-based)
-- CSV format: unchanged (no new columns), parseable by plot_middleware_jit.py
-  (verified: 113 queries, all 17 columns present)
+- Correctness: all 113 JOB queries pass for all related configs
+- CSV format: unchanged (no new columns), parseable by /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
 - No new print statements; existing LIKE debug trace guarded by `#ifndef NDEBUG`
-- No changes to measure/*.sh or measure/*.py (not needed)
-- Performance (top 15 worst LIKE queries): template/strict ratio 1.018x
-  (was 1.30x before fix)
+- Check if need changes to measure/*.sh or measure/*.py
+- Performance (top 15 worst LIKE queries): measure/measure_breakdown_time_job.sh with correct configs 

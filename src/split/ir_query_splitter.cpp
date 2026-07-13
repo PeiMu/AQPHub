@@ -218,7 +218,6 @@ void IRQuerySplitter::LoadTuneEntry(int idx, const nlohmann::json &val) {
     if (v.is_string()) {
       std::string s = v.get<std::string>();
       if (s == "off") e.skip_hash_cmp = 0;
-      else if (s == "single") e.skip_hash_cmp = 1;
       else if (s == "all") e.skip_hash_cmp = 2;
     } else {
       e.skip_hash_cmp = v.get<bool>() ? 2 : 0;
@@ -1006,7 +1005,19 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
     if (!precomputed_extraction_)
 #endif
-      splitter_->ReorderBeforeSplit(remaining_ir);
+    {
+      // Timed into pending_extract_us_ so the (topdown-only) ReOptimizeIR
+      // round trip shows up in the extract_next_sub-IR column instead of
+      // vanishing between timers.
+      if (config_.enable_timing) {
+        auto reorder_timer = chrono_tic();
+        splitter_->ReorderBeforeSplit(remaining_ir);
+        pending_extract_us_ +=
+            chrono_toc(&reorder_timer, "ReorderBeforeSplit time\n", false);
+      } else {
+        splitter_->ReorderBeforeSplit(remaining_ir);
+      }
+    }
 
     if (!ExecuteOneIteration(remaining_ir)) {
       std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
@@ -1217,8 +1228,15 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         log_final_exe_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     } else {
+      // Final-query tune key = number of EXECUTED subqueries (matches the
+      // group index tune_per_subquery.py assigns to the final tail).  Do not
+      // use iteration_count_: a threshold-abort split burns one iteration on
+      // terminal discovery without executing a subquery, so iteration_count_
+      // overshoots the key by 1 and the final query keeps stale flags.
       if (!tune_entries_.empty())
-        ApplyTuneOverride(iteration_count_);
+        ApplyTuneOverride(static_cast<int>(temp_tables_.size()));
+      if (config_.engine == BackendEngine::DUCKDB && trivial_temp.empty())
+        ApplyCrossSubPlanOptimizations(final_sql);
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
                   << config_.jit_flags << std::dec << " (";
@@ -3251,7 +3269,7 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
 
   if (!build_bloom_filters) return;
 
-  constexpr uint64_t kBFMaxTempCard = 100000;
+  constexpr uint64_t kBFMaxTempCard = 2000000;
 
   std::vector<DuckDBAdapter::BloomFilterInfo> bloom_filters;
   std::set<std::pair<std::string, std::string>> bf_targets;

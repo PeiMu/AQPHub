@@ -10,7 +10,7 @@ jit_simd=${4:-off}
 payload_prune=${5:-on}
 prefetch=${6:-on}
 batch_probe=${7:-on}
-skip_hash_cmp=${8:-all}   # off | single | all
+skip_hash_cmp=${8:-all}   # off | all
 jit_cache=${9:-off}       # off | single-run-strict | single-run-template | full
 spec_jit=${10:-off}       # off | recompile | interpret
 compile_mode=${11:-llvm}   # llvm | fastisel | tpde 
@@ -58,7 +58,6 @@ flag_suffix=""
 [[ "$prefetch"       == "off" ]] && flag_suffix+="_noprefetch"
 [[ "$prefetch" != "on" && "$prefetch" != "off" ]] && flag_suffix+="_pf${prefetch}"
 [[ "$batch_probe"    == "off" ]] && flag_suffix+="_nobatchprobe"
-[[ "$skip_hash_cmp"  == "single" ]] && flag_suffix+="_skiphash1"
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 if [[ "$jit_cache" == "on" ]]; then
     flag_suffix+="_jitcache"

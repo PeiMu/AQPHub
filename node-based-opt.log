@@ -166,3 +166,130 @@ CSV files produced:
   measure/job_result/duckdb_node-based_none_off_thresh_200000_breakdown_time_log.csv
   measure/job_result/duckdb_node-based_none_off_thresh_500000_breakdown_time_log.csv
   measure/job_result/duckdb_node-based_none_off_thresh_1000000_breakdown_time_log.csv
+
+### Opt-6: Dynamic Filter Pushdown for Temp Tables — INVESTIGATED, NOT FEASIBLE (2026-06-29)
+
+Goal: Close the 1.526s asymmetry between DuckDB 1.5.2 none-split and node-based
+caused by dynamic filters not crossing temp table boundaries.
+
+Investigation covered two paths:
+1. **SQL path (scan_temp_collection)**: Enabled `filter_pushdown=true` on the
+   table function and implemented row-level filter evaluation via GetValue().
+   Result: massive regression (+6.425s, +59.9%) because DuckDB pushes WHERE-clause
+   filters into the scan function, replacing its own efficient vectorized Filter
+   operator with our slow row-by-row implementation. Even vectorized filtering
+   inside the scan would only replicate what DuckDB's Filter operator already does.
+2. **MiddleOptimize path (LogicalColumnDataGet)**: Added `dynamic_filters` field
+   (Step B1). Same fundamental limitation applies.
+
+Root cause analysis: Dynamic filter pushdown's primary benefit comes from
+**zone-map/segment skipping** at the storage level. DuckDB's internal tables have
+RowGroups (~122,880 rows) with per-column min/max statistics. When a dynamic
+filter (min/max from hash join build side) is pushed to a table scan, entire
+RowGroups can be skipped without scanning if their statistics show no overlap.
+
+ColumnDataCollection (used for both temp table paths) has:
+- No per-chunk statistics
+- No zone-map metadata
+- 2,048-row chunks (vs 122,880-row RowGroups)
+
+Even if zone maps were added to ColumnDataCollection, they would be ineffective
+because hash join output (which populates temp tables) is **not sorted** on the
+join key — every chunk would span the full value range, preventing any skipping.
+
+DuckDB temp tables (CREATE TEMP TABLE) also wouldn't help: they have RowGroups
+with zone maps, but INSERT preserves query output order (no sorting), so hash
+join output would still have poor zone-map characteristics.
+
+The 1.526s gap is an inherent cost of materialization-based splitting:
+- In non-split, dynamic filters chain across multiple joins to reach real table
+  scans (e.g., cast_info 36M rows), enabling zone-map skipping on sorted storage
+- In node-based, real tables are scanned in earlier iterations before filter
+  information from later joins is available
+- No temp table storage format change can recover this
+
+Changes reverted:
+- src/adapters/duckdb_adapter.cpp: Reverted all Phase 1 changes (filter includes,
+  TempCollectionGlobalState.filters, filter_pushdown=true, EvaluateTableFilter,
+  TempCollectionScanFunc rewrite)
+- DuckDB logical_column_data_get.hpp: Will revert dynamic_filters field (Step B1)
+
+Measurement data:
+  measure/job_result/duckdb_152_perf/ — baseline (before changes)
+  measure/job_result/ — after Phase 1 (reverted)
+
+### Opt-7: STATISTICS_PROPAGATION in MiddleOptimize — HARMFUL, REVERTED (2026-06-29)
+
+Goal: A/B test adding STATISTICS_PROPAGATION to RunBuiltInMiddleOptimizers
+(optimizer.cpp:567-571, currently commented out). STATISTICS_PROPAGATION is
+active in PostOptimize (line 678-697) with merge logic. Hypothesis: adding it
+to MiddleOptimize could improve per-iteration filter/statistics quality.
+
+Change: Uncommented the STATISTICS_PROPAGATION block in RunBuiltInMiddleOptimizers.
+
+Results (15 warm runs, mean, 113 JOB queries):
+
+| Config | Before | After | Change |
+|--------|--------|-------|--------|
+| none-split | 9.621s | 9.541s | -0.080s (-0.8%) |
+| node-based | 10.720s | 21.623s | +10.902s (+101.7%) |
+| Gap | +1.100s | +12.082s | +10.982s |
+
+Catastrophically harmful for node-based (+101.7%). Statistics propagation during
+MiddleOptimize causes the optimizer to make much worse join ordering decisions
+in subsequent iterations. The propagated statistics override the real cardinality
+feedback from temp tables, defeating node-based's core strength (iterative
+correction via actual row counts).
+
+MW Overhead also increased from 0.674s to 1.520s (+125%), indicating the
+statistics propagation adds significant per-iteration optimization cost.
+
+Top regressions:
+  8d: 0.133s → 2.868s (+2.735s)
+  8c: 0.388s → 2.911s (+2.523s)
+  15d: 0.128s → 0.832s (+0.704s)
+  26a: 0.122s → 0.777s (+0.656s)
+  19d: 0.353s → 0.951s (+0.599s)
+
+Some queries improved modestly (22a: -0.051s, 4c: -0.050s, 30b: -0.044s)
+but the regressions vastly outweigh the improvements.
+
+Correctness: node-based jit=none passes 113/113. JIT configs (expr/operator/query)
+showed correctness failures — changed plan structure causes JIT to produce
+different results for MIN/MAX aggregate queries.
+
+Change reverted via git reset.
+
+### Opt-8: Temp Table Distinct Count Statistics (HyperLogLog) — NO EFFECT, REVERTED (2026-06-29)
+
+Goal: Provide accurate per-column distinct counts for temp tables via HyperLogLog,
+so JoinOrderOptimizer uses correct denominators in join cost estimation.
+
+Implementation:
+- duckdb_adapter.cpp: Added HyperLogLog per column during temp table materialization.
+  For each INT8/16/32/64 value, called col_hlls[ci].InsertElement(Hash(data[r])).
+  After scan, called col_stats[ci]->SetDistinctCount(col_hlls[ci].Count()).
+  Applied to both ExecuteSQLandCreateTempTable and ExecuteSpeculativeAndCreateTempTable.
+- relation_statistics_helper.cpp: ExtractColumnDataGetStats now reads distinct count
+  from column_stats with from_hll=true (previously hardcoded estimated_card with
+  from_hll=false).
+
+Verified impact (2026-06-29, measured with/without in perf_with_opt8 / perf_without_opt8):
+
+| Metric            | Without Opt-8 | With Opt-8 | Delta   |
+|-------------------|---------------|------------|---------|
+| None-split total  | 9.682s        | 9.330s     | -0.352s |
+| Node-based total  | 10.716s       | 10.703s    | -0.013s |
+| Gap (NB - None)   | +1.035s       | +1.373s    | +0.338s |
+
+None-split difference (-352ms) is pure run-to-run variance — Opt-8 changes zero
+code in the none-split path. Node-based change (-13ms) also within noise: only
+3 queries improved and 3 regressed beyond ±5ms.
+
+Root cause of no effect (confirms pre-implementation analysis in CLAUDE.md):
+- For temp-to-real joins (common case): real tables have HLL distinct counts, so
+  real table's HLL is used as denominator regardless of temp table stats.
+- For all-temp joins: ID/FK columns have distinct count ≈ cardinality, so the
+  correction from HLL is negligible.
+
+Change reverted — adds HyperLogLog computation overhead for no benefit.

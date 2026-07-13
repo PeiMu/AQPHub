@@ -6827,9 +6827,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
       break;
     }
   }
-  const bool do_skip_salt =
-      (skip_hash_cmp_ == 2 && all_keys_integer) ||
-      (skip_hash_cmp_ == 1 && all_keys_integer && probe_key_cols.size() == 1);
+  const bool do_skip_salt = (skip_hash_cmp_ == 2 && all_keys_integer);
 #ifndef NDEBUG
   std::cerr << "[AQP-JIT] skip_hash_cmp: mode=" << skip_hash_cmp_
             << " all_keys_integer=" << all_keys_integer
@@ -7832,9 +7830,7 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
         all_int = false;
       sd.keys.push_back(kc);
     }
-    sd.do_skip_salt =
-        (skip_hash_cmp_ == 2 && all_int) ||
-        (skip_hash_cmp_ == 1 && all_int && sd.keys.size() == 1);
+    sd.do_skip_salt = (skip_hash_cmp_ == 2 && all_int);
     sd.num_keys = (unsigned)sd.keys.size();
   }
 
@@ -8978,8 +8974,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
         break;
       }
     }
-    bool skip = (skip_hash_cmp_ == 2 && all_int) ||
-                (skip_hash_cmp_ == 1 && all_int && ht.num_keys == 1);
+    bool skip = (skip_hash_cmp_ == 2 && all_int);
 #ifndef NDEBUG
     std::cerr << "[AQP-QJIT] skip_hash_cmp: mode=" << skip_hash_cmp_
               << " ht=" << ht_id << " nkeys=" << ht.num_keys

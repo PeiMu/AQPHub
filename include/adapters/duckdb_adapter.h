@@ -79,7 +79,6 @@ struct StoredTempResult {
   std::vector<std::string> column_names;
   bool has_override_cardinality = false;
   uint64_t override_cardinality = 0;
-  std::vector<duckdb::unique_ptr<duckdb::BaseStatistics>> column_stats;
   // True while this entry is a speculative placeholder (empty collection,
   // estimated cardinality). The real result is Combine()d into the same
   // collection object — a speculative Prepare's bind data holds a raw
@@ -669,7 +668,7 @@ private:
   int  jit_prefetch_entry_distance_ = 24;
   int  jit_prefetch_row_distance_ = 12;
   bool jit_batch_probe_ = true;
-  int  jit_skip_hash_cmp_ = 2; // 0=off, 1=single, 2=all
+  int  jit_skip_hash_cmp_ = 2; // 0=off, 2=all
   bool jit_single_col_int_join_ = true;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
@@ -872,12 +871,6 @@ private:
   static duckdb::unique_ptr<duckdb::NodeStatistics>
   TempCollectionCardinality(duckdb::ClientContext &context,
                             const duckdb::FunctionData *bind_data);
-
-#if DUCKDB_VERSION_AT_LEAST(1, 5)
-  static duckdb::unique_ptr<duckdb::BaseStatistics>
-  TempCollectionStatistics(duckdb::ClientContext &context,
-                           duckdb::TableFunctionGetStatisticsInput &input);
-#endif
 
   // Inject join_stats into PhysicalHashJoin nodes whose build side scans a
   // temp table, enabling DuckDB's perfect hash join optimization.
