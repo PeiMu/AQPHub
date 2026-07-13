@@ -21,16 +21,12 @@ set -euo pipefail
 # ============================================================
 # Environment — source machine-specific paths from env.sh
 # ============================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
-PROJECT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BINARY="${PROJECT}/build_release/aqp_middleware"
 HELPER_DB="${DUCKDB_DB}"
 SCHEMA="${JOB_PATH}/schema.sql"
 FKEYS="${JOB_PATH}/fkeys.sql"
 QUERY_DIR="${JOB_PATH}/queries"
-STORAGE_CACHE="/tmp/imdb_storage_plan_pg.cache"
 
 ITERATION=15  # 5 warm-up, 10 measured
 
