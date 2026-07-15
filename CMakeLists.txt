@@ -100,7 +100,6 @@ if (LLVM_FOUND)
                 ${AQP_TPDE_BUILD}/tpde/libtpde.a
                 ${AQP_TPDE_BUILD}/tpde/deps/fadec/libfadec.a
                 ${AQP_TPDE_BUILD}/tpde/deps/disarm/libdisarm64.a
-                ${AQP_TPDE_BUNDLE}
         )
 
         # Link the static archives into a single shared lib with hidden internals.
@@ -155,6 +154,8 @@ add_library(split_lib STATIC
         src/split/foreign_key_extractor.cpp
         src/split/select_sub_ir.cpp
         src/split/fk_based_splitter.cpp
+        src/split/distinct_cache.cpp
+        src/split/ir_join_optimizer.cpp
         src/split/topdown_splitter.cpp
         src/split/node_based_splitter.cpp
         src/split/ir_query_splitter.cpp

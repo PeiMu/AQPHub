@@ -525,7 +525,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     std::future<std::unique_ptr<CrossQueryPrepResult>> pending_cross_prep;
     DuckDBAdapter *duck_for_cross =
         config.jit_cache >= 1 &&
-                config.strategy == SplitStrategy::NODE_BASED &&
+                (config.strategy == SplitStrategy::NODE_BASED ||
+                 config.strategy == SplitStrategy::TOP_DOWN) &&
                 config.engine == BackendEngine::DUCKDB &&
                 !(config.jit_cache >= 3 && iter > 0)
             ? dynamic_cast<DuckDBAdapter *>(adapter)
@@ -599,7 +600,6 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 #if defined(HAVE_LLVM)
         auto &bg_comp_slot = cross_compilers[cross_compiler_idx];
         cross_compiler_idx ^= 1;
-        // Resolve effective flags for next query's first sub-query
         std::string next_qname;
         {
           auto sl = next_file.rfind('/');
@@ -610,19 +610,37 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         }
         auto [eff_flags, eff_cm] =
             IRQuerySplitter::ResolveTuneFlags(config, next_qname, 0);
-        pending_cross_prep = cross_query_pool->Submit(
-            [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
-             eff_flags, eff_cm]() {
-              return IRQuerySplitter::PrepareNextQuery(
-                  next_file, db_ref, duck_for_cross, config, bg_comp_slot,
-                  eff_flags, eff_cm);
-            });
+        if (config.strategy == SplitStrategy::TOP_DOWN) {
+          pending_cross_prep = cross_query_pool->Submit(
+              [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
+               eff_flags, eff_cm]() {
+                return IRQuerySplitter::PrepareNextQueryTopDown(
+                    next_file, db_ref, duck_for_cross, config, bg_comp_slot,
+                    eff_flags, eff_cm);
+              });
+        } else {
+          pending_cross_prep = cross_query_pool->Submit(
+              [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
+               eff_flags, eff_cm]() {
+                return IRQuerySplitter::PrepareNextQuery(
+                    next_file, db_ref, duck_for_cross, config, bg_comp_slot,
+                    eff_flags, eff_cm);
+              });
+        }
 #else
-        pending_cross_prep = cross_query_pool->Submit(
-            [&next_file, &db_ref, duck_for_cross, &config]() {
-              return IRQuerySplitter::PrepareNextQuery(
-                  next_file, db_ref, duck_for_cross, config);
-            });
+        if (config.strategy == SplitStrategy::TOP_DOWN) {
+          pending_cross_prep = cross_query_pool->Submit(
+              [&next_file, &db_ref, duck_for_cross, &config]() {
+                return IRQuerySplitter::PrepareNextQueryTopDown(
+                    next_file, db_ref, duck_for_cross, config);
+              });
+        } else {
+          pending_cross_prep = cross_query_pool->Submit(
+              [&next_file, &db_ref, duck_for_cross, &config]() {
+                return IRQuerySplitter::PrepareNextQuery(
+                    next_file, db_ref, duck_for_cross, config);
+              });
+        }
 #endif
       }
 #endif

@@ -1,0 +1,8 @@
+--- split=none jit=query compile=llvm shc=single simd=off cache=off spec=off ---
+1d0
+< Warning: Unknown argument: --jit-skip-hash-cmp=single
+
+--- split=node-based jit=query compile=llvm shc=single simd=off cache=off spec=off ---
+1d0
+< Warning: Unknown argument: --jit-skip-hash-cmp=single
+

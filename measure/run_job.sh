@@ -67,7 +67,11 @@ fi
 # read it (all splitter uses are gated on kernel_path != NONE).
 storage_flags=""
 if [[ "$jit_level" == "query" ]]; then
-    storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
+    if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+        storage_flags="--storage-plan --storage-cache=${STORAGE_CACHE:-/tmp/imdb_storage_plan_pg.cache}"
+    else
+        storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
+    fi
 fi
 
 if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
@@ -110,7 +114,7 @@ fi
 helper_db_arg=""
 if [[ "$engine" == "lingo-db-runtime" ]]; then
     helper_db_arg="--helper-db-path=${DUCKDB_DB}"
-elif [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
+elif [[ ("$split" == "node-based" || "$split" == "topdown") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${DUCKDB_DB}"
 elif [[ "$engine" == "mariadb" ]]; then
     helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"

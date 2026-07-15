@@ -187,6 +187,16 @@ public:
   // Convert logical plan to IR
   std::unique_ptr<ir_sql_converter::AQPStmt> ConvertPlanToIR() override;
 
+  // Untimed config statement (no timing columns). disabled_optimizers is a
+  // GLOBAL DuckDB setting (DBConfig), so it also covers fresh spec/bg
+  // connections created later from the same DatabaseInstance.
+  void ApplyEngineSetting(const std::string &sql) override {
+    auto res = conn->Query(sql);
+    if (res->HasError())
+      throw std::runtime_error("ApplyEngineSetting failed: " +
+                               res->GetError());
+  }
+
   // Execute SQL query
   QueryResult ExecuteSQL(const std::string &sql) override;
   void ExecuteSQLandCreateTempTable(const std::string &sql,
@@ -468,12 +478,18 @@ public:
   }
 
   // Pass pre-built IR from SplitIR to skip the redundant ParseSQL+Optimize+
-  // ConvertPlanToIR round-trip in PrepareWithQueryJitAnalysis. The adapter's
-  // plan member must still hold the sub_plan from SplitIR (consumed by
-  // PrepareFromPlan in the fast path). IR is borrowed (non-owning pointer);
-  // caller must keep it alive through ExecuteSQLandCreateTempTable.
-  void SetQjitPendingIR(const ir_sql_converter::AQPStmt *ir) {
+  // ConvertPlanToIR round-trip in PrepareWithQueryJitAnalysis. IR is
+  // borrowed (non-owning pointer); caller must keep it alive through
+  // ExecuteSQLandCreateTempTable.
+  // use_engine_plan=true (node-based): the adapter's plan member holds the
+  // sub_plan from SplitIR (consumed by PrepareFromPlan in the fast path).
+  // use_engine_plan=false (SDS v18): the plan member is STALE (it still
+  // holds the initial FilterOptimize'd whole-query plan) — the fast path
+  // must build the sub-plan from the IR via TryBuildBinaryPlanFromIR.
+  void SetQjitPendingIR(const ir_sql_converter::AQPStmt *ir,
+                        bool use_engine_plan = true) {
     qjit_pending_ir_ = ir;
+    qjit_pending_use_plan_ = use_engine_plan;
   }
 
   // Spec-jit blocking-wait time charged by the splitter; added to the next
@@ -752,6 +768,8 @@ private:
   // ExecuteSQLandCreateTempTable uses TakePlan+PrepareFromPlan+AnnotateBuildSides
   // on this IR instead of the full ParseSQL+Optimize+ConvertPlanToIR round-trip.
   const ir_sql_converter::AQPStmt *qjit_pending_ir_ = nullptr;
+  // Whether the plan member is the matching sub-plan (see SetQjitPendingIR).
+  bool qjit_pending_use_plan_ = true;
 
   // Pending spec-jit wait time (µs) to fold into the next jit_compile CSV
   // column write. See AddSpecWaitTime.
@@ -800,6 +818,21 @@ private:
   void AnnotateBuildSides(duckdb::PhysicalOperator &op,
                           ir_sql_converter::AQPStmt &ir,
                           bool include_chunk_scans = false);
+
+  // v18 (SDS hybrid): closed IR→DuckDB-logical-plan constructor for the
+  // pending-IR fast path when no pre-built plan exists (TOP_DOWN — the
+  // node-based splitter sets `plan`, SDS only has the IR). Accepted shape:
+  // Projection over ONE inner equi-join of two plain Scan/Chunk leaves with
+  // conjunctive single-table filters. Base leaves bind through a fresh
+  // Binder (catalog); temp leaves bind their chunk name through the temp
+  // replacement scan. LogicalGet table indices are overwritten with the IR
+  // indices so AnnotateBuildSides matches; FilterOptimize populates
+  // table_filters (zone-map parity — the plan may also execute interpreted
+  // on a qjit run error). Any other shape → nullptr + reject_reason; the
+  // caller falls back to the SQL round trip (v17 behavior).
+  duckdb::unique_ptr<duckdb::LogicalOperator>
+  TryBuildBinaryPlanFromIR(const ir_sql_converter::AQPStmt &ir,
+                           std::string &reject_reason);
 
   // Query-jit prepare result: the prepared statement (always usable as the
   // interpreter fallback), plus — when analysis succeeded — the fresh-binder
