@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <numeric>
+#include <stdexcept>
 
 namespace middleware {
 namespace storage {
@@ -18,6 +19,13 @@ SortedIndex BuildSortedIndex(const FlatTable &table,
     return idx;
 
   const auto &col = table.columns[col_pos];
+  if (col.type != FlatColumnType::INT32 &&
+      col.type != FlatColumnType::VARCHAR) {
+    // The sort comparators below only understand INT32/VARCHAR layouts.
+    throw std::runtime_error("BuildSortedIndex unsupported: column " +
+                             table.table_name + "." + col_name +
+                             " is neither INT32 nor VARCHAR");
+  }
 
   idx.sorted_perm.reserve(col.row_count);
   for (uint64_t r = 0; r < col.row_count; r++) {

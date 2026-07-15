@@ -120,8 +120,10 @@ private:
   std::unique_ptr<ir_sql_converter::AQPStmt> TakePlanAsIR();
 
   bool enable_debug_print_ = false;
+  size_t original_col_count_ = 0;
 
 public:
+  size_t GetOriginalOutputColumnCount() const { return original_col_count_; }
   // Peek at the next subquery group (speculative — uses current split state
   // before MiddleOptimize of the next iteration).  Returns IR for the predicted
   // next sub-query, or nullptr if terminal / empty.  Does NOT consume any

@@ -1,0 +1,125 @@
+
+========================================
+Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/
+========================================
+Found 22 SQL file(s)
+
+--- Iteration 0 ---
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013/query013_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013_spj/query013_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 11
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 5
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 10
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 8
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050_spj/query050_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 12
+bar|1|180|Hickory |Suite 320 |Plainview|43604     |8346|2450819|2450859|8179|2450819|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072_spj/query072_spj_0.sql
+[AQP-SPLIT] Split-loop failed: [DuckDB] Prepare failed: Not implemented Error: Non-inner join on correlated columns not supported
+  -> falling back to direct execution of original SQL
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AAAAAAAAAEPDCAAA|12297|219|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 7
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 5
+NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 3
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100_spj/query100_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102/query102_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 5
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102_spj/query102_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+
+========================================
+Benchmark Summary
+========================================
+Total queries: 22
+Passed: 22
+Failed: 0
+========================================
+
+========================================
+Execution completed
+========================================

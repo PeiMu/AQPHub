@@ -5,6 +5,13 @@ rm -rf compile.log
 
 engine=$1
 split=$2
+jit_level=$3
+jit_simd=$4
+payload_prune=${5:-on}
+prefetch=${6:-on}
+batch_probe=${7:-on}
+skip_hash_cmp=${8:-all}   # off | all (legacy: on=all)
+cache=${9:-off}
 
 ########################################
 # Start / Stop PostgreSQL
@@ -32,7 +39,7 @@ start_umbra() {
         --network=host \
         --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
-        -v "$DSB_CSV_DIR":/benchmark/csv:ro \
+        -v "$DSB_PATH/code/tools/out_10/csv":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
@@ -45,9 +52,8 @@ start_umbra() {
 load_umbra_dsb_data() {
     echo "Loading schema and CSV data into Umbra..."
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
-        -f "$DSB_SCHEMA"
-    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
-        -f "$DSB_IMPORT_CSV"
+        -f "$DSB_PATH/scripts/create_tables.sql"
+    (cd "$DSB_PATH/code/tools" && python3 "$DSB_PATH/scripts/load_data_umbra.py")
     echo "Data loading done."
 }
 
@@ -136,6 +142,7 @@ elif [[ "$engine" == "opengauss" ]]; then
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}"
+cd ../measure && bash ./hyperfine_dsb.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
+    "${payload_prune}" "${prefetch}" "${batch_probe}" "${skip_hash_cmp}" "${cache}"
 
-#mv compile.log job_result/.
+#mv compile.log dsb_result/.

@@ -5,10 +5,12 @@
 #include "split/ir_query_splitter.h"
 #include "kernel/pipeline_kernel.h"
 #include "jit/aqp_jit_abi.h"
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <stdexcept>
 
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
@@ -744,6 +746,7 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // from the file-backed distinct cache so FetchMissingLeafCardinalities
     // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
     TopDownSplitter bg_splitter(duck, /*apply_engine_settings=*/false);
+    bg_splitter.SetBgMode(true);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.Preprocess(result->whole_ir);
 
@@ -756,7 +759,6 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // identically. Must run BEFORE MovePreprocessState (PlanNext reads
     // table_card_ etc.).
     static const bool no_presplit = std::getenv("AQP_TD_NO_PRESPLIT") != nullptr;
-    bg_splitter.SetBgMode(true);
     try {
       if (!no_presplit && !bg_splitter.IsComplete(result->whole_ir.get())) {
         auto extraction = bg_splitter.SplitIR(result->whole_ir.get());
@@ -1002,12 +1004,44 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 #endif
 
+  // Capture original output column count for projection trim after split.
+  // For topdown/FK-based: read from the whole_ir projection before splitting.
+  // For node-based: deferred to after Preprocess (inside ExecuteSplitLoop).
+  original_output_col_count_ = 0;
+  if (whole_ir) {
+    auto *root = whole_ir.get();
+    while (root &&
+           root->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           root->children.size() == 1)
+      root = root->children[0].get();
+    if (root && root->GetNodeType() ==
+                    ir_sql_converter::SimplestNodeType::ProjectionNode)
+      original_output_col_count_ = root->target_list.size();
+  }
+
   // === Phase 4: Iterative Split-Execute Loop ===
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Phase 4: Iterative Split-Execute Loop"
               << std::endl;
   }
-  auto result = ExecuteSplitLoop(std::move(whole_ir));
+  QueryResult result;
+  try {
+    result = ExecuteSplitLoop(std::move(whole_ir));
+  } catch (const std::runtime_error &e) {
+    std::string msg = e.what();
+    if (msg.find("Prepare failed") != std::string::npos ||
+        msg.find("unsupported") != std::string::npos) {
+      if (config_.enable_debug_print) {
+        std::cerr << "[AQP-SPLIT] Split-loop failed: " << msg
+                  << "\n  -> falling back to direct execution of original SQL\n";
+      }
+      adapter_->ResetQueryState();
+      result = adapter_->ExecuteSQL(sql);
+    } else {
+      throw;
+    }
+  }
 
   if (config_.enable_debug_print) {
     std::cout
@@ -1043,6 +1077,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     } else {
       auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
       td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+      td_splitter->CompleteMissingCardinalities(remaining_ir);
 #if defined(HAVE_LLVM)
       precomputed_extraction_ =
           std::move(active_cross_query_prep_->first_extraction);
@@ -1090,6 +1125,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
 #ifdef HAVE_DUCKDB
   }
+
+  // Node-based: capture original col count AFTER Preprocess/InitFromCrossQueryPrep.
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    auto *nb = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+    if (nb && nb->GetOriginalOutputColumnCount() > 0)
+      original_output_col_count_ = nb->GetOriginalOutputColumnCount();
+  }
 #endif
 
   all_inner_joins_ =
@@ -1097,11 +1139,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   // Phase A wiring: the adapter fires this hook twice per iteration — after
-  // Prepare(i) and again after Execute(i). Legacy spec mode launches the bg
-  // compile for subquery i+1 at the post-execute invocation (post-Prepare is
-  // trace-only); spec-jit launches at post-Prepare so the compile
-  // overlaps Execute(i). Cleared in the destructor (the hook captures
-  // `this`).
+  // Prepare(i) and again after Execute(i). The bg compile launches at
+  // post-Execute so it doesn't race with the foreground's Prepare; the
+  // compile overlaps inter-iteration middleware. Cleared in the destructor
+  // (the hook captures `this`).
   if (config_.spec_jit != 0 &&
       config_.strategy == SplitStrategy::NODE_BASED &&
       config_.engine == BackendEngine::DUCKDB &&
@@ -1158,10 +1199,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
 
     if (!ExecuteOneIteration(remaining_ir)) {
-      std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
-                   "false but IsComplete was false. Breaking loop."
-                << std::endl;
-      break;
+      throw std::runtime_error(
+          "IRQuerySplitter unsupported: ExecuteOneIteration made no progress "
+          "while the split is incomplete (iteration " +
+          std::to_string(iteration_count_) + ")");
     }
 
     if (config_.enable_debug_print) {
@@ -1196,6 +1237,24 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
               << (spec_wait_us_ / 1000.0) << "\n";
   }
 #endif
+
+  // === Projection trim: fix extra columns from split machinery ===
+  if (original_output_col_count_ > 0 && remaining_ir) {
+    auto *proj = remaining_ir.get();
+    while (proj &&
+           proj->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           !proj->children.empty())
+      proj = proj->children[0].get();
+    if (proj &&
+        proj->GetNodeType() ==
+            ir_sql_converter::SimplestNodeType::ProjectionNode &&
+        proj->target_list.size() > original_output_col_count_) {
+      proj->target_list.resize(original_output_col_count_);
+      if (!proj->expr_target_list.empty())
+        proj->expr_target_list.resize(original_output_col_count_);
+    }
+  }
 
   // === Final Execution ===
   if (!remaining_ir) {
@@ -1677,23 +1736,21 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   if (config_.spec_jit == 0)
     return;
 
-  // Launch EARLY at post-Prepare so the full-quality bg compile overlaps
-  // Execute(i); assumed_card is the Prepare estimate and the card guard in
-  // CheckSpeculativeResult is the usability filter. A miss never relaunches
-  // — it goes to the inline miss policy instead (recompile=TPDE or
-  // interpret=skip).
-  // Trace est (post-Prepare) and actual (post-execute) cardinality.
+  // Launch at post-Execute so the bg compile does not race with the
+  // foreground's Prepare/AnnotateBuildSides on the main DuckDB connection.
+  // The compile overlaps inter-iteration middleware (SplitIR, UpdateIR,
+  // CheckSpec). Post-Prepare is trace-only.
   if (!post_execute) {
     if (config_.enable_debug_print)
       std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
                 << " temp=" << temp_table_name << " prepare_est=" << est_card
                 << "\n";
+    return; // trace only; launch deferred to post-Execute
   } else {
     if (config_.enable_debug_print)
       std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
                 << " temp=" << temp_table_name << " actual_card=" << est_card
                 << "\n";
-    return; // already launched at post-Prepare
   }
   if (config_.strategy != SplitStrategy::NODE_BASED)
     return;
@@ -1748,9 +1805,8 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   if (!node_splitter || !node_splitter->HasNextSubquery())
     return;
 
-  // Placeholder so the bg Prepare can bind temp_table_name before the real
-  // result exists. The real result is Combine()d into it after ExecuteRow.
-  duck->RegisterPlaceholderTemp(temp_table_name, types, col_names, est_card);
+  // Post-Execute launch: the real temp result already exists in the adapter,
+  // so no placeholder is needed (the bg Prepare binds against real data).
 
   auto spec_ir = node_splitter->PeekNextSubquery(chunk_index, types, est_card);
   if (!spec_ir)
@@ -1763,9 +1819,8 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   std::string spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
 
   // Apply range predicates so a HIT is never inferior to the inline plan.
-  // At early-launch (post-Prepare) temp(i)'s collection is still the empty
-  // placeholder — we DON'T push it to temp_tables_ (bloom/min-max from zero
-  // rows would be wrong). Divergence from the inline SQL is caught by the
+  // Post-Execute launch: temp(i) holds real data; range preds and bloom
+  // filters are available. Divergence from the inline SQL is caught by the
   // SQL match and routed to the miss policy.
   if (query_jit)
     ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/true,
@@ -2706,6 +2761,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
     // inter-iteration window), compensate mode at post-Prepare (estimated
     // cardinality; overlaps Execute(i)).
 
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+    // Drain zombie bg specs before the foreground enters
+    // ExecuteSQLandCreateTempTable: a retired spec's bg task may still be
+    // calling RegisterJITImpl on the shared adapter.
+    for (auto &z : zombie_specs_)
+      if (z->future.valid())
+        z->future.wait();
+    zombie_specs_.clear();
+#endif
+
     std::chrono::high_resolution_clock::time_point duckdb_exe_start;
     if (config_.enable_tuning)
       duckdb_exe_start = std::chrono::high_resolution_clock::now();
@@ -3210,11 +3275,23 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
   }
 
   if (!extra_where.empty()) {
-    size_t semi = sub_sql.rfind(';');
-    if (semi != std::string::npos)
-      sub_sql.insert(semi, extra_where);
-    else
-      sub_sql += extra_where;
+    size_t insert_pos = std::string::npos;
+    std::string norm_sql = sub_sql;
+    std::transform(norm_sql.begin(), norm_sql.end(), norm_sql.begin(), ::tolower);
+    std::replace(norm_sql.begin(), norm_sql.end(), '\n', ' ');
+    std::replace(norm_sql.begin(), norm_sql.end(), '\r', ' ');
+    std::replace(norm_sql.begin(), norm_sql.end(), '\t', ' ');
+    for (const char *kw : {" order by ", " group by ", " having ", " limit "}) {
+      size_t pos = norm_sql.rfind(kw);
+      if (pos != std::string::npos &&
+          (insert_pos == std::string::npos || pos < insert_pos))
+        insert_pos = pos;
+    }
+    if (insert_pos == std::string::npos) {
+      size_t semi = sub_sql.rfind(';');
+      insert_pos = (semi != std::string::npos) ? semi : sub_sql.size();
+    }
+    sub_sql.insert(insert_pos, extra_where);
     if (config_.enable_debug_print)
       std::cerr << "[RANGE-SQL] injected: " << extra_where << "\n";
   }
@@ -3378,6 +3455,57 @@ void IRQuerySplitter::UpdateExprIndices(
     }
     return;
   }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *in_expr = dynamic_cast<ir_sql_converter::SimplestInExpr *>(expr);
+    if (in_expr && in_expr->attr) {
+      auto updated =
+          UpdateAttrIndices(in_expr->attr.get(), temp_table, old_table_indices);
+      if (updated) {
+        in_expr->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *arith = dynamic_cast<ir_sql_converter::SimplestArithExpr *>(expr);
+    if (arith) {
+      UpdateExprIndices(arith->left.get(), temp_table, old_table_indices);
+      UpdateExprIndices(arith->right.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *cast = dynamic_cast<ir_sql_converter::SimplestCastExpr *>(expr);
+    if (cast) {
+      UpdateExprIndices(cast->child.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ExprNode) {
+    auto *general =
+        dynamic_cast<ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (general) {
+      UpdateExprIndices(general->left_expr.get(), temp_table,
+                        old_table_indices);
+      UpdateExprIndices(general->right_expr.get(), temp_table,
+                        old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ConstVarNode) {
+    // SimplestConstExpr: no attributes to remap
+    return;
+  }
+
+  throw std::runtime_error(
+      "IRQuerySplitter unsupported: expression node type " +
+      std::to_string(static_cast<int>(node_type)) +
+      " in UpdateExprIndices; column indices would go stale");
 }
 
 std::unique_ptr<ir_sql_converter::SimplestAttr>
@@ -3399,10 +3527,13 @@ IRQuerySplitter::UpdateAttrIndices(
   int new_col_idx = temp_table.FindNewColumnIndex(old_table_idx, old_col_idx);
 
   if (new_col_idx < 0) {
-    std::cerr << "[UpdateAttrIndices] Warning: Column [" << old_table_idx << "."
-              << old_col_idx << "] (" << attr->GetColumnName()
-              << ") not found in temp table mapping" << std::endl;
-    return nullptr;
+    // the attr belongs to a table consumed by this temp table but the column
+    // is not in the mapping; leaving it unmapped yields a stale reference
+    throw std::runtime_error(
+        "IRQuerySplitter unsupported: column [" +
+        std::to_string(old_table_idx) + "." + std::to_string(old_col_idx) +
+        "] (" + attr->GetColumnName() +
+        ") not found in temp table mapping during index update");
   }
 
   // Use the column name from column_mappings which matches SQL generator's
@@ -3619,6 +3750,16 @@ void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
   auto types = coll.Types();
   flat->columns.resize(types.size());
 
+  // Only INTEGER/BIGINT/VARCHAR can be flattened below; DATE/DECIMAL/etc.
+  // are physically integers and reading them as string_t would crash.
+  // Skip caching this temp — the DuckDB temp table stays authoritative.
+  for (size_t c = 0; c < types.size(); c++) {
+    if (types[c] != duckdb::LogicalType::INTEGER &&
+        types[c] != duckdb::LogicalType::BIGINT &&
+        types[c].id() != duckdb::LogicalTypeId::VARCHAR)
+      return;
+  }
+
   for (size_t c = 0; c < types.size(); c++) {
     auto &col = flat->columns[c];
     col.row_count = flat->row_count;
@@ -3763,6 +3904,16 @@ void IRQuerySplitter::EnsureKernelTempReadyNoCsr(const std::string &temp_name) {
   flat->column_names = stored->column_names;
   auto types = coll.Types();
   flat->columns.resize(types.size());
+
+  // Only INTEGER/BIGINT/VARCHAR can be flattened below; DATE/DECIMAL/etc.
+  // are physically integers and reading them as string_t would crash.
+  // Skip caching this temp — the DuckDB temp table stays authoritative.
+  for (size_t c = 0; c < types.size(); c++) {
+    if (types[c] != duckdb::LogicalType::INTEGER &&
+        types[c] != duckdb::LogicalType::BIGINT &&
+        types[c].id() != duckdb::LogicalTypeId::VARCHAR)
+      return;
+  }
 
   for (size_t c = 0; c < types.size(); c++) {
     auto &col = flat->columns[c];

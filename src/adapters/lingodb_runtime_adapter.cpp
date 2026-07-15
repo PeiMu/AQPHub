@@ -1069,6 +1069,34 @@ private:
       return builder.create<tuples::GetColumnOp>(
           builder.getUnknownLoc(), colRef.getColumn().type, colRef, tuple);
     }
+    case NT::ExprNode: {
+      auto &gen =
+          static_cast<ir_sql_converter::SimplestGeneralComparison &>(expr);
+      auto leftVal = convertExpr(builder, *gen.left_expr, tuple);
+      auto rightVal = convertExpr(builder, *gen.right_expr, tuple);
+      auto pred = mapCmpPredicate(gen.GetSimplestExprType());
+      return builder.create<db::CmpOp>(builder.getUnknownLoc(), pred,
+                                       leftVal, rightVal);
+    }
+    case NT::FunctionExprNodeType: {
+      auto &fn =
+          static_cast<ir_sql_converter::SimplestFunctionExpr &>(expr);
+      auto loc = builder.getUnknownLoc();
+      std::vector<mlir::Value> args;
+      for (auto &arg : fn.args)
+        args.push_back(convertExpr(builder, *arg, tuple));
+      auto lingoName = mapFunctionName(fn.fn_name);
+      auto resType = inferFunctionResultType(builder, lingoName, args);
+      return builder.create<db::RuntimeCall>(loc, resType, lingoName,
+                                             mlir::ValueRange(args))
+          .getRes();
+    }
+    case NT::ConstVarNode: {
+      auto &ce =
+          static_cast<ir_sql_converter::SimplestConstExpr &>(expr);
+      auto loc = builder.getUnknownLoc();
+      return createConstantUntyped(builder, *ce.value);
+    }
     default:
       throw std::runtime_error(
           "[IRToRelAlg] Unsupported expression type: " +
@@ -1288,6 +1316,67 @@ private:
   }
 
   // ============== Helpers ==============
+
+  std::string mapFunctionName(const std::string &duckName) {
+    static const std::unordered_map<std::string, std::string> map = {
+        {"substring", "Substring"},
+        {"substr", "Substring"},
+        {"upper", "ToUpper"},
+        {"lower", "ToLower"},
+        {"length", "StringLength"},
+        {"contains", "Contains"},
+        {"replace", "Replace"},
+        {"regexp_replace", "RegexpReplace"},
+        {"concat", "Concatenate"},
+        {"abs", "AbsInt"},
+    };
+    auto it = map.find(duckName);
+    if (it != map.end())
+      return it->second;
+    std::string pascal;
+    bool capitalize = true;
+    for (char c : duckName) {
+      if (c == '_') {
+        capitalize = true;
+      } else {
+        pascal += capitalize ? (char)toupper(c) : c;
+        capitalize = false;
+      }
+    }
+    return pascal;
+  }
+
+  mlir::Type inferFunctionResultType(mlir::OpBuilder &builder,
+                                     const std::string &fn,
+                                     const std::vector<mlir::Value> &args) {
+    if (fn == "StringLength")
+      return builder.getI64Type();
+    if (!args.empty())
+      return args[0].getType();
+    return db::StringType::get(&ctx_);
+  }
+
+  mlir::Value createConstantUntyped(mlir::OpBuilder &builder,
+                                    ir_sql_converter::SimplestConstVar &cv) {
+    auto loc = builder.getUnknownLoc();
+    switch (cv.GetType()) {
+    case ir_sql_converter::SimplestVarType::IntVar:
+      return builder.create<db::ConstantOp>(
+          loc, builder.getI64Type(),
+          builder.getI64IntegerAttr(cv.GetIntValue()));
+    case ir_sql_converter::SimplestVarType::FloatVar:
+      return builder.create<db::ConstantOp>(
+          loc, mlir::Float64Type::get(&ctx_),
+          builder.getF64FloatAttr(cv.GetFloatValue()));
+    case ir_sql_converter::SimplestVarType::StringVar:
+      return builder.create<db::ConstantOp>(
+          loc, db::StringType::get(&ctx_),
+          builder.getStringAttr(cv.GetStringValue()));
+    default:
+      return builder.create<db::ConstantOp>(
+          loc, builder.getI64Type(), builder.getI64IntegerAttr(0));
+    }
+  }
 
   mlir::Value createConstant(mlir::OpBuilder &builder,
                              ir_sql_converter::SimplestConstVar &constVar,

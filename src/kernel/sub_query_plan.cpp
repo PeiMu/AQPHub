@@ -412,8 +412,12 @@ RowPredicate CompileOnePredicate(const AQPExpr *expr, const FlatTable *table) {
     if (col_type == FlatColumnType::INT32) {
       std::unordered_set<int32_t> val_set;
       for (const auto &v : in_expr->values) {
-        if (v->GetType() == IntVar)
-          val_set.insert(v->GetIntValue());
+        // A value of a different type (e.g. StringVar date literal against a
+        // DATE column stored as INT32) would silently vanish from the set and
+        // make the predicate reject every row — bail out instead.
+        if (v->GetType() != IntVar)
+          return {};
+        val_set.insert(v->GetIntValue());
       }
       return [col_idx, val_set, negated](const FlatTable &t, uint64_t row) {
         if (t.columns[col_idx].IsNull(row))
@@ -426,8 +430,9 @@ RowPredicate CompileOnePredicate(const AQPExpr *expr, const FlatTable *table) {
     if (col_type == FlatColumnType::VARCHAR) {
       std::unordered_set<std::string> val_set;
       for (const auto &v : in_expr->values) {
-        if (v->GetType() == StringVar)
-          val_set.insert(v->GetStringValue());
+        if (v->GetType() != StringVar)
+          return {};
+        val_set.insert(v->GetStringValue());
       }
       return [col_idx, val_set, negated](const FlatTable &t, uint64_t row) {
         if (t.columns[col_idx].IsNull(row))
@@ -1186,6 +1191,10 @@ SubQueryPlan AnalyzeSubIR(
       if (out.col_idx < 0)
         return plan;
       out.type = scan_leaf->flat->columns[out.col_idx].type;
+      // Emit paths only handle INT32/VARCHAR; bail so DuckDB executes.
+      if (out.type != FlatColumnType::INT32 &&
+          out.type != FlatColumnType::VARCHAR)
+        return plan;
       out.name = col_name;
       output_cols.push_back(out);
     }
@@ -1444,6 +1453,10 @@ SubQueryPlan AnalyzeSubIR(
     } else {
       return plan;
     }
+    // Emit paths only handle INT32/VARCHAR; bail so DuckDB executes.
+    if (out.type != FlatColumnType::INT32 &&
+        out.type != FlatColumnType::VARCHAR)
+      return plan;
     out.name = col_name;
     output_cols.push_back(out);
   }
@@ -2081,6 +2094,9 @@ FinalAggregatePlan AnalyzeFinalIR(
       return plan;
 
     mc.type = mc.table->columns[mc.flat_col_idx].type;
+    if (mc.type != FlatColumnType::INT32 &&
+        mc.type != FlatColumnType::VARCHAR)
+      return plan;
 
     // Look up sorted index (only for base tables on scan side)
     if (mc.on_scan_table && scan_leaf->is_base) {

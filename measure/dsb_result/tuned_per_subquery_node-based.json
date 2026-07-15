@@ -1,0 +1,509 @@
+{
+  "query013_0": {
+    "0": {
+      "config": "operator",
+      "total_ms": 47.605
+    }
+  },
+  "query013_spj_0": {
+    "0": {
+      "config": "expr",
+      "total_ms": 46.769
+    }
+  },
+  "query018_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.695
+    },
+    "1": {
+      "config": "query_full",
+      "total_ms": 0.284
+    },
+    "2": {
+      "config": "query_full",
+      "total_ms": 0.271
+    },
+    "3": {
+      "config": "query_full",
+      "total_ms": 0.293
+    },
+    "4": {
+      "config": "query_full",
+      "total_ms": 1.125
+    }
+  },
+  "query019_0": {
+    "0": {
+      "config": "expr",
+      "total_ms": 6.58
+    },
+    "1": {
+      "config": "operator",
+      "total_ms": 3.331
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "operator_fastisel",
+      "total_ms": 2.469
+    },
+    "3": {
+      "config": "expr",
+      "total_ms": 0.747
+    }
+  },
+  "query019_spj_0": {
+    "0": {
+      "config": "operator",
+      "total_ms": 5.944
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 3.318
+    },
+    "2": {
+      "config": "operator",
+      "total_ms": 2.393
+    },
+    "3": {
+      "config": "operator",
+      "total_ms": 0.533
+    }
+  },
+  "query025_spj_0": {
+    "0": {
+      "config": "expr",
+      "total_ms": 0.568
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.313
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.299
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.247
+    },
+    "4": {
+      "config": "expr",
+      "total_ms": 0.735
+    }
+  },
+  "query027_spj_0": {
+    "0": {
+      "config": "query_full",
+      "total_ms": 24.478
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 2.905
+    }
+  },
+  "query040_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.791
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 0.263
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.259
+    },
+    "3": {
+      "config": "operator",
+      "total_ms": 0.575
+    }
+  },
+  "query050_spj_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 35.862
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 191.277
+    }
+  },
+  "query072_spj_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 0.815
+    },
+    "1": {
+      "config": "operator",
+      "total_ms": 0.288
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.295
+    },
+    "3": {
+      "config": "query_full",
+      "total_ms": 0.294
+    },
+    "4": {
+      "config": "query_full",
+      "total_ms": 0.293
+    },
+    "5": {
+      "config": "query_full",
+      "total_ms": 0.248
+    },
+    "6": {
+      "config": "query_full",
+      "total_ms": 9.217
+    }
+  },
+  "query084_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 1.621
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.838
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.361
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 6.895
+    }
+  },
+  "query085_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 5.031
+    },
+    "1": {
+      "config": "operator",
+      "total_ms": 15.863
+    }
+  },
+  "query085_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 4.999
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "operator_fastisel",
+      "total_ms": 15.313
+    }
+  },
+  "query091_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.22
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 2.288
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 2.204
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.306
+    },
+    "4": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 1.049
+    }
+  },
+  "query091_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.138
+    },
+    "1": {
+      "config": "operator",
+      "total_ms": 2.691
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 2.184
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.421
+    },
+    "4": {
+      "config": "interp",
+      "total_ms": 0.963
+    }
+  },
+  "query099_spj_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 0.603
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.253
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.24
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 0.683
+    }
+  },
+  "query100_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 2.012
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.276
+    },
+    "2": {
+      "config": "query_full",
+      "total_ms": 0.24
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.252
+    },
+    "4": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 0.23
+    },
+    "5": {
+      "config": "interp",
+      "total_ms": 0.187
+    },
+    "6": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.964
+    }
+  },
+  "query100_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.019
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.278
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.241
+    },
+    "3": {
+      "config": "query_full",
+      "total_ms": 0.255
+    },
+    "4": {
+      "config": "interp",
+      "total_ms": 0.24
+    },
+    "5": {
+      "config": "interp",
+      "total_ms": 0.198
+    },
+    "6": {
+      "config": "interp",
+      "total_ms": 2.826
+    }
+  },
+  "query101_0": {
+    "0": {
+      "config": "query_full",
+      "total_ms": 20.78
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.394
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.225
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.272
+    },
+    "4": {
+      "config": "interp",
+      "total_ms": 0.238
+    },
+    "5": {
+      "config": "query_full",
+      "total_ms": 0.234
+    },
+    "6": {
+      "compile_mode": 1,
+      "config": "operator_fastisel",
+      "total_ms": 0.761
+    }
+  },
+  "query101_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 19.437
+    },
+    "1": {
+      "config": "query_full",
+      "total_ms": 0.393
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.221
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.267
+    },
+    "4": {
+      "config": "query_full",
+      "total_ms": 0.232
+    },
+    "5": {
+      "config": "interp",
+      "total_ms": 0.236
+    },
+    "6": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 0.648
+    }
+  },
+  "query102_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 139.203
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 0.28
+    },
+    "10": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 1.184
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.294
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.238
+    },
+    "4": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.232
+    },
+    "5": {
+      "config": "interp",
+      "total_ms": 0.25
+    },
+    "6": {
+      "config": "operator",
+      "total_ms": 0.238
+    },
+    "7": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.26
+    },
+    "8": {
+      "config": "interp",
+      "total_ms": 0.257
+    },
+    "9": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 0.254
+    }
+  },
+  "query102_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 3.845
+    },
+    "1": {
+      "config": "expr",
+      "total_ms": 137.094
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.304
+    },
+    "3": {
+      "config": "expr",
+      "total_ms": 0.3
+    },
+    "4": {
+      "config": "expr",
+      "total_ms": 0.253
+    },
+    "5": {
+      "config": "expr",
+      "total_ms": 0.247
+    },
+    "6": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.245
+    },
+    "7": {
+      "config": "expr",
+      "total_ms": 2.301
+    },
+    "8": {
+      "config": "interp",
+      "total_ms": 0.235
+    },
+    "9": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 4.38
+    }
+  }
+}

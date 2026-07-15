@@ -273,11 +273,13 @@ void TopDownSplitter::Preprocess(
       continue;
     double flat = std::max(it->second / kSemiSelectivity, 1.0);
     double est = flat;
-    double distinct = distinct_cache_.Get(*adapter_, GetTableName(t),
-                                          info.first);
-    if (distinct > 0.0) {
-      double cand = std::ceil(it->second * info.second / distinct);
-      est = std::max(est, std::min(it->second, std::max(cand, 1.0)));
+    if (!bg_mode_) {
+      double distinct = distinct_cache_.Get(*adapter_, GetTableName(t),
+                                            info.first);
+      if (distinct > 0.0) {
+        double cand = std::ceil(it->second * info.second / distinct);
+        est = std::max(est, std::min(it->second, std::max(cand, 1.0)));
+      }
     }
     it->second = est;
   }
@@ -327,6 +329,7 @@ void TopDownSplitter::CaptureLeafCardinalities(
 
 void TopDownSplitter::FetchMissingLeafCardinalities(
     ir_sql_converter::AQPStmt *ir) {
+  if (bg_mode_) return;
   std::vector<JoinRel> rels;
   std::vector<unsigned int> rel_tables;
   CollectRelations(ir, rels, rel_tables);
@@ -470,6 +473,126 @@ void TopDownSplitter::CollectRelations(
     CollectRelations(child.get(), rels, rel_tables);
 }
 
+// Collect the table indices referenced by an expression. Returns false
+// (conservative "don't touch") on any node kind it does not understand.
+static bool CollectExprTables(const ir_sql_converter::AQPExpr *e,
+                              std::set<unsigned int> &tables) {
+  using namespace ir_sql_converter;
+  if (!e)
+    return false;
+  switch (e->GetNodeType()) {
+  case SimplestNodeType::VarConstComparisonNode: {
+    auto *c = dynamic_cast<const SimplestVarConstComparison *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::VarComparisonNode: {
+    auto *c = dynamic_cast<const SimplestVarComparison *>(e);
+    if (!c || !c->left_attr || !c->right_attr)
+      return false;
+    tables.insert(c->left_attr->GetTableIndex());
+    tables.insert(c->right_attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::IsNullExprNode: {
+    auto *c = dynamic_cast<const SimplestIsNullExpr *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::InExprNode: {
+    auto *c = dynamic_cast<const SimplestInExpr *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::LogicalExprNode: {
+    auto *c = dynamic_cast<const SimplestLogicalExpr *>(e);
+    if (!c)
+      return false;
+    if (c->GetLogicalOp() != SimplestLogicalOp::LogicalNot &&
+        !CollectExprTables(c->left_expr.get(), tables))
+      return false;
+    return CollectExprTables(c->right_expr.get(), tables);
+  }
+  case SimplestNodeType::SingleAttrExprNode: {
+    auto *c = dynamic_cast<const SimplestSingleAttrExpr *>(e);
+    if (!c || !c->attr)
+      return false;
+    tables.insert(c->attr->GetTableIndex());
+    return true;
+  }
+  case SimplestNodeType::ArithExprNode: {
+    auto *c = dynamic_cast<const SimplestArithExpr *>(e);
+    if (!c)
+      return false;
+    bool ok = true;
+    if (c->left)
+      ok = CollectExprTables(c->left.get(), tables);
+    if (ok && c->right)
+      ok = CollectExprTables(c->right.get(), tables);
+    return ok;
+  }
+  case SimplestNodeType::CastExprNode: {
+    auto *c = dynamic_cast<const SimplestCastExpr *>(e);
+    if (!c)
+      return false;
+    return CollectExprTables(c->child.get(), tables);
+  }
+  case SimplestNodeType::ExprNode: {
+    auto *c = dynamic_cast<const SimplestGeneralComparison *>(e);
+    if (!c)
+      return false;
+    return CollectExprTables(c->left_expr.get(), tables) &&
+           CollectExprTables(c->right_expr.get(), tables);
+  }
+  case SimplestNodeType::ConstVarNode:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Collect sets of table indices that MUST stay in the same cluster because
+// they share unsplittable predicates (general comparisons, OR clauses
+// spanning multiple tables). Each entry is a set of >= 2 table indices.
+static void CollectMustColocateSets(
+    const ir_sql_converter::AQPStmt *node,
+    std::vector<std::set<unsigned int>> &groups) {
+  if (!node)
+    return;
+#ifndef NDEBUG
+  std::cout << "[SDS] CollectMustColocateSets: node type="
+            << (int)node->GetNodeType() << " qual_vec.size="
+            << node->qual_vec.size() << " children=" << node->children.size()
+            << std::endl;
+#endif
+  for (const auto &qual : node->qual_vec) {
+    std::set<unsigned int> expr_tables;
+    bool ok = CollectExprTables(qual.get(), expr_tables);
+#ifndef NDEBUG
+    std::cout << "[SDS]   qual node_type=" << (int)qual->GetNodeType()
+              << " ok=" << ok << " tables={";
+    for (auto t : expr_tables)
+      std::cout << t << " ";
+    std::cout << "}" << std::endl;
+#endif
+    if (ok && expr_tables.size() >= 2) {
+      auto nt = qual->GetNodeType();
+      bool is_simple_join_pred =
+          (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode);
+      if (!is_simple_join_pred)
+        groups.push_back(expr_tables);
+    }
+  }
+  for (const auto &child : node->children)
+    CollectMustColocateSets(child.get(), groups);
+}
+
 void TopDownSplitter::CollectEdges(
     const ir_sql_converter::AQPStmt *node,
     const std::map<unsigned int, int> &table_to_pos,
@@ -512,8 +635,32 @@ void TopDownSplitter::CollectEdges(
       }
     }
   }
-  for (const auto &qual : node->qual_vec)
+  for (const auto &qual : node->qual_vec) {
     ForEachJoinPredicate(qual.get(), add_edge);
+    // Also detect cross-table general expressions (e.g. BETWEEN with
+    // date arithmetic) and add connectivity edges so the DP optimizer
+    // keeps those tables in the same cluster.
+    std::set<unsigned int> expr_tables;
+    if (CollectExprTables(qual.get(), expr_tables) && expr_tables.size() >= 2) {
+      std::vector<unsigned int> tvec(expr_tables.begin(), expr_tables.end());
+      for (size_t i = 0; i < tvec.size(); ++i) {
+        for (size_t j = i + 1; j < tvec.size(); ++j) {
+          auto lit = table_to_pos.find(tvec[i]);
+          auto rit = table_to_pos.find(tvec[j]);
+          if (lit != table_to_pos.end() && rit != table_to_pos.end() &&
+              lit->second != rit->second) {
+            JoinEdge e;
+            e.left_rel = lit->second;
+            e.right_rel = rit->second;
+            e.left_col = 0;
+            e.right_col = 0;
+            e.is_equality = false;
+            edges.push_back(std::move(e));
+          }
+        }
+      }
+    }
+  }
 
   for (const auto &child : node->children)
     CollectEdges(child.get(), table_to_pos, edges);
@@ -540,9 +687,11 @@ bool TopDownSplitter::PlanNext(
   for (auto &r : rels) {
     if (r.is_temp)
       continue;
-    double bc = distinct_cache_.GetRowCount(*adapter_, r.table_name);
-    if (bc > 0.0)
-      r.base_cardinality = bc;
+    if (!bg_mode_) {
+      double bc = distinct_cache_.GetRowCount(*adapter_, r.table_name);
+      if (bc > 0.0)
+        r.base_cardinality = bc;
+    }
   }
 
   std::map<unsigned int, int> table_to_pos;
@@ -559,7 +708,8 @@ bool TopDownSplitter::PlanNext(
       const std::string &col = side == 0 ? e.left_col_name : e.right_col_name;
       if (rels[pos].is_temp || col.empty())
         continue;
-      double d = distinct_cache_.Get(*adapter_, rels[pos].table_name, col);
+      double d = bg_mode_ ? distinct_cache_.GetCached(rels[pos].table_name, col)
+                          : distinct_cache_.Get(*adapter_, rels[pos].table_name, col);
       if (d > 0.0) {
         auto &hint = col_distinct_hints_[col];
         hint = std::max(hint, d);
@@ -571,9 +721,6 @@ bool TopDownSplitter::PlanNext(
       std::move(rels), std::move(edges),
       [this](const std::string &table, const std::string &column) {
         if (table.rfind("temp", 0) == 0) {
-          // Temp columns carry decorated names
-          // (<src_table>_<idx>_<col>, nested through temps); the base
-          // column name is the trailing component -> longest-suffix match.
           auto it = col_distinct_hints_.find(column);
           if (it != col_distinct_hints_.end())
             return it->second;
@@ -591,10 +738,12 @@ bool TopDownSplitter::PlanNext(
           }
           return best;
         }
-        return distinct_cache_.Get(*adapter_, table, column);
+        return bg_mode_ ? distinct_cache_.GetCached(table, column)
+                        : distinct_cache_.Get(*adapter_, table, column);
       },
       [this](const std::string &table, const std::string &column) {
-        return distinct_cache_.GetCorrelation(*adapter_, table, column);
+        return bg_mode_ ? -1.0
+                        : distinct_cache_.GetCorrelation(*adapter_, table, column);
       });
   auto tree = optimizer.Solve();
   if (!tree) {
@@ -625,6 +774,32 @@ bool TopDownSplitter::PlanNext(
       max_pos = (int)i;
   const uint64_t max_bit = (uint64_t)1 << max_pos;
 
+  // Must-colocate constraints: table groups tied by unsplittable predicates
+  // (general comparisons, OR clauses spanning multiple tables). A candidate
+  // that includes SOME but not ALL tables of a group would lose the predicate.
+  std::vector<std::set<unsigned int>> colocate_groups;
+  CollectMustColocateSets(remaining_ir, colocate_groups);
+  // Convert to position bitmasks for fast subtree checks.
+  std::vector<uint64_t> colocate_masks;
+  for (const auto &grp : colocate_groups) {
+    uint64_t mask = 0;
+    for (unsigned int ti : grp) {
+      auto it = table_to_pos.find(ti);
+      if (it != table_to_pos.end())
+        mask |= (uint64_t)1 << it->second;
+    }
+    if (__builtin_popcountll(mask) >= 2) {
+      colocate_masks.push_back(mask);
+#ifndef NDEBUG
+      std::cout << "[SDS] colocate mask 0x" << std::hex << mask << std::dec
+                << " tables:";
+      for (unsigned int ti : grp)
+        std::cout << " " << ti;
+      std::cout << std::endl;
+#endif
+    }
+  }
+
   auto subtree_ok = [&](const JoinTree *t) -> bool {
     if (!t || t->IsLeaf() || t->cross_product)
       return false;
@@ -633,6 +808,13 @@ bool TopDownSplitter::PlanNext(
     for (uint64_t m = t->set; m; m &= m - 1) {
       int pos = __builtin_ctzll(m);
       if (mark_locked_.count(optimizer.Relation(pos).table_index))
+        return false;
+    }
+    // Reject if splitting a must-colocate group: the candidate includes
+    // some but not all tables of a colocate set.
+    for (uint64_t cm : colocate_masks) {
+      uint64_t overlap = t->set & cm;
+      if (overlap != 0 && overlap != cm)
         return false;
     }
     return true;
@@ -701,8 +883,10 @@ bool TopDownSplitter::PlanNext(
                 if (!col)
                   continue;
                 any_edge = true;
-                if (distinct_cache_.Get(*adapter_, base.table_name, *col) >
-                    0.9 * base_card(base))
+                double dc = bg_mode_
+                    ? distinct_cache_.GetCached(base.table_name, *col)
+                    : distinct_cache_.Get(*adapter_, base.table_name, *col);
+                if (dc > 0.9 * base_card(base))
                   any_unique = true;
                 else
                   all_unique = false;
@@ -1011,20 +1195,48 @@ bool TopDownSplitter::PlanNext(
     std::vector<int> cand_width(ncomp, 0);
     std::vector<bool> cand_ok(ncomp, true);
     std::vector<double> cand_limit(ncomp, kComponentEstLimit);
+    std::vector<uint64_t> cand_pos_mask(ncomp, 0);
     for (size_t i = 0; i < n; i++) {
       if ((int)i == max_pos || comp[i] < 0)
         continue;
       const JoinRel &r = optimizer.Relation((int)i);
       cand_tables[comp[i]].insert(r.table_index);
+      cand_pos_mask[comp[i]] |= (uint64_t)1 << i;
       cand_width[comp[i]]++;
       if (mark_locked_.count(r.table_index))
         cand_ok[comp[i]] = false;
+    }
+    for (int c = 0; c < ncomp; c++) {
+      if (!cand_ok[c])
+        continue;
+      for (uint64_t cm : colocate_masks) {
+        uint64_t overlap = cand_pos_mask[c] & cm;
+        if (overlap != 0 && overlap != cm) {
+          cand_ok[c] = false;
+          break;
+        }
+      }
     }
 
     for (const auto &p : rejected_pairs) {
       cand_tables.push_back(p.first);
       cand_width.push_back((int)p.first.size());
-      cand_ok.push_back(true);
+      uint64_t pmask = 0;
+      for (unsigned int ti : p.first) {
+        auto pit = table_to_pos.find(ti);
+        if (pit != table_to_pos.end())
+          pmask |= (uint64_t)1 << pit->second;
+      }
+      cand_pos_mask.push_back(pmask);
+      bool ok = true;
+      for (uint64_t cm : colocate_masks) {
+        uint64_t overlap = pmask & cm;
+        if (overlap != 0 && overlap != cm) {
+          ok = false;
+          break;
+        }
+      }
+      cand_ok.push_back(ok);
       double lim = std::max(p.second, kPairEstFloor);
       cand_limit.push_back(lim < kSplitCardThreshold ? lim
                                                      : kSplitCardThreshold);
@@ -1130,57 +1342,6 @@ bool TopDownSplitter::IsComplete(
   if (planned_for_ != remaining_ir)
     PlanNext(remaining_ir);
   return !planned_splittable_;
-}
-
-// v18: collect the table indices referenced by an expression. Returns false
-// (conservative "don't touch") on any node kind it does not understand.
-static bool CollectExprTables(const ir_sql_converter::AQPExpr *e,
-                              std::set<unsigned int> &tables) {
-  using namespace ir_sql_converter;
-  if (!e)
-    return false;
-  switch (e->GetNodeType()) {
-  case SimplestNodeType::VarConstComparisonNode: {
-    auto *c = dynamic_cast<const SimplestVarConstComparison *>(e);
-    if (!c || !c->attr)
-      return false;
-    tables.insert(c->attr->GetTableIndex());
-    return true;
-  }
-  case SimplestNodeType::VarComparisonNode: {
-    auto *c = dynamic_cast<const SimplestVarComparison *>(e);
-    if (!c || !c->left_attr || !c->right_attr)
-      return false;
-    tables.insert(c->left_attr->GetTableIndex());
-    tables.insert(c->right_attr->GetTableIndex());
-    return true;
-  }
-  case SimplestNodeType::IsNullExprNode: {
-    auto *c = dynamic_cast<const SimplestIsNullExpr *>(e);
-    if (!c || !c->attr)
-      return false;
-    tables.insert(c->attr->GetTableIndex());
-    return true;
-  }
-  case SimplestNodeType::InExprNode: {
-    auto *c = dynamic_cast<const SimplestInExpr *>(e);
-    if (!c || !c->attr)
-      return false;
-    tables.insert(c->attr->GetTableIndex());
-    return true;
-  }
-  case SimplestNodeType::LogicalExprNode: {
-    auto *c = dynamic_cast<const SimplestLogicalExpr *>(e);
-    if (!c)
-      return false;
-    if (c->GetLogicalOp() != SimplestLogicalOp::LogicalNot &&
-        !CollectExprTables(c->left_expr.get(), tables))
-      return false;
-    return CollectExprTables(c->right_expr.get(), tables);
-  }
-  default:
-    return false;
-  }
 }
 
 // v18: move single-table filter conjuncts from the sub-IR's top filter node
@@ -1320,9 +1481,11 @@ TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
       std::make_unique<SubqueryExtraction>(cluster, temp_table_name);
   extraction->sub_ir = BuildSubIRForCluster(remaining_ir, cluster);
   if (!extraction->sub_ir) {
-    std::cerr << "[SDS] SplitIR: BuildSubIRForCluster failed" << std::endl;
-    planned_splittable_ = false;
-    return nullptr;
+    // the planner committed to this split; silently running unsplit would
+    // hide the capability gap
+    throw std::runtime_error(
+        "TopDownSplitter unsupported: BuildSubIRForCluster failed for planned "
+        "cluster of " + std::to_string(cluster.size()) + " table(s)");
   }
   if (!V17Mode()) {
     PushFilterConjunctsToScans(extraction->sub_ir.get(), temp_indices_);
@@ -1442,6 +1605,25 @@ void TopDownSplitter::PrePopulateBaseCountCache() {
   for (auto &kv : rows) {
     if (base_count_cache_.find(kv.first) == base_count_cache_.end())
       base_count_cache_[kv.first] = kv.second;
+  }
+}
+
+void TopDownSplitter::CompleteMissingCardinalities(
+    std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {
+  FetchMissingLeafCardinalities(ir.get());
+  for (auto &[t, info] : mark_in_) {
+    auto it = table_card_.find(t);
+    if (it == table_card_.end())
+      continue;
+    double flat = std::max(it->second / kSemiSelectivity, 1.0);
+    double distinct = distinct_cache_.Get(*adapter_, GetTableName(t),
+                                          info.first);
+    double est = flat;
+    if (distinct > 0.0) {
+      double cand = std::ceil(it->second * info.second / distinct);
+      est = std::max(est, std::min(it->second, std::max(cand, 1.0)));
+    }
+    it->second = est;
   }
 }
 

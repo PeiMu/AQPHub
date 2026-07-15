@@ -161,7 +161,15 @@ std::string ReadSQLFile(const std::string &file_path) {
 
   std::stringstream buffer;
   buffer << sql_file.rdbuf();
-  return buffer.str();
+  std::string sql = buffer.str();
+  size_t start = sql.find_first_not_of(" \t\n\r");
+  if (start != std::string::npos && sql.size() - start >= 16) {
+    std::string head = sql.substr(start, 16);
+    std::transform(head.begin(), head.end(), head.begin(), ::tolower);
+    if (head == "explain analyze ")
+      sql.erase(start, 16);
+  }
+  return sql;
 }
 
 // Execute single query with timing and result collection

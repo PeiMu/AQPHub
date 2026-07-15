@@ -1210,8 +1210,29 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     jit_active = true;
     ParseSQL(sql);
     Optimize();
+    // Skip IR conversion for EMPTY_RESULT plans (optimizer determined 0 rows).
+    std::function<bool(const duckdb::LogicalOperator &)> has_empty =
+        [&](const duckdb::LogicalOperator &op) -> bool {
+      if (op.type == duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT)
+        return true;
+      for (auto &c : op.children)
+        if (c && has_empty(*c))
+          return true;
+      return false;
+    };
+    bool has_empty_result = plan && has_empty(*plan);
     // ConvertPlanToIR reads plan via raw pointer without mutating it.
-    auto whole_ir = ConvertPlanToIR();
+    std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
+    if (!has_empty_result) {
+      try {
+        whole_ir = ConvertPlanToIR();
+      } catch (const std::exception &e) {
+#ifndef NDEBUG
+        std::cerr << "[AQP-JIT] ConvertPlanToIR threw: " << e.what()
+                  << " → interpreter fallback\n";
+#endif
+      }
+    }
     if (whole_ir) {
       SetJITPendingIR(whole_ir.get(), jit_flags_, TakePlan());
       owned_jit_ir_ = std::move(whole_ir);
@@ -1438,6 +1459,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       std::string reason;
       if (ResolveQjitSources(qjit_spec->plan, *qjit_spec->compiled, reason)) {
         qjit_compiled = std::move(qjit_spec->compiled);
+        qjit_pending_ir_ = nullptr;
 #ifndef NDEBUG
         fprintf(stderr, "[AQP-QJIT] spec-hit label=%s\n",
                 temp_table_name.c_str());
@@ -1869,10 +1891,9 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   temp_table_card_.emplace(temp_table_name, chunk_size);
 
 #ifdef HAVE_LLVM
-  // Post-execute: the actual cardinality is now known and the placeholder
-  // holds the real data + stats. Re-invoke the hook — this is the ONLY
-  // invocation that launches the speculative bg compile (the post-Prepare
-  // one above is trace-only).
+  // Post-execute: the actual cardinality is known and the real temp data is
+  // stored. Re-invoke the hook — this invocation launches the speculative
+  // bg compile (the post-Prepare one above is trace-only).
   if (post_prepare_hook_) {
     const auto &stored_names =
         qjit_stored ? qjit_temp_meta_[temp_table_name].column_names
@@ -2339,6 +2360,10 @@ DuckDBAdapter::GetTempTableMinMax(const std::string &temp_table_name) {
   for (size_t col_idx = 0; col_idx < types.size(); col_idx++) {
     auto pt = types[col_idx].InternalType();
     if (pt != duckdb::PhysicalType::INT32 && pt != duckdb::PhysicalType::INT64)
+      continue;
+    // DATE/DECIMAL/TIME/TIMESTAMP are physically INT32/INT64 but their raw
+    // values must not be emitted as integer literals in zone-map predicates
+    if (!types[col_idx].IsIntegral())
       continue;
 
     int64_t min_val = std::numeric_limits<int64_t>::max();
@@ -3581,6 +3606,8 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
   auto t_before_pfp = t0;
   auto t_parse = t0, t_opt = t0, t_conv = t0;
   const char *stage = "parse";
+  bool plan_empty_result = false;
+  std::string fail_reason;
   try {
     ParseSQL(sql);
     if (trace_pass2) t_parse = SteadyClock::now();
@@ -3596,7 +3623,7 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
                             chunk_col_names_, temp_collections_,
                             qjit_temp_meta_);
     // Reject EMPTY_RESULT plans before conversion to keep stdout identical.
-    bool plan_empty_result =
+    plan_empty_result =
         PlanContainsOpType(*plan, duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT);
     std::unique_ptr<ir_sql_converter::AQPStmt> ir;
     if (!plan_empty_result) {
@@ -3615,25 +3642,16 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
         AnnotateBuildSides(prepared->data->physical_plan->Root(), *ir);
         prep.analysis = qjit::AnalyzeQueryJit(*ir, label);
         prep.ir = std::move(ir);
-      }
-#ifndef NDEBUG
-      else if (plan_empty_result) {
-        fprintf(stderr, "[AQP-QJIT] reject:plan-empty-result label=%s\n",
-                label.c_str());
-      } else {
-        fprintf(stderr, "[AQP-QJIT] reject:ir-conversion-failed label=%s\n",
-                label.c_str());
+      } else if (!plan_empty_result) {
+        fail_reason = "ir-conversion-produced-no-IR";
       }
     } else {
-      fprintf(stderr, "[AQP-QJIT] reject:prepare-failed label=%s\n",
-              label.c_str());
+      fail_reason = "prepare-from-plan failed";
+      if (prepared && prepared->HasError())
+        fail_reason += ": " + prepared->GetError();
     }
-#else
-    }
-#endif
   } catch (std::exception &e) {
-    fprintf(stderr, "[AQP-QJIT] reject:exception(stage=%s: %s) label=%s\n",
-            stage, e.what(), label.c_str());
+    fail_reason = std::string("stage=") + stage + ": " + e.what();
     prepared.reset();
   }
 
@@ -3658,12 +3676,8 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
   intermediate_table_map = std::move(saved_map);
   chunk_col_names_ = std::move(saved_chunk_names);
 
-  // The analysis path failed before producing a usable prepared statement:
-  // fall back to a plain Prepare so the interpreter still runs the sub-query.
-  if (!prepared || prepared->HasError()) {
+  if (!fail_reason.empty() || !prepared || prepared->HasError()) {
     prepared = conn->Prepare(sql);
-    // This prepared statement was NOT the one the IR was annotated/analyzed
-    // against — never compile from it.
     prep.ir.reset();
     prep.analysis = qjit::QjitAnalysisResult{};
   }
@@ -3850,7 +3864,7 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
   };
 
   if (!analysis.accepted)
-    return nullptr; // AnalyzeQueryJit already traced the reject reason
+    return nullptr;
   if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
     return fallback("no-storage-plan");
 

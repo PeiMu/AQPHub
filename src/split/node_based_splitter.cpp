@@ -37,6 +37,18 @@ void NodeBasedSplitter::Preprocess(
                                                    *ctx_);
   reorder_get_ = std::make_unique<duckdb::ReorderGet>(*ctx_);
 
+  // Capture original output column count before splitting begins.
+  original_col_count_ = 0;
+  {
+    auto *root = plan_.get();
+    while (root &&
+           root->type != duckdb::LogicalOperatorType::LOGICAL_PROJECTION &&
+           !root->children.empty())
+      root = root->children[0].get();
+    if (root && root->type == duckdb::LogicalOperatorType::LOGICAL_PROJECTION)
+      original_col_count_ = root->Cast<duckdb::LogicalProjection>().expressions.size();
+  }
+
   subqueries_.clear();
   proj_expr_.clear();
   table_expr_queue_.clear();
@@ -491,7 +503,20 @@ void NodeBasedSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
   last_sibling_node_ = std::move(prep.last_sibling_node);
   merge_sibling_expr_ = prep.merge_sibling_expr;
   sub_plan_types_ = std::move(prep.sub_plan_types);
-  terminal_ = false;
+  // Cross-query prep's early-terminal path never sets remaining_plan;
+  // detect that and mark the splitter complete so the loop stops.
+  terminal_ = !plan_;
+
+  original_col_count_ = 0;
+  {
+    auto *root = plan_.get();
+    while (root &&
+           root->type != duckdb::LogicalOperatorType::LOGICAL_PROJECTION &&
+           !root->children.empty())
+      root = root->children[0].get();
+    if (root && root->type == duckdb::LogicalOperatorType::LOGICAL_PROJECTION)
+      original_col_count_ = root->Cast<duckdb::LogicalProjection>().expressions.size();
+  }
 }
 
 } // namespace middleware

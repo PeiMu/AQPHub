@@ -279,6 +279,7 @@ private:
   // returns 0 rows and all joins are inner (empty propagates to output).
   bool all_inner_joins_ = false;
   bool early_terminate_ = false;
+  size_t original_output_col_count_ = 0;
 
   // Cached integer-column min/max per temp table (immutable once stored);
   // avoids re-scanning collections on repeated range-pred injection.

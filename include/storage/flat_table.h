@@ -14,6 +14,7 @@ namespace storage {
 enum class FlatColumnType : uint8_t {
   INT32,
   VARCHAR,
+  INT64,
 };
 
 struct FlatColumn {
@@ -36,6 +37,11 @@ struct FlatColumn {
   inline int32_t GetInt32(uint64_t row) const {
     assert(type == FlatColumnType::INT32);
     return reinterpret_cast<const int32_t *>(data.get())[row];
+  }
+
+  inline int64_t GetInt64(uint64_t row) const {
+    assert(type == FlatColumnType::INT64);
+    return reinterpret_cast<const int64_t *>(data.get())[row];
   }
 
   inline bool IsNull(uint64_t row) const {
@@ -81,6 +87,8 @@ struct FlatColumn {
     uint64_t mem = 0;
     if (type == FlatColumnType::INT32) {
       mem += row_count * sizeof(int32_t);
+    } else if (type == FlatColumnType::INT64) {
+      mem += row_count * sizeof(int64_t);
     } else {
       mem += (row_count + 1) * sizeof(uint32_t); // offsets
       mem += string_pool_size;

@@ -5,7 +5,7 @@ against the source config CSVs used by tune_per_subquery.py.
 Shows per-subquery breakdown for a few queries to diagnose the
 measured-vs-predicted gap.
 
-Usage: python3 verify_tuned_detail.py [query] [split]
+Usage: python3 verify_tuned_detail.py [--bench=dsb] [query] [split]
 """
 import csv, json, os, re, sys
 
@@ -21,7 +21,7 @@ def parse_per_subquery(path, hasjit=True, head=4):
     cur = None
     for line in open(path):
         if line.startswith("Running"):
-            cur = re.search(r"/([0-9a-z]+)\.sql", line).group(1)
+            cur = re.search(r"/([0-9a-z_]+)\.sql", line).group(1)
             raw[cur] = []
             continue
         if cur is None:
@@ -75,9 +75,17 @@ def parse_per_subquery(path, hasjit=True, head=4):
 
 
 def main():
-    query = sys.argv[1] if len(sys.argv) > 1 else "10a"
-    split = sys.argv[2] if len(sys.argv) > 2 else "node-based"
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_result")
+    bench = "job"
+    positional = []
+    for a in sys.argv[1:]:
+        if a.startswith("--bench="):
+            bench = a.split("=", 1)[1]
+        else:
+            positional.append(a)
+    query = positional[0] if len(positional) > 0 else "10a"
+    split = positional[1] if len(positional) > 1 else "node-based"
+    result_dir = "dsb_result" if bench == "dsb" else "job_result"
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 4
 
     tune_json = json.load(open(os.path.join(base, f"tuned_per_subquery_{split}.json")))

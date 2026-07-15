@@ -19,8 +19,9 @@ Each candidate config is defined by:
     skip_hash_cmp) — future sweeps; currently all use global defaults.
 
 Usage:
-  python3 tune_per_subquery.py [split]
+  python3 tune_per_subquery.py [--bench=dsb] [split]
 
+  --bench: job (default) | dsb  (selects job_result/ vs dsb_result/)
   split: node-based (default) | none | topdown | relationship-center
 
 Candidate configs are defined in CONFIGS below.  Each entry specifies
@@ -71,7 +72,7 @@ def parse_csv(path, hasjit=True, head=4):
     cur = None
     for line in open(path):
         if line.startswith("Running"):
-            cur = re.search(r"/([0-9a-z]+)\.sql", line).group(1)
+            cur = re.search(r"/([0-9a-z_]+)\.sql", line).group(1)
             raw[cur] = []
             continue
         if cur is None:
@@ -245,8 +246,16 @@ def make_configs(split):
 
 
 def main():
-    split = sys.argv[1] if len(sys.argv) > 1 else "node-based"
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_result")
+    bench = "job"
+    positional = []
+    for a in sys.argv[1:]:
+        if a.startswith("--bench="):
+            bench = a.split("=", 1)[1]
+        else:
+            positional.append(a)
+    split = positional[0] if positional else "node-based"
+    result_dir = "dsb_result" if bench == "dsb" else "job_result"
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 5 if split in ("relationship-center", "topdown") else 4
 
     CONFIGS = make_configs(split)

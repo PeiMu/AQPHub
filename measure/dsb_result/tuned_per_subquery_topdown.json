@@ -1,0 +1,332 @@
+{
+  "query013_0": {
+    "0": {
+      "config": "expr",
+      "total_ms": 47.559
+    }
+  },
+  "query013_spj_0": {
+    "0": {
+      "config": "expr",
+      "total_ms": 46.768
+    }
+  },
+  "query018_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.287
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.288
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "expr_tpde",
+      "total_ms": 0.423
+    }
+  },
+  "query019_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 1.888
+    },
+    "1": {
+      "config": "expr",
+      "total_ms": 7.106
+    }
+  },
+  "query019_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 1.65
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 6.779
+    }
+  },
+  "query025_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.273
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.01
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.008
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.009
+    },
+    "4": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 0.029
+    }
+  },
+  "query027_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 30.48
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 28.712
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 2.442
+    },
+    "3": {
+      "config": "expr",
+      "total_ms": 2.75
+    }
+  },
+  "query040_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.285
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.314
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 0.43
+    }
+  },
+  "query050_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 34.282
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 182.653
+    }
+  },
+  "query072_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.289
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.323
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.292
+    },
+    "3": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 0.488
+    }
+  },
+  "query084_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 1.667
+    },
+    "1": {
+      "config": "expr",
+      "total_ms": 0.72
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 0.578
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.299
+    },
+    "4": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 6.812
+    }
+  },
+  "query085_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 27.258
+    }
+  },
+  "query085_spj_0": {
+    "0": {
+      "config": "operator",
+      "total_ms": 26.664
+    }
+  },
+  "query091_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 2.285
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 4.302
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 3.453
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.653
+    },
+    "4": {
+      "config": "operator",
+      "total_ms": 3.945
+    },
+    "5": {
+      "config": "interp",
+      "total_ms": 0.7
+    }
+  },
+  "query091_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 2.63
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "expr_tpde",
+      "total_ms": 4.323
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "expr_tpde",
+      "total_ms": 3.578
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.678
+    },
+    "4": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 3.925
+    },
+    "5": {
+      "config": "interp",
+      "total_ms": 0.622
+    }
+  },
+  "query099_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 0.231
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.242
+    },
+    "2": {
+      "config": "expr",
+      "total_ms": 0.39
+    }
+  },
+  "query100_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "operator_fastisel",
+      "total_ms": 1.984
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "expr_tpde",
+      "total_ms": 5.366
+    }
+  },
+  "query100_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 1.971
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 5.0
+    }
+  },
+  "query101_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 139.762
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 7.911
+    }
+  },
+  "query101_spj_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 137.184
+    },
+    "1": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 7.66
+    }
+  },
+  "query102_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 0.526
+    },
+    "1": {
+      "config": "expr",
+      "total_ms": 137.131
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 15.923
+    }
+  },
+  "query102_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 0.543
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "operator_tpde",
+      "total_ms": 137.223
+    },
+    "2": {
+      "compile_mode": 1,
+      "config": "expr_fastisel",
+      "total_ms": 15.997
+    }
+  }
+}

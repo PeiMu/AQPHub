@@ -134,6 +134,17 @@ double DistinctCache::GetRowCount(EngineAdapter &adapter,
   return rows;
 }
 
+double DistinctCache::GetCached(const std::string &table,
+                                const std::string &column) const {
+  auto it = map_.find(table + "\t" + column);
+  return it != map_.end() ? it->second : -1.0;
+}
+
+double DistinctCache::GetCachedRowCount(const std::string &table) const {
+  auto it = map_.find(table + "\trows:");
+  return it != map_.end() ? it->second : -1.0;
+}
+
 std::map<std::string, double> DistinctCache::GetAllCachedRowCounts() const {
   std::map<std::string, double> out;
   const std::string suffix = "\trows:";

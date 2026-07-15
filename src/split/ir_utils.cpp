@@ -4,6 +4,9 @@
 
 #include "split/ir_utils.h"
 
+#include <stdexcept>
+#include <string>
+
 namespace middleware {
 namespace ir_utils {
 
@@ -74,7 +77,68 @@ CloneExpr(const ir_sql_converter::AQPExpr *expr) {
     }
   }
 
-  return nullptr;
+  if (node_type == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    if (e && e->attr) {
+      std::vector<std::unique_ptr<ir_sql_converter::SimplestConstVar>> vals;
+      for (const auto &v : e->values)
+        vals.push_back(
+            std::make_unique<ir_sql_converter::SimplestConstVar>(*v));
+      return std::make_unique<ir_sql_converter::SimplestInExpr>(
+          CloneAttr(e->attr), std::move(vals), e->negated);
+    }
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(expr);
+    if (e) {
+      return std::make_unique<ir_sql_converter::SimplestArithExpr>(
+          e->arith_op, CloneExpr(e->left.get()), CloneExpr(e->right.get()),
+          e->result_type);
+    }
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(expr);
+    if (e) {
+      return std::make_unique<ir_sql_converter::SimplestCastExpr>(
+          CloneExpr(e->child.get()), e->target_type);
+    }
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ExprNode) {
+    auto *e =
+        dynamic_cast<const ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (e) {
+      return std::make_unique<ir_sql_converter::SimplestGeneralComparison>(
+          e->GetSimplestExprType(), CloneExpr(e->left_expr.get()),
+          CloneExpr(e->right_expr.get()));
+    }
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ConstVarNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestConstExpr *>(expr);
+    if (e && e->value) {
+      return std::make_unique<ir_sql_converter::SimplestConstExpr>(
+          std::make_unique<ir_sql_converter::SimplestConstVar>(*e->value));
+    }
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::FunctionExprNodeType) {
+    auto *e =
+        dynamic_cast<const ir_sql_converter::SimplestFunctionExpr *>(expr);
+    if (e) {
+      std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> cloned_args;
+      for (const auto &arg : e->args)
+        cloned_args.push_back(CloneExpr(arg.get()));
+      return std::make_unique<ir_sql_converter::SimplestFunctionExpr>(
+          e->fn_name, std::move(cloned_args));
+    }
+  }
+
+  throw std::runtime_error("ir_utils::CloneExpr unsupported: expression node "
+                           "type " +
+                           std::to_string(static_cast<int>(node_type)));
 }
 
 bool ExprInvolvesOnlyTables(const ir_sql_converter::AQPExpr *expr,
@@ -124,6 +188,51 @@ bool ExprInvolvesOnlyTables(const ir_sql_converter::AQPExpr *expr,
     auto *e =
         dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(expr);
     return e && tables.count(e->attr->GetTableIndex()) > 0;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    return e && e->attr && tables.count(e->attr->GetTableIndex()) > 0;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(expr);
+    if (!e)
+      return false;
+    return ExprInvolvesOnlyTables(e->left.get(), tables) &&
+           ExprInvolvesOnlyTables(e->right.get(), tables);
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(expr);
+    if (!e)
+      return false;
+    return ExprInvolvesOnlyTables(e->child.get(), tables);
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ExprNode) {
+    auto *e =
+        dynamic_cast<const ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (!e)
+      return false;
+    return ExprInvolvesOnlyTables(e->left_expr.get(), tables) &&
+           ExprInvolvesOnlyTables(e->right_expr.get(), tables);
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ConstVarNode) {
+    return true;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::FunctionExprNodeType) {
+    auto *e =
+        dynamic_cast<const ir_sql_converter::SimplestFunctionExpr *>(expr);
+    if (!e)
+      return false;
+    for (const auto &arg : e->args) {
+      if (!ExprInvolvesOnlyTables(arg.get(), tables))
+        return false;
+    }
+    return true;
   }
 
   return false;
@@ -203,6 +312,59 @@ void CollectAttrsFromExpr(
       addAttr(e->attr.get());
     return;
   }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestInExpr *>(expr);
+    if (e)
+      addAttr(e->attr.get());
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(expr);
+    if (e) {
+      CollectAttrsFromExpr(e->left.get(), target_tables, seen, attrs);
+      CollectAttrsFromExpr(e->right.get(), target_tables, seen, attrs);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *e = dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(expr);
+    if (e)
+      CollectAttrsFromExpr(e->child.get(), target_tables, seen, attrs);
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ExprNode) {
+    auto *e =
+        dynamic_cast<const ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (e) {
+      CollectAttrsFromExpr(e->left_expr.get(), target_tables, seen, attrs);
+      CollectAttrsFromExpr(e->right_expr.get(), target_tables, seen, attrs);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ConstVarNode) {
+    // SimplestConstExpr: no attrs to collect
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::FunctionExprNodeType) {
+    auto *e =
+        dynamic_cast<const ir_sql_converter::SimplestFunctionExpr *>(expr);
+    if (e) {
+      for (const auto &arg : e->args)
+        CollectAttrsFromExpr(arg.get(), target_tables, seen, attrs);
+    }
+    return;
+  }
+
+  throw std::runtime_error(
+      "ir_utils::CollectAttrsFromExpr unsupported: expression node type " +
+      std::to_string(static_cast<int>(node_type)) +
+      "; required columns would be missed");
 }
 
 // ===== AND-Splitting for Filter Conditions =====
@@ -308,7 +470,14 @@ CollectJoinConditions(ir_sql_converter::AQPStmt *ir,
       for (const auto &cond : join->join_conditions) {
         unsigned int left_table = cond->left_attr->GetTableIndex();
         unsigned int right_table = cond->right_attr->GetTableIndex();
-
+#ifndef NDEBUG
+        std::cout << "[ir_utils::CollectJoinConditions] cond "
+                  << left_table << "." << cond->left_attr->GetColumnName()
+                  << " vs " << right_table << "."
+                  << cond->right_attr->GetColumnName()
+                  << " in_cluster: " << tables.count(left_table)
+                  << "/" << tables.count(right_table) << std::endl;
+#endif
         // Include condition if BOTH tables are in our cluster
         if (tables.count(left_table) && tables.count(right_table)) {
           auto cloned = CloneVarComparison(cond.get());

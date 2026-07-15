@@ -4,7 +4,7 @@
 Compares per-query (jit_compile + execute) totals from the measured tuned CSV
 against the predicted totals in tuned_per_subquery_<split>.json.
 
-Usage: python3 verify_tuned.py [split]
+Usage: python3 verify_tuned.py [--bench=dsb] [split]
 """
 import csv, json, os, re, sys
 
@@ -25,7 +25,7 @@ def parse_per_query_totals(csv_file, has_jit, is_node_based):
         reader = csv.reader(f)
         for row in reader:
             if row and row[0].startswith("Running benchmark for"):
-                match = re.search(r"/([0-9a-z]+)\.sql", row[0])
+                match = re.search(r"/([0-9a-z_]+)\.sql", row[0])
                 if not match:
                     continue
                 sql_name = match.group(1)
@@ -70,8 +70,16 @@ def parse_per_query_totals(csv_file, has_jit, is_node_based):
 
 
 def main():
-    split = sys.argv[1] if len(sys.argv) > 1 else "node-based"
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_result")
+    bench = "job"
+    positional = []
+    for a in sys.argv[1:]:
+        if a.startswith("--bench="):
+            bench = a.split("=", 1)[1]
+        else:
+            positional.append(a)
+    split = positional[0] if positional else "node-based"
+    result_dir = "dsb_result" if bench == "dsb" else "job_result"
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     is_nb = split == "node-based"
 
     tuned_csv = os.path.join(base,

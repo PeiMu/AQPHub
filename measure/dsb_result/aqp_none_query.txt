@@ -1,0 +1,150 @@
+[StoragePlan] Loading 25 tables into flat arrays...
+[StoragePlan]   call_center: 24 rows, 31 cols, 0 MB
+[StoragePlan]   catalog_page: 12000 rows, 9 cols, 1 MB
+[StoragePlan]   catalog_returns: 2158260 rows, 27 cols, 228 MB
+[StoragePlan]   catalog_sales: 0 rows, 34 cols, 0 MB
+[StoragePlan]   customer: 500000 rows, 18 cols, 98 MB
+[StoragePlan]   customer_address: 250000 rows, 13 cols, 42 MB
+[StoragePlan]   customer_demographics: 1920800 rows, 9 cols, 126 MB
+[StoragePlan]   date_dim: 73049 rows, 28 cols, 10 MB
+[StoragePlan]   dbgen_version: 0 rows, 4 cols, 0 MB
+[StoragePlan]   household_demographics: 7200 rows, 5 cols, 0 MB
+[StoragePlan]   income_band: 20 rows, 3 cols, 0 MB
+[StoragePlan]   inventory: 133110000 rows, 4 cols, 2046 MB
+[StoragePlan]   item: 102000 rows, 22 cols, 52 MB
+[StoragePlan]   promotion: 500 rows, 19 cols, 0 MB
+[StoragePlan]   reason: 45 rows, 3 cols, 0 MB
+[StoragePlan]   ship_mode: 20 rows, 6 cols, 0 MB
+[StoragePlan]   store: 102 rows, 29 cols, 0 MB
+[StoragePlan]   store_returns: 7198194 rows, 20 cols, 564 MB
+[StoragePlan]   store_sales: 28800991 rows, 23 cols, 2599 MB
+[StoragePlan]   time_dim: 86400 rows, 10 cols, 8 MB
+[StoragePlan]   warehouse: 10 rows, 14 cols, 0 MB
+[StoragePlan]   web_page: 200 rows, 14 cols, 0 MB
+[StoragePlan]   web_returns: 1440354 rows, 24 cols, 135 MB
+[StoragePlan]   web_sales: 7197566 rows, 34 cols, 960 MB
+[StoragePlan]   web_site: 42 rows, 26 cols, 0 MB
+[StoragePlan] Flat table loading complete in 26598 ms, total memory: 6876 MB
+
+========================================
+Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/
+========================================
+Found 22 SQL file(s)
+
+--- Iteration 0 ---
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013/query013_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013_spj/query013_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 11
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 5
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 10
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 8
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050_spj/query050_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 12
+bar|1|180|Hickory |Suite 320 |Plainview|43604     |8346|2450819|2450859|8179|2450819|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072_spj/query072_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AAAAAAAAAEPDCAAA|12297|219|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 7
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 5
+NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 3
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100_spj/query100_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102/query102_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 5
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102_spj/query102_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+
+========================================
+Benchmark Summary
+========================================
+Total queries: 22
+Passed: 22
+Failed: 0
+========================================
+
+========================================
+Execution completed
+========================================

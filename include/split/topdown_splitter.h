@@ -53,6 +53,7 @@ public:
 #endif
 
   void PrePopulateBaseCountCache();
+  void CompleteMissingCardinalities(std::unique_ptr<ir_sql_converter::AQPStmt> &ir);
 
   // On the cross-query-prep background thread the engine must not be
   // contacted (shared connection, main thread may be executing). PlanNext

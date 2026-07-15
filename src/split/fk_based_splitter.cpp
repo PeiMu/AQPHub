@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 namespace middleware {
 
@@ -79,6 +80,10 @@ CloneMarkUnit(const ir_sql_converter::AQPStmt *node) {
   }
   auto base = std::make_unique<AQPStmt>(std::move(children), std::move(targets),
                                         std::move(quals), node->GetNodeType());
+  if (!node->expr_target_list.empty()) {
+    for (const auto &e : node->expr_target_list)
+      base->expr_target_list.push_back(e ? ir_utils::CloneExpr(e.get()) : nullptr);
+  }
 
   std::unique_ptr<AQPStmt> out;
   switch (node->GetNodeType()) {
@@ -1039,6 +1044,8 @@ FKBasedSplitter::BuildSubIRForCluster(
 
   // Helper to add a cluster attr to required_attrs if not already seen
   auto AddIfClusterAttr = [&](const ir_sql_converter::SimplestAttr *attr) {
+    if (!attr)
+      return;
     if (cluster_tables.count(attr->GetTableIndex())) {
       auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
       if (seen_attrs.find(key) == seen_attrs.end()) {
@@ -1122,10 +1129,15 @@ FKBasedSplitter::BuildSubIRForCluster(
     // UNFILTERED base counts.
     if (cluster_tables.size() > 1) {
       if (const auto *unit = FindMarkUnitForScan(ir, scan->GetTableIndex())) {
-        if (auto cloned = CloneMarkUnit(unit)) {
-          scan_nodes.push_back(std::move(cloned));
-          continue;
+        auto cloned = CloneMarkUnit(unit);
+        if (!cloned) {
+          // falling back to a bare scan would silently drop the IN predicate
+          throw std::runtime_error(
+              "FKBasedSplitter unsupported: cannot clone IN-filter (mark join) "
+              "unit for table " + scan->GetTableName());
         }
+        scan_nodes.push_back(std::move(cloned));
+        continue;
       }
     }
     // Clone the scan node - build manually since AQPStmt has no copy
@@ -2238,19 +2250,32 @@ FKBasedSplitter::UpdateRemainingIR(
   // several output columns (JOB 17a/b/c: two MIN(n.name) columns over one
   // agg_fn). Dropping it would change the output arity, so clone its target
   // list and re-add it above the rebuilt Aggregate (8f).
+  // Also preserves the original SELECT columns when GROUP BY columns are
+  // not in the SELECT (e.g. DSB query085: GROUP BY r_reason_desc but
+  // SELECT substring(r_reason_desc,1,20)).
   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
       dup_proj_targets;
+  std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>>
+      dup_proj_expr_targets;
   unsigned int dup_proj_index = 0;
-  if (orig_agg && !orig_order && !orig_limit &&
-      remaining_ir->GetNodeType() ==
-          ir_sql_converter::SimplestNodeType::ProjectionNode &&
-      remaining_ir->target_list.size() >
-          orig_agg->agg_fns.size() + orig_agg->groups.size()) {
-    for (const auto &t : remaining_ir->target_list)
-      dup_proj_targets.push_back(
-          std::make_unique<ir_sql_converter::SimplestAttr>(*t));
-    dup_proj_index =
-        remaining_ir->Cast<ir_sql_converter::SimplestProjection>().GetIndex();
+  if (orig_agg) {
+    // Walk through ORDER/LIMIT wrappers to find the Projection node.
+    auto *proj_node = remaining_ir.get();
+    while (proj_node &&
+           proj_node->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           !proj_node->children.empty())
+      proj_node = proj_node->children[0].get();
+    if (proj_node &&
+        proj_node->GetNodeType() ==
+            ir_sql_converter::SimplestNodeType::ProjectionNode) {
+      for (const auto &t : proj_node->target_list)
+        dup_proj_targets.push_back(
+            std::make_unique<ir_sql_converter::SimplestAttr>(*t));
+      dup_proj_expr_targets = std::move(proj_node->expr_target_list);
+      dup_proj_index =
+          proj_node->Cast<ir_sql_converter::SimplestProjection>().GetIndex();
+    }
   }
 
   // 8e: Add Projection node on top - move target_list from old IR
@@ -2258,12 +2283,16 @@ FKBasedSplitter::UpdateRemainingIR(
   proj_children.push_back(std::move(result));
 
   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> proj_target_list;
+  std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> proj_expr_target_list;
   if (!orig_agg && !orig_order && !orig_limit) {
     proj_target_list = std::move(remaining_ir->target_list);
+    proj_expr_target_list = std::move(remaining_ir->expr_target_list);
   }
   auto proj_base = std::make_unique<ir_sql_converter::AQPStmt>(
       std::move(proj_children), std::move(proj_target_list),
       ir_sql_converter::SimplestNodeType::ProjectionNode);
+  if (!proj_expr_target_list.empty())
+    proj_base->expr_target_list = std::move(proj_expr_target_list);
 
   result = std::make_unique<ir_sql_converter::SimplestProjection>(
       std::move(proj_base), 0);
@@ -2288,8 +2317,10 @@ FKBasedSplitter::UpdateRemainingIR(
             std::make_unique<ir_sql_converter::SimplestAttr>(*grp));
       }
       for (const auto &fn_pair : orig_agg->agg_fns) {
-        agg_target_list.push_back(
-            std::make_unique<ir_sql_converter::SimplestAttr>(*fn_pair.first));
+        if (fn_pair.first) {
+          agg_target_list.push_back(
+              std::make_unique<ir_sql_converter::SimplestAttr>(*fn_pair.first));
+        }
       }
     }
 
@@ -2312,6 +2343,8 @@ FKBasedSplitter::UpdateRemainingIR(
       auto dup_base = std::make_unique<ir_sql_converter::AQPStmt>(
           std::move(dup_children), std::move(dup_proj_targets),
           ir_sql_converter::SimplestNodeType::ProjectionNode);
+      if (!dup_proj_expr_targets.empty())
+        dup_base->expr_target_list = std::move(dup_proj_expr_targets);
       result = std::make_unique<ir_sql_converter::SimplestProjection>(
           std::move(dup_base), dup_proj_index);
     }

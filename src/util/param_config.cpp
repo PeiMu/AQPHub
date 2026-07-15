@@ -278,9 +278,9 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       PrintUsage();
       exit(0);
     }
-    // Unknown argument - could be non-split related, just warn
     else if (arg.find("--") == 0) {
-      std::cerr << "Warning: Unknown argument: " << arg << std::endl;
+      throw std::runtime_error("Unknown argument: " + arg +
+                               " (run with --help for valid options)");
     }
   }
 

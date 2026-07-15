@@ -1,0 +1,29 @@
+[LingoDB] Skipping table with unsupported type (time)
+[LingoDB] Loaded 25 tables from CSV: /home/pei/Project/benchmarks/dsb-postgres/code/tools/out_10/lingo_db_csv
+
+========================================
+Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_lingo_db/1/
+========================================
+Found 13 SQL file(s)
+
+--- Iteration 0 ---
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_lingo_db/1/query013/query013_0.sql
+error: type mismatch between returned value and column definition
+PartialQueryOptimizer: pass pipeline failed
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_lingo_db/1/query013_spj/query013_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_lingo_db/1/query018_spj/query018_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 11
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_lingo_db/1/query019/query019_0.sql
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  [IRToRelAlg] Unsupported expression type: 6

@@ -47,6 +47,10 @@ public:
   // on bg-thread TopDownSplitter instances.
   std::map<std::string, double> GetAllCachedRowCounts() const;
 
+  // In-memory-only lookups (no adapter calls). Return <= 0 on miss.
+  double GetCached(const std::string &table, const std::string &column) const;
+  double GetCachedRowCount(const std::string &table) const;
+
   static std::string DefaultPath();
 
 private:
