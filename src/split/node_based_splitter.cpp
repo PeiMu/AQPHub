@@ -285,6 +285,15 @@ NodeBasedSplitter::UpdateRemainingIR(
     force_terminal_next_ = true;
   }
 
+  if (!last_extraction_standalone_ && temp_table_cardinality == 0 &&
+      !subqueries_.empty()) {
+    if (enable_debug_print_) {
+      std::cout << "[NodeBased] Empty-chain abort: non-standalone sub-query "
+                << "produced 0 rows. Will merge and terminate.\n";
+    }
+    force_terminal_next_ = true;
+  }
+
   // ── Late terminal: only one subquery group remains ──────────────────────
   // UpdateProjHead IS called here (unlike the early-terminal path).
   if (subqueries_.size() == 1) {

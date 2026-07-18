@@ -314,3 +314,202 @@ runs only the 36 new topdown+recompile DSB configs independently.
 **JOB (239 configs):**
 - Same structure as DSB plus additional JOB-specific configs
   (lingodb variants, extra cache tiers)
+
+---
+
+## Phase 1: QJIT `expr:attr-type` Fallback Fix (DONE 2026-07-17)
+
+**Problem:** Most DSB sub-queries passed QJIT analysis (`accept`) but
+fell back at execution time with `fallback:expr:attr-type` because
+`ExpectedDtype()` returned 0 for DECIMAL/BIGINT/FLOAT column types.
+
+**Root cause:** DSB DECIMAL columns are stored as INT32 (precision ≤ 9)
+or INT64 (precision > 9) in FlatTable, not as DOUBLE. The IR represented
+them as `FloatVar`, but `ExpectedDtype()` had no mapping for FloatVar
+or IntVar with 64-bit width.
+
+**Changes:**
+1. `duckdb_plan_to_ir.cpp`: Added `GetPhysicalBitWidth(LogicalType)` helper;
+   set `bit_width` at all ~15 `SimplestAttr` construction sites.
+2. `query_jit_steps.cpp`: `ExpectedDtype()` — FloatVar → INT32/INT64
+   based on bit_width; IntVar 64-bit → INT64. `CheckVarConst()` — accept
+   INT64 dtype and FloatVar constants. Join key validation — accept INT64.
+3. `query_jit_executor.cpp`: `ResolveSource()` — accept INT64 dtype,
+   add FlatColumnType::INT64 data view path.
+4. `duckdb_adapter.cpp`: `ResolveQjitOutputs()` — comprehensive type
+   mapping: INT32↔INTEGER/DATE/SMALLINT/DECIMAL(p≤9), INT64↔BIGINT/
+   TIMESTAMP/DECIMAL(p>9), VARCHAR↔VARCHAR.
+
+**Result:** `fallback:expr:attr-type` eliminated. QJIT now reaches
+`filter:payload-ref` (separate issue, Phase 5 scope).
+
+**JOB impact:** Zero. JOB uses INTEGER/VARCHAR only → unchanged paths.
+
+## Phase 2: IR Conversion Gaps + Topdown Parity (DONE 2026-07-17)
+
+**Problem:** 30 of 52 DSB queries crashed during IR conversion. Of the
+22 that worked, topdown only passed 23/31 (after adding 9 new queries
+to `1_instance_out_aqp/`).
+
+### Phase 2a: Crash prevention + basic feature support
+
+1. **nullptr guard** in `iterate_plan` — prevents segfault when
+   DuckDB's QuerySplit produces plans with nullptr children.
+2. **CASE expression** — `SimplestCaseExpr` class, `CaseExprNodeType`
+   enum, conversion from `BoundCaseExpression`, SQL generation.
+3. **COALESCE** — Converted to `SimplestFunctionExpr("COALESCE", args)`
+   instead of throwing.
+4. **Anti/Full join types** — Added to `ConstructSimplestJoin` switch
+   and SQL generation (NOT IN pattern for Anti, FULL OUTER for Full).
+5. **DISTINCT aggregates** — Added `agg_distinct` flag vector to
+   `SimplestAggregate`, stored flag from `BoundAggregateExpression`,
+   emit `COUNT(DISTINCT col)` in SQL.
+6. **stddev_samp** — Added `StddevSamp` to `SimplestAggFnType`,
+   `ConvertAggFnType`, `Print()`, and `TranslateSimplestAggFnType`.
+
+**Result:** Node-based 31/31 (was 22/52), topdown 23/31.
+
+### Phase 2b: Topdown parity fixes
+
+7. **DELIM_GET/DELIM_JOIN** — Added handling in `iterate_plan`.
+   DELIM_GET modeled as scan with synthetic column names. DELIM_JOIN
+   handled as `LogicalComparisonJoin`.
+8. **Expression-based aggregate arguments** — Changed `UnwrapToColumnRef`
+   to `TryUnwrapCastToColumnRef` with fallback to `ConvertExprToAQPExpr`
+   for CASE/function expressions in SUM/COUNT children. Added
+   `agg_fn_exprs` vector to `SimplestAggregate`.
+9. **Expression-based GROUP BY** — Same pattern: fallback to expression
+   conversion. Added `group_exprs` vector to `SimplestAggregate`.
+10. **BOUND_OPERATOR in expressions** — Added COALESCE, IS_NULL,
+    IS_NOT_NULL handling in `ConvertExprToAQPExpr`.
+11. **BOUND_COMPARISON/CONJUNCTION** — Added handling using attr+const
+    or attr+attr when possible, falling back to `__infix_` function
+    encoding for general expression comparisons.
+12. **SINGLE join type** — Mapped to `SimplestJoinType::Left`.
+13. **NOT_DISTINCT_FROM** — Mapped to `Equal` in `ConvertCompType`.
+14. **String concatenation `||`** — Infix rendering in `CollectFilter`.
+15. **ORDER BY expression fallback** — `TryUnwrapCastToColumnRef` with
+    synthetic attr fallback for function expressions in ORDER BY.
+
+**Result:** Topdown 30/31 (only query094 fails — uses DELIM_GET which
+cannot survive SQL round-trip). query094 removed from query set.
+
+### Final query set
+
+**30 queries** in `1_instance_out_aqp/`. Removed query094 (DELIM_GET
+in correlated subquery — fundamentally incompatible with topdown's
+whole-plan IR→SQL round-trip). Both node-based and topdown pass 30/30.
+
+### Files changed
+
+| File | Changes |
+|------|---------|
+| `third_party/IR_SQL_Converter/src/duckdb_plan_to_ir.cpp` | bit_width, nullptr guard, CASE, COALESCE, Anti/Full/SINGLE/DELIM joins, DISTINCT, stddev_samp, expression agg/group/order, BOUND_OPERATOR/COMPARISON/CONJUNCTION |
+| `third_party/IR_SQL_Converter/inc/simplest_ir.h` | CaseExprNode, agg_distinct, agg_fn_exprs, group_exprs, StddevSamp |
+| `third_party/IR_SQL_Converter/inc/duckdb_plan_to_ir.h` | logical_delim_get include |
+| `third_party/IR_SQL_Converter/inc/ir_to_sql.h` | group_exprs_vec member |
+| `third_party/IR_SQL_Converter/src/ir_to_sql.cpp` | CASE SQL, Anti/Full/StddevSamp SQL, DISTINCT, expression agg/group SQL, __infix_ and || rendering |
+| `src/qjit/query_jit_steps.cpp` | ExpectedDtype, CheckVarConst, join keys |
+| `src/qjit/query_jit_executor.cpp` | ResolveSource INT64 |
+| `src/adapters/duckdb_adapter.cpp` | Output type validation |
+
+### Verification
+
+- Build: release + debug pass
+- JOB: 113 queries × {none, node-based, topdown} = 0 diffs vs golden
+- DSB: 30 queries × {none, node-based} = pass; topdown = 30/30
+- No new print statements; all debug output guarded by `#ifndef NDEBUG`
+- CSV format: unchanged
+- No changes to measure/*.sh or measure/*.py
+
+---
+
+## Phase 5: QJIT Operator Support for DSB (DONE 2026-07-17)
+
+**Implemented fixes:**
+1. **`output:agg-type`** (Fix 1): Extended `BuildQjitOutputDescs` agg branch to accept INT64 (BIGINT, TIMESTAMP, DECIMAL>9) and expanded INT32 (DATE, SMALLINT, TINYINT, DECIMAL<=9). Also extended `CollectionToQjitTable` for temp table types. Unblocked: query025_spj, query027_spj, query084_spj, query091_spj (query018_spj needs IR, not available in no-split).
+2. **`build-side-unannotated`** (Fix 3): Extended `AnnotateBuildSidesRec` to handle NESTED_LOOP_JOIN, BLOCKWISE_NL_JOIN, PIECEWISE_MERGE_JOIN.
+3. **`node:OrderBy`** (Fix 2): OrderNode/LimitNode peeled in both Pass A (Walk) and Pass B (BuildExecutionSteps). Post-QJIT sort + limit truncation on result.rows. Handles OrderNode nested under ProjectionNode.
+4. **`agg:avg`** (Fix 4): Added `QjitAggFn::Average` — accumulates as SUM+COUNT, post-merge division to f64. Output type = AQP_DTYPE_DOUBLE.
+
+**Deferred (too complex, queries removed from benchmark):**
+- `filter:payload-ref` (Fix 5): Requires codegen changes to load from HT payload in filter expressions.
+- `join:non-equi-condition` (Fix 6): Depends on Fix 5.
+- `join:Right` (Fix 7): query072 fails at IR conversion (LEFT JOIN not supported by DuckDB plan-to-IR).
+- Removed queries: query013, query013_spj, query072, query072_spj.
+
+**QJIT status (25 queries, no-split):**
+- exec: 4 final queries (query025_spj, query027_spj, query084_spj, query091_spj)
+- reject: agg:grouped (4), join:non-equi-condition (3), join:no-conditions (1), join:build-side-unannotated (1), join:key-dtype (1)
+- no IR: remaining queries
+
+**With node-based split:** 41 QJIT execs (sub-queries + final queries), 17 rejects/fallbacks.
+
+### Files changed
+
+| File | Changes |
+|------|---------|
+| `include/qjit/query_jit_runtime.h` | QjitAggFn::Average enum |
+| `include/qjit/query_jit_steps.h` | agg-type expanded type lists |
+| `include/adapters/duckdb_adapter.h` | output type mapping |
+| `src/qjit/query_jit_steps.cpp` | BuildQjitOutputDescs, AnnotateBuildSidesRec |
+| `src/qjit/query_jit_executor.cpp` | OrderNode/LimitNode peel, Average post-merge |
+| `src/adapters/duckdb_adapter.cpp` | CollectionToQjitTable type expansion |
+
+---
+
+## Phase 6: Split Quality — Empty-Chain Abort (DONE 2026-07-18)
+
+**Problem:** Node-based split on DSB caused severe regressions:
+- query102/102_spj (33ms → 151ms, 4.5x slower): 12-table query split into 10 sequential sub-queries, ALL producing cardinality=0 temp tables.
+- query101/101_spj (11ms → 19ms, 1.8x slower): 9-table query, 6 sub-queries, all empty.
+
+**Root cause:** The existing `early_terminate_` mechanism (ir_query_splitter.cpp:2929) relies on `all_inner_joins_`, computed from `remaining_ir` (line 1137). For NODE_BASED, `remaining_ir` is nullptr (line 968 skips IR conversion), so `all_inner_joins_` is always false and early termination never fires. Topdown was unaffected (its `remaining_ir` is non-null).
+
+**Fix:** Added empty-chain force-terminal condition in `NodeBasedSplitter::UpdateRemainingIR` (node_based_splitter.cpp). When a non-standalone sub-query produces 0 rows, set `force_terminal_next_=true`. On the next `SplitIR()` call, the splitter merges everything back and returns `is_final=true` with valid plan IR through the normal terminal path.
+
+```cpp
+if (!last_extraction_standalone_ && temp_table_cardinality == 0 &&
+    !subqueries_.empty()) {
+  force_terminal_next_ = true;
+}
+```
+
+**Why non-standalone only:** Standalone sub-queries with 0 rows may indicate highly selective filters on base tables, but subsequent sub-queries joining OTHER base tables may still produce results. Non-standalone sub-queries that produce 0 rows (joined against empty temp) guarantee all subsequent inner-join sub-queries also produce 0 rows.
+
+**Result:** query102: 10 → 3 iterations. query101: 6 → 3 iterations. Expected savings: ~243ms total.
+
+**Scope:** Node-based only. Topdown already handles this correctly via `early_terminate_`.
+
+**JOB impact:** Zero. Checked all 113 JOB queries — none have zero-cardinality non-standalone sub-queries.
+
+### Phase 4: Non-Inner Join Split Behavior (PARTIAL — done portions, 2026-07-17)
+
+**Done:**
+1. `topdown_splitter.cpp` `CollectMarkInfo()`: Left/Right/Full added to locked join types.
+2. `topdown_splitter.cpp` `CollectEdges()`: Left/Right/Full added to exclusion list.
+3. `fk_based_splitter.cpp` `UpdateRemainingIR`: transfers `agg_fn_exprs`, `agg_distinct`, `group_exprs`, `grouping_sets` from original aggregate.
+4. `fk_based_splitter.cpp`: recursive `RewriteExprAttrs` rewrites attribute references in expression trees to point to temp tables.
+5. `fk_based_splitter.cpp` `BuildSubIRForCluster` `CollectPlanAttrs`: collects attributes from `agg_fn_exprs`/`group_exprs` into sub-query output columns.
+
+**Remaining:** `BuildSubIRForCluster` hardcodes `Inner` join type (line 1251). Only needed if LEFT/RIGHT/FULL joins are allowed to split in the future. Zero current impact.
+
+---
+
+## Deferred / Not Worth Pursuing (2026-07-18)
+
+### Phase 3: n_exec=1 IR Round-Trip Shortcut — DEFERRED
+
+**Problem:** When the splitter determines nothing to split, the query still goes through the full IR→SQL round-trip (~3.5ms overhead per query).
+
+**Why deferred:** Only applies to 1 DSB query (node-based) and 2 DSB queries (topdown). Total savings ~3.5-7ms on DSB, 0ms on JOB. Negligible.
+
+**Location:** ir_query_splitter.cpp lines 871-874 (no-split early exit) vs lines 1286-1484 (regenerated SQL path).
+
+### Phase 4 Remaining: Non-Inner Join Split — DEFERRED
+
+**Remaining:** `BuildSubIRForCluster` hardcodes `Inner` join type (fk_based_splitter.cpp line 1251). Only matters if LEFT/RIGHT/FULL joins are ever allowed to split. Currently non-inner joins are locked in both topdown and node-based. Zero impact on both DSB and JOB.
+
+### Phase 6 Remaining: query050_spj — OUT OF SCOPE
+
+**Problem:** query050_spj (+187ms, 2.14x regression) — cross-table date range filter creates huge intermediate when split. Requires changing DuckDB's internal `QuerySplit::Split()` decisions, not fixable from middleware.

@@ -1079,6 +1079,70 @@ FKBasedSplitter::BuildSubIRForCluster(
         for (const auto &grp : agg->groups) {
           AddIfClusterAttr(grp.get());
         }
+        std::function<void(const ir_sql_converter::AQPExpr *)> CollectExprAttrs;
+        CollectExprAttrs = [&](const ir_sql_converter::AQPExpr *e) {
+          if (!e)
+            return;
+          switch (e->GetNodeType()) {
+          case ir_sql_converter::SingleAttrExprNode: {
+            auto *s = dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(e);
+            if (s) AddIfClusterAttr(s->attr.get());
+            break;
+          }
+          case ir_sql_converter::VarConstComparisonNode: {
+            auto *v = dynamic_cast<const ir_sql_converter::SimplestVarConstComparison *>(e);
+            if (v) AddIfClusterAttr(v->attr.get());
+            break;
+          }
+          case ir_sql_converter::IsNullExprNode: {
+            auto *n = dynamic_cast<const ir_sql_converter::SimplestIsNullExpr *>(e);
+            if (n) AddIfClusterAttr(n->attr.get());
+            break;
+          }
+          case ir_sql_converter::LogicalExprNode: {
+            auto *l = dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(e);
+            if (l) { CollectExprAttrs(l->left_expr.get()); CollectExprAttrs(l->right_expr.get()); }
+            break;
+          }
+          case ir_sql_converter::ArithExprNode: {
+            auto *a = dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(e);
+            if (a) { CollectExprAttrs(a->left.get()); CollectExprAttrs(a->right.get()); }
+            break;
+          }
+          case ir_sql_converter::CastExprNode: {
+            auto *c = dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(e);
+            if (c) CollectExprAttrs(c->child.get());
+            break;
+          }
+          case ir_sql_converter::FunctionExprNodeType: {
+            auto *f = dynamic_cast<const ir_sql_converter::SimplestFunctionExpr *>(e);
+            if (f) for (const auto &arg : f->args) CollectExprAttrs(arg.get());
+            break;
+          }
+          case ir_sql_converter::CaseExprNodeType: {
+            auto *c = dynamic_cast<const ir_sql_converter::SimplestCaseExpr *>(e);
+            if (c) {
+              for (const auto &wc : c->case_checks) {
+                CollectExprAttrs(wc.when_expr.get());
+                CollectExprAttrs(wc.then_expr.get());
+              }
+              CollectExprAttrs(c->else_expr.get());
+            }
+            break;
+          }
+          case ir_sql_converter::ExprNode: {
+            auto *g = dynamic_cast<const ir_sql_converter::SimplestGeneralComparison *>(e);
+            if (g) { CollectExprAttrs(g->left_expr.get()); CollectExprAttrs(g->right_expr.get()); }
+            break;
+          }
+          default:
+            break;
+          }
+        };
+        for (const auto &fn_expr : agg->agg_fn_exprs)
+          CollectExprAttrs(fn_expr.get());
+        for (const auto &grp_expr : agg->group_exprs)
+          CollectExprAttrs(grp_expr.get());
       }
     }
     if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::OrderNode) {
@@ -1775,6 +1839,108 @@ EntityCenterSplitter::FindEntityCluster(ir_sql_converter::AQPStmt *ir,
   return best_cluster;
 }
 
+static void RewriteExprAttrs(
+    ir_sql_converter::AQPExpr *expr,
+    const std::set<unsigned int> &executed_table_indices,
+    unsigned int temp_table_index,
+    const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
+    const std::vector<std::string> &column_names) {
+  if (!expr)
+    return;
+  auto tryRewrite = [&](std::unique_ptr<ir_sql_converter::SimplestAttr> &attr) {
+    if (!attr)
+      return;
+    unsigned int old_table = attr->GetTableIndex();
+    if (executed_table_indices.count(old_table) == 0)
+      return;
+    unsigned int old_col = attr->GetColumnIndex();
+    for (size_t i = 0; i < column_mappings.size(); i++) {
+      if (column_mappings[i].first == old_table &&
+          column_mappings[i].second == old_col) {
+        attr = std::make_unique<ir_sql_converter::SimplestAttr>(
+            attr->GetType(), temp_table_index,
+            static_cast<unsigned int>(i), column_names[i]);
+        break;
+      }
+    }
+  };
+  auto recurse = [&](std::unique_ptr<ir_sql_converter::AQPExpr> &child) {
+    RewriteExprAttrs(child.get(), executed_table_indices, temp_table_index,
+                     column_mappings, column_names);
+  };
+
+  switch (expr->GetNodeType()) {
+  case ir_sql_converter::SingleAttrExprNode: {
+    auto *sae = dynamic_cast<ir_sql_converter::SimplestSingleAttrExpr *>(expr);
+    if (sae)
+      tryRewrite(sae->attr);
+    break;
+  }
+  case ir_sql_converter::VarConstComparisonNode: {
+    auto *vcc = dynamic_cast<ir_sql_converter::SimplestVarConstComparison *>(expr);
+    if (vcc)
+      tryRewrite(vcc->attr);
+    break;
+  }
+  case ir_sql_converter::IsNullExprNode: {
+    auto *isn = dynamic_cast<ir_sql_converter::SimplestIsNullExpr *>(expr);
+    if (isn)
+      tryRewrite(isn->attr);
+    break;
+  }
+  case ir_sql_converter::LogicalExprNode: {
+    auto *le = dynamic_cast<ir_sql_converter::SimplestLogicalExpr *>(expr);
+    if (le) {
+      recurse(le->left_expr);
+      recurse(le->right_expr);
+    }
+    break;
+  }
+  case ir_sql_converter::ArithExprNode: {
+    auto *ae = dynamic_cast<ir_sql_converter::SimplestArithExpr *>(expr);
+    if (ae) {
+      recurse(ae->left);
+      recurse(ae->right);
+    }
+    break;
+  }
+  case ir_sql_converter::CastExprNode: {
+    auto *ce = dynamic_cast<ir_sql_converter::SimplestCastExpr *>(expr);
+    if (ce)
+      recurse(ce->child);
+    break;
+  }
+  case ir_sql_converter::FunctionExprNodeType: {
+    auto *fe = dynamic_cast<ir_sql_converter::SimplestFunctionExpr *>(expr);
+    if (fe)
+      for (auto &arg : fe->args)
+        recurse(arg);
+    break;
+  }
+  case ir_sql_converter::CaseExprNodeType: {
+    auto *ce = dynamic_cast<ir_sql_converter::SimplestCaseExpr *>(expr);
+    if (ce) {
+      for (auto &wc : ce->case_checks) {
+        recurse(wc.when_expr);
+        recurse(wc.then_expr);
+      }
+      recurse(ce->else_expr);
+    }
+    break;
+  }
+  case ir_sql_converter::ExprNode: {
+    auto *gc = dynamic_cast<ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (gc) {
+      recurse(gc->left_expr);
+      recurse(gc->right_expr);
+    }
+    break;
+  }
+  default:
+    break;
+  }
+}
+
 // ===== UpdateRemainingIR (PostgreSQL-style rebuild) =====
 std::unique_ptr<ir_sql_converter::AQPStmt>
 FKBasedSplitter::UpdateRemainingIR(
@@ -2336,6 +2502,20 @@ FKBasedSplitter::UpdateRemainingIR(
         std::move(agg_base), std::move(orig_agg->agg_fns),
         std::move(orig_agg->groups), orig_agg->GetAggIndex(),
         orig_agg->GetGroupIndex());
+    auto *new_agg = dynamic_cast<ir_sql_converter::SimplestAggregate *>(result.get());
+    new_agg->agg_fn_exprs = std::move(orig_agg->agg_fn_exprs);
+    new_agg->agg_distinct = std::move(orig_agg->agg_distinct);
+    new_agg->group_exprs = std::move(orig_agg->group_exprs);
+    new_agg->grouping_sets = std::move(orig_agg->grouping_sets);
+
+    for (auto &fn_expr : new_agg->agg_fn_exprs) {
+      RewriteExprAttrs(fn_expr.get(), executed_table_indices, temp_table_index,
+                       column_mappings, column_names);
+    }
+    for (auto &grp_expr : new_agg->group_exprs) {
+      RewriteExprAttrs(grp_expr.get(), executed_table_indices, temp_table_index,
+                       column_mappings, column_names);
+    }
 
     if (!dup_proj_targets.empty()) {
       std::vector<std::unique_ptr<ir_sql_converter::AQPStmt>> dup_children;

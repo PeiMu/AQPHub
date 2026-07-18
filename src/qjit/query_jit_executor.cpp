@@ -70,7 +70,8 @@ bool QjitExecutor::ResolveSource(const FlatTable &flat,
     const FlatColumn &col = flat.columns[idx];
     const bool want_varchar = ref.expected_dtype == AQP_DTYPE_VARCHAR;
     if (want_varchar != (col.type == FlatColumnType::VARCHAR) ||
-        (!want_varchar && ref.expected_dtype != AQP_DTYPE_INT32)) {
+        (!want_varchar && ref.expected_dtype != AQP_DTYPE_INT32 &&
+         ref.expected_dtype != AQP_DTYPE_INT64)) {
       reason = "source:dtype-mismatch:" + ref.column_name;
       return false;
     }
@@ -80,6 +81,9 @@ bool QjitExecutor::ResolveSource(const FlatTable &flat,
     if (col.type == FlatColumnType::INT32) {
       view.data = col.data.get();
       view.dtype = AQP_DTYPE_INT32;
+    } else if (col.type == FlatColumnType::INT64) {
+      view.data = col.data.get();
+      view.dtype = AQP_DTYPE_INT64;
     } else {
       std::string key = flat.table_name + "." + std::to_string(idx);
       auto it = varchar_views_.find(key);
@@ -207,6 +211,16 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
     QjitAggState merged(agg_descs, &merge_arena);
     for (uint32_t w = 0; w < nworkers; w++)
       merged.Merge(*agg_states[w]);
+    for (size_t i = 0; i < merged.NumCells(); i++) {
+      QjitAggCell &c = merged.Cell(i);
+      const QjitAggCellDesc &d = merged.Desc(i);
+      if (d.fn == QjitAggFn::Average && c.seen) {
+        if (d.dtype == QjitAggDType::F64)
+          c.f64 = c.f64 / (double)c.count;
+        else
+          c.f64 = (double)c.i64 / (double)c.count;
+      }
+    }
     for (size_t i = 0; i < agg_output_cells.size(); i++) {
       const size_t cell = (size_t)agg_output_cells[i];
       const QjitAggCell &c = merged.Cell(cell);

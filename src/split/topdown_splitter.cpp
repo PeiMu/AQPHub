@@ -174,13 +174,22 @@ void CollectMarkInfo(
         return;
       }
       if (jt == ir_sql_converter::SimplestJoinType::Semi ||
-          jt == ir_sql_converter::SimplestJoinType::Anti) {
-        std::cerr << "[SDS] WARNING: "
-                  << (jt == ir_sql_converter::SimplestJoinType::Semi ? "SEMI"
-                                                                     : "ANTI")
+          jt == ir_sql_converter::SimplestJoinType::Anti ||
+          jt == ir_sql_converter::SimplestJoinType::Left ||
+          jt == ir_sql_converter::SimplestJoinType::Right ||
+          jt == ir_sql_converter::SimplestJoinType::Full) {
+#ifndef NDEBUG
+        static const char *jt_names[] = {"SEMI", "ANTI", "LEFT", "RIGHT", "FULL"};
+        int jt_idx = (jt == ir_sql_converter::SimplestJoinType::Semi)    ? 0
+                   : (jt == ir_sql_converter::SimplestJoinType::Anti)    ? 1
+                   : (jt == ir_sql_converter::SimplestJoinType::Left)    ? 2
+                   : (jt == ir_sql_converter::SimplestJoinType::Right)   ? 3
+                   :                                                       4;
+        std::cerr << "[SDS] WARNING: " << jt_names[jt_idx]
                   << " join detected in IR; locking subtree tables "
-                     "(cardinality model does not handle SEMI/ANTI natively)"
+                     "(cardinality model does not handle this join natively)"
                   << std::endl;
+#endif
         CollectMarkLockedTables(node, locked, /*under_mark=*/true);
         return;
       }
@@ -627,7 +636,10 @@ void TopDownSplitter::CollectEdges(
       auto jt = join->GetSimplestJoinType();
       if (jt != ir_sql_converter::SimplestJoinType::Mark &&
           jt != ir_sql_converter::SimplestJoinType::Semi &&
-          jt != ir_sql_converter::SimplestJoinType::Anti) {
+          jt != ir_sql_converter::SimplestJoinType::Anti &&
+          jt != ir_sql_converter::SimplestJoinType::Left &&
+          jt != ir_sql_converter::SimplestJoinType::Right &&
+          jt != ir_sql_converter::SimplestJoinType::Full) {
         for (const auto &cond : join->join_conditions) {
           if (cond)
             add_edge(cond.get());

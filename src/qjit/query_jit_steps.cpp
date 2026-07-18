@@ -303,6 +303,7 @@ struct Analyzer {
         case Max:
         case Sum:
         case Count:
+        case Average:
           if (!fn.first)
             return Reject("agg:missing-arg");
           break;
@@ -320,7 +321,13 @@ struct Analyzer {
     }
 
     case OrderNode:
-    case LimitNode:
+    case LimitNode: {
+      if (node.children.size() != 1 || !node.children[0])
+        return Reject(std::string(NodeTypeName(node.GetNodeType())) +
+                      ":children!=1");
+      return Walk(*node.children[0], top_of_spine);
+    }
+
     case CrossProductNode:
     case HashNode:
     case SortNode:
@@ -334,10 +341,22 @@ struct Analyzer {
 
 } // namespace
 
+static const AQPStmt *PeelOrderLimit(const AQPStmt *node) {
+  while (node) {
+    if (node->GetNodeType() == OrderNode || node->GetNodeType() == LimitNode) {
+      node = node->children.empty() ? nullptr : node->children[0].get();
+    } else {
+      break;
+    }
+  }
+  return node;
+}
+
 QjitAnalysisResult AnalyzeQueryJit(const AQPStmt &root,
                                    const std::string &label) {
   Analyzer a;
-  a.result.accepted = a.Walk(root, /*top_of_spine=*/true);
+  const AQPStmt *inner = PeelOrderLimit(&root);
+  a.result.accepted = inner && a.Walk(*inner, /*top_of_spine=*/true);
   // A recorded mark consumer whose Mark join was never reached (e.g. the
   // join sits in a build subtree, its mark column carried as payload).
   if (a.result.accepted && !a.pending_marks.empty()) {
@@ -554,9 +573,10 @@ struct PlanBuilder {
     switch (attr.GetType()) {
     case IntVar:
     case Date:
-      // bit_width 64 would need an INT64 source FlatTable cannot provide;
-      // 0 (unspecified) / 8 / 16 / 32 are all served by the INT32 array.
-      return attr.GetBitWidth() == 64 ? 0 : AQP_DTYPE_INT32;
+      return attr.GetBitWidth() == 64 ? AQP_DTYPE_INT64 : AQP_DTYPE_INT32;
+    case FloatVar:
+      // DECIMAL stored as INT32/INT64 in FlatTable
+      return attr.GetBitWidth() == 64 ? AQP_DTYPE_INT64 : AQP_DTYPE_INT32;
     case StringVar:
       return AQP_DTYPE_VARCHAR;
     default:
@@ -764,9 +784,11 @@ struct PlanBuilder {
                  "]");
             return -1;
           }
-          // v1: integer keys only (stored sign-extended i64).
-          if (ExpectedDtype(*bk) != AQP_DTYPE_INT32 ||
-              ExpectedDtype(*pk) != AQP_DTYPE_INT32) {
+          // Integer keys (stored sign-extended as i64 in HT layout).
+          int32_t bk_dt = ExpectedDtype(*bk);
+          int32_t pk_dt = ExpectedDtype(*pk);
+          if ((bk_dt != AQP_DTYPE_INT32 && bk_dt != AQP_DTYPE_INT64) ||
+              (pk_dt != AQP_DTYPE_INT32 && pk_dt != AQP_DTYPE_INT64)) {
             Fail("join:key-dtype");
             return -1;
           }
@@ -774,7 +796,7 @@ struct PlanBuilder {
           kc.table_index = bk->GetTableIndex();
           kc.column_index = bk->GetColumnIndex();
           kc.column_name = bk->GetColumnName();
-          kc.dtype = AQP_DTYPE_INT32;
+          kc.dtype = bk_dt;
           ht.cols.push_back(std::move(kc));
           probe_keys.push_back(pk);
         }
@@ -952,8 +974,8 @@ struct PlanBuilder {
     int32_t dtype = ExpectedDtype(*cmp.attr);
     SimplestExprType op = cmp.GetSimplestExprType();
     SimplestVarType ct = cmp.const_var->GetType();
-    if (dtype == AQP_DTYPE_INT32) {
-      if (ct != IntVar && ct != Date)
+    if (dtype == AQP_DTYPE_INT32 || dtype == AQP_DTYPE_INT64) {
+      if (ct != IntVar && ct != Date && ct != FloatVar)
         return Fail("expr:int-const-type");
       switch (op) {
       case SimplestExprType::Equal:
@@ -1091,6 +1113,7 @@ struct PlanBuilder {
         case Sum:       cell.fn = QjitAggFn::Sum; break;
         case Count:     cell.fn = QjitAggFn::Count; break;
         case CountStar: cell.fn = QjitAggFn::CountStar; break;
+        case Average:   cell.fn = QjitAggFn::Average; break;
         default:
           return Fail(std::string("agg:") + AggFnName(fn.second));
         }
@@ -1183,25 +1206,61 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
                          std::string &reason) {
   out = QjitQueryPlan();
   reason.clear();
+
+  // Peel ORDER BY / LIMIT wrappers. They don't affect the scan/join/agg
+  // plan — we handle them as post-processing on result.rows.
+  const AQPStmt *inner = &root;
+  const SimplestOrderBy *peeled_order = nullptr;
+  const SimplestLimit *peeled_limit = nullptr;
+  while (inner) {
+    if (inner->GetNodeType() == OrderNode) {
+      peeled_order = static_cast<const SimplestOrderBy *>(inner);
+      inner = inner->children.empty() ? nullptr : inner->children[0].get();
+    } else if (inner->GetNodeType() == LimitNode) {
+      peeled_limit = static_cast<const SimplestLimit *>(inner);
+      inner = inner->children.empty() ? nullptr : inner->children[0].get();
+    } else {
+      break;
+    }
+  }
+  if (!inner)
+    return false;
+
   PlanBuilder pb{out, reason};
-  pb.CollectProjRemap(root);
+  pb.CollectProjRemap(*inner);
 
   // Peel the root: Projection* [Aggregate]. DuckDB plans `SELECT MIN(..)`
   // as Projection -> Aggregate; the projection only reorders the single
   // agg row. Quals above the aggregate would filter the agg result —
   // unsupported (reject), and >1 projection above the agg would make the
   // target mapping indirect (never seen from DuckDB plans; reject).
-  const AQPStmt *node = &root;
+  const AQPStmt *node = inner;
   const SimplestAggregate *agg = nullptr;
   const AQPStmt *proj_above_agg = nullptr;
   {
-    const AQPStmt *p = &root;
+    const AQPStmt *p = inner;
     int projs = 0;
-    while (p->GetNodeType() == ProjectionNode) {
+    while (p->GetNodeType() == ProjectionNode ||
+           p->GetNodeType() == OrderNode ||
+           p->GetNodeType() == LimitNode) {
       if (p->children.size() != 1 || !p->children[0])
         return pb.Fail("spine:children!=1");
+      if (p->GetNodeType() == OrderNode) {
+        if (!peeled_order)
+          peeled_order = static_cast<const SimplestOrderBy *>(p);
+        p = p->children[0].get();
+        continue;
+      }
+      if (p->GetNodeType() == LimitNode) {
+        if (!peeled_limit)
+          peeled_limit = static_cast<const SimplestLimit *>(p);
+        p = p->children[0].get();
+        continue;
+      }
       if (p->children[0]->GetNodeType() == AggregateNode ||
-          p->children[0]->GetNodeType() == ProjectionNode) {
+          p->children[0]->GetNodeType() == ProjectionNode ||
+          p->children[0]->GetNodeType() == OrderNode ||
+          p->children[0]->GetNodeType() == LimitNode) {
         // keep peeling only while an aggregate could be underneath
         if (p->children[0]->GetNodeType() == AggregateNode) {
           if (!p->qual_vec.empty())
@@ -1220,8 +1279,8 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
       }
       break;
     }
-    if (!agg && root.GetNodeType() == AggregateNode)
-      agg = static_cast<const SimplestAggregate *>(&root);
+    if (!agg && inner->GetNodeType() == AggregateNode)
+      agg = static_cast<const SimplestAggregate *>(inner);
   }
 
   if (agg) {
@@ -1270,9 +1329,9 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
         out.agg_output_cells.push_back((int)i);
     }
   } else {
-    if (root.target_list.empty())
+    if (inner->target_list.empty())
       return pb.Fail("output:empty-target-list");
-    for (const auto &attr : root.target_list) {
+    for (const auto &attr : inner->target_list) {
       if (!attr)
         return pb.Fail("output:null-attr");
       rs.output_attrs.push_back(attr.get());
@@ -1286,6 +1345,53 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
 
   pb.AssignOffsets();
   PlanJoinFilterPushdown(out);
+
+  // Record peeled ORDER BY / LIMIT for post-QJIT sorting.
+  if (peeled_limit && peeled_limit->limit_val.type ==
+          SimplestLimitType::CONSTANT_VALUE)
+    out.limit = (int64_t)peeled_limit->limit_val.val;
+  if (peeled_order) {
+    const auto &last_step = out.steps.back();
+    for (const auto &o : peeled_order->orders) {
+      if (!o.attr)
+        continue;
+      const std::string &col_name = o.attr->GetColumnName();
+      int col_idx = -1;
+      if (out.has_agg) {
+        // Agg output columns: match against the projection target names
+        if (proj_above_agg) {
+          for (size_t i = 0; i < proj_above_agg->target_list.size(); i++) {
+            if (proj_above_agg->target_list[i] &&
+                proj_above_agg->target_list[i]->GetColumnName() == col_name) {
+              col_idx = (int)i;
+              break;
+            }
+          }
+        }
+      } else {
+        for (size_t i = 0; i < last_step.outputs.size(); i++) {
+          if (i < inner->target_list.size() && inner->target_list[i] &&
+              inner->target_list[i]->GetColumnName() == col_name) {
+            col_idx = (int)i;
+            break;
+          }
+        }
+      }
+      if (col_idx >= 0) {
+        int32_t dt = AQP_DTYPE_VARCHAR;
+        if (out.has_agg && (size_t)col_idx < out.agg_output_cells.size()) {
+          size_t cell = (size_t)out.agg_output_cells[col_idx];
+          if (cell < last_step.agg_cells.size())
+            dt = last_step.agg_cells[cell].arg.dtype;
+        } else if (!out.has_agg && (size_t)col_idx < last_step.outputs.size()) {
+          dt = last_step.outputs[col_idx].dtype;
+        }
+        out.order_by.push_back(
+            {col_idx, o.order_type != SimplestOrderType::Descending, dt});
+      }
+    }
+  }
+
   return true;
 }
 

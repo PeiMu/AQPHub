@@ -1,110 +1,242 @@
+ANALYZING...
+ANALYZE done
 
 ========================================
-Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/
+Running Benchmark: /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/
 ========================================
-Found 22 SQL file(s)
+Found 29 SQL file(s)
 
 --- Iteration 0 ---
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013/query013_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query013/query013_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013_spj/query013_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query013_spj/query013_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
-
-=== Query Results ===
-Rows: 1, Columns: 11
-NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
-
-=== Query Results ===
-Rows: 0, Columns: 9
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
-
-=== Query Results ===
-Rows: 1, Columns: 3
-NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query018/query018_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 10
 NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 11
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 5
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query025/query025_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 7
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 10
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 8
 NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query032/query032_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 1
+NULL|
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query040/query040_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
 NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050_spj/query050_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query050_spj/query050_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 12
-bar|1|180|Hickory |Suite 320 |Plainview|43604     |8346|2450819|2450859|4145|2450819|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072_spj/query072_spj_0.sql
+bar|1|180|Hickory |Suite 320 |Plainview|43604     |8346|2450819|2450859|8179|2450819|
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query072/query072_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 6
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query072_spj/query072_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
 NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query084/query084_0.sql
+
+=== Query Results ===
+Rows: 100, Columns: 2
+AAAAAAAAAMNGAAAA|Ha                            , Richard             |
+AAAAAAAABIMBFAAA|Stack                         , Dinah               |
+AAAAAAAABIMBFAAA|Stack                         , Dinah               |
+AAAAAAAABIMBFAAA|Stack                         , Dinah               |
+AAAAAAAABIMBFAAA|Stack                         , Dinah               |
+AAAAAAAABIMIAAAA|Green                         , Kenneth             |
+AAAAAAAABIMIAAAA|Green                         , Kenneth             |
+AAAAAAAABIMIAAAA|Green                         , Kenneth             |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACFLDFAAA|Yanez                         , Vera                |
+AAAAAAAACOIKDAAA|Mills                         , Susan               |
+AAAAAAAACOIKDAAA|Mills                         , Susan               |
+AAAAAAAACOIKDAAA|Mills                         , Susan               |
+AAAAAAAACOIKDAAA|Mills                         , Susan               |
+AAAAAAAACOIKDAAA|Mills                         , Susan               |
+AAAAAAAACOIKDAAA|Mills                         , Susan               |
+AAAAAAAADKFOGAAA|Bates                         , Donald              |
+AAAAAAAADKFOGAAA|Bates                         , Donald              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADNFDEAAA|Wise                          , Robert              |
+AAAAAAAADPJAHAAA|Nelson                        , Andrew              |
+AAAAAAAADPJAHAAA|Nelson                        , Andrew              |
+AAAAAAAADPJAHAAA|Nelson                        , Andrew              |
+AAAAAAAAEFIIFAAA|Pierson                       , Linda               |
+AAAAAAAAEFIIFAAA|Pierson                       , Linda               |
+AAAAAAAAEJOEHAAA|Ortiz                         , Rudolph             |
+AAAAAAAAEJOEHAAA|Ortiz                         , Rudolph             |
+AAAAAAAAEJOEHAAA|Ortiz                         , Rudolph             |
+AAAAAAAAEJOEHAAA|Ortiz                         , Rudolph             |
+AAAAAAAAEJOEHAAA|Ortiz                         , Rudolph             |
+AAAAAAAAFEONCAAA|Bartlett                      , Neal                |
+AAAAAAAAFEONCAAA|Bartlett                      , Neal                |
+AAAAAAAAFEONCAAA|Bartlett                      , Neal                |
+AAAAAAAAFEONCAAA|Bartlett                      , Neal                |
+AAAAAAAAFEONCAAA|Bartlett                      , Neal                |
+AAAAAAAAFEONCAAA|Bartlett                      , Neal                |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFFCHAAAA|Hamilton                      , Margorie            |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAFOJJHAAA|Dominquez                     , Don                 |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGDBJGAAA|Carey                         , Herman              |
+AAAAAAAAGHLFFAAA|Rose                          , Alma                |
+AAAAAAAAGIFIGAAA|Rich                          , Anne                |
+AAAAAAAAGPDGHAAA|Ferguson                      , Virginia            |
+AAAAAAAAHGIAHAAA|Cantwell                      , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+AAAAAAAAHJFFGAAA|Washington                    , William             |
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
 AAAAAAAAAEPDCAAA|12297|219|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
 
 === Query Results ===
-Rows: 0, Columns: 5
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 7
 NULL|NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
 
 === Query Results ===
-Rows: 0, Columns: 9
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
 NULL|NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query099/query099_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 8
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 5
 NULL|NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
 
 === Query Results ===
-Rows: 0, Columns: 6
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100_spj/query100_spj_0.sql
-
-=== Query Results ===
-Rows: 1, Columns: 4
-NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
-
-=== Query Results ===
-Rows: 0, Columns: 8
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
+Rows: 0, Columns: 3
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query100_spj/query100_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102/query102_0.sql
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
 
 === Query Results ===
-Rows: 0, Columns: 10
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102_spj/query102_spj_0.sql
+Rows: 0, Columns: 4
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query102/query102_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 5
+Run /home/pei/Project/benchmarks/DSB4AQP/code/tools/1_instance_out_aqp/1/query102_spj/query102_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
@@ -113,8 +245,8 @@ NULL|NULL|NULL|NULL|NULL|NULL|
 ========================================
 Benchmark Summary
 ========================================
-Total queries: 22
-Passed: 22
+Total queries: 29
+Passed: 29
 Failed: 0
 ========================================
 

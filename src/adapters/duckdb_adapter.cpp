@@ -1128,6 +1128,8 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
               row_data.push_back(std::to_string(qtable.GetI32(col, r)));
             } else if (qtable.Col(col).dtype == AQP_DTYPE_INT64) {
               row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+            } else if (qtable.Col(col).dtype == AQP_DTYPE_DOUBLE) {
+              row_data.push_back(std::to_string(qtable.GetF64(col, r)));
             } else {
               QjitString s = qtable.GetStr(col, r);
               row_data.emplace_back(qjit::StringData(s), qjit::StringLen(s));
@@ -1135,6 +1137,43 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
           }
           result.rows.push_back(std::move(row_data));
           result.num_rows++;
+        }
+        if (!compiled->order_by.empty()) {
+          const auto &sort_cols = compiled->order_by;
+          std::stable_sort(result.rows.begin(), result.rows.end(),
+              [&](const std::vector<std::string> &a,
+                  const std::vector<std::string> &b) {
+            for (const auto &sc : sort_cols) {
+              if ((size_t)sc.col_idx >= a.size())
+                continue;
+              const auto &va = a[sc.col_idx];
+              const auto &vb = b[sc.col_idx];
+              bool a_null = (va == "NULL"), b_null = (vb == "NULL");
+              if (a_null && b_null) continue;
+              if (a_null) return false; // NULLS LAST
+              if (b_null) return true;
+              int cmp = 0;
+              if (sc.dtype == AQP_DTYPE_INT32) {
+                long la = strtol(va.c_str(), nullptr, 10);
+                long lb = strtol(vb.c_str(), nullptr, 10);
+                cmp = (la < lb) ? -1 : (la > lb) ? 1 : 0;
+              } else if (sc.dtype == AQP_DTYPE_INT64) {
+                long long la = strtoll(va.c_str(), nullptr, 10);
+                long long lb = strtoll(vb.c_str(), nullptr, 10);
+                cmp = (la < lb) ? -1 : (la > lb) ? 1 : 0;
+              } else {
+                cmp = va.compare(vb);
+              }
+              if (cmp != 0)
+                return sc.ascending ? (cmp < 0) : (cmp > 0);
+            }
+            return false;
+          });
+        }
+        if (compiled->limit >= 0 &&
+            (int64_t)result.rows.size() > compiled->limit) {
+          result.rows.resize((size_t)compiled->limit);
+          result.num_rows = (int64_t)compiled->limit;
         }
         if (plan_recording_active_) {
           CachedSubquery entry;
@@ -3034,8 +3073,12 @@ void AnnotateBuildSidesRec(duckdb::PhysicalOperator &op,
                            PhysScanCollector collector) {
   for (auto &child : op.children)
     AnnotateBuildSidesRec(child.get(), ir, universe, collector);
-  if (op.type != duckdb::PhysicalOperatorType::HASH_JOIN ||
-      op.children.size() != 2)
+  if (op.children.size() != 2)
+    return;
+  if (op.type != duckdb::PhysicalOperatorType::HASH_JOIN &&
+      op.type != duckdb::PhysicalOperatorType::NESTED_LOOP_JOIN &&
+      op.type != duckdb::PhysicalOperatorType::BLOCKWISE_NL_JOIN &&
+      op.type != duckdb::PhysicalOperatorType::PIECEWISE_MERGE_JOIN)
     return;
 
   std::unordered_set<unsigned int> probe_set, build_set;
@@ -3073,8 +3116,8 @@ void AnnotateBuildSidesRec(duckdb::PhysicalOperator &op,
     r += "}";
     return r;
   };
-  std::cerr << "[AQP-QJIT] AnnotateBuildSides: no IR JoinNode matched a "
-               "physical HASH_JOIN probe="
+  std::cerr << "[AQP-QJIT] AnnotateBuildSides: no IR JoinNode matched "
+               "physical join probe="
             << dump_set(probe_set) << " build=" << dump_set(build_set) << "\n";
   for (auto *join : joins) {
     std::unordered_set<unsigned int> c0_set, c1_set;
@@ -3717,14 +3760,37 @@ bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
           return false;
         }
         dt = AQP_DTYPE_INT64;
+      } else if (cell.fn == qjit::QjitAggFn::Average) {
+        auto tid = types[i].id();
+        if (tid != duckdb::LogicalTypeId::DOUBLE &&
+            tid != duckdb::LogicalTypeId::DECIMAL) {
+          reason = "output:agg-type";
+          return false;
+        }
+        dt = AQP_DTYPE_DOUBLE;
       } else if (cell.arg.dtype == AQP_DTYPE_INT32) {
-        // MIN/MAX(INTEGER) keeps INTEGER. SUM(INTEGER) is HUGEINT in
-        // DuckDB and rejects here (v1).
-        if (types[i].id() != duckdb::LogicalTypeId::INTEGER) {
+        auto tid = types[i].id();
+        if (tid != duckdb::LogicalTypeId::INTEGER &&
+            tid != duckdb::LogicalTypeId::DATE &&
+            tid != duckdb::LogicalTypeId::SMALLINT &&
+            tid != duckdb::LogicalTypeId::TINYINT &&
+            !(tid == duckdb::LogicalTypeId::DECIMAL &&
+              duckdb::DecimalType::GetWidth(types[i]) <= 9)) {
           reason = "output:agg-type";
           return false;
         }
         dt = AQP_DTYPE_INT32;
+      } else if (cell.arg.dtype == AQP_DTYPE_INT64) {
+        auto tid = types[i].id();
+        if (tid != duckdb::LogicalTypeId::BIGINT &&
+            tid != duckdb::LogicalTypeId::TIMESTAMP &&
+            tid != duckdb::LogicalTypeId::TIMESTAMP_TZ &&
+            !(tid == duckdb::LogicalTypeId::DECIMAL &&
+              duckdb::DecimalType::GetWidth(types[i]) > 9)) {
+          reason = "output:agg-type";
+          return false;
+        }
+        dt = AQP_DTYPE_INT64;
       } else if (cell.arg.dtype == AQP_DTYPE_VARCHAR) {
         if (types[i].id() != duckdb::LogicalTypeId::VARCHAR) {
           reason = "output:agg-type";
@@ -3740,10 +3806,18 @@ bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
     compiled.agg_output_cells = plan.agg_output_cells;
     compiled.agg_descs.reserve(last.agg_cells.size());
     for (const auto &cell : last.agg_cells) {
-      qjit::QjitAggDType adt =
-          (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
-              ? qjit::QjitAggDType::Str
-              : qjit::QjitAggDType::I64;
+      qjit::QjitAggDType adt;
+      if (cell.fn == qjit::QjitAggFn::Average)
+        adt = (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+                  ? qjit::QjitAggDType::Str
+                  : (cell.has_arg && (cell.arg.dtype == AQP_DTYPE_DOUBLE ||
+                                      cell.arg.dtype == AQP_DTYPE_FLOAT))
+                        ? qjit::QjitAggDType::F64
+                        : qjit::QjitAggDType::I64;
+      else
+        adt = (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+                  ? qjit::QjitAggDType::Str
+                  : qjit::QjitAggDType::I64;
       compiled.agg_descs.push_back({cell.fn, adt});
     }
   } else {
@@ -3753,11 +3827,24 @@ bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
     }
     for (size_t i = 0; i < types.size(); i++) {
       int32_t dt = last.outputs[i].dtype;
-      if ((dt == AQP_DTYPE_INT32 &&
-           types[i].id() != duckdb::LogicalTypeId::INTEGER) ||
-          (dt == AQP_DTYPE_VARCHAR &&
-           types[i].id() != duckdb::LogicalTypeId::VARCHAR) ||
-          (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_VARCHAR)) {
+      bool ok = false;
+      if (dt == AQP_DTYPE_INT32) {
+        ok = types[i].id() == duckdb::LogicalTypeId::INTEGER ||
+             types[i].id() == duckdb::LogicalTypeId::DATE ||
+             types[i].id() == duckdb::LogicalTypeId::SMALLINT ||
+             types[i].id() == duckdb::LogicalTypeId::TINYINT ||
+             (types[i].id() == duckdb::LogicalTypeId::DECIMAL &&
+              duckdb::DecimalType::GetWidth(types[i]) <= 9);
+      } else if (dt == AQP_DTYPE_INT64) {
+        ok = types[i].id() == duckdb::LogicalTypeId::BIGINT ||
+             types[i].id() == duckdb::LogicalTypeId::TIMESTAMP ||
+             types[i].id() == duckdb::LogicalTypeId::TIMESTAMP_TZ ||
+             (types[i].id() == duckdb::LogicalTypeId::DECIMAL &&
+              duckdb::DecimalType::GetWidth(types[i]) > 9);
+      } else if (dt == AQP_DTYPE_VARCHAR) {
+        ok = types[i].id() == duckdb::LogicalTypeId::VARCHAR;
+      }
+      if (!ok) {
         reason = "output:type-mismatch i=" + std::to_string(i) + " dt=" +
                  std::to_string(dt) + " plan_type=" + types[i].ToString() +
                  " name=" + out_name(i);
@@ -3886,6 +3973,8 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
     compiled->ht_tuple_sizes.push_back(ht.tuple_size);
     compiled->ht_key0_offsets.push_back(ht.prefix_bytes); // key 0 lives first
   }
+  compiled->order_by = plan.order_by;
+  compiled->limit = plan.limit;
 
   // use_fast (spec-jit FAST_ONCE): route through the TPDE compiler.
   aqp_jit::IrToLlvmCompiler *comp;
@@ -4123,10 +4212,20 @@ DuckDBAdapter::CollectionToQjitTable(const StoredTempResult &stored,
     int32_t dt;
     switch (types[i].id()) {
     case duckdb::LogicalTypeId::INTEGER:
+    case duckdb::LogicalTypeId::DATE:
+    case duckdb::LogicalTypeId::SMALLINT:
+    case duckdb::LogicalTypeId::TINYINT:
       dt = AQP_DTYPE_INT32;
       break;
     case duckdb::LogicalTypeId::BIGINT:
+    case duckdb::LogicalTypeId::TIMESTAMP:
+    case duckdb::LogicalTypeId::TIMESTAMP_TZ:
       dt = AQP_DTYPE_INT64;
+      break;
+    case duckdb::LogicalTypeId::DECIMAL:
+      dt = duckdb::DecimalType::GetWidth(types[i]) <= 9
+               ? AQP_DTYPE_INT32
+               : AQP_DTYPE_INT64;
       break;
     case duckdb::LogicalTypeId::VARCHAR:
       dt = AQP_DTYPE_VARCHAR;
