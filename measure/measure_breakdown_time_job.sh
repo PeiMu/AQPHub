@@ -49,7 +49,11 @@ fi
 # is built on first use if missing (--storage-plan is auto-enabled by the
 # binary for --jit-level=query, kept explicit here for clarity).
 if [[ "$jit_level" == "query" ]]; then
-    jit_extra_flags+=" --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
+    if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+        jit_extra_flags+=" --storage-plan --storage-cache=${STORAGE_CACHE:-/tmp/imdb_storage_plan_pg.cache}"
+    else
+        jit_extra_flags+=" --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
+    fi
 fi
 
 # Build a short suffix for the log filename
@@ -65,14 +69,18 @@ elif [[ "$jit_cache" != "off" ]]; then
     flag_suffix+="_jitcache_${jit_cache//-/_}"
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
+[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
 
 log_name=time_log.csv
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
-iteration=15 # 5 warm up, 10 runs
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    iteration=8  # 3 warm up, 5 runs
+else
+    iteration=15 # 5 warm up, 10 runs
+fi
 
 ########################################
 # DB connection
@@ -105,7 +113,7 @@ fi
 helper_db_arg=""
 if [[ "$engine" == "lingo-db-runtime" ]]; then
     helper_db_arg="--helper-db-path=${DUCKDB_DB}"
-elif [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
+elif [[ ("$split" == "node-based" || "$split" == "topdown") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${DUCKDB_DB}"
 elif [[ "$engine" == "mariadb" ]]; then
     helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
@@ -271,7 +279,7 @@ fi
 
 $cmd_prefix ../build_release/aqp_middleware \
   --engine="${engine}" \
-  ${db_arg} \
+  "${db_arg}" \
   "${helper_db_arg}" \
   --schema=$JOB_PATH/schema.sql \
   --fkeys=$JOB_PATH/fkeys.sql \

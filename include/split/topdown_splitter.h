@@ -1,23 +1,42 @@
 /*
- * TopDown split strategy implementation
- * Splits at FILTER nodes or JOIN nodes (build side)
+ * SDS — stats-driven IR splitter (Phase 2 rewrite of the old TopDown
+ * strategy; keeps the TOP_DOWN plumbing name).
+ *
+ * Split decisions are made entirely in the middleware: an IR-native
+ * join-order DP (IRJoinOptimizer, a port of DuckDB's plan_enumerator /
+ * tdom cardinality model) picks the cheapest first join from the remaining
+ * join graph each iteration; that pair is materialized as a temp table and
+ * fed back with its EXACT cardinality. No ReOptimizeIR round trips — the
+ * engine only sees plain sub-SQL (which it fully re-optimizes anyway).
+ *
+ * Mechanics (sub-IR construction, remaining-IR rebuild) are inherited from
+ * FKBasedSplitter; all FK-specific behavior in that base is gated on
+ * RELATIONSHIP_CENTER/ENTITY_CENTER and stays inert under TOP_DOWN.
+ * Design: new_split_strategy_analysis.md §9.
  */
 
 #pragma once
 
-#include "split/split_algorithm.h"
-#include <map>
-#include <queue>
-#include <set>
+#include "split/distinct_cache.h"
+#include "split/fk_based_splitter.h"
+#include "split/ir_join_optimizer.h"
+
+#include <cstdlib>
+#include <unordered_map>
 
 namespace middleware {
 
-class TopDownSplitter : public AQPSplitter {
-public:
-  explicit TopDownSplitter(EngineAdapter *adapter, bool enable_reorder = true)
-      : AQPSplitter(adapter), enable_reorder_(enable_reorder) {}
+struct CrossQueryPrepResult;
 
-  // Preprocess: Run IR-level ReorderGet if enabled
+class TopDownSplitter : public FKBasedSplitter {
+public:
+  // apply_engine_settings: issue the one-time session SET (B2 optimizer
+  // trim) from the ctor. MUST be false when constructing on a background
+  // thread (cross-query prep) — the adapter connection is not thread-safe.
+  explicit TopDownSplitter(EngineAdapter *adapter,
+                           BackendEngine engine = BackendEngine::DUCKDB,
+                           bool apply_engine_settings = true);
+
   void Preprocess(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
 
   std::unique_ptr<SubqueryExtraction>
@@ -27,13 +46,17 @@ public:
 
   std::string GetStrategyName() const override { return "TopDown"; }
 
-  // Re-run IR-level reorder before each split iteration so that temp tables
-  // (with actual cardinalities) influence join ordering.
-  void ReorderBeforeSplit(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
+  void InitFromCrossQueryPrep(CrossQueryPrepResult &prep);
+  void MovePreprocessState(CrossQueryPrepResult &out);
 
-  // Update remaining IR by replacing subtree (DuckDB style)
-  // Because split points align with subtree boundaries
-  // Takes ownership but modifies in-place and returns the same IR
+  void PrePopulateBaseCountCache();
+
+  // On the cross-query-prep background thread the engine must not be
+  // contacted (shared connection, main thread may be executing). PlanNext
+  // throws instead of issuing EXPLAINs; the caller aborts the first-sub
+  // prep so the split decision stays identical to the foreground path.
+  void SetBgMode(bool v) { bg_mode_ = v; }
+
   std::unique_ptr<ir_sql_converter::AQPStmt> UpdateRemainingIR(
       std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir,
       const std::set<unsigned int> &executed_table_indices,
@@ -42,90 +65,96 @@ public:
       const std::vector<std::pair<unsigned int, unsigned int>> &column_mappings,
       const std::vector<std::string> &column_names) override;
 
+  // v18 hybrid kill switches (same-session A/B, precedent AQP_TD_NO_OPTSET):
+  //  AQP_TD_V17         — full v17 restore: grown multi-relation groups and
+  //                       no pending-IR fast-path handoff.
+  //  AQP_TD_NO_PLANCTOR — v18 binary boundaries but no fast-path handoff
+  //                       (isolates the boundary-change exe effect from the
+  //                       constructor jit effect).
+  static bool V17Mode() {
+    static const bool v = std::getenv("AQP_TD_V17") != nullptr;
+    return v;
+  }
+  static bool NoPlanCtor() {
+    static const bool v = std::getenv("AQP_TD_NO_PLANCTOR") != nullptr;
+    return v;
+  }
+
+  // Same standalone-abort threshold as node-based
+  // (include/split/node_based_splitter.h): don't materialize a pair whose
+  // estimated output exceeds this.
+  static constexpr double kSplitCardThreshold = 1000000.0;
+
+  // DuckDB join-order parity: flat mark/semi selectivity
+  // (CardinalityEstimator::DEFAULT_SEMI_ANTI_SELECTIVITY).
+  static constexpr double kSemiSelectivity = 5.0;
+
 private:
-  // Visit operator tree and identify the next split point.
-  // No parameter: top_most_ is a member variable (mirrors DuckDB's top_most
-  // member in TopDownSplit), reset to true before each call from
-  // SplitIR.
-  void Visit(ir_sql_converter::AQPStmt *node);
+  // Run the IR DP over the remaining join graph and cache the chosen next
+  // group: the cheapest maximal subtree of the optimal join tree that does
+  // not contain the largest relation (the probe spine stays in the final
+  // query) and whose estimated output is under the threshold. Returns true
+  // when a beneficial split exists.
+  bool PlanNext(const ir_sql_converter::AQPStmt *remaining_ir);
 
-  // Collect all table indices in a subtree
-  std::set<unsigned int>
-  CollectTableIndices(const ir_sql_converter::AQPStmt *node) const;
+  void CollectRelations(const ir_sql_converter::AQPStmt *node,
+                        std::vector<JoinRel> &rels,
+                        std::vector<unsigned int> &rel_tables) const;
+  void CollectEdges(const ir_sql_converter::AQPStmt *node,
+                    const std::map<unsigned int, int> &table_to_pos,
+                    std::vector<JoinEdge> &edges) const;
+  void CaptureLeafCardinalities(const ir_sql_converter::AQPStmt *node);
+  // The incoming IR is FilterOptimize-only (join order never ran), so nodes
+  // usually carry NO estimates: fill the gaps per base table with base-table
+  // rows from one batched EXPLAIN of single-table sub-SQL (the engine does
+  // not fold filter selectivity into single-table estimates), then apply the
+  // middleware filter-selectivity model.
+  void FetchMissingLeafCardinalities(ir_sql_converter::AQPStmt *ir);
 
-  // Count number of base tables (scans) in the IR
-  int CountBaseTables(const ir_sql_converter::AQPStmt *node) const;
+  // Port of DuckDB's RelationStatisticsHelper::ExtractGetStats filter model:
+  // equality-with-constant -> ceil(base / distinct), min over filters;
+  // IN (k values) -> k such equalities; any other filter present without an
+  // equality -> DEFAULT_SELECTIVITY (0.2) once.
+  double EstimateFilteredCardinality(
+      double base_cardinality, const std::string &table_name,
+      const std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> &conjuncts);
 
-  // Helper to get node type name for debugging
-  std::string GetNodeTypeName(ir_sql_converter::SimplestNodeType type) const;
+  // Effective per-table cardinality (filters applied): captured from the
+  // initial optimized IR; temps get exact counts in UpdateRemainingIR.
+  std::map<unsigned int, double> table_card_;
+  // Unfiltered base rows per table NAME (engine single-table estimates carry
+  // no filter selectivity) -> constant across queries/repeats, never cleared.
+  std::map<std::string, double> base_count_cache_;
+  std::set<unsigned int> temp_indices_;
 
-  bool
-  CheckSameTableInSubtree(ir_sql_converter::AQPStmt *node,
-                          std::unordered_set<std::string> &seen_tables) const;
+  // Mark joins are large-IN-list filters lowered to MarkJoin+Chunk by the
+  // engine. Tables in the canonical Filter->Mark->[Scan,Chunk] shape are
+  // splittable (BuildSubIRForCluster clones the whole unit as the scan) and
+  // get their IN selectivity modeled: mark_in_ maps table index ->
+  // (probe column, IN-list size). Any other Mark shape is not safely
+  // clonable: those tables land in mark_locked_, stay out of split groups,
+  // and resolve in the final query (the remaining-IR rebuild preserves the
+  // subtree).
+  std::map<unsigned int, std::pair<std::string, double>> mark_in_;
+  std::set<unsigned int> mark_locked_;
 
-  // Fallback for when Visit() finds no split point: pick the deepest
-  // right child (build side) in the tree.
-  ir_sql_converter::AQPStmt *
-  FindDeepestRightChild(ir_sql_converter::AQPStmt *node) const;
+  // PlanNext cache (valid for one remaining-IR instance).
+  const ir_sql_converter::AQPStmt *planned_for_ = nullptr;
+  bool planned_splittable_ = false;
+  std::set<unsigned int> planned_group_;
+  double planned_card_ = 0.0;
 
-  // Find the deepest JoinNode in a left-deep chain.  Used when Visit()
-  // picks a split that covers the entire tree — we drill down to the
-  // smallest join (2-3 tables) as the first subquery instead.
-  ir_sql_converter::AQPStmt *
-  FindDeepestJoin(ir_sql_converter::AQPStmt *node) const;
+  // Column-name -> max base-table distinct seen at any join-edge endpoint
+  // this query. Temps inherit these as distinct upper bounds (a temp column
+  // can never have more distincts than its source base column) — without it
+  // temps report distinct = cardinality, inflating tdom denominators into
+  // est=1 garbage groups. Accumulated across iterations because the source
+  // base tables vanish into temps.
+  std::unordered_map<std::string, double> col_distinct_hints_;
 
-  // Collect the minimum set of attributes that the remaining IR needs from
-  // found_split_node_'s subtree.  Mirrors FK-splitter's required_attrs logic:
-  // (a) top-level target_list attrs from subquery tables,
-  // (b) AGGR/ORDER node attrs from subquery tables,
-  // (c) cross-boundary join condition attrs (one side in subquery, other not).
-  std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
-  CollectRequiredAttrs(const ir_sql_converter::AQPStmt *full_ir,
-                       const std::set<unsigned int> &subquery_tables) const;
+  DistinctCache distinct_cache_{DistinctCache::DefaultPath()};
 
-  // Wrap found_split_node_ in a SimplestProjection node in-place.
-  // Finds found_split_node_'s parent, extracts it, wraps in a projection with
-  // required_attrs as target_list, puts the projection back.
-  // Updates found_split_node_ to point to the new projection.
-  // Returns pointer to the new projection, or nullptr on failure.
-  ir_sql_converter::AQPStmt *
-  WrapInProjection(ir_sql_converter::AQPStmt *remaining_ir,
-                   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
-                       required_attrs);
-
-  // Build column name map from the IR (before ReOptimizeIR corrupts names).
-  // Maps (table_name, col_idx) → correct column name.
-  void BuildColumnNameMap(const ir_sql_converter::AQPStmt *ir);
-
-  // Look up the correct column name for a given table and col_idx.
-  std::string LookupColumnName(const std::string &table_name,
-                               unsigned int col_idx) const;
-
-  // Fix corrupted attr names in the IR after ReOptimizeIR.
-  void FixAttrName(ir_sql_converter::SimplestAttr *attr) const;
-  void FixExprNames(ir_sql_converter::AQPExpr *expr) const;
-  void FixAllAttrNames(ir_sql_converter::AQPStmt *node) const;
-
-  bool enable_reorder_;
-
-  // Pointer to the found split point during SplitIR traversal
-  // This is set during tree traversal and used in SplitIR
-  ir_sql_converter::AQPStmt *found_split_node_ = nullptr;
-
-  // Mirrors DuckDB's TopDownSplit::top_most member variable.
-  // Starts true at the beginning of each SplitIR traversal and is set to
-  // false the first time a split-worthy JOIN or top-level FILTER is seen.
-  // Using a member variable (not a parameter) so the flag propagates across
-  // recursive calls through non-split nodes (AGGR, ORDER, LIMIT, etc.).
-  bool top_most_ = true;
-
-  // Current subquery index
-  int query_split_index_ = 0;
-
-  // Correct column names from the original IR (before ReOptimizeIR).
-  // Key: (table_name, col_idx), Value: correct column name.
-  std::map<std::pair<std::string, unsigned int>, std::string> col_name_map_;
-
+  bool bg_mode_ = false;
 };
 
 } // namespace middleware

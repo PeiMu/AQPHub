@@ -176,6 +176,30 @@ e.g., `--estimator=postgres --helper-db-path="host=localhost port=5432 dbname=im
 Note: it is a bit tricky that there are some bugs with the `node-based` strategy, 
 and we need to specify a duckdb's database path to avoid these bugs 
 
+#### topdown
+
+Stats-Driven IR Splitter (SDS). Uses an IR-native DP join-order optimizer with
+cardinality estimation from distinct-count statistics. Splits at binary join
+pairs, materializing the cheapest pair each iteration. Does not require engine
+re-optimization round trips.
+
+```bash
+./build_release/aqp_middleware \
+--engine=duckdb \
+--db="/home/pei/Project/duckdb/measure/imdb.db" \
+--schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--split=topdown \
+--check-correctness \
+--debug \
+/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+```
+
+Environment variable kill-switches for A/B measurement:
+- `AQP_TD_V17=1` -- restore v17 grown multi-relation groups (disables plan constructor)
+- `AQP_TD_NO_PLANCTOR=1` -- keep v18 binary boundaries but skip the plan constructor fast path
+- `AQP_TD_NO_OPTSET=1` -- skip the `SET disabled_optimizers` call
+
 ### JIT
 
 Requires building with LLVM (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL operators from the AQP IR into native machine code using LLVM ORC LLJIT.
@@ -245,9 +269,9 @@ These flags control individual pipeline/query-level optimizations.
 ./build_release/aqp_middleware \
   --engine=duckdb \
   --db="/home/pei/Project/duckdb/measure/imdb.db" \
-  --schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
-  --fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
-  --split=node-based \
+  --schema=$JOB_PATH/schema.sql \
+  --fkeys=$JOB_PATH/fkeys.sql \
+  --split=topdown \
   --jit-level=query --compile-mode=tpde \
   --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache \
   --no-analyze \
@@ -388,7 +412,7 @@ Go to directory `measure/`. The scripts accept the following positional argument
 
 ```
 $1   engine          duckdb / postgres / umbra / mariadb / opengauss / lingodb
-$2   split           none / relationship-center / node-based
+$2   split           none / relationship-center / node-based / topdown
 $3   jit_level       none / expr / operator / pipeline / query  (lingodb: llvm / tpde)
 $4   jit_simd        off / none / auto                          (default: off)
 $5   payload_prune   on / off                                   (default: on)
@@ -429,7 +453,7 @@ bash ./measure_breakdown_time_job.sh duckdb node-based query none \
     on on on on off off off job_result/tuned_per_subquery_node-based.json
 ```
 
-Log filenames encode the active flags, e.g., `duckdb_node-based_query_none_fctpde_breakdown_time_log.csv`.
+Log filenames encode the active flags, e.g., `duckdb_node-based_query_none_tpde_breakdown_time_log.csv`.
 
 ### Analysis Scripts (measure/*.py)
 

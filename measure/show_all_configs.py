@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Show performance breakdown of all node-based configs in job_result/.
 
-Uses the same parser as plot_middleware_jit.py (drop 5 warmup, mean of 10).
+Uses the same parser as plot_middleware_jit.py (PG: 3 warmup + 5 runs, others: 5 warmup + 10 runs).
 Columns: middleware overhead, jit compile, execute, end-to-end total (all in seconds).
 
 Usage: python3 show_all_configs.py [split]
@@ -10,8 +10,16 @@ Usage: python3 show_all_configs.py [split]
 import csv, json, os, re, sys
 
 
+def _iter_params(csv_file):
+    base = os.path.basename(csv_file)
+    if base.startswith('postgresql_') or base.startswith('postgres_'):
+        return 8, 3
+    return 15, 5
+
+
 def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
     """Copied from plot_middleware_jit.py — canonical parser."""
+    repeat, warmup = _iter_params(csv_file)
     results = {}
     if has_jit:
         group_columns = ["extract_next_sub-IR", "generate_sub-SQL",
@@ -31,7 +39,7 @@ def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
                     continue
                 sql_name = match.group(1)
                 perf_rows = []
-                for _ in range(15):
+                for _ in range(repeat):
                     try:
                         perf_row = next(reader)
                         if not is_node_based:
@@ -107,9 +115,9 @@ def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
                     except (StopIteration, ValueError, IndexError):
                         break
 
-                if len(perf_rows) < 6:
+                if len(perf_rows) < warmup + 1:
                     continue
-                valid = perf_rows[5:]
+                valid = perf_rows[warmup:]
 
                 overhead = 0.0
                 jit_total = 0.0
@@ -151,41 +159,41 @@ def main():
         ("interp",
          f"duckdb_{split}_none_off_breakdown_time_log.csv", False),
         ("expr",
-         f"duckdb_{split}_expr_none_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_llvm_breakdown_time_log.csv", True),
         # ("expr_simd",
         #  f"duckdb_{split}_expr_auto_breakdown_time_log.csv", True),
         ("expr_fastisel",
-         f"duckdb_{split}_expr_none_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_fastisel_breakdown_time_log.csv", True),
         # ("expr_fastisel_simd",
         #  f"duckdb_{split}_expr_auto_fcfastisel_breakdown_time_log.csv", True),
         ("expr_tpde",
-         f"duckdb_{split}_expr_none_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_tpde_breakdown_time_log.csv", True),
         ("operator",
-         f"duckdb_{split}_operator_none_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_llvm_breakdown_time_log.csv", True),
         # ("operator_simd",
         #  f"duckdb_{split}_operator_auto_breakdown_time_log.csv", True),
         ("operator_fastisel",
-         f"duckdb_{split}_operator_none_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_fastisel_breakdown_time_log.csv", True),
         # ("operator_fastisel_simd",
         #  f"duckdb_{split}_operator_auto_fcfastisel_breakdown_time_log.csv", True),
         ("operator_tpde",
-         f"duckdb_{split}_operator_none_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_tpde_breakdown_time_log.csv", True),
         ("pipeline",
-         f"duckdb_{split}_pipeline_none_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_llvm_breakdown_time_log.csv", True),
         # ("pipeline_simd",
         #  f"duckdb_{split}_pipeline_auto_breakdown_time_log.csv", True),
         ("pipeline_fastisel",
-         f"duckdb_{split}_pipeline_none_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_fastisel_breakdown_time_log.csv", True),
         # ("pipeline_fastisel_simd",
         #  f"duckdb_{split}_pipeline_auto_fcfastisel_breakdown_time_log.csv", True),
         ("pipeline_tpde",
-         f"duckdb_{split}_pipeline_none_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_tpde_breakdown_time_log.csv", True),
         ("query_full",
-         f"duckdb_{split}_query_none_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_llvm_breakdown_time_log.csv", True),
         ("query_fastisel",
-         f"duckdb_{split}_query_none_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_fastisel_breakdown_time_log.csv", True),
         ("query_tpde",
-         f"duckdb_{split}_query_none_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_tpde_breakdown_time_log.csv", True),
         # ("query_full_simd",
         #  f"duckdb_{split}_query_auto_breakdown_time_log.csv", True),
         # ("query_fastisel_simd",
@@ -194,15 +202,15 @@ def main():
          f"duckdb_{split}_query_none_tuned_breakdown_time_log.csv", True),
         # --- query-jit spec-jit (no cache) ---
         ("query_full_specrecomp",
-         f"duckdb_{split}_query_none_specrecompile_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_specrecompile_llvm_breakdown_time_log.csv", True),
         # ("query_full_specinterp",
         #  f"duckdb_{split}_query_none_specinterpret_breakdown_time_log.csv", True),
         ("query_fasti_specrecomp",
-         f"duckdb_{split}_query_none_specrecompile_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_specrecompile_fastisel_breakdown_time_log.csv", True),
         # ("query_fasti_specinterp",
         #  f"duckdb_{split}_query_none_specinterpret_fcfastisel_breakdown_time_log.csv", True),
         ("query_tpde_specrecomp",
-         f"duckdb_{split}_query_none_specrecompile_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_specrecompile_tpde_breakdown_time_log.csv", True),
         # ("query_tpde_specinterp",
         #  f"duckdb_{split}_query_none_specinterpret_fctpde_breakdown_time_log.csv", True),
         # --- query-jit SIMD (no cache) ---
@@ -218,51 +226,51 @@ def main():
         ("interp_strict",
          f"duckdb_{split}_none_off_jitcache_single_run_strict_breakdown_time_log.csv", False),
         ("expr_strict",
-         f"duckdb_{split}_expr_none_jitcache_single_run_strict_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_jitcache_single_run_strict_llvm_breakdown_time_log.csv", True),
         # ("expr_simd_strict",
         #  f"duckdb_{split}_expr_auto_jitcache_single_run_strict_breakdown_time_log.csv", True),
         ("expr_fi_strict",
-         f"duckdb_{split}_expr_none_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_jitcache_single_run_strict_fastisel_breakdown_time_log.csv", True),
         # ("expr_fi_simd_strict",
         #  f"duckdb_{split}_expr_auto_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
         ("expr_tpde_strict",
-         f"duckdb_{split}_expr_none_jitcache_single_run_strict_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_jitcache_single_run_strict_tpde_breakdown_time_log.csv", True),
         ("oper_strict",
-         f"duckdb_{split}_operator_none_jitcache_single_run_strict_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_jitcache_single_run_strict_llvm_breakdown_time_log.csv", True),
         # ("oper_simd_strict",
         #  f"duckdb_{split}_operator_auto_jitcache_single_run_strict_breakdown_time_log.csv", True),
         ("oper_fi_strict",
-         f"duckdb_{split}_operator_none_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_jitcache_single_run_strict_fastisel_breakdown_time_log.csv", True),
         # ("oper_fi_simd_strict",
         #  f"duckdb_{split}_operator_auto_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
         ("oper_tpde_strict",
-         f"duckdb_{split}_operator_none_jitcache_single_run_strict_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_jitcache_single_run_strict_tpde_breakdown_time_log.csv", True),
         ("pipe_strict",
-         f"duckdb_{split}_pipeline_none_jitcache_single_run_strict_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_jitcache_single_run_strict_llvm_breakdown_time_log.csv", True),
         # ("pipe_simd_strict",
         #  f"duckdb_{split}_pipeline_auto_jitcache_single_run_strict_breakdown_time_log.csv", True),
         ("pipe_fi_strict",
-         f"duckdb_{split}_pipeline_none_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_jitcache_single_run_strict_fastisel_breakdown_time_log.csv", True),
         # ("pipe_fi_simd_strict",
         #  f"duckdb_{split}_pipeline_auto_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
         ("pipe_tpde_strict",
-         f"duckdb_{split}_pipeline_none_jitcache_single_run_strict_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_jitcache_single_run_strict_tpde_breakdown_time_log.csv", True),
         ("q_full_strict",
-         f"duckdb_{split}_query_none_jitcache_single_run_strict_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_strict_llvm_breakdown_time_log.csv", True),
         ("q_fasti_strict",
-         f"duckdb_{split}_query_none_jitcache_single_run_strict_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_strict_fastisel_breakdown_time_log.csv", True),
         ("q_tpde_strict",
-         f"duckdb_{split}_query_none_jitcache_single_run_strict_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_strict_tpde_breakdown_time_log.csv", True),
         ("q_strict_srec",
-         f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_llvm_breakdown_time_log.csv", True),
         # ("q_strict_sint",
         #  f"duckdb_{split}_query_none_jitcache_single_run_strict_specinterpret_breakdown_time_log.csv", True),
         ("q_fasti_strict_srec",
-         f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_fastisel_breakdown_time_log.csv", True),
         # ("q_fasti_strict_sint",
         #  f"duckdb_{split}_query_none_jitcache_single_run_strict_specinterpret_fcfastisel_breakdown_time_log.csv", True),
         ("q_tpde_strict_srec",
-         f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_tpde_breakdown_time_log.csv", True),
         # ("q_tpde_strict_sint",
         #  f"duckdb_{split}_query_none_jitcache_single_run_strict_specinterpret_fctpde_breakdown_time_log.csv", True),
         # ("q_simd_strict",
@@ -283,51 +291,51 @@ def main():
          f"duckdb_{split}_query_none_jitcache_single_run_strict_specrecompile_tuned_breakdown_time_log.csv", True),
         # --- jit-cache=single-run-template ---
         ("expr_tmpl",
-         f"duckdb_{split}_expr_none_jitcache_single_run_template_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_jitcache_single_run_template_llvm_breakdown_time_log.csv", True),
         # ("expr_simd_tmpl",
         #  f"duckdb_{split}_expr_auto_jitcache_single_run_template_breakdown_time_log.csv", True),
         ("expr_fi_tmpl",
-         f"duckdb_{split}_expr_none_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv", True),
         # ("expr_fi_simd_tmpl",
         #  f"duckdb_{split}_expr_auto_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
         ("expr_tpde_tmpl",
-         f"duckdb_{split}_expr_none_jitcache_single_run_template_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_expr_none_jitcache_single_run_template_tpde_breakdown_time_log.csv", True),
         ("oper_tmpl",
-         f"duckdb_{split}_operator_none_jitcache_single_run_template_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_jitcache_single_run_template_llvm_breakdown_time_log.csv", True),
         # ("oper_simd_tmpl",
         #  f"duckdb_{split}_operator_auto_jitcache_single_run_template_breakdown_time_log.csv", True),
         ("oper_fi_tmpl",
-         f"duckdb_{split}_operator_none_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv", True),
         # ("oper_fi_simd_tmpl",
         #  f"duckdb_{split}_operator_auto_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
         ("oper_tpde_tmpl",
-         f"duckdb_{split}_operator_none_jitcache_single_run_template_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_operator_none_jitcache_single_run_template_tpde_breakdown_time_log.csv", True),
         ("pipe_tmpl",
-         f"duckdb_{split}_pipeline_none_jitcache_single_run_template_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_jitcache_single_run_template_llvm_breakdown_time_log.csv", True),
         # ("pipe_simd_tmpl",
         #  f"duckdb_{split}_pipeline_auto_jitcache_single_run_template_breakdown_time_log.csv", True),
         ("pipe_fi_tmpl",
-         f"duckdb_{split}_pipeline_none_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv", True),
         # ("pipe_fi_simd_tmpl",
         #  f"duckdb_{split}_pipeline_auto_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
         ("pipe_tpde_tmpl",
-         f"duckdb_{split}_pipeline_none_jitcache_single_run_template_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_pipeline_none_jitcache_single_run_template_tpde_breakdown_time_log.csv", True),
         ("q_full_tmpl",
-         f"duckdb_{split}_query_none_jitcache_single_run_template_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv", True),
         ("q_fasti_tmpl",
-         f"duckdb_{split}_query_none_jitcache_single_run_template_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv", True),
         ("q_tpde_tmpl",
-         f"duckdb_{split}_query_none_jitcache_single_run_template_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_template_tpde_breakdown_time_log.csv", True),
         ("q_tmpl_srec",
-         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv", True),
         # ("q_tmpl_sint",
         #  f"duckdb_{split}_query_none_jitcache_single_run_template_specinterpret_breakdown_time_log.csv", True),
         ("q_fasti_tmpl_srec",
-         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_fcfastisel_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_fastisel_breakdown_time_log.csv", True),
         # ("q_fasti_tmpl_sint",
         #  f"duckdb_{split}_query_none_jitcache_single_run_template_specinterpret_fcfastisel_breakdown_time_log.csv", True),
         ("q_tpde_tmpl_srec",
-         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_fctpde_breakdown_time_log.csv", True),
+         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv", True),
         # ("q_tpde_tmpl_sint",
         #  f"duckdb_{split}_query_none_jitcache_single_run_template_specinterpret_fctpde_breakdown_time_log.csv", True),
         # ("q_simd_tmpl",

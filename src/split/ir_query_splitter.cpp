@@ -72,8 +72,8 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
   // Create the appropriate splitter based on strategy
   switch (config.strategy) {
   case SplitStrategy::TOP_DOWN:
-    splitter_ =
-        std::make_unique<TopDownSplitter>(adapter, config.enable_reorder_get);
+    splitter_ = std::make_unique<TopDownSplitter>(
+        adapter, config.engine, /*apply_engine_settings=*/true);
     break;
 
   case SplitStrategy::MIN_SUBQUERY:
@@ -408,6 +408,65 @@ static void EnsureCrossCompiler(
   if (need_qjit)
     duck->RegisterQjitRuntimeSymbols(comp.get());
 }
+
+// Phase 2 bg compile of the first sub-query (shared by node-based and SDS
+// cross-query prep). Path A: query-jit full bg compile; Path B: other jit
+// levels Prepare + RegisterJITImpl; Path C: interpreter plain Prepare.
+static void BgCompileFirstSubquery(
+    CrossQueryPrepResult &result, DuckDBAdapter *duck,
+    const ir_sql_converter::AQPStmt &sub_ir,
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+    uint32_t effective_jit_flags, int effective_compile_mode, bool debug) {
+  if (result.first_sub_sql.empty())
+    return;
+  try {
+    bool is_query_jit = (effective_jit_flags & AQP_JIT_QUERY_JIT) != 0;
+    bool has_jit = (effective_jit_flags & AQP_JIT_LEVEL_MASK) != 0;
+    if (is_query_jit) {
+      EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
+                          effective_compile_mode, /*need_qjit=*/true);
+      bg_compiler->ResetModules();
+      std::string label = "cross-" + result.query_name + "-sq0";
+      result.qjit_spec = duck->SpeculativeQueryJitCompile(
+          result.first_sub_sql, label, *result.bg_conn, bg_compiler.get());
+      result.has_qjit = (result.qjit_spec != nullptr);
+      if (debug && result.has_qjit)
+        std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
+    } else if (has_jit) {
+      result.prepared = result.bg_conn->Prepare(result.first_sub_sql);
+      if (result.prepared && !result.prepared->HasError() &&
+          result.prepared->data && result.prepared->data->physical_plan) {
+        EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
+                            effective_compile_mode, /*need_qjit=*/false);
+        bg_compiler->ResetModules();
+        auto *bg_ctx = result.bg_conn->context.get();
+        bg_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
+        std::unordered_set<const ir_sql_converter::AQPStmt *>
+            consumed_filters, consumed_joins;
+        DuckDBAdapter::TempCollectionSnapshot empty_snapshot;
+        duck->RegisterJITImpl(result.prepared->data->physical_plan->Root(),
+                              sub_ir, bg_ctx, bg_compiler.get(),
+                              consumed_filters, consumed_joins,
+                              &empty_snapshot);
+        if (bg_ctx->aqp_jit_context->flags == 0)
+          bg_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
+        result.has_prepare = true;
+        if (debug)
+          std::cerr << "[CROSS-QUERY] Phase 2 path B (jit) OK\n";
+      }
+    } else {
+      result.prepared = result.bg_conn->Prepare(result.first_sub_sql);
+      if (result.prepared && !result.prepared->HasError())
+        result.has_prepare = true;
+      if (debug && result.has_prepare)
+        std::cerr << "[CROSS-QUERY] Phase 2 path C (interp) OK\n";
+    }
+  } catch (const std::exception &e) {
+    if (debug)
+      std::cerr << "[CROSS-QUERY] Phase 2 compile failed: " << e.what()
+                << "\n";
+  }
+}
 #endif
 
 #ifdef HAVE_LLVM
@@ -586,61 +645,9 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
 
 #if defined(HAVE_LLVM)
     // Phase 2: bg compile first sub-query
-    if (!result->first_sub_sql.empty()) {
-      try {
-        bool is_query_jit = (effective_jit_flags & AQP_JIT_QUERY_JIT) != 0;
-        bool has_jit = (effective_jit_flags & AQP_JIT_LEVEL_MASK) != 0;
-        if (is_query_jit) {
-          // Path A: query-jit — full bg compile via SpeculativeQueryJitCompile
-          EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
-                              effective_compile_mode, /*need_qjit=*/true);
-          bg_compiler->ResetModules();
-          std::string label = "cross-" + result->query_name + "-sq0";
-          result->qjit_spec = duck->SpeculativeQueryJitCompile(
-              result->first_sub_sql, label, *result->bg_conn,
-              bg_compiler.get());
-          result->has_qjit = (result->qjit_spec != nullptr);
-          if (debug && result->has_qjit)
-            std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
-        } else if (has_jit) {
-          // Path B: non-query-jit — Prepare + RegisterJITImpl
-          result->prepared = result->bg_conn->Prepare(result->first_sub_sql);
-          if (result->prepared && !result->prepared->HasError() &&
-              result->prepared->data &&
-              result->prepared->data->physical_plan) {
-            EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
-                                effective_compile_mode, /*need_qjit=*/false);
-            bg_compiler->ResetModules();
-            auto *bg_ctx = result->bg_conn->context.get();
-            bg_ctx->aqp_jit_context =
-                duckdb::make_uniq<duckdb::AQPJITContext>();
-            std::unordered_set<const ir_sql_converter::AQPStmt *>
-                consumed_filters, consumed_joins;
-            DuckDBAdapter::TempCollectionSnapshot empty_snapshot;
-            duck->RegisterJITImpl(
-                result->prepared->data->physical_plan->Root(), *sub_ir,
-                bg_ctx, bg_compiler.get(), consumed_filters, consumed_joins,
-                &empty_snapshot);
-            if (bg_ctx->aqp_jit_context->flags == 0)
-              bg_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
-            result->has_prepare = true;
-            if (debug)
-              std::cerr << "[CROSS-QUERY] Phase 2 path B (jit) OK\n";
-          }
-        } else {
-          // Path C: interpreter — just Prepare
-          result->prepared = result->bg_conn->Prepare(result->first_sub_sql);
-          if (result->prepared && !result->prepared->HasError())
-            result->has_prepare = true;
-          if (debug && result->has_prepare)
-            std::cerr << "[CROSS-QUERY] Phase 2 path C (interp) OK\n";
-        }
-      } catch (const std::exception &e) {
-        if (debug)
-          std::cerr << "[CROSS-QUERY] Phase 2 compile failed: " << e.what()
-                    << "\n";
-      }
-    }
+    BgCompileFirstSubquery(*result, duck, *sub_ir, bg_compiler,
+                           effective_jit_flags, effective_compile_mode,
+                           debug);
 #endif
 
     auto extraction =
@@ -665,6 +672,254 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
       std::chrono::duration<double, std::micro>(t1 - t0).count();
   return result;
 }
+
+#if defined(HAVE_LLVM)
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQueryTopDown(
+    const std::string &sql_path, duckdb::DuckDB &db_ref, DuckDBAdapter *duck,
+    const ParamConfig &config,
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
+    uint32_t effective_jit_flags, int effective_compile_mode) {
+#else
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
+                                         duckdb::DuckDB &db_ref,
+                                         DuckDBAdapter *duck,
+                                         const ParamConfig &config) {
+#endif
+  bool debug = config.enable_debug_print;
+  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto t0 = std::chrono::high_resolution_clock::now();
+  try {
+    // Read SQL file
+    {
+      std::ifstream f(sql_path);
+      if (!f.is_open()) {
+        result->error = "failed to open " + sql_path;
+        return result;
+      }
+      std::stringstream buf;
+      buf << f.rdbuf();
+      result->sql = buf.str();
+    }
+
+    // Extract query name
+    {
+      auto slash = sql_path.rfind('/');
+      std::string fname =
+          (slash != std::string::npos) ? sql_path.substr(slash + 1) : sql_path;
+      auto dot = fname.rfind('.');
+      if (dot != std::string::npos)
+        fname = fname.substr(0, dot);
+      result->query_name = std::move(fname);
+    }
+
+    // bg connection + Parse + Plan (mirrors DuckDBAdapter::ParseSQL)
+    result->bg_conn = std::make_unique<duckdb::Connection>(db_ref);
+    auto *ctx = result->bg_conn->context.get();
+
+    bool auto_commit = ctx->transaction.IsAutoCommit();
+    if (auto_commit)
+      ctx->transaction.BeginTransaction();
+
+    duckdb::Parser parser(ctx->GetParserOptions());
+    parser.ParseQuery(result->sql);
+    if (parser.statements.empty() ||
+        parser.statements[0]->type !=
+            duckdb::StatementType::SELECT_STATEMENT) {
+      if (auto_commit)
+        ctx->transaction.Commit();
+      result->error = "not a single SELECT statement";
+      return result;
+    }
+
+    result->bg_planner = std::make_unique<duckdb::Planner>(*ctx);
+    result->bg_planner->CreatePlan(std::move(parser.statements[0]));
+    auto plan = std::move(result->bg_planner->plan);
+    if (!plan) {
+      if (auto_commit)
+        ctx->transaction.Commit();
+      result->error = "failed to create logical plan";
+      return result;
+    }
+
+    // FilterOptimize (mirrors DuckDBAdapter::FilterOptimize)
+    if (plan->RequireOptimizer()) {
+      duckdb::Optimizer optimizer(*result->bg_planner->binder, *ctx);
+      plan = optimizer.FilterOptimize(std::move(plan));
+    }
+
+    if (auto_commit)
+      ctx->transaction.Commit();
+
+    // ConvertPlanToIR (SDS needs the full IR upfront)
+    std::unordered_map<unsigned int, std::string> empty_map;
+    result->whole_ir = ir_sql_converter::ConvertDuckDBPlanToIR(
+        *result->bg_planner->binder, *ctx, plan.get(), empty_map, false);
+    if (!result->whole_ir) {
+      result->error = "ConvertDuckDBPlanToIR failed";
+      return result;
+    }
+
+    // Run Preprocess on a bg TopDownSplitter. Pre-populate base_count_cache_
+    // from the file-backed distinct cache so FetchMissingLeafCardinalities
+    // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
+    TopDownSplitter bg_splitter(duck, BackendEngine::DUCKDB,
+                                /*apply_engine_settings=*/false);
+    bg_splitter.PrePopulateBaseCountCache();
+    bg_splitter.Preprocess(result->whole_ir);
+
+#if defined(HAVE_LLVM)
+    // Iteration 1's split decision depends only on preprocessed base stats
+    // (no temp feedback yet), so it is deterministic: run it here and
+    // bg-compile the first sub-query like node-based does. Bg mode makes
+    // PlanNext throw instead of contacting the engine (EXPLAIN fallback);
+    // on throw we abort the pre-split so the foreground path decides
+    // identically. Must run BEFORE MovePreprocessState (PlanNext reads
+    // table_card_ etc.).
+    static const bool no_presplit = std::getenv("AQP_TD_NO_PRESPLIT") != nullptr;
+    bg_splitter.SetBgMode(true);
+    try {
+      if (!no_presplit && !bg_splitter.IsComplete(result->whole_ir.get())) {
+        auto extraction = bg_splitter.SplitIR(result->whole_ir.get());
+        if (extraction && extraction->sub_ir) {
+          result->first_sub_sql =
+              ir_sql_converter::ConvertIRToSQL(*extraction->sub_ir, 0);
+          BgCompileFirstSubquery(*result, duck, *extraction->sub_ir,
+                                 bg_compiler, effective_jit_flags,
+                                 effective_compile_mode, debug);
+          result->td_split_iteration = 1;
+          result->td_executed_tables = extraction->executed_table_indices;
+          result->first_extraction = std::move(extraction);
+        }
+      }
+    } catch (const std::exception &e) {
+      result->first_extraction.reset();
+      result->first_sub_sql.clear();
+      if (debug)
+        std::cerr << "[CROSS-QUERY-TD] pre-split aborted: " << e.what()
+                  << "\n";
+    }
+#endif
+
+    bg_splitter.MovePreprocessState(*result);
+
+    result->success = true;
+    if (debug)
+      std::cerr << "[CROSS-QUERY-TD] prep OK for " << result->query_name
+                << "\n";
+  } catch (const std::exception &e) {
+    result->error = e.what();
+    if (debug)
+      std::cerr << "[CROSS-QUERY-TD] prep failed: " << e.what() << "\n";
+  }
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  result->prep_time_us =
+      std::chrono::duration<double, std::micro>(t1 - t0).count();
+  return result;
+}
+#endif
+
+#ifdef HAVE_POSTGRES
+std::unique_ptr<CrossQueryPrepResult>
+IRQuerySplitter::PrepareNextQueryTopDownPG(const std::string &sql_path,
+                                           EngineAdapter *adapter,
+                                           const ParamConfig &config) {
+  bool debug = config.enable_debug_print;
+  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto t0 = std::chrono::high_resolution_clock::now();
+  try {
+    {
+      std::ifstream f(sql_path);
+      if (!f.is_open()) {
+        result->error = "failed to open " + sql_path;
+        return result;
+      }
+      std::stringstream buf;
+      buf << f.rdbuf();
+      result->sql = buf.str();
+    }
+
+    {
+      auto slash = sql_path.rfind('/');
+      std::string fname =
+          (slash != std::string::npos) ? sql_path.substr(slash + 1) : sql_path;
+      auto dot = fname.rfind('.');
+      if (dot != std::string::npos)
+        fname = fname.substr(0, dot);
+      result->query_name = std::move(fname);
+    }
+
+    PgQueryParseResult pg_result = pg_query_parse(result->sql.c_str());
+    if (pg_result.error) {
+      result->error =
+          "parse error: " + std::string(pg_result.error->message);
+      pg_query_free_parse_result(pg_result);
+      return result;
+    }
+    nlohmann::json parse_tree;
+    try {
+      parse_tree = nlohmann::json::parse(pg_result.parse_tree);
+    } catch (...) {
+      pg_query_free_parse_result(pg_result);
+      result->error = "json parse failed";
+      return result;
+    }
+    pg_query_free_parse_result(pg_result);
+
+    result->whole_ir =
+        ir_sql_converter::ConvertParseTreeToIRWithSchema(parse_tree, 0);
+    if (!result->whole_ir) {
+      result->error = "IR conversion failed";
+      return result;
+    }
+
+    TopDownSplitter bg_splitter(adapter, BackendEngine::POSTGRESQL,
+                                /*apply_engine_settings=*/false);
+    bg_splitter.PrePopulateBaseCountCache();
+    bg_splitter.SetBgMode(true);
+    bg_splitter.Preprocess(result->whole_ir);
+
+    static const bool no_presplit =
+        std::getenv("AQP_TD_NO_PRESPLIT") != nullptr;
+    try {
+      if (!no_presplit &&
+          !bg_splitter.IsComplete(result->whole_ir.get())) {
+        auto extraction = bg_splitter.SplitIR(result->whole_ir.get());
+        if (extraction && extraction->sub_ir) {
+          result->first_sub_sql =
+              ir_sql_converter::ConvertIRToSQL(*extraction->sub_ir, 0);
+          result->td_split_iteration = 1;
+          result->td_executed_tables = extraction->executed_table_indices;
+          result->first_extraction = std::move(extraction);
+        }
+      }
+    } catch (const std::exception &e) {
+      result->first_extraction.reset();
+      result->first_sub_sql.clear();
+      if (debug)
+        std::cerr << "[CROSS-QUERY-TD-PG] pre-split aborted: " << e.what()
+                  << "\n";
+    }
+
+    bg_splitter.MovePreprocessState(*result);
+
+    result->success = true;
+    if (debug)
+      std::cerr << "[CROSS-QUERY-TD-PG] prep OK for " << result->query_name
+                << "\n";
+  } catch (const std::exception &e) {
+    result->error = e.what();
+    if (debug)
+      std::cerr << "[CROSS-QUERY-TD-PG] prep failed: " << e.what() << "\n";
+  }
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  result->prep_time_us =
+      std::chrono::duration<double, std::micro>(t1 - t0).count();
+  return result;
+}
 #endif
 
 QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
@@ -681,6 +936,9 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   // incrementing across queries so temp table names stay unique)
   temp_tables_.clear();
   sub_plan_sqls_.clear();
+  empty_temp_tables_.clear();
+  all_inner_joins_ = false;
+  early_terminate_ = false;
   for (auto &kv : async_csrs_)
     kv.second.wait();
   async_csrs_.clear();
@@ -766,18 +1024,32 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duckdb_adapter_->BeginPlanRecording();
   }
 #endif
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+  if (config_.jit_cache >= 3 && config_.engine == BackendEngine::POSTGRESQL) {
+    auto &cache = PostgreSQLAdapter::PgQueryPlanCache();
+    auto it = cache.find(query_name_);
+    if (it != cache.end())
+      return ReplayQueryPlanPG(it->second);
+    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+    if (pg)
+      pg->BeginPlanRecording();
+  }
+#endif
 
   // === Phase 1: Parse SQL ===
   std::chrono::high_resolution_clock::time_point timer;
-#ifdef HAVE_DUCKDB
   bool using_cross_query_prep =
       active_cross_query_prep_ && active_cross_query_prep_->success &&
-      config_.strategy == SplitStrategy::NODE_BASED;
+      (config_.strategy == SplitStrategy::NODE_BASED ||
+       config_.strategy == SplitStrategy::TOP_DOWN);
   if (using_cross_query_prep) {
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Phase 1+2: Skipped (cross-query prep)\n";
-    // Inject bg planner so iterations 2+ can use GetBinder()/ConvertPlanToIR()
-    duckdb_adapter_->SetPlanner(std::move(active_cross_query_prep_->bg_planner));
+#ifdef HAVE_DUCKDB
+    if (config_.strategy == SplitStrategy::NODE_BASED) {
+      duckdb_adapter_->SetPlanner(std::move(active_cross_query_prep_->bg_planner));
+    }
+#endif
     if (config_.enable_timing) {
       std::ofstream log_file;
       log_file.open(g_timing_log_name, std::ios_base::app);
@@ -786,7 +1058,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     }
   } else {
     active_cross_query_prep_.reset();
-#endif
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
     if (config_.enable_timing)
@@ -807,9 +1078,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
                << (parse_sql_time / 1000.0) << ", ";
       log_file.close();
     }
-#ifdef HAVE_DUCKDB
   }
-#endif
 
   // === Phase 2: Pre-Optimize (ONLY for DuckDB, or node-based split) ===
 #ifdef HAVE_DUCKDB
@@ -846,25 +1115,38 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #ifdef HAVE_DUCKDB
   if (config_.strategy != SplitStrategy::NODE_BASED) {
 #endif
-    if (config_.enable_timing)
-      timer = chrono_tic();
-    whole_ir = adapter_->ConvertPlanToIR();
-    if (config_.enable_timing) {
-      auto convert_plan_to_ir_time =
-          chrono_toc(&timer, "Convert Plan to IR time is\n", false);
-      // save time to a file
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3)
-               << (convert_plan_to_ir_time / 1000.0) << ", ";
-      log_file.close();
-    }
-    if (!whole_ir) {
-      throw std::runtime_error("Failed to convert plan to IR");
-    }
-    if (config_.enable_debug_print) {
-      std::cout << "\n=== Whole IR (before split) ===" << std::endl;
-      whole_ir->Print();
+    if (using_cross_query_prep &&
+        config_.strategy == SplitStrategy::TOP_DOWN &&
+        active_cross_query_prep_->whole_ir) {
+      if (config_.enable_debug_print)
+        std::cout << "[IRQuerySplitter] Phase 3: Skipped (cross-query prep)\n";
+      whole_ir = std::move(active_cross_query_prep_->whole_ir);
+      if (config_.enable_timing) {
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << "0.000, "; // convert_plan_to_ir placeholder
+        log_file.close();
+      }
+    } else {
+      if (config_.enable_timing)
+        timer = chrono_tic();
+      whole_ir = adapter_->ConvertPlanToIR();
+      if (config_.enable_timing) {
+        auto convert_plan_to_ir_time =
+            chrono_toc(&timer, "Convert Plan to IR time is\n", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3)
+                 << (convert_plan_to_ir_time / 1000.0) << ", ";
+        log_file.close();
+      }
+      if (!whole_ir) {
+        throw std::runtime_error("Failed to convert plan to IR");
+      }
+      if (config_.enable_debug_print) {
+        std::cout << "\n=== Whole IR (before split) ===" << std::endl;
+        whole_ir->Print();
+      }
     }
 #ifdef HAVE_DUCKDB
   }
@@ -895,17 +1177,28 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
   // === Strategy Preprocessing ===
   std::chrono::high_resolution_clock::time_point timer;
-#ifdef HAVE_DUCKDB
   if (active_cross_query_prep_ && active_cross_query_prep_->success &&
-      config_.strategy == SplitStrategy::NODE_BASED) {
+      (config_.strategy == SplitStrategy::NODE_BASED ||
+       config_.strategy == SplitStrategy::TOP_DOWN)) {
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Preprocess: using cross-query prep\n";
-    auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
-    node_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+    if (config_.strategy == SplitStrategy::NODE_BASED) {
+#ifdef HAVE_DUCKDB
+      auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+      node_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
 #if defined(HAVE_LLVM)
-    precomputed_extraction_ =
-        std::move(active_cross_query_prep_->first_extraction);
+      precomputed_extraction_ =
+          std::move(active_cross_query_prep_->first_extraction);
 #endif
+#endif
+    } else {
+      auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
+      td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+#if defined(HAVE_LLVM)
+      precomputed_extraction_ =
+          std::move(active_cross_query_prep_->first_extraction);
+#endif
+    }
     if (config_.enable_timing) {
       std::ofstream log_file;
       log_file.open(g_timing_log_name, std::ios_base::app);
@@ -918,9 +1211,17 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                 << " bg_prep=" << std::fixed << std::setprecision(1)
                 << (prep_us / 1000.0) << "ms\n";
     }
+    if (config_.strategy == SplitStrategy::TOP_DOWN) {
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+      if (!active_cross_query_prep_->has_qjit &&
+          !active_cross_query_prep_->has_prepare)
+        active_cross_query_prep_.reset();
+#else
+      active_cross_query_prep_.reset();
+#endif
+    }
   } else {
     active_cross_query_prep_.reset();
-#endif
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
     if (config_.enable_timing)
@@ -935,9 +1236,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                << (preprocess_time / 1000.0) << ", ";
       log_file.close();
     }
-#ifdef HAVE_DUCKDB
   }
-#endif
+
+  all_inner_joins_ =
+      remaining_ir != nullptr && AllJoinsPropagatEmpty(remaining_ir.get());
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   // Phase A wiring: the adapter fires this hook twice per iteration — after
@@ -975,10 +1277,9 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
           [this](const std::string &temp_name,
                  const std::vector<int32_t> &aqp_dtypes,
                  const std::vector<std::string> &col_names,
-                 const std::string &explain_json,
                  uint64_t est_card, bool post_execute) {
             LaunchSpeculativeCompilePG(temp_name, aqp_dtypes, col_names,
-                                       explain_json, est_card, post_execute);
+                                       est_card, post_execute);
           });
     }
   }
@@ -988,6 +1289,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   // Also continue if precomputed_extraction_ holds a cached SplitIR result
   // from LaunchSpeculativeCompile — even if the splitter is now terminal.
   auto has_work = [&]() -> bool {
+    if (early_terminate_)
+      return false;
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
     if (precomputed_extraction_)
       return true;
@@ -1093,6 +1396,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::cout << final_sql << std::endl;
     }
   }
+
   // Try kernel MIN aggregate execution path
   QueryResult query_result;
   bool kernel_final_executed = false;
@@ -1321,9 +1625,130 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     duckdb_adapter_->EndPlanRecording();
   }
 #endif
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+  if (config_.jit_cache >= 3 && config_.engine == BackendEngine::POSTGRESQL) {
+    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+    if (pg && pg->IsPlanRecording()) {
+      PgCachedQueryPlan cached;
+      auto &buf = pg->GetPlanRecording();
+      if (!buf.empty()) {
+        cached.final_query = std::move(buf.back());
+        buf.pop_back();
+        cached.subqueries = std::move(buf);
+      }
+      PostgreSQLAdapter::PgQueryPlanCache()[query_name_] = std::move(cached);
+      pg->EndPlanRecording();
+    }
+  }
+#endif
 
   return query_result;
 }
+
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+
+QueryResult
+IRQuerySplitter::ReplayQueryPlanPG(const PgCachedQueryPlan &cached) {
+  auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+  if (!pg)
+    throw std::runtime_error("[PLAN-REPLAY-PG] not a PostgreSQLAdapter");
+
+  std::chrono::high_resolution_clock::time_point timer;
+
+  if (config_.enable_timing) {
+    std::ofstream log_file;
+    log_file.open(g_timing_log_name, std::ios_base::app);
+    if (config_.strategy == SplitStrategy::NODE_BASED)
+      log_file << "0.000, 0.000, ";
+    else
+      log_file << "0.000, 0.000, 0.000, ";
+    log_file.close();
+  }
+
+  for (const auto &sub : cached.subqueries) {
+    if (config_.enable_timing) {
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << "0.000, 0.000, ";
+      log_file.close();
+      timer = chrono_tic();
+    }
+
+    if (sub.is_query_jit && !sub.is_interpreter_fallback) {
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-REPLAY-PG] sub " << sub.temp_table_name
+                  << ": JIT replay\n";
+      int64_t rows = pg->ReplayQjitSubquery(sub,
+                                                config_.enable_update_temp_card);
+      if (rows < 0) {
+        throw std::runtime_error(
+            "[PLAN-REPLAY-PG] replay failed for " + sub.temp_table_name +
+            " rc=" + std::to_string(rows));
+      }
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-REPLAY-PG] sub " << sub.temp_table_name
+                  << ": rows=" << rows << "\n";
+      if (config_.enable_timing) {
+        auto us = chrono_toc(&timer, "", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3) << "0.000, "
+                 << (us / 1000.0) << ", 0.000, 0.000, ";
+        log_file.close();
+      }
+    } else {
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-REPLAY-PG] sub " << sub.temp_table_name
+                  << ": native PG fallback\n";
+      bool saved_timing = pg->enable_timing_;
+      pg->enable_timing_ = false;
+      pg->ExecuteSQLandCreateTempTable(sub.sql, sub.temp_table_name,
+                                       config_.enable_update_temp_card);
+      pg->enable_timing_ = saved_timing;
+      if (config_.enable_timing) {
+        auto us = chrono_toc(&timer, "", false);
+        std::ofstream log_file;
+        log_file.open(g_timing_log_name, std::ios_base::app);
+        log_file << std::fixed << std::setprecision(3) << "0.000, "
+                 << (us / 1000.0) << ", 0.000, 0.000, ";
+        log_file.close();
+      }
+    }
+  }
+
+  if (config_.enable_timing) {
+    std::ofstream log_file;
+    log_file.open(g_timing_log_name, std::ios_base::app);
+    log_file << "0.000, ";
+    log_file.close();
+    timer = chrono_tic();
+  }
+
+  QueryResult result;
+  if (cached.final_query.is_query_jit &&
+      !cached.final_query.is_interpreter_fallback) {
+    if (config_.enable_debug_print)
+      std::cerr << "[PLAN-REPLAY-PG] final: JIT replay\n";
+    result = pg->ReplayQjitFinal(cached.final_query);
+    if (config_.enable_timing) {
+      auto us = chrono_toc(&timer, "", false);
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3) << "0.000, "
+               << (us / 1000.0) << ", ";
+      log_file.close();
+    }
+  } else {
+    if (config_.enable_debug_print)
+      std::cerr << "[PLAN-REPLAY-PG] final: native PG (sql="
+                << cached.final_query.sql.substr(0, 80) << "...)\n";
+    result = adapter_->ExecuteSQL(cached.final_query.sql);
+  }
+
+  return result;
+}
+
+#endif // HAVE_POSTGRES && HAVE_LLVM
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
 
@@ -1799,7 +2224,6 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
     const std::string &temp_table_name,
     const std::vector<int32_t> &aqp_dtypes,
     const std::vector<std::string> &col_names,
-    const std::string &explain_json,
     uint64_t est_card, bool post_execute) {
   if (config_.spec_jit == 0)
     return;
@@ -1883,7 +2307,7 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
 
   auto *spec_raw = spec.get();
   std::string label = "spec-iter" + std::to_string(iteration_count_ + 1);
-  std::string ej_copy = explain_json;
+  auto tc_snap = adapter_->GetTempTableCardSnapshot();
 
   int spec_backend = 0;
 
@@ -1908,11 +2332,11 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
   auto *spec_comp = compiler_slot.get();
 
   spec->future = jit_compile_pool_->Submit(
-      [spec_raw, pg, spec_comp, label, ej_copy, spec_sub_plan_id]() -> bool {
+      [spec_raw, pg, spec_comp, label, tc_snap, spec_sub_plan_id]() -> bool {
         try {
           spec_comp->ResetModules();
-          spec_raw->pg_qjit = pg->SpeculativeQueryJitCompileFromJSON(
-              spec_raw->speculative_sql, ej_copy, label, spec_sub_plan_id,
+          spec_raw->pg_qjit = pg->SpeculativeQueryJitCompile(
+              spec_raw->speculative_sql, tc_snap, label, spec_sub_plan_id,
               spec_comp);
           return spec_raw->pg_qjit != nullptr;
         } catch (...) {
@@ -1941,7 +2365,8 @@ void IRQuerySplitter::PrecomputeNextExtraction(
     std::unique_ptr<ir_sql_converter::AQPStmt> &remaining_ir) {
   if (config_.spec_jit == 0)
     return;
-  if (config_.strategy != SplitStrategy::NODE_BASED)
+  if (config_.strategy != SplitStrategy::NODE_BASED &&
+      config_.strategy != SplitStrategy::TOP_DOWN)
     return;
   if (config_.engine != BackendEngine::DUCKDB &&
       config_.engine != BackendEngine::POSTGRESQL) {
@@ -2043,6 +2468,99 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   if (pending_spec_) {
     spec_learned_miss_iter_ = pending_spec_->target_iter;
     RetirePendingSpec();
+  }
+
+  // TOP_DOWN has no Phase A peek — launch bg compile from Phase B result.
+  if (!pending_spec_ && precomputed_extraction_ &&
+      (config_.jit_flags & AQP_JIT_QUERY_JIT) && config_.spec_jit != 0) {
+    int next_tune_key = iteration_count_;
+    uint32_t spec_jit_flags = config_.jit_flags;
+    auto tune_it = tune_entries_.find(next_tune_key);
+    if (tune_it != tune_entries_.end()) {
+      const auto &te = tune_it->second;
+      uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
+      spec_jit_flags = te.jit_flags | simd_bits;
+      if (te.query_jit)
+        spec_jit_flags |= AQP_JIT_QUERY_JIT;
+    }
+    if (spec_jit_flags & AQP_JIT_QUERY_JIT) {
+      RetirePendingSpec();
+      unsigned int spec_sub_plan_id = adapter_->subquery_index;
+      int spec_backend = 0;
+      if (tune_it != tune_entries_.end())
+        spec_backend = tune_it->second.compile_mode;
+
+      auto spec = std::make_unique<SpeculativeCompilation>();
+      spec->speculative_sql = spec_sql;
+      spec->target_iter = iteration_count_ + 1;
+
+      auto &compiler_slot = spec_compilers_[spec_compiler_idx_];
+      spec_compiler_idx_ ^= 1;
+
+#if defined(HAVE_POSTGRES)
+      if (config_.engine == BackendEngine::POSTGRESQL) {
+        auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+        if (pg) {
+          EnsureSpecCompilerPG(compiler_slot, pg, spec_jit_flags, spec_backend);
+          auto *spec_raw = spec.get();
+          auto *spec_comp = compiler_slot.get();
+          std::string label =
+              "spec-iter" + std::to_string(iteration_count_ + 1);
+          auto tc_snap = adapter_->GetTempTableCardSnapshot();
+          spec->future = jit_compile_pool_->Submit(
+              [spec_raw, pg, spec_comp, label,
+               tc_snap, spec_sub_plan_id]() -> bool {
+                try {
+                  spec_comp->ResetModules();
+                  spec_raw->pg_qjit =
+                      pg->SpeculativeQueryJitCompile(
+                          spec_raw->speculative_sql, tc_snap, label,
+                          spec_sub_plan_id, spec_comp);
+                  return spec_raw->pg_qjit != nullptr;
+                } catch (...) {
+                  return false;
+                }
+              });
+          pending_spec_ = std::move(spec);
+          if (config_.enable_debug_print)
+            std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
+                      << " Phase B: launched bg compile (TOP_DOWN)\n";
+        }
+      }
+#endif
+#ifdef HAVE_DUCKDB
+      if (config_.engine == BackendEngine::DUCKDB) {
+        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+        if (duck) {
+          EnsureSpecCompiler(compiler_slot, duck, spec_jit_flags, spec_backend,
+                            true);
+          auto *spec_raw = spec.get();
+          auto *spec_comp = compiler_slot.get();
+          auto &db_ref = duck->GetDB();
+          std::string label =
+              "spec-iter" + std::to_string(iteration_count_ + 1);
+          spec->future = jit_compile_pool_->Submit(
+              [spec_raw, &db_ref, duck, spec_comp, label]() -> bool {
+                try {
+                  spec_comp->ResetModules();
+                  spec_raw->spec_conn =
+                      std::make_unique<duckdb::Connection>(db_ref);
+                  spec_raw->qjit = duck->SpeculativeQueryJitCompile(
+                      spec_raw->speculative_sql, label, *spec_raw->spec_conn,
+                      spec_comp);
+                  return spec_raw->qjit != nullptr;
+                } catch (...) {
+                  return false;
+                }
+              });
+          pending_spec_ = std::move(spec);
+          if (config_.enable_debug_print)
+            std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                      << " Phase B: launched bg compile (TOP_DOWN)\n";
+        }
+      }
+#endif
+    }
   }
 }
 
@@ -2698,18 +3216,15 @@ bool IRQuerySplitter::ExecuteOneIteration(
     }
 
     bool spec_hit = false;
-#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-    // Compensate-jit miss policy: applies to this iteration when its spec
-    // was launched but unusable (MISS/CARD_MISS/BG_ERROR) or was skipped /
-    // invalidated via the learned-miss history (no pending_spec_). Never
-    // fires without a spec launch attempt — none-jit and non-node-based
-    // runs can't reach it (LaunchSpeculativeCompile's gates).
+#if (defined(HAVE_DUCKDB) || defined(HAVE_POSTGRES)) && defined(HAVE_LLVM)
     bool compensate_miss = false;
     const bool learned_missed_iter =
         config_.spec_jit != 0 && spec_learned_miss_iter_ == iteration_count_;
     if (config_.spec_jit != 0)
       spec_learned_miss_iter_ = -1; // one-shot
-    if (pending_spec_ && config_.engine == BackendEngine::DUCKDB) {
+    if (pending_spec_ &&
+        (config_.engine == BackendEngine::DUCKDB ||
+         config_.engine == BackendEngine::POSTGRESQL)) {
       ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
                                      /*build_bloom_filters=*/false);
       spec_hit = CheckSpeculativeResult(sub_sql, temp_table_name);
@@ -2722,9 +3237,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
     {
       ApplyCrossSubPlanOptimizations(sub_sql);
-#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+#if (defined(HAVE_DUCKDB) || defined(HAVE_POSTGRES)) && defined(HAVE_LLVM)
       compensate_miss =
-          learned_missed_iter && config_.engine == BackendEngine::DUCKDB;
+          learned_missed_iter && (config_.engine == BackendEngine::DUCKDB ||
+                                  config_.engine == BackendEngine::POSTGRESQL);
 #endif
     }
 
@@ -2752,8 +3268,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
         // normal execute call resolves sources and runs the compiled fn
         // (jit_compile column ≈ 0 — no Prepare, no codegen on this thread).
         duck->SetQjitSpecHit(std::move(hit_spec->qjit));
-        if (config_.strategy == SplitStrategy::NODE_BASED && executable_ir)
-          duck->SetQjitPendingIR(executable_ir);
+        // v18: TOP_DOWN subs also hand their IR to the adapter so the
+        // pending-IR fast path (plan constructor) can skip parse/optimize.
+        if ((config_.strategy == SplitStrategy::NODE_BASED ||
+             (config_.strategy == SplitStrategy::TOP_DOWN &&
+              !TopDownSplitter::V17Mode() && !TopDownSplitter::NoPlanCtor())) &&
+            executable_ir)
+          duck->SetQjitPendingIR(
+              executable_ir,
+              /*use_engine_plan=*/config_.strategy ==
+                  SplitStrategy::NODE_BASED);
         adapter_->ExecuteSQLandCreateTempTable(
             sub_sql, temp_table_name, config_.enable_update_temp_card);
       } else {
@@ -2773,7 +3297,9 @@ bool IRQuerySplitter::ExecuteOneIteration(
       auto hit_spec = std::move(pending_spec_);
       if (pg && hit_spec->pg_qjit) {
         pg->SetQjitSpecHit(std::move(hit_spec->pg_qjit));
-        if (config_.strategy == SplitStrategy::NODE_BASED && executable_ir)
+        if ((config_.strategy == SplitStrategy::NODE_BASED ||
+             config_.strategy == SplitStrategy::TOP_DOWN) &&
+            executable_ir)
           pg->SetQjitPendingIR(executable_ir);
         adapter_->ExecuteSQLandCreateTempTable(
             sub_sql, temp_table_name, config_.enable_update_temp_card);
@@ -2858,13 +3384,18 @@ bool IRQuerySplitter::ExecuteOneIteration(
       } else {
 #ifdef HAVE_LLVM
         if ((config_.jit_flags & AQP_JIT_QUERY_JIT) &&
-            config_.strategy == SplitStrategy::NODE_BASED &&
+            (config_.strategy == SplitStrategy::NODE_BASED ||
+             (config_.strategy == SplitStrategy::TOP_DOWN &&
+              !TopDownSplitter::V17Mode() && !TopDownSplitter::NoPlanCtor())) &&
             executable_ir && !spec_hit) {
 #ifdef HAVE_DUCKDB
           if (config_.engine == BackendEngine::DUCKDB) {
             auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
             if (duck)
-              duck->SetQjitPendingIR(executable_ir);
+              duck->SetQjitPendingIR(
+                  executable_ir,
+                  /*use_engine_plan=*/config_.strategy ==
+                      SplitStrategy::NODE_BASED);
           }
 #endif
 #ifdef HAVE_POSTGRES
@@ -2920,6 +3451,12 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
   if (cardinality == 0) {
     empty_temp_tables_.insert(temp_table_name);
+    if (all_inner_joins_) {
+      early_terminate_ = true;
+      if (config_.enable_debug_print)
+        std::cerr << "[EARLY-TERM] temp " << temp_table_name
+                  << " returned 0 rows, all joins inner — terminating\n";
+    }
   }
 
   TempTableInfo temp_table =
@@ -3090,10 +3627,34 @@ IRQuerySplitter::GetTrivialTempTable(ir_sql_converter::AQPStmt *ir) const {
 
 bool IRQuerySplitter::SubPlanReferencesEmptyTemp(const std::string &sql) const {
   for (const auto &name : empty_temp_tables_) {
-    if (sql.find(name) != std::string::npos)
-      return true;
+    size_t pos = 0;
+    while ((pos = sql.find(name, pos)) != std::string::npos) {
+      size_t end = pos + name.size();
+      bool word_end = end >= sql.size() || !std::isalnum(sql[end]);
+      if (word_end)
+        return true;
+      pos = end;
+    }
   }
   return false;
+}
+
+bool IRQuerySplitter::AllJoinsPropagatEmpty(
+    const ir_sql_converter::AQPStmt *ir) {
+  if (!ir) return true;
+  if (ir->GetNodeType() == ir_sql_converter::JoinNode) {
+    auto *join = static_cast<const ir_sql_converter::SimplestJoin *>(ir);
+    auto jt = join->GetSimplestJoinType();
+    if (jt == ir_sql_converter::Left || jt == ir_sql_converter::Right ||
+        jt == ir_sql_converter::Full) {
+      return false;
+    }
+  }
+  for (const auto &child : ir->children) {
+    if (!AllJoinsPropagatEmpty(child.get()))
+      return false;
+  }
+  return true;
 }
 
 // Outlined from ExecuteOneIteration to keep the hot path compact.
@@ -3482,6 +4043,8 @@ void IRQuerySplitter::UpdateNodeIndices(
     auto *join = dynamic_cast<ir_sql_converter::SimplestJoin *>(node);
     if (join) {
       for (auto &cond : join->join_conditions) {
+        if (!cond)
+          continue;
         if (cond->left_attr) {
           auto updated = UpdateAttrIndices(cond->left_attr.get(), temp_table,
                                            old_table_indices);
@@ -3579,15 +4142,29 @@ void IRQuerySplitter::UpdateRemainingIRIndices(
 std::string
 IRQuerySplitter::ComputeColumnAlias(unsigned int table_idx,
                                     const std::string &col_name) const {
-  // SQL generator convention: {chunk_name}_{table_index}_{column_name}
-  // Index included to disambiguate when same table appears multiple times
   std::string table_name = splitter_->GetTableName(table_idx);
+  std::string alias;
   if (!table_name.empty()) {
-    return table_name + "_" + std::to_string(table_idx) + "_" + col_name;
+    alias = table_name + "_" + std::to_string(table_idx) + "_" + col_name;
+  } else {
+    alias = "t" + std::to_string(table_idx) + "_" + col_name;
   }
-  // Fallback: prefix with "t" so the alias never starts with a digit
-  // (digits at the start cause SQL parse errors, e.g. table.5_col → ".5")
-  return "t" + std::to_string(table_idx) + "_" + col_name;
+  // PG truncates identifiers to NAMEDATALEN-1 (63 chars). If two columns
+  // share a long prefix they collide after truncation. Keep aliases short
+  // enough by hashing the overflow portion.
+  constexpr size_t kMaxLen = 63;
+  if (alias.size() > kMaxLen) {
+    uint64_t h = 14695981039346656037ULL; // FNV-1a
+    for (char c : alias) {
+      h ^= static_cast<uint64_t>(static_cast<unsigned char>(c));
+      h *= 1099511628211ULL;
+    }
+    char buf[18];
+    snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+    // "c_" + 16-char hex = 18 chars, well within 63
+    alias = std::string("c_") + buf;
+  }
+  return alias;
 }
 
 // Strip trailing whitespace and semicolons from a SQL string

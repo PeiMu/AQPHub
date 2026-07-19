@@ -137,6 +137,11 @@ public:
     return sql;
   }
 
+  // Apply an engine configuration statement (e.g. "SET ...") outside the
+  // timed query path — must not emit timing columns. Default: no-op for
+  // engines without such settings.
+  virtual void ApplyEngineSetting(const std::string &sql) {}
+
   // Execute SQL query
   virtual QueryResult ExecuteSQL(const std::string &sql) = 0;
   virtual void ExecuteSQLandCreateTempTable(const std::string &sql,
@@ -230,6 +235,10 @@ public:
 
   // std::string intermediate_table_name, int64_t created_table_size
   std::unordered_map<std::string, int64_t> temp_table_card_;
+
+  std::unordered_map<std::string, int64_t> GetTempTableCardSnapshot() const {
+    return temp_table_card_;
+  }
 
   bool enable_timing_ = false;
 };

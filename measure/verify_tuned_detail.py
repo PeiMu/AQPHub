@@ -10,6 +10,13 @@ Usage: python3 verify_tuned_detail.py [query] [split]
 import csv, json, os, re, sys
 
 
+def _iter_params(path):
+    base = os.path.basename(path)
+    if base.startswith('postgresql_') or base.startswith('postgres_'):
+        return 8, 3
+    return 15, 5
+
+
 def mean(vals):
     xs = list(vals)
     return sum(xs) / len(xs)
@@ -38,7 +45,8 @@ def parse_per_subquery(path, hasjit=True, head=4):
     tail = 4 if hasjit else 3
     out = {}
     for q, rows in raw.items():
-        warm = rows[5:] if len(rows) > 6 else rows[1:]
+        _, warmup = _iter_params(path)
+        warm = rows[warmup:] if len(rows) > warmup + 1 else rows[1:]
         lens = [len(r) for r in warm]
         if not lens:
             continue
@@ -96,24 +104,24 @@ def main():
     source_configs = {}
     CONFIG_FILES = {
         "interp":        (f"duckdb_{split}_none_off_breakdown_time_log.csv", False),
-        "expr":          (f"duckdb_{split}_expr_none_breakdown_time_log.csv", True),
+        "expr":          (f"duckdb_{split}_expr_none_llvm_breakdown_time_log.csv", True),
         # "expr_simd":     (f"duckdb_{split}_expr_auto_breakdown_time_log.csv", True),
-        "expr_fastisel": (f"duckdb_{split}_expr_none_fcfastisel_breakdown_time_log.csv", True),
+        "expr_fastisel": (f"duckdb_{split}_expr_none_fastisel_breakdown_time_log.csv", True),
         # "expr_fastisel_simd": (f"duckdb_{split}_expr_auto_fcfastisel_breakdown_time_log.csv", True),
-        "expr_tpde":     (f"duckdb_{split}_expr_none_fctpde_breakdown_time_log.csv", True),
-        "operator":      (f"duckdb_{split}_operator_none_breakdown_time_log.csv", True),
+        "expr_tpde":     (f"duckdb_{split}_expr_none_tpde_breakdown_time_log.csv", True),
+        "operator":      (f"duckdb_{split}_operator_none_llvm_breakdown_time_log.csv", True),
         # "operator_simd": (f"duckdb_{split}_operator_auto_breakdown_time_log.csv", True),
-        "operator_fastisel": (f"duckdb_{split}_operator_none_fcfastisel_breakdown_time_log.csv", True),
+        "operator_fastisel": (f"duckdb_{split}_operator_none_fastisel_breakdown_time_log.csv", True),
         # "operator_fastisel_simd": (f"duckdb_{split}_operator_auto_fcfastisel_breakdown_time_log.csv", True),
-        "operator_tpde": (f"duckdb_{split}_operator_none_fctpde_breakdown_time_log.csv", True),
-        "pipeline":      (f"duckdb_{split}_pipeline_none_breakdown_time_log.csv", True),
+        "operator_tpde": (f"duckdb_{split}_operator_none_tpde_breakdown_time_log.csv", True),
+        "pipeline":      (f"duckdb_{split}_pipeline_none_llvm_breakdown_time_log.csv", True),
         # "pipeline_simd": (f"duckdb_{split}_pipeline_auto_breakdown_time_log.csv", True),
-        "pipeline_fastisel": (f"duckdb_{split}_pipeline_none_fcfastisel_breakdown_time_log.csv", True),
+        "pipeline_fastisel": (f"duckdb_{split}_pipeline_none_fastisel_breakdown_time_log.csv", True),
         # "pipeline_fastisel_simd": (f"duckdb_{split}_pipeline_auto_fcfastisel_breakdown_time_log.csv", True),
-        "pipeline_tpde": (f"duckdb_{split}_pipeline_none_fctpde_breakdown_time_log.csv", True),
-        "query_full":    (f"duckdb_{split}_query_none_breakdown_time_log.csv", True),
-        "query_fastisel":(f"duckdb_{split}_query_none_fcfastisel_breakdown_time_log.csv", True),
-        "query_tpde":    (f"duckdb_{split}_query_none_fctpde_breakdown_time_log.csv", True),
+        "pipeline_tpde": (f"duckdb_{split}_pipeline_none_tpde_breakdown_time_log.csv", True),
+        "query_full":    (f"duckdb_{split}_query_none_llvm_breakdown_time_log.csv", True),
+        "query_fastisel":(f"duckdb_{split}_query_none_fastisel_breakdown_time_log.csv", True),
+        "query_tpde":    (f"duckdb_{split}_query_none_tpde_breakdown_time_log.csv", True),
         # "query_full_simd":    (f"duckdb_{split}_query_auto_breakdown_time_log.csv", True),
         # "query_fastisel_simd":(f"duckdb_{split}_query_auto_fcfastisel_breakdown_time_log.csv", True),
     }

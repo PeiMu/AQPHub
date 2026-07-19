@@ -1777,6 +1777,70 @@ static Value *EmitVarConst(CompileCtx &cc,
   return ConstantInt::getTrue(cc.llctx); // unknown type: pass all
 }
 
+// Emit col-vs-col comparison on the same source (integer family only).
+// Non-integer or unresolvable columns pass all rows, matching EmitVarConst's
+// fallback convention; the qjit whitelist (CheckFilterStrict) guarantees
+// INT32 on both sides before this is reached from CompileQuerySteps.
+static Value *EmitVarVar(CompileCtx &cc, const SimplestVarComparison *cmp) {
+  if (!cmp->left_attr || !cmp->right_attr)
+    return ConstantInt::getTrue(cc.llctx);
+  int li = cc.FindColIdx(*cmp->left_attr);
+  int ri = cc.FindColIdx(*cmp->right_attr);
+  if (li < 0 || ri < 0)
+    return ConstantInt::getTrue(cc.llctx);
+
+  auto load_as_i64 = [&](int ci) -> Value * {
+    const ColSchema &cs = cc.schema[ci];
+    Value *data = cc.col_data[ci];
+    switch (cs.dtype) {
+    case AQP_DTYPE_INT8:
+    case AQP_DTYPE_BOOL: {
+      Value *p8 = cc.b.CreateBitCast(
+          data, PointerType::getUnqual(Type::getInt8Ty(cc.llctx)));
+      Value *ep = cc.b.CreateGEP(Type::getInt8Ty(cc.llctx), p8, cc.row_idx);
+      return cc.b.CreateSExt(cc.b.CreateLoad(Type::getInt8Ty(cc.llctx), ep),
+                             cc.i64());
+    }
+    case AQP_DTYPE_INT16: {
+      Value *p16 = cc.b.CreateBitCast(
+          data, PointerType::getUnqual(Type::getInt16Ty(cc.llctx)));
+      Value *ep = cc.b.CreateGEP(Type::getInt16Ty(cc.llctx), p16, cc.row_idx);
+      return cc.b.CreateSExt(cc.b.CreateLoad(Type::getInt16Ty(cc.llctx), ep),
+                             cc.i64());
+    }
+    case AQP_DTYPE_INT32:
+    case AQP_DTYPE_DATE:
+      return cc.b.CreateSExt(LoadI32(cc, data), cc.i64());
+    case AQP_DTYPE_INT64:
+      return LoadI64(cc, data);
+    default:
+      return nullptr;
+    }
+  };
+
+  Value *lhs = load_as_i64(li);
+  Value *rhs = load_as_i64(ri);
+  if (!lhs || !rhs)
+    return ConstantInt::getTrue(cc.llctx);
+
+  switch (cmp->GetSimplestExprType()) {
+  case SimplestExprType::Equal:
+    return cc.b.CreateICmpEQ(lhs, rhs);
+  case SimplestExprType::NotEqual:
+    return cc.b.CreateICmpNE(lhs, rhs);
+  case SimplestExprType::LessThan:
+    return cc.b.CreateICmpSLT(lhs, rhs);
+  case SimplestExprType::GreaterThan:
+    return cc.b.CreateICmpSGT(lhs, rhs);
+  case SimplestExprType::LessEqual:
+    return cc.b.CreateICmpSLE(lhs, rhs);
+  case SimplestExprType::GreaterEqual:
+    return cc.b.CreateICmpSGE(lhs, rhs);
+  default:
+    return ConstantInt::getTrue(cc.llctx);
+  }
+}
+
 // Emit IS NULL / IS NOT NULL check
 static Value *EmitIsNull(CompileCtx &cc, const SimplestIsNullExpr *expr) {
   int col_idx = cc.FindColIdx(*expr->attr);
@@ -2337,6 +2401,21 @@ static Value *EmitExpr(CompileCtx &cc, const AQPExpr *expr) {
                                    [&] { return EmitVarConst(cc, vc); });
     }
     return EmitVarConst(cc, vc);
+  }
+  case VarComparisonNode: {
+    auto *vv = static_cast<const SimplestVarComparison *>(expr);
+    // EmitVarVar's integer loads have no validity check; NULL on either
+    // side must yield false. Guard both columns.
+    if (cc.strict_null_guard && vv->left_attr && vv->right_attr) {
+      int li = cc.FindColIdx(*vv->left_attr);
+      int ri = cc.FindColIdx(*vv->right_attr);
+      if (li >= 0 && ri >= 0)
+        return EmitNullGuardedLeaf(cc, li, [&] {
+          return EmitNullGuardedLeaf(cc, ri,
+                                     [&] { return EmitVarVar(cc, vv); });
+        });
+    }
+    return EmitVarVar(cc, vv);
   }
   case IsNullExprNode:
     return EmitIsNull(cc, static_cast<const SimplestIsNullExpr *>(expr));

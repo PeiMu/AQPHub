@@ -62,18 +62,6 @@ static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
 #ifdef HAVE_LLVM
 #include "jit/aqp_jit_abi.h"
 namespace {
-static uint64_t ExtractEstimatedRows(const std::string &json_str) {
-  if (json_str.empty())
-    return 0;
-  try {
-    auto j = json::parse(json_str);
-    if (j.is_array() && !j.empty() && j[0].contains("Plan"))
-      if (j[0]["Plan"].contains("Plan Rows"))
-        return j[0]["Plan"]["Plan Rows"].get<uint64_t>();
-  } catch (...) {
-  }
-  return 0;
-}
 
 static void IrTargetListToDtypes(const ir_sql_converter::AQPStmt &ir,
                                  std::vector<int32_t> &dtypes,
@@ -180,7 +168,7 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
     ParseSQL(sql);
     auto ir = ConvertPlanToIR();
     if (ir) {
-      AnnotateBuildSidesFromExplain(sql, *ir);
+      AnnotateBuildSidesByCard(*ir);
       auto analysis = qjit::AnalyzeQueryJit(*ir, "result");
       if (analysis.accepted) {
         auto compiled = TryCompileQueryJit(*ir, analysis, "result");
@@ -205,6 +193,28 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
                        << (run_us / 1000.0) << ", ";
               log_file.close();
             }
+            if (plan_recording_active_) {
+              PgCachedSubquery entry;
+              entry.is_query_jit = true;
+              entry.cache_key = compiled->replay_cache_key;
+              entry.fn_name = compiled->replay_fn_name;
+              entry.source_cols = std::move(compiled->replay_source_cols);
+              entry.source_tables = std::move(compiled->replay_source_tables);
+              entry.source_is_temp =
+                  std::move(compiled->replay_source_is_temp);
+              entry.source_block_skip_cols =
+                  std::move(compiled->replay_source_block_skip_cols);
+              entry.step_col_counts =
+                  std::move(compiled->replay_step_col_counts);
+              entry.ht_tuple_sizes = compiled->ht_tuple_sizes;
+              entry.ht_key0_offsets = compiled->ht_key0_offsets;
+              entry.agg_descs = compiled->agg_descs;
+              entry.agg_output_cells = compiled->agg_output_cells;
+              entry.out_descs = compiled->out_descs;
+              entry.params_buf = compiled->params_buf;
+              entry.sql = sql;
+              plan_recording_.push_back(std::move(entry));
+            }
             return qjit_result;
           }
         }
@@ -219,6 +229,13 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
     log_file.open(g_timing_log_name, std::ios_base::app);
     log_file << std::fixed << std::setprecision(3)
              << (ConsumeSpecWaitUs() / 1000.0) << ", ";
+    log_file.close();
+    timer = chrono_tic();
+  } else if (enable_timing_ && session_query_jit_) {
+    // Keep the timing CSV rectangular (same as DuckDB adapter).
+    std::ofstream log_file;
+    log_file.open(g_timing_log_name, std::ios_base::app);
+    log_file << "0.000, ";
     log_file.close();
     timer = chrono_tic();
   }
@@ -276,6 +293,13 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
              << (run_us / 1000.0) << ", ";
     log_file.close();
   }
+#ifdef HAVE_LLVM
+  if (plan_recording_active_) {
+    PgCachedSubquery entry;
+    entry.sql = sql;
+    plan_recording_.push_back(std::move(entry));
+  }
+#endif
   return result;
 }
 
@@ -329,7 +353,29 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
         log_file.close();
       }
       if (post_prepare_hook_)
-        post_prepare_hook_(temp_table_name, {}, {}, "", rows, true);
+        post_prepare_hook_(temp_table_name, {}, {}, rows, true);
+      if (plan_recording_active_) {
+        PgCachedSubquery entry;
+        entry.is_query_jit = true;
+        entry.cache_key = spec->compiled->replay_cache_key;
+        entry.fn_name = spec->compiled->replay_fn_name;
+        entry.source_cols = std::move(spec->compiled->replay_source_cols);
+        entry.source_tables = std::move(spec->compiled->replay_source_tables);
+        entry.source_is_temp = std::move(spec->compiled->replay_source_is_temp);
+        entry.source_block_skip_cols =
+            std::move(spec->compiled->replay_source_block_skip_cols);
+        entry.step_col_counts =
+            std::move(spec->compiled->replay_step_col_counts);
+        entry.ht_tuple_sizes = spec->compiled->ht_tuple_sizes;
+        entry.ht_key0_offsets = spec->compiled->ht_key0_offsets;
+        entry.agg_descs = spec->compiled->agg_descs;
+        entry.agg_output_cells = spec->compiled->agg_output_cells;
+        entry.out_descs = spec->compiled->out_descs;
+        entry.params_buf = spec->compiled->params_buf;
+        entry.sql = sql;
+        entry.temp_table_name = temp_table_name;
+        plan_recording_.push_back(std::move(entry));
+      }
 #ifndef NDEBUG
       std::cout << "[PostgreSQL] Created temp table (qjit spec-hit): "
                 << temp_table_name << " (rows=" << rows << ")"
@@ -354,16 +400,15 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
 
     QJIT_ASSERT(ir_ptr, "IR conversion failed for sub-query");
 
-    std::string explain_json;
-    AnnotateBuildSidesFromExplain(sql, *ir_ptr, &explain_json);
+    AnnotateBuildSidesByCard(*ir_ptr);
 
     if (post_prepare_hook_) {
       std::vector<int32_t> dtypes;
       std::vector<std::string> col_names;
       IrTargetListToDtypes(*ir_ptr, dtypes, col_names);
-      uint64_t est = ExtractEstimatedRows(explain_json);
+      uint64_t est = EstimateIRCard(*ir_ptr);
       post_prepare_hook_(temp_table_name, dtypes, col_names,
-                         explain_json, est, false);
+                         est, false);
     }
 
     auto analysis = qjit::AnalyzeQueryJit(*ir_ptr, temp_table_name);
@@ -409,8 +454,29 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
       log_file.close();
     }
     if (post_prepare_hook_)
-      post_prepare_hook_(temp_table_name, {}, {}, "", rows,
+      post_prepare_hook_(temp_table_name, {}, {}, rows,
                          true);
+    if (plan_recording_active_) {
+      PgCachedSubquery entry;
+      entry.is_query_jit = true;
+      entry.cache_key = compiled->replay_cache_key;
+      entry.fn_name = compiled->replay_fn_name;
+      entry.source_cols = std::move(compiled->replay_source_cols);
+      entry.source_tables = std::move(compiled->replay_source_tables);
+      entry.source_is_temp = std::move(compiled->replay_source_is_temp);
+      entry.source_block_skip_cols =
+          std::move(compiled->replay_source_block_skip_cols);
+      entry.step_col_counts = std::move(compiled->replay_step_col_counts);
+      entry.ht_tuple_sizes = compiled->ht_tuple_sizes;
+      entry.ht_key0_offsets = compiled->ht_key0_offsets;
+      entry.agg_descs = compiled->agg_descs;
+      entry.agg_output_cells = compiled->agg_output_cells;
+      entry.out_descs = compiled->out_descs;
+      entry.params_buf = compiled->params_buf;
+      entry.sql = sql;
+      entry.temp_table_name = temp_table_name;
+      plan_recording_.push_back(std::move(entry));
+    }
 #ifndef NDEBUG
     std::cout << "[PostgreSQL] Created temp table (qjit): "
               << temp_table_name << " (rows=" << rows << ")"
@@ -429,6 +495,14 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
       log_file.close();
       timer = chrono_tic();
     }
+  } else if (enable_timing_ && session_query_jit_) {
+    // Keep the timing CSV rectangular: session-level query-JIT runs always
+    // emit the jit_compile column, even when a tune override disabled JIT
+    // for this sub-query.
+    std::ofstream log_file;
+    log_file.open(g_timing_log_name, std::ios_base::app);
+    log_file << "0.000, ";
+    log_file.close();
   }
 #endif
 
@@ -499,6 +573,16 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
              << (extra_materialize_time / 1000.0) << ", ";
     log_file.close();
   }
+
+#ifdef HAVE_LLVM
+  if (plan_recording_active_) {
+    PgCachedSubquery entry;
+    entry.is_interpreter_fallback = true;
+    entry.sql = sql;
+    entry.temp_table_name = temp_table_name;
+    plan_recording_.push_back(std::move(entry));
+  }
+#endif
 
 #ifndef NDEBUG
   std::cout << "[PostgreSQL] Created temp table: " << temp_table_name
@@ -765,6 +849,8 @@ void PostgreSQLAdapter::ResetQueryState() {
   qjit_pending_ir_ = nullptr;
   qjit_spec_hit_.reset();
   spec_wait_extra_us_ = 0;
+  plan_recording_.clear();
+  plan_recording_active_ = false;
   if (jit_compiler_)
     jit_compiler_->ResetModules();
 #endif
@@ -784,21 +870,6 @@ void PostgreSQLAdapter::CheckConnection() {
 namespace {
 
 static void
-CollectIRSourceIndices(const ir_sql_converter::AQPStmt *ir,
-                       std::unordered_set<unsigned int> &out) {
-  if (!ir)
-    return;
-  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode)
-    out.insert(
-        static_cast<const ir_sql_converter::SimplestScan *>(ir)->GetTableIndex());
-  else if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ChunkNode)
-    out.insert(
-        static_cast<const ir_sql_converter::SimplestChunk *>(ir)->GetTableIndex());
-  for (const auto &child : ir->children)
-    CollectIRSourceIndices(child.get(), out);
-}
-
-static void
 CollectIRJoinNodes(ir_sql_converter::AQPStmt *ir,
                    std::vector<ir_sql_converter::SimplestJoin *> &out) {
   if (!ir)
@@ -807,110 +878,6 @@ CollectIRJoinNodes(ir_sql_converter::AQPStmt *ir,
     out.push_back(static_cast<ir_sql_converter::SimplestJoin *>(ir));
   for (auto &child : ir->children)
     CollectIRJoinNodes(child.get(), out);
-}
-
-static void
-BuildTableNameToIndex(const ir_sql_converter::AQPStmt *ir,
-                      std::unordered_map<std::string, unsigned int> &out) {
-  if (!ir)
-    return;
-  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
-    auto *scan = static_cast<const ir_sql_converter::SimplestScan *>(ir);
-    out[scan->GetTableName()] = scan->GetTableIndex();
-  } else if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ChunkNode) {
-    auto *chunk = static_cast<const ir_sql_converter::SimplestChunk *>(ir);
-    out[chunk->GetChunkName()] = chunk->GetTableIndex();
-  }
-  for (const auto &child : ir->children)
-    BuildTableNameToIndex(child.get(), out);
-}
-
-static void
-CollectRelationNames(const json &plan_node, std::vector<std::string> &out) {
-  if (plan_node.contains("Relation Name"))
-    out.push_back(plan_node["Relation Name"].get<std::string>());
-  if (plan_node.contains("Alias") && !plan_node.contains("Relation Name"))
-    out.push_back(plan_node["Alias"].get<std::string>());
-  if (plan_node.contains("Plans")) {
-    for (const auto &child : plan_node["Plans"])
-      CollectRelationNames(child, out);
-  }
-}
-
-static void
-AnnotateFromExplainRec(
-    const json &plan_node,
-    ir_sql_converter::AQPStmt &ir,
-    const std::unordered_map<std::string, unsigned int> &name_to_index) {
-  if (plan_node.contains("Plans")) {
-    for (const auto &child : plan_node["Plans"])
-      AnnotateFromExplainRec(child, ir, name_to_index);
-  }
-
-  std::string node_type;
-  if (plan_node.contains("Node Type"))
-    node_type = plan_node["Node Type"].get<std::string>();
-  if (node_type != "Hash Join" && node_type != "Nested Loop" &&
-      node_type != "Merge Join")
-    return;
-  if (!plan_node.contains("Plans"))
-    return;
-
-  const json *inner_child = nullptr;
-  const json *outer_child = nullptr;
-  for (const auto &child : plan_node["Plans"]) {
-    if (!child.contains("Parent Relationship"))
-      continue;
-    std::string rel = child["Parent Relationship"].get<std::string>();
-    if (rel == "Inner")
-      inner_child = &child;
-    else if (rel == "Outer")
-      outer_child = &child;
-  }
-  if (!inner_child || !outer_child)
-    return;
-
-  std::vector<std::string> build_names, probe_names;
-  CollectRelationNames(*inner_child, build_names);
-  CollectRelationNames(*outer_child, probe_names);
-
-  std::unordered_set<unsigned int> build_set, probe_set;
-  for (const auto &name : build_names) {
-    auto it = name_to_index.find(name);
-    if (it != name_to_index.end())
-      build_set.insert(it->second);
-  }
-  for (const auto &name : probe_names) {
-    auto it = name_to_index.find(name);
-    if (it != name_to_index.end())
-      probe_set.insert(it->second);
-  }
-  if (build_set.empty() || probe_set.empty())
-    return;
-
-  std::vector<ir_sql_converter::SimplestJoin *> joins;
-  CollectIRJoinNodes(&ir, joins);
-  for (auto *join : joins) {
-    if (join->GetBuildChild() != -1 || join->children.size() != 2)
-      continue;
-    std::unordered_set<unsigned int> c0_set, c1_set;
-    CollectIRSourceIndices(join->children[0].get(), c0_set);
-    CollectIRSourceIndices(join->children[1].get(), c1_set);
-    if (c0_set.empty() || c1_set.empty())
-      continue;
-    if (c0_set == probe_set && c1_set == build_set) {
-      join->SetBuildChild(1);
-      return;
-    }
-    if (c0_set == build_set && c1_set == probe_set) {
-      join->SetBuildChild(0);
-      return;
-    }
-  }
-#ifndef NDEBUG
-  std::cerr << "[AQP-QJIT] AnnotateFromExplainRec: no IR JoinNode matched "
-            << node_type << "\n";
-#endif
 }
 
 static uint64_t
@@ -963,49 +930,14 @@ AnnotateUnannotatedJoinsByCard(
 
 } // anonymous namespace
 
-// Step 2: Build-side annotation from EXPLAIN JSON
-void PostgreSQLAdapter::AnnotateBuildSidesFromExplain(
-    const std::string &sql, ir_sql_converter::AQPStmt &ir,
-    std::string *out_json) {
-  std::string explain_sql =
-      "EXPLAIN (FORMAT JSON) " + StripSqlTerminator(sql);
-  PGresult *pg_result = PQexec(conn, explain_sql.c_str());
-
-  if (PQresultStatus(pg_result) != PGRES_TUPLES_OK ||
-      PQntuples(pg_result) == 0) {
-#ifndef NDEBUG
-    fprintf(stderr, "[AQP-QJIT] EXPLAIN failed for build-side annotation: %s\n",
-            PQerrorMessage(conn));
-#endif
-    PQclear(pg_result);
-    return;
-  }
-
-  std::string json_str = PQgetvalue(pg_result, 0, 0);
-  PQclear(pg_result);
-  if (out_json)
-    *out_json = json_str;
-
-  json explain_json;
-  try {
-    explain_json = json::parse(json_str);
-  } catch (const std::exception &e) {
-#ifndef NDEBUG
-    fprintf(stderr, "[AQP-QJIT] EXPLAIN JSON parse failed: %s\n", e.what());
-#endif
-    return;
-  }
-
-  if (!explain_json.is_array() || explain_json.empty() ||
-      !explain_json[0].contains("Plan"))
-    return;
-
-  std::unordered_map<std::string, unsigned int> name_to_index;
-  BuildTableNameToIndex(&ir, name_to_index);
-
-  AnnotateFromExplainRec(explain_json[0]["Plan"], ir, name_to_index);
-
+void PostgreSQLAdapter::AnnotateBuildSidesByCard(
+    ir_sql_converter::AQPStmt &ir) {
   AnnotateUnannotatedJoinsByCard(ir, qjit_storage_plan_, temp_table_card_);
+}
+
+uint64_t PostgreSQLAdapter::EstimateIRCard(
+    const ir_sql_converter::AQPStmt &ir) const {
+  return EstimateSubtreeCard(&ir, qjit_storage_plan_, temp_table_card_);
 }
 
 // Runtime symbol registration (same as DuckDB adapter)
@@ -1070,16 +1002,33 @@ static void CollectTableNames(
   }
 }
 
+static std::string TruncateIdentifier(const std::string &name) {
+  constexpr size_t kMaxLen = 63;
+  if (name.size() <= kMaxLen)
+    return name;
+  uint64_t h = 14695981039346656037ULL;
+  for (unsigned char c : name) {
+    h ^= c;
+    h *= 1099511628211ULL;
+  }
+  char buf[18];
+  snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+  return std::string("c_") + buf;
+}
+
 static std::string IrColumnAlias(
     const ir_sql_converter::SimplestAttr &attr,
     const std::unordered_map<unsigned int, std::string> &table_names) {
   unsigned int tidx = attr.GetTableIndex();
+  std::string alias;
   auto it = table_names.find(tidx);
   if (it != table_names.end()) {
-    return it->second + "_" + std::to_string(tidx) + "_" +
-           attr.GetColumnName();
+    alias = it->second + "_" + std::to_string(tidx) + "_" +
+            attr.GetColumnName();
+  } else {
+    alias = "col_" + std::to_string(tidx) + "_" + attr.GetColumnName();
   }
-  return "col_" + std::to_string(tidx) + "_" + attr.GetColumnName();
+  return TruncateIdentifier(alias);
 }
 
 bool PostgreSQLAdapter::BuildOutputDescsFromIR(
@@ -1243,6 +1192,16 @@ PostgreSQLAdapter::TryCompileQueryJit(
 
   compiled->fn =
       jit_compiler_->CompileQuerySteps(plan, &compiled->params_buf);
+  compiled->replay_cache_key = jit_compiler_->LastCacheKey();
+  compiled->replay_fn_name = jit_compiler_->LastEntryName();
+  for (const auto &st : plan.steps) {
+    compiled->replay_source_tables.push_back(st.source_table);
+    compiled->replay_source_is_temp.push_back(st.source_is_temp);
+    compiled->replay_source_block_skip_cols.push_back(st.block_skip_col);
+    compiled->replay_step_col_counts.push_back(st.cols.size());
+    compiled->replay_source_cols.insert(compiled->replay_source_cols.end(),
+                                        st.cols.begin(), st.cols.end());
+  }
   if (!compiled->fn)
     return fallback("compile-failed");
 
@@ -1324,6 +1283,11 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
   uint64_t nrows = qtable.NumRows();
   size_t ncols = qtable.NumCols();
 
+  // Drop any existing table with the same name (replay reuses recorded names)
+  std::string drop_sql = "DROP TABLE IF EXISTS " + name;
+  PGresult *dr = PQexec(conn, drop_sql.c_str());
+  PQclear(dr);
+
   // Build CREATE TEMP TABLE with correct column types
   std::string create_sql = "CREATE TEMP TABLE " + name + " (";
   for (size_t c = 0; c < ncols; c++) {
@@ -1398,8 +1362,7 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
   if (PQputCopyEnd(conn, nullptr) != 1) {
     fprintf(stderr, "[AQP-QJIT] MaterializeQjitTemp: PQputCopyEnd failed\n");
   }
-  PGresult *copy_result = PQgetResult(conn);
-  if (copy_result) {
+  while (PGresult *copy_result = PQgetResult(conn)) {
     if (PQresultStatus(copy_result) != PGRES_COMMAND_OK) {
       fprintf(stderr,
               "[AQP-QJIT] MaterializeQjitTemp: COPY result error: %s\n",
@@ -1427,11 +1390,12 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
 #endif
 }
 
-// Bg-thread speculative compile: parse → IR → annotate from JSON → compile.
+// Bg-thread speculative compile: parse → IR → annotate by card → compile.
 // No PGconn access — all server interaction must happen on the main thread.
 std::unique_ptr<PostgreSQLAdapter::QjitSpecCompiled>
-PostgreSQLAdapter::SpeculativeQueryJitCompileFromJSON(
-    const std::string &sql, const std::string &explain_json,
+PostgreSQLAdapter::SpeculativeQueryJitCompile(
+    const std::string &sql,
+    const std::unordered_map<std::string, int64_t> &temp_card_snapshot,
     const std::string &label, unsigned int sub_plan_id,
     aqp_jit::IrToLlvmCompiler *spec_comp) {
   auto reject = [&](const std::string &reason)
@@ -1471,19 +1435,9 @@ PostgreSQLAdapter::SpeculativeQueryJitCompileFromJSON(
     if (!ir)
       return reject("ir-conversion-failed");
 
-    // 3. Annotate build sides from cached EXPLAIN JSON (no PGconn needed)
-    if (!explain_json.empty()) {
-      json ej;
-      try {
-        ej = json::parse(explain_json);
-      } catch (...) {
-      }
-      if (ej.is_array() && !ej.empty() && ej[0].contains("Plan")) {
-        std::unordered_map<std::string, unsigned int> name_to_index;
-        BuildTableNameToIndex(ir.get(), name_to_index);
-        AnnotateFromExplainRec(ej[0]["Plan"], *ir, name_to_index);
-      }
-    }
+    // 3. Annotate build sides by cardinality (thread-safe: StoragePlan is
+    //    read-only, temp_card_snapshot is a copy captured on the main thread)
+    AnnotateUnannotatedJoinsByCard(*ir, qjit_storage_plan_, temp_card_snapshot);
 
     // 4. Analyze + build steps
     auto analysis = qjit::AnalyzeQueryJit(*ir, label);
@@ -1510,6 +1464,18 @@ PostgreSQLAdapter::SpeculativeQueryJitCompileFromJSON(
     // 5. LLVM compile
     payload->compiled->fn = spec_comp->CompileQuerySteps(
         payload->plan, &payload->compiled->params_buf);
+    payload->compiled->replay_cache_key = spec_comp->LastCacheKey();
+    payload->compiled->replay_fn_name = spec_comp->LastEntryName();
+    for (const auto &st : payload->plan.steps) {
+      payload->compiled->replay_source_tables.push_back(st.source_table);
+      payload->compiled->replay_source_is_temp.push_back(st.source_is_temp);
+      payload->compiled->replay_source_block_skip_cols.push_back(
+          st.block_skip_col);
+      payload->compiled->replay_step_col_counts.push_back(st.cols.size());
+      payload->compiled->replay_source_cols.insert(
+          payload->compiled->replay_source_cols.end(), st.cols.begin(),
+          st.cols.end());
+    }
     if (!payload->compiled->fn)
       return reject("compile-failed");
 
@@ -1518,6 +1484,140 @@ PostgreSQLAdapter::SpeculativeQueryJitCompileFromJSON(
   } catch (std::exception &e) {
     return reject(std::string("exception:") + e.what());
   }
+}
+
+std::unordered_map<std::string, PgCachedQueryPlan> &
+PostgreSQLAdapter::PgQueryPlanCache() {
+  static std::unordered_map<std::string, PgCachedQueryPlan> cache;
+  return cache;
+}
+
+void PostgreSQLAdapter::EnsureJITCompiler() {
+  auto want_simd = ResolveSimdISA(jit_flags_);
+  auto want_fast =
+      static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
+  if (jit_compiler_ &&
+      (jit_compiler_->GetFastMode() != want_fast ||
+       jit_compiler_->GetSimdISA() != want_simd)) {
+    jit_compiler_.reset();
+    qjit_syms_registered_ = false;
+  }
+  if (!jit_compiler_) {
+    jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
+        jit_debug_, want_simd, want_fast);
+    jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
+  }
+  if (!qjit_syms_registered_) {
+    RegisterQjitRuntimeSymbols(jit_compiler_.get());
+    qjit_syms_registered_ = true;
+  }
+  jit_compiler_->SetSkipHashCmp(skip_hash_cmp_);
+  if (jit_cache_)
+    jit_compiler_->SetCache(jit_cache_);
+  if (!jit_cache_dir_.empty())
+    jit_compiler_->SetDiskCacheDir(jit_cache_dir_);
+}
+
+int64_t
+PostgreSQLAdapter::ReplayQjitSubquery(const PgCachedSubquery &sub,
+                                       bool update_temp_card) {
+  EnsureJITCompiler();
+  jit_compiler_->ResetModules();
+
+  void *fn = jit_compiler_->LookupCachedFn(sub.cache_key, sub.fn_name);
+  if (!fn) {
+#ifndef NDEBUG
+    fprintf(stderr, "[PLAN-REPLAY-PG] object cache miss for %s\n",
+            sub.temp_table_name.c_str());
+#endif
+    return -1;
+  }
+
+  QjitCompiled compiled;
+  compiled.fn = fn;
+  compiled.ht_tuple_sizes = sub.ht_tuple_sizes;
+  compiled.ht_key0_offsets = sub.ht_key0_offsets;
+  compiled.agg_descs = sub.agg_descs;
+  compiled.agg_output_cells = sub.agg_output_cells;
+  compiled.out_descs = sub.out_descs;
+  compiled.params_buf = sub.params_buf;
+
+  qjit::QjitQueryPlan replay_plan;
+  size_t col_offset = 0;
+  for (size_t k = 0; k < sub.source_tables.size(); k++) {
+    qjit::QjitStep step;
+    step.source_table = sub.source_tables[k];
+    step.source_is_temp = sub.source_is_temp[k];
+    step.block_skip_col = sub.source_block_skip_cols[k];
+    size_t ncols = sub.step_col_counts[k];
+    step.cols.assign(sub.source_cols.begin() + col_offset,
+                     sub.source_cols.begin() + col_offset + ncols);
+    col_offset += ncols;
+    replay_plan.steps.push_back(std::move(step));
+  }
+
+  std::string reason;
+  if (!ResolveQjitSources(replay_plan, compiled, reason)) {
+#ifndef NDEBUG
+    fprintf(stderr, "[PLAN-REPLAY-PG] resolve failed: %s for %s\n",
+            reason.c_str(), sub.temp_table_name.c_str());
+#endif
+    return -2;
+  }
+
+  int64_t rows = ExecuteQueryJit(compiled, sub.temp_table_name);
+  if (rows < 0)
+    return rows;
+
+  temp_table_card_[sub.temp_table_name] = rows;
+  MaterializeQjitTempToPostgreSQL(sub.temp_table_name, update_temp_card);
+
+#ifndef NDEBUG
+  fprintf(stderr, "[PLAN-REPLAY-PG] exec label=%s rows=%lld\n",
+          sub.temp_table_name.c_str(), (long long)rows);
+#endif
+  return rows;
+}
+
+QueryResult
+PostgreSQLAdapter::ReplayQjitFinal(const PgCachedSubquery &sub) {
+  EnsureJITCompiler();
+  jit_compiler_->ResetModules();
+
+  void *fn = jit_compiler_->LookupCachedFn(sub.cache_key, sub.fn_name);
+  if (!fn)
+    throw std::runtime_error(
+        "[PLAN-REPLAY-PG] object cache miss for final query");
+
+  QjitCompiled compiled;
+  compiled.fn = fn;
+  compiled.ht_tuple_sizes = sub.ht_tuple_sizes;
+  compiled.ht_key0_offsets = sub.ht_key0_offsets;
+  compiled.agg_descs = sub.agg_descs;
+  compiled.agg_output_cells = sub.agg_output_cells;
+  compiled.out_descs = sub.out_descs;
+  compiled.params_buf = sub.params_buf;
+
+  qjit::QjitQueryPlan replay_plan;
+  size_t col_offset = 0;
+  for (size_t k = 0; k < sub.source_tables.size(); k++) {
+    qjit::QjitStep step;
+    step.source_table = sub.source_tables[k];
+    step.source_is_temp = sub.source_is_temp[k];
+    step.block_skip_col = sub.source_block_skip_cols[k];
+    size_t ncols = sub.step_col_counts[k];
+    step.cols.assign(sub.source_cols.begin() + col_offset,
+                     sub.source_cols.begin() + col_offset + ncols);
+    col_offset += ncols;
+    replay_plan.steps.push_back(std::move(step));
+  }
+
+  std::string reason;
+  if (!ResolveQjitSources(replay_plan, compiled, reason))
+    throw std::runtime_error(
+        "[PLAN-REPLAY-PG] resolve failed: " + reason);
+
+  return ExecuteQueryJitFinal(compiled);
 }
 
 #endif // HAVE_LLVM
