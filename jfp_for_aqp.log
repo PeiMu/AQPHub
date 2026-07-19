@@ -1,0 +1,1463 @@
+# JFP for AQP: Implementation Log
+
+## Root Cause Analysis (DONE)
+
+### JOIN_FILTER_PUSHDOWN Asymmetry
+
+Experimentally verified (see `duckdb_152_3_passes_analysis.md`): We isolated
+3 candidate optimizer changes from 1.3.2->1.5.2, disabled them individually, and
+measured. **JOIN_FILTER_PUSHDOWN accounts for 99.8% of the asymmetry.**
+
+| Config | none-split (s) | node-based (s) | Gap (s) | Gap (%) |
+|--------|---------------:|---------------:|--------:|--------:|
+| All passes ON (baseline 1.5.2) | 9.682 | 10.716 | +1.035 | +10.7% |
+| JFP only OFF | 15.732 | 14.416 | -1.316 | -8.4% |
+
+| Metric | Value |
+|--------|------:|
+| none-split improvement from JFP | +6.050s |
+| node-based improvement from JFP | +3.700s |
+| Asymmetry (none - node) | +2.350s |
+
+Disabling JFP flips the gap: node-based goes from 1.035s slower to 1.316s faster.
+
+### What JFP Does (DuckDB 1.5.2)
+
+The `JoinFilterPushdownOptimizer` sets up runtime dynamic filters pushed from hash
+join build side to probe-side table scans. Three filter types at runtime:
+- **Min/Max range filters** -- push min/max from build-side keys to probe-side scans,
+  enabling zone-map-based row group skipping in storage
+- **IN filters** (NEW in 1.5.2) -- for small hash tables, push exact value lists
+- **Bloom filters** (NEW in 1.5.2) -- for medium hash tables, push probabilistic filters
+- **SelectivityOptionalFilter** (NEW) -- adaptive wrapper that monitors selectivity
+  and disables ineffective filters mid-execution
+
+### What Changed: JFP 1.3.2 -> 1.5.2
+
+| Feature | 1.3.2 | 1.5.2 | Impact |
+|---------|-------|-------|--------|
+| Min/Max range filters | Yes (simple) | Yes + SelectivityOptionalFilter wrapper | Adaptive: disables if selectivity > 75% |
+| IN filters | Yes (small HTs) | Yes + storage type casting | More robust type handling |
+| Bloom filters | No | Yes (medium HTs, single-key equality) | New row-level probabilistic filtering |
+| SelectivityOptionalFilter | No | Yes | Makes aggressive pushdown safe |
+| Cast-through pushdown | No | Yes (integral casts) | More join conditions eligible |
+| Build-side filter detection | No | Yes (`IsFiltering()`) | Bloom filter only when build is filtered |
+
+### Why Node-Based Loses the JFP Benefit: Three Gaps
+
+#### Gap 1: No JFP pushdown TO temp table scans (code-verified)
+
+The JFP optimizer's `GetPushdownFilterTargets()` only recognizes `LOGICAL_GET`
+(type 25). Temp tables use `LogicalColumnDataGet` = `LOGICAL_CHUNK_GET` (type 26),
+which falls through to the `default` no-op. Three-layer block:
+
+1. Optimizer: No case for `LOGICAL_CHUNK_GET` in `GetPushdownFilterTargets()`
+2. Type system: `PushdownFilterTarget` struct requires `LogicalGet&` reference
+3. Physical operator: `PhysicalColumnDataScan` has no `dynamic_filters` member
+
+#### Gap 2: Cross-boundary filter loss (inherent to splitting, dominant gap)
+
+In none-split, filters from ANY join can reach ANY base table scan in the full
+pipeline. In node-based, a base table scanned in subquery N cannot receive filters
+from joins in subquery N+1.
+
+#### Gap 3: No zone maps on ColumnDataCollection (inherent, NOT fixable)
+
+ColumnDataCollection has no zone maps. Range filters degrade to row-by-row.
+SelectivityOptionalFilter would detect low selectivity and auto-disable.
+Bloom and IN filters work at row level regardless. ~5% of asymmetry.
+
+#### Gap Impact Ranking (pre-measurement estimate)
+
+| Gap | Estimated Impact | Fixable? |
+|-----|-----------------|----------|
+| Gap 2: cross-boundary | ~60-70% of asymmetry | Partially |
+| Gap 1: temp as target | ~25-35% of asymmetry | Yes |
+| Gap 3: no zone maps | ~5% of asymmetry | No |
+
+### Query 8c Deep Dive: JFP Filter Comparison
+
+None-split dynamic filters (from EXPLAIN ANALYZE):
+
+| Base Table | Dynamic Filters Applied | Rows Read | Time |
+|-----------|------------------------|-----------|------|
+| cast_info (36M) | role_id=4, movie_id range, movie_id IN BF | 1,475,526 | 0.09s |
+| title (2.5M) | id range, id IN BF(movie_id) | 233,845 | 0.16s |
+| name (4.2M) | id range, id IN BF(person_id) | 43,415 | 0.13s |
+| aka_name (901K) | person_id range | 711,691 | 0.04s |
+| mc (2.6M) | company_id range | 2,609,129 | 0.02s |
+
+Node-based: Sub-1 dynamic filters:
+
+| Base Table | Dynamic Filters Applied | Rows Read |
+|-----------|------------------------|-----------|
+| mc (2.6M) | company_id range (from cn build) | 2,609,129 |
+
+Node-based: Final query dynamic filters:
+
+| Base Table | Dynamic Filters Applied | Rows Read | Time |
+|-----------|------------------------|-----------|------|
+| cast_info (36M) | role_id=4, person_id range + IN BF(person_id) | 1,087,110 | 0.05s |
+| title (2.5M) | id range, id IN BF(movie_id) | 233,845 | 0.15s |
+| name (4.2M) | id range, id IN BF(person_id) | 43,415 | 0.16s |
+| temp1 (1.15M) | movie_id range (only with SQL temp table) | 1,153,795 | 0.00s |
+| aka_name (901K) | person_id range (only static) | 772,581 | 0.04s |
+
+Key difference: cast_info loses the movie_id IN BF from the cn->mc chain because
+that data is in temp1 (LogicalColumnDataGet, not a JFP target). The bloom filter
+on movie_id reduces cast_info from 2.6M->1.48M reads in none-split.
+
+### JFP Runtime Execution Flow (DuckDB 1.5.2)
+
+```
+HASH JOIN BUILD (sink phase):
+  -> Aggregate MIN/MAX values from build keys
+
+HASH JOIN FINALIZE:
+  1. Compute final MIN/MAX (FinalizeMinMax)
+  2. For each probe target:
+     - Small HT + equality: PushInFilter()
+     - HT count > 1: PushRange filters (wrapped in SelectivityOptionalFilter)
+     - Medium HT + probe>>build: PushBloomFilter (with SelectivityOptionalFilter)
+  3. Store filters in DynamicTableFilterSet
+
+TABLE SCAN (probe phase):
+  -> GetFinalTableFilters() retrieves accumulated dynamic filters
+     -> ColumnSegment::FilterSelection() applies them:
+        - Bloom: hash lookup + selection
+        - Range: value comparison with adaptive pause
+        - Selectivity tracking: disable if selectivity > threshold
+```
+
+### JFP Code Locations (DuckDB 1.5.2)
+
+| File | What |
+|------|------|
+| `src/optimizer/join_filter_pushdown_optimizer.cpp` | Optimizer pass: `GetPushdownFilterTargets()` |
+| `src/include/duckdb/execution/operator/join/join_filter_pushdown.hpp` | `PushdownFilterTarget` struct |
+| `src/include/duckdb/execution/operator/scan/physical_table_scan.hpp` | `dynamic_filters` on PhysicalTableScan |
+| `src/execution/operator/join/physical_hash_join.cpp:723-892` | Runtime: PushInFilter, PushBloomFilter, PushRange |
+| `src/execution/operator/join/physical_hash_join.cpp:992-1027` | Runtime: FinalizeMinMax + FinalizeFilters |
+| `src/execution/operator/scan/physical_table_scan.cpp` | Runtime: GetFinalTableFilters() applies dynamic filters |
+| `src/storage/table/column_segment.cpp:410-561` | Storage: FilterSelection() for Bloom, Range, Optional |
+| `src/planner/filter/selectivity_optional_filter.cpp` | Adaptive filter wrapper |
+| `src/planner/filter/bloom_filter.cpp` | Bloom filter implementation |
+| `src/optimizer/optimizer.cpp` | JFP runs in RunBuiltIn{,Middle,Post}Optimizers |
+
+---
+
+## Opt-10: Gap 1 Fix -- JFP Support for LogicalColumnDataGet (DONE)
+
+### What
+
+Allow JFP to push dynamic filters TO temp table scans within a single subquery
+execution. This automatically enables Bloom filters, IN filters,
+SelectivityOptionalFilter, and cast-through pushdown for temp table targets.
+
+### Files changed (DuckDB branch AQP_JIT_152)
+
+| File | Change |
+|------|--------|
+| `src/include/duckdb/planner/operator/logical_column_data_get.hpp` | Added `shared_ptr<DynamicTableFilterSet> dynamic_filters` member |
+| `src/include/duckdb/execution/operator/join/join_filter_pushdown.hpp` | Generalized `PushdownFilterTarget` to hold `shared_ptr<DynamicTableFilterSet>&` + `optional_ptr<LogicalGet>` |
+| `src/optimizer/join_filter_pushdown_optimizer.cpp` | Added `LOGICAL_CHUNK_GET` case to `GetPushdownFilterTargets()` |
+| `src/include/duckdb/planner/table_filter.hpp` + `src/planner/table_filter.cpp` | Generalized `GetFinalTableFilters()` (removed unused `PhysicalTableScan&` param) |
+| `src/execution/operator/scan/physical_table_scan.cpp` | Updated `GetFinalTableFilters()` call sites |
+| `src/include/duckdb/execution/operator/scan/physical_column_data_scan.hpp` | Added `shared_ptr<DynamicTableFilterSet> dynamic_filters` member |
+| `src/execution/physical_plan/plan_column_data_get.cpp` | Wired `dynamic_filters` from logical to physical operator |
+| `src/execution/operator/scan/physical_column_data_scan.cpp` | Filter application in `GetDataInternal()` via `ColumnSegment::FilterSelection()` |
+| `src/optimizer/topn_optimizer.cpp` | Adapted to new `PushdownFilterTarget` (check `target.get` before deref) |
+| `src/optimizer/row_group_pruner.cpp` | Adapted to new `PushdownFilterTarget` (check `target.get` before deref) |
+
+### Correctness
+
+All 113 JOB queries pass correctness verification (identical results between
+none-split and node-based).
+
+### Performance Results
+
+Measurement: 15 runs, skip first 5 warmup, mean of 10. All 113 JOB queries.
+
+| Config | none-split (s) | node-based (s) | Gap (s) | Gap (%) |
+|--------|---------------:|---------------:|--------:|--------:|
+| All passes ON (baseline, pre-Opt-10) | 9.682 | 10.716 | +1.035 | +10.7% |
+| JFP disabled (reference) | 15.732 | 14.416 | -1.316 | -8.4% |
+| **Opt-10 (Gap 1 done)** | **9.597** | **10.565** | **+0.968** | **+10.1%** |
+
+#### Impact Analysis
+
+| Metric | Value |
+|--------|------:|
+| Node-based improvement | -0.151s (10.716 -> 10.565) |
+| None-split change | -0.085s (9.682 -> 9.597, measurement noise) |
+| **Gap reduction** | **0.067s** (1.035 -> 0.968) |
+| **% of original gap closed** | **6.5%** |
+| JFP asymmetry reduction | 2.350s -> 2.283s (-0.067s) |
+
+#### Assessment
+
+Gap 1 fix had **modest impact** (6.5% of gap closed), consistent with the pre-
+implementation prediction that "expected impact is modest on its own." The none-
+split variation (-0.085s) is measurement noise (spread across many queries, max
+per-query diff ~10ms).
+
+The Gap 1 fix is a necessary enabler but most of the JFP asymmetry comes from
+**Gap 2: cross-boundary filter loss**. Within a single subquery, temp tables are
+often probe-side with large build sides, so bloom filters rarely trigger
+(`CanUseBloomFilter()` requires probe > build cardinality). The range filters
+pushed to temp tables are typically too broad to meaningfully filter.
+
+#### Revised Gap Impact Estimates (post-measurement)
+
+| Gap | Pre-estimate | Measured | Notes |
+|-----|-------------|----------|-------|
+| Gap 1: temp as target | ~25-35% | **~6.5%** | Range filters too broad; bloom rarely triggers |
+| Gap 2: cross-boundary | ~60-70% | **~88-90%** (revised) | Dominant: filters from other subqueries can't reach |
+| Gap 3: no zone maps | ~5% | ~5% | Unchanged, inherent |
+
+Gap 1 and Gap 2 overlap less than initially estimated. Most of the "temp as target"
+scenario involves filters that are too broad to help, while the real impact is
+the cross-boundary loss of selective bloom filters.
+
+#### Top 10 Queries Where Opt-10 Helped Most
+
+| Query | Baseline gap | Opt-10 gap | Improvement |
+|-------|:-----------:|:---------:|:----------:|
+| 22d | -0.104s | -0.115s | +0.011s |
+| 8d | +0.038s | +0.027s | +0.011s |
+| 9d | +0.064s | +0.055s | +0.009s |
+| 8c | +0.140s | +0.131s | +0.009s |
+| 17f | -0.009s | -0.017s | +0.008s |
+| 14c | +0.035s | +0.028s | +0.007s |
+| 11c | -0.068s | -0.074s | +0.007s |
+| 20b | +0.025s | +0.019s | +0.006s |
+| 22c | -0.041s | -0.046s | +0.005s |
+| 22a | +0.077s | +0.073s | +0.005s |
+
+#### Node-Based Execution Time Improvement (Top 10)
+
+| Query | Baseline | Opt-10 | Change |
+|-------|:--------:|:-----:|:------:|
+| 8c | 0.395s | 0.378s | -0.017s |
+| 7c | 0.181s | 0.170s | -0.011s |
+| 9d | 0.224s | 0.215s | -0.009s |
+| 17f | 0.204s | 0.195s | -0.009s |
+| 16b | 0.319s | 0.312s | -0.007s |
+| 19a | 0.168s | 0.161s | -0.007s |
+| 10c | 0.254s | 0.248s | -0.007s |
+| 20b | 0.125s | 0.119s | -0.006s |
+| 19d | 0.353s | 0.347s | -0.005s |
+| 20a | 0.125s | 0.121s | -0.004s |
+
+### Key Insight for Phase 2
+
+The measurement confirms that **Gap 2 (cross-boundary filter loss) is the dominant
+bottleneck**. The remaining gap of 0.968s is almost entirely due to filters that
+cannot cross subquery boundaries. Phase 2 (pre-computing bloom/range filters from
+temp table data and injecting them into subsequent subquery base table scans) should
+target this directly.
+
+---
+
+## Opt-11: Gap 2 Fix -- Cross-Boundary Bloom Filters for Final Query (DONE)
+
+### What
+
+Enable the existing `ApplyCrossSubPlanOptimizations` infrastructure (range predicates
++ bloom filters built from temp table data) for the **final query**, not just
+intermediate iterations. Previously the final query path skipped this entirely:
+1. No `ApplyCrossSubPlanOptimizations(final_sql)` call before final query
+2. `ExecuteSQL` (non-JIT path) used `conn->Query(sql)` — no physical plan to walk
+   for bloom filter registration
+3. `kBFMaxTempCard=100000` blocked the highest-impact queries (8c/8d/19d have
+   1.15M-row temp tables)
+
+### Files changed (AQP Middleware, branch topdown_fix)
+
+| File | Change |
+|------|--------|
+| `src/split/ir_query_splitter.cpp` (~line 1162) | Added `ApplyCrossSubPlanOptimizations(final_sql)` before final query execution, guarded by `config_.engine == BackendEngine::DUCKDB && trivial_temp.empty()` |
+| `src/adapters/duckdb_adapter.cpp` (lines 1350-1381) | Changed non-JIT `ExecuteSQL` from `conn->Query(sql)` to `conn->Prepare(sql)` + bloom filter registration via `RegisterBloomFilters()` + `InjectTempTableJoinStats()` + `prepared->Execute()` |
+| `src/split/ir_query_splitter.cpp` (line 2966) | Raised `kBFMaxTempCard` from 100000 to 2000000 |
+
+### Correctness
+
+All 113 JOB queries pass correctness verification (identical results between
+none-split and node-based). BF diagnostic verified on query 8c:
+`[BF-DIAG] temp=temp1 col=movie_companies_3_movie_id card=1153798 -> cast_info.movie_id`
+
+### Performance Results
+
+Measurement: 15 runs, skip first 5 warmup, mean of 10. All 113 JOB queries.
+perf_gap1_gap2_done (first measurement) and perf_current (re-measured 2026-06-30)
+both with kBFMaxTempCard=2M, match within 4ms.
+
+| Config | none-split (s) | node-based (s) | Gap (s) | Gap (%) |
+|--------|---------------:|---------------:|--------:|--------:|
+| All passes ON (baseline, pre-Opt-10) | 9.682 | 10.716 | +1.035 | +10.7% |
+| JFP disabled (reference) | 15.732 | 14.416 | -1.316 | -8.4% |
+| Opt-10 (Gap 1 done) | 9.597 | 10.565 | +0.968 | +10.1% |
+| Opt-10+11 (Gap 1+2, first meas) | 9.620 | 10.365 | +0.746 | +7.8% |
+| **Opt-10+11 (Gap 1+2, re-measured)** | **9.604** | **10.355** | **+0.750** | **+7.8%** |
+
+#### Impact Analysis
+
+| Metric | Value |
+|--------|------:|
+| Node-based improvement | -0.210s (10.565 -> 10.355) |
+| None-split change | +0.007s (9.597 -> 9.604, measurement noise) |
+| **Gap reduction** | **0.218s** (0.968 -> 0.750) |
+| **% of original gap closed (Opt-11 alone)** | **21.1%** |
+| **% of original gap closed (Opt-10+11 cumulative)** | **27.5%** |
+| JFP asymmetry reduction | 2.283s -> 2.065s (-0.218s) |
+
+#### JFP Benefit Progression
+
+| Config | none JFP gain | node JFP gain | Asymmetry |
+|--------|:-------------:|:-------------:|:---------:|
+| Pre-Opt-10 | +6.050s | +3.700s | 2.350s |
+| After Opt-10 | +6.135s | +3.851s | 2.283s |
+| After Opt-10+11 | +6.112s | +4.051s | 2.061s |
+
+Opt-11 recovered +0.200s of JFP benefit for node-based (3.851s -> 4.051s) with
+negligible impact on none-split.
+
+#### Assessment
+
+Gap 2 fix had **moderate impact** (21.4% of original gap closed, 22.9% of remaining
+gap after Gap 1). This is significantly less than the pre-estimate of ~88-90%.
+
+**Why less than expected**: The cross-boundary bloom filter infrastructure only covers
+a subset of the Gap 2 problem. `ApplyCrossSubPlanOptimizations` builds bloom filters
+from temp table join key columns and injects range predicates into the final SQL.
+However:
+1. Many cross-boundary filter losses involve DuckDB's native JFP (range + bloom +
+   IN filters pushed between joins within a single pipeline), which cannot be
+   replicated by injecting filters from outside
+2. The middleware's bloom filter injection operates at scan level
+   (`aqp_jit_context->bloom_scan_filters`) — it applies per-row after storage reads,
+   not at the zone-map level like DuckDB's native JFP
+3. Range predicates injected via SQL rewriting (`AND col >= min AND col <= max`) are
+   often too broad to meaningfully filter — the existing `kMaxSelectivity=0.40` guard
+   prevents the worst cases but many pass that threshold while still being ineffective
+
+#### Revised Gap Impact Estimates (post-Opt-11 measurement)
+
+| Gap | Pre-estimate | Opt-10 measured | Opt-11 measured | Notes |
+|-----|-------------|-----------------|-----------------|-------|
+| Gap 1: temp as target | ~25-35% | **6.5%** | — | Range filters too broad; bloom rarely triggers |
+| Gap 2: cross-boundary | ~88-90% | — | **21.4%** | Only partial recovery; native JFP unreplicable |
+| Gap 3: no zone maps | ~5% | — | — | Unchanged, inherent |
+| Remaining unexplained | — | — | **~49%** | Cross-boundary losses not addressable by BF injection |
+
+The three gaps sum to ~77% accounted for (6.5% + 21.4% + ~5% + overhead noise).
+The remaining ~49% of the original gap is cross-boundary filter loss that cannot
+be recovered by the middleware's bloom filter injection because it involves DuckDB's
+native JFP mechanisms (build-side aggregated min/max pushed to probe-side zone maps,
+adaptive SelectivityOptionalFilter, IN filters from small hash tables).
+
+#### Top 20 Queries Where Opt-11 Helped Most (gap reduction)
+
+| Query | Gap1-gap | Gap2-gap | Improvement | Node change |
+|-------|:-------:|:-------:|:----------:|:----------:|
+| 12c | +0.070s | +0.034s | +0.036s | -0.036s |
+| 4a | +0.003s | -0.030s | +0.033s | -0.033s |
+| 19c | +0.042s | +0.018s | +0.024s | -0.023s |
+| 4c | -0.001s | -0.023s | +0.022s | -0.020s |
+| 24a | +0.044s | +0.024s | +0.020s | -0.019s |
+| 9a | +0.026s | +0.008s | +0.018s | -0.017s |
+| 26c | +0.016s | -0.002s | +0.018s | -0.013s |
+| 19a | +0.057s | +0.043s | +0.014s | -0.013s |
+| 20c | +0.028s | +0.016s | +0.012s | -0.013s |
+| 6f | -0.041s | -0.053s | +0.012s | -0.012s |
+| 20a | -0.009s | -0.021s | +0.012s | -0.008s |
+| 6d | +0.101s | +0.089s | +0.012s | -0.011s |
+| 3c | +0.046s | +0.038s | +0.008s | -0.009s |
+| 5c | +0.046s | +0.038s | +0.008s | -0.008s |
+| 31a | +0.009s | +0.003s | +0.007s | -0.005s |
+| 3a | +0.042s | +0.035s | +0.006s | -0.005s |
+| 30c | +0.003s | -0.002s | +0.005s | -0.005s |
+| 6e | +0.013s | +0.009s | +0.005s | -0.004s |
+| 6a | +0.010s | +0.005s | +0.005s | -0.004s |
+| 8c | +0.131s | +0.127s | +0.005s | -0.002s |
+
+#### Top 10 Remaining Gaps (node-based still slower)
+
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 19d | 0.211 | 0.348 | +0.137 |
+| 8c | 0.249 | 0.376 | +0.127 |
+| 6d | 0.068 | 0.157 | +0.089 |
+| 22a | 0.075 | 0.153 | +0.078 |
+| 30b | 0.043 | 0.120 | +0.077 |
+| 10c | 0.173 | 0.250 | +0.077 |
+| 30a | 0.115 | 0.179 | +0.064 |
+| 22b | 0.056 | 0.114 | +0.058 |
+| 31c | 0.124 | 0.181 | +0.057 |
+| 9d | 0.160 | 0.215 | +0.055 |
+
+### Key Insights
+
+1. **8c improved only 0.005s** despite the bloom filter now firing on
+   `cast_info.movie_id`. The BF operates at scan level (per-row probe after storage
+   read), not at the zone-map level like DuckDB's native JFP bloom filters. The
+   scan-level BF filtering cost partly offsets the row reduction benefit.
+
+2. **12c, 4a, 19c, 4c benefited most** — these queries have temp tables where the
+   range predicates from `ApplyCrossSubPlanOptimizations` meaningfully narrowed the
+   base table scan via SQL-level `WHERE` clause injection.
+
+3. **19d and 8c remain the largest gaps** (+0.137s, +0.127s). These have large temp
+   tables (1.15M rows) where the cross-boundary filter loss involves multiple JFP
+   filter types (bloom + range + IN) that cannot be fully replicated by the
+   middleware's injection approach.
+
+### Opt-11 BF Activation Analysis (verified 2026-06-30)
+
+Running all 113 queries with `--debug` and tracking BF-DIAG output relative to
+"Executing final remaining IR":
+
+| Category | Count | Description |
+|----------|------:|-------------|
+| BF on FINAL path only (Opt-11) | 23 | BF fires exclusively via final-query ApplyCrossSubPlanOptimizations |
+| BF on BOTH iter + final | 37 | Some BFs during iterations, some on final query |
+| BF on ITERATION path only | 18 | No final-query BFs needed |
+| No BFs at all | 35 | No matching temp→base join partners |
+
+Total: 60 queries have at least one BF on the final query path. Without Opt-11,
+these 60 queries would lose their final-query BFs entirely.
+
+Additionally, 6 queries get RANGE predicates injected into the final SQL:
+1a, 21b, 27b, 29a, 29c, 31a.
+
+Note on Opt-11 attribution: Opt-11 enables 60 queries to get final-query BFs.
+Combined with kBFMaxTempCard=2M, the total recovery is -0.218s (gap 0.968 -> 0.750).
+The kBFMaxTempCard increase accounts for most of the gain by enabling BFs on
+medium-to-large temp tables (4a=106K, 12c=122K, 19c/4c/24a/9a=100K-150K range,
+8c/8d/9d/10c/19d=1.15M). The final-query path (Opt-11 infrastructure) is required
+to deliver these BFs for the 60 queries that need them.
+
+---
+
+## Opt-12: Failed Experiment — TempCollectionStatistics + Transitive BF (REVERTED/PENDING)
+
+### What was attempted
+
+Three changes bundled as Opt-12:
+
+**Opt-12a**: Register `TempCollectionStatistics` on the `scan_temp_collection` table
+function so DuckDB's optimizer gets per-column min/max for temp tables. The function
+`TempCollectionStatistics()` already existed in `duckdb_adapter.cpp` but was never
+wired up to the table function's `statistics_extended` callback.
+
+**Opt-12b**: Transitive bloom filter injection. When `temp.A = X.B` and `X.B = Y.C`
+in the SQL, the BF from temp can also filter Y.C even though there is no direct
+temp→Y join. Added `find_all_join_partners` lambda to `ApplyCrossSubPlanOptimizations`
+that scans the SQL for all equality partners of a column, then tries each as a BF
+target (subject to the existing match_rate < 0.25 guard).
+
+**Opt-12c**: Raised `kBFMaxTempCard` from 100000 to 2000000. (Later folded into Opt-11.)
+
+### Files changed (AQP Middleware, branch topdown_fix)
+
+| File | Change |
+|------|--------|
+| `src/adapters/duckdb_adapter.cpp` (line 214) | Added `func.statistics_extended = TempCollectionStatistics` (Opt-12a) |
+| `src/adapters/duckdb_adapter.cpp` (line 1788) | Added `IsNumeric()` guard on stats creation to prevent StringStats bug |
+| `src/adapters/duckdb_adapter.cpp` (line 1802) | Added `!col_stats[ci]` null guard in per-chunk scan loop |
+| `src/split/ir_query_splitter.cpp` (~line 2970) | Added `find_all_join_partners` lambda for transitive BF targets (Opt-12b) |
+| `src/split/ir_query_splitter.cpp` (line 2964) | Raised `kBFMaxTempCard` to 2000000 (Opt-12c, later folded into Opt-11) |
+
+### Correctness Bug Found (Opt-12a)
+
+`BaseStatistics::CreateEmpty()` for VARCHAR columns initializes `StringStats` with
+`max_string_length=0` and inverted min/max (`min=0xFF*`, `max=0x00*`). The stats
+computation code was calling `CreateEmpty()` for ALL column types but only updating
+numeric stats — VARCHAR columns kept the "empty" defaults. When the optimizer saw
+`max_string_length=0` it concluded no valid strings exist and pruned joins
+incorrectly. Query 17f returned `=|` instead of `'El Galgo PornoStar', Blanquito|`.
+
+**Fix**: Only create stats for `types[ci].IsNumeric()`, leaving non-numeric columns
+as `nullptr` (no stats). This fixed the correctness bug but the performance
+regression remained.
+
+### Performance Results (Opt-12a+12b+12c combined)
+
+Measurement: `perf_gap1_gap2_fix/`. 15 runs, skip first 5, mean of 10. 113 JOB queries.
+
+| Config | none-split (s) | node-based (s) | Gap (s) | Gap (%) |
+|--------|---------------:|---------------:|--------:|--------:|
+| All passes ON (baseline, pre-Opt-10) | 9.682 | 10.716 | +1.035 | +10.7% |
+| JFP disabled (reference, re-measured) | 15.732 | 14.416 | -1.316 | -8.4% |
+| Opt-10+11 (Gap 1+2 done) | 9.620 | 10.365 | +0.746 | +7.8% |
+| **Opt-10+11+12abc (this experiment)** | **9.586** | **10.747** | **+1.162** | **+12.1%** |
+
+#### Impact Analysis
+
+| Metric | Value |
+|--------|------:|
+| Node-based change | +0.382s (10.365 -> 10.747) **REGRESSION** |
+| None-split change | -0.034s (9.620 -> 9.586, noise) |
+| **Gap change** | **+0.416s (0.746 -> 1.162)** |
+| Queries regressed (>1ms) | 56 |
+| Queries improved (>1ms) | 11 |
+| Sum of positive regressions | +0.428s |
+| Sum of negative improvements | -0.056s |
+
+#### Top 10 Regressions (gap vs none-split increased)
+
+| Query | Old gap | New gap | Gap change |
+|-------|:-------:|:-------:|:----------:|
+| 31a | +0.003s | +0.057s | +0.054s |
+| 10c | +0.077s | +0.116s | +0.039s |
+| 9a | +0.008s | +0.045s | +0.037s |
+| 19d | +0.137s | +0.171s | +0.034s |
+| 19a | +0.043s | +0.066s | +0.023s |
+| 8c | +0.127s | +0.144s | +0.017s |
+| 17f | -0.020s | -0.004s | +0.016s |
+| 6a | +0.005s | +0.017s | +0.012s |
+| 26c | -0.002s | +0.010s | +0.012s |
+| 6e | +0.009s | +0.021s | +0.012s |
+
+#### Root Cause: Statistics-Driven Join Order Regressions
+
+The regressions are widespread (56 queries), not concentrated on specific queries.
+The mechanism: providing column min/max for temp tables via `statistics_extended`
+causes DuckDB's cost-based optimizer to change join orderings. While the statistics
+are accurate, the optimizer's cardinality estimations (which combine min/max ranges
+with join selectivity estimates) produce worse plans in most cases.
+
+The same SQL queries, same temp table data, same cardinalities — only the presence
+of per-column min/max stats on `scan_temp_collection` changed. This means:
+1. DuckDB's join ordering is sensitive to column statistics availability
+2. Without temp table column stats, the optimizer makes conservative (but often
+   better) assumptions about temp table value distributions
+3. Adding accurate but simple min/max stats (without histograms, distinct counts,
+   or distribution info) misleads the optimizer more than it helps
+
+### Decision (round 1: bundled measurement)
+
+**Opt-12a: REVERTED** — `statistics_extended` registration commented out. The
+cardinality callback alone provides sufficient information for good plans.
+
+**Opt-12b+12c: KEPT in working tree** for independent measurement.
+
+---
+
+## Opt-12b+12c Independent Measurement (REVERTED)
+
+### What was measured
+
+After reverting Opt-12a, measured Opt-12b+12c independently:
+- **Opt-12b**: Transitive BF injection via `find_all_join_partners`
+- **Opt-12c**: `kBFMaxTempCard` raised from 100000 to 2000000
+
+### Performance Results
+
+Measurement: `perf_12b_12c/`. 15 runs, skip first 5, mean of 10. 113 JOB queries.
+
+| Config | none-split (s) | node-based (s) | Gap (s) | Gap (%) |
+|--------|---------------:|---------------:|--------:|--------:|
+| Opt-10+11 (Gap 1+2 done) | 9.620 | 10.365 | +0.746 | +7.8% |
+| **Opt-10+11+12b+12c** | **9.536** | **10.407** | **+0.871** | **+9.1%** |
+
+#### Impact Analysis
+
+| Metric | Value |
+|--------|------:|
+| Node-based change | +0.041s (10.365 -> 10.407) **REGRESSION** |
+| None-split change | -0.084s (9.620 -> 9.536, noise) |
+| **Gap change** | **+0.126s (0.746 -> 0.871)** |
+| Queries regressed (>5ms) | 5 |
+| Queries improved (>5ms) | 1 |
+
+#### Per-Query Analysis
+
+The regression is concentrated in queries where the raised kBFMaxTempCard (Opt-12c)
+caused BFs to fire on 1.15M-row temp tables targeting cast_info.movie_id:
+
+| Query | NB old (s) | NB new (s) | Exec delta | BF target |
+|-------|:----------:|:----------:|:----------:|-----------|
+| 19d | 0.348 | 0.376 | +0.028s | temp1 (1.15M) → cast_info.movie_id |
+| 10c | 0.250 | 0.284 | +0.034s | temp1 (1.15M) → cast_info.movie_id |
+| 8c | 0.376 | 0.376 | +0.000s | temp1 (1.15M) → cast_info.movie_id |
+| 8d | 0.126 | 0.127 | +0.001s | temp1 (1.15M) → cast_info.movie_id |
+| 9d | 0.215 | 0.211 | -0.004s | temp1 (1.15M) → cast_info.movie_id |
+
+Large BF queries sum: +0.059s. All other queries: -0.017s (noise).
+
+#### Root Cause: BF on Large Temp Tables is Counterproductive
+
+The 1.15M-row mc+cn temp table has 571,710 distinct movie_ids out of ~2.53M total.
+The BF:
+- Size: 838 KB (571K keys × 12 bits/key). Fits in L3 but not L1/L2.
+- Selectivity: 22.6% of cast_info rows pass (8.17M out of 36.2M).
+- Cost: probing 36.2M rows through 838KB BF at ~5ns/probe ≈ 181ms.
+- Benefit: filtering 77.4% of rows before hash join probe.
+- BUT: the hash join's miss path for in-memory data is already cheap (~few ns/row).
+  The BF adds redundant filtering overhead on top of what the hash join would do
+  anyway. DuckDB's native JFP only pushes BFs when `build_side_has_filter=true`
+  (the build side has selection predicates). For temp tables, `build_side_has_filter`
+  is always false, so even DuckDB's native JFP would not push a BF here.
+
+#### Transitive BF (Opt-12b): No Impact
+
+The `find_all_join_partners` lambda found no multi-hop equality chains in any of
+the top-gap queries. All BF targets were already direct partners found by the
+existing `find_join_partner`. The transitive BF code adds complexity without
+benefit for this workload.
+
+### Decision (round 2: independent measurement)
+
+**Opt-12b: REVERTED** — Transitive BF injection removed. No multi-hop chains
+exist in JOB queries for top-gap temp tables.
+
+**Opt-12c: INITIALLY reverted to 200K, later RESTORED to 2M.**
+
+Initial analysis of perf_12b_12c (kBF=2M + Opt-12b transitive BF) vs
+perf_gap1_gap2_done (kBF=2M, no transitive) misattributed the regression to
+the kBF threshold. The regressions on 19d (+28ms), 10c (+34ms) in perf_12b_12c
+were actually caused by Opt-12b's transitive BF injection, not by kBF=2M itself.
+
+With Opt-12b reverted and kBF=2M restored, the new perf_current measurement
+confirms kBF=2M is net positive:
+
+| Query | perf_gap1_gap2_done NB (s) | perf_current NB (s) | delta |
+|-------|:--------------------------:|:-------------------:|:-----:|
+| 19d | 0.348 | 0.351 | +0.003 |
+| 10c | 0.250 | 0.251 | +0.001 |
+| 8c | 0.376 | 0.375 | -0.001 |
+
+All three within noise. The 1.15M-row BFs do NOT regress when transitive BF
+injection is not present.
+
+### kBFMaxTempCard=2M Threshold Rationale
+
+Natural gap in temp table cardinality distribution:
+- Largest temp <=2M: 1,153,798 (many queries: 8c, 8d, 9d, 10c, 19c, 19d)
+- Smallest temp >2M: 3,036,719 (only 13d)
+- Any threshold between 1.16M and 3.04M gives identical results
+
+The existing `match_rate >= 0.25` guard (line 2983) prevents BFs where the temp
+table is >25% of the base table size. This is sufficient to block ineffective BFs.
+
+### Lessons Learned
+
+1. **BF regressions need careful attribution.** The initial conclusion that
+   "kBF=2M regresses large temps" was wrong — the regression came from Opt-12b
+   transitive BF injection, which was measured together with kBF=2M.
+2. **perf_gap1_gap2_done was correct all along.** The kBF=2M threshold produces
+   good results when not combined with transitive BF injection.
+3. **Transitive filter chains are theoretical.** No multi-hop equality chains exist
+   in JOB queries.
+
+---
+
+## Measurement Reconciliation
+
+### Key Discovery: perf_gap1_gap2_done Included kBFMaxTempCard=2M
+
+Cross-comparison of NB execution times across all datasets revealed that
+perf_gap1_gap2_done and perf_12b_12c show nearly identical NB times for medium-temp
+queries (4a, 12c, 19c, 4c, 24a — within 1-3ms), while perf_all_passes shows
+higher times for these queries. This confirms perf_gap1_gap2_done was measured
+with kBFMaxTempCard=2M (from the original Opt-11 Step 3), not 100K.
+
+### Final Attribution (verified with perf_current kBF=2M remeasurement)
+
+The new perf_current (2026-06-30) with kBFMaxTempCard=2M matches
+perf_gap1_gap2_done within 4ms, confirming the code now reproduces that config:
+
+| Opt | Description | Measured Gap Impact | Status |
+|-----|------------|:-------------------:|--------|
+| Opt-10 | JFP for LogicalColumnDataGet | -0.067s | DONE |
+| Opt-11 + kBFMax=2M | Final-query BF + range injection + threshold raise | -0.218s (combined) | DONE |
+| **Total gap recovery** | | **-0.285s (27.5% of 1.035s baseline)** | |
+
+Note: The earlier "Opt-12c regression" analysis was incorrect — the large-temp
+regressions attributed to kBF=2M were actually caused by Opt-12b transitive BF
+injection measured together. With Opt-12b reverted, kBF=2M is cleanly net positive.
+
+---
+
+## End-to-End JFP Gap Analysis (Post All Optimizations)
+
+### Measured Performance
+
+| Config | none-split (s) | node-based (s) | Gap (s) | Gap (%) |
+|--------|---------------:|---------------:|--------:|--------:|
+| All passes ON (pre-Opt-10) | 9.682 | 10.716 | +1.035 | +10.7% |
+| JFP disabled | 15.732 | 14.416 | -1.316 | -8.4% |
+| perf_gap1_gap2_done (Opt-10+11+kBF=2M) | 9.620 | 10.365 | +0.746 | +7.8% |
+| perf_12b_12c (+ transitive BF) | 9.536 | 10.407 | +0.871 | +9.1% |
+| **perf_current (Opt-10+11+kBF=2M, re-measured)** | **9.604** | **10.355** | **+0.750** | **+7.8%** |
+
+### Optimization Summary
+
+| Opt | Description | Gap Impact | Status |
+|-----|------------|:----------:|--------|
+| Opt-10 | JFP support for LogicalColumnDataGet | -0.067s | DONE |
+| Opt-11 + kBFMax=2M | Cross-boundary BF + range for final query | -0.218s (combined) | DONE |
+| Opt-12a | TempCollectionStatistics | +0.416s (REGRESSION) | REVERTED |
+| Opt-12b | Transitive BF injection | 0s (no effect) | REVERTED |
+| **Total recovery** | | **-0.285s (27.5% of baseline)** | |
+
+### Why the Remaining Gap is Inherent
+
+The remaining gap (+0.750s measured with kBF=2M) cannot be recovered by the
+middleware:
+
+1. **Zone-map pruning on FK columns is useless for IMDB**: cast_info.movie_id has
+   completely unsorted data — all 590 row groups span [~0, ~2.5M]. Even if the
+   middleware registered BFs as DynamicTableFilterSet entries, 0 row groups would
+   be skipped. Same for movie_info.movie_id, movie_keyword.movie_id.
+
+2. **IN-list injection infeasible**: All relevant temp tables have >50 unique join
+   key values (smallest: 478 in 30b; top-gap: 571,710 in 19d/8c/10c/9d/8d).
+
+3. **DuckDB's native JFP is pipeline-internal**: Filters pushed from hash join
+   build sides within the same pipeline are "free" (extracted from hash table).
+   The middleware must explicitly build BFs from temp tables.
+
+4. **`build_side_has_filter=false` for temp tables**: DuckDB's native JFP only
+   pushes BFs when the build side has selection predicates.
+
+### Top Remaining Gaps (perf_current, kBFMaxTempCard=2M, re-measured 2026-06-30)
+
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 19d | 0.210 | 0.351 | +0.141 |
+| 8c | 0.256 | 0.375 | +0.118 |
+| 6d | 0.068 | 0.152 | +0.084 |
+| 10c | 0.172 | 0.251 | +0.079 |
+| 22a | 0.076 | 0.154 | +0.078 |
+| 30b | 0.043 | 0.120 | +0.077 |
+| 30a | 0.114 | 0.178 | +0.064 |
+| 22b | 0.055 | 0.114 | +0.059 |
+| 31c | 0.123 | 0.181 | +0.058 |
+| 9d | 0.160 | 0.214 | +0.054 |
+
+Top 5 queries where NB is faster:
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 7c | 0.531 | 0.178 | -0.353 |
+| 11d | 0.292 | 0.063 | -0.229 |
+| 22d | 0.244 | 0.136 | -0.108 |
+| 17d | 0.180 | 0.077 | -0.103 |
+| 17c | 0.119 | 0.048 | -0.071 |
+
+### Measurement Data Locations
+
+| Dataset | Path | What |
+|---------|------|------|
+| Pre-Opt-10 baseline | `perf_all_passes/` | Before any optimizations |
+| JFP disabled | `perf_disable_jfp/` | Baseline with JFP optimizer pass disabled |
+| Opt-10+11+kBF=2M (first meas) | `perf_gap1_gap2_done/` | Original kBF=2M measurement |
+| Opt-12abc (failed) | `perf_gap1_gap2_fix/` | Including stats regression |
+| Opt-12b+12c (failed) | `perf_12b_12c/` | Transitive BF regression |
+| Opt-10+11+kBF=2M (re-measured) | `perf_baseline/` | Baseline for Opt-13+14+15 |
+
+---
+
+## Why DuckDB-Native JFP Cannot Work Across Query Boundaries
+
+### The Core Mechanism
+
+DuckDB's native JFP operates within a SINGLE query execution pipeline:
+
+1. **Optimizer phase** (`join_filter_pushdown_optimizer.cpp:210-329`):
+   - `GetPushdownFilterTargets()` finds probe-side table scans in the logical plan
+   - `IsFiltering()` checks if build side has selection predicates (filters, TopN)
+   - Creates `DynamicTableFilterSet` (shared_ptr) on target scans
+   - Links build-side hash join to probe-side scans via shared_ptr
+
+2. **Build execution** (`physical_hash_join.cpp:780-808`):
+   - After JoinHashTable is fully built, `FinalizeFilters()` extracts:
+     - Min/max from aggregated build keys → `ConstantFilter` + `SelectivityOptionalFilter`
+     - Bloom filter from JoinHashTable's internal BloomFilter member
+     - IN-list for small hash tables
+   - `PushBloomFilter()` injects BF into `DynamicTableFilterSet` via shared_ptr
+   - Guard: `can_use_bf && build_side_has_filter && probe_larger_than_build` (line 793)
+
+3. **Probe execution** (`physical_table_scan.cpp:39-40`):
+   - `GetFinalTableFilters()` reads from the same `DynamicTableFilterSet` shared_ptr
+   - Filters applied at storage level: zone-map pruning for range, row-level for BF
+
+### Why Splitting Breaks This
+
+When the middleware splits query `SELECT ... FROM A JOIN B JOIN C` into:
+- **Subquery 1**: `SELECT ... FROM A JOIN B → temp1`
+- **Final query**: `SELECT ... FROM temp1 JOIN C`
+
+The native JFP in the final query can only push filters WITHIN that query (e.g.,
+from the temp1⋈C join build side to C's scan). It CANNOT:
+
+1. **Push filters from the A⋈B join to C**: That join executed in subquery 1,
+   its JoinHashTable is destroyed, its DynamicTableFilterSet lifetime ended.
+
+2. **Use temp table as BF build source**: `IsFiltering()` returns false for
+   LogicalColumnDataGet (no selection predicates on temp tables), so
+   `build_side_has_filter=false` → bloom filter not created (line 793).
+
+3. **Push multi-hop filters**: In none-split, filter chains like
+   A→B→C propagate through the pipeline. In split execution, the A→B
+   boundary is severed.
+
+### What the Middleware's BF Injection (Opt-11) Recovers
+
+The middleware's `ApplyCrossSubPlanOptimizations` partially addresses gap #1 above:
+- Builds BFs from temp table data (explicit scan + construction)
+- Registers via `AQPJITContext::bloom_scan_filters` (not DynamicTableFilterSet)
+- Applied at scan level (per-row probe), not at storage/zone-map level
+
+### What CANNOT Be Recovered
+
+| Native JFP Feature | Cross-Boundary Status | Why |
+|--------------------|-----------------------|-----|
+| Zone-map pruning via min/max range | NOT USEFUL | FK columns unsorted: all row groups span full range |
+| Bloom filter from hash table | PARTIALLY recovered | Middleware builds BF from temp data; applied per-row not per-zone-map |
+| IN-list (small HT) | NOT RECOVERED | All relevant temps have >50 unique values |
+| SelectivityOptionalFilter (adaptive) | NOT RECOVERED | Opt-14 reverted (caused +33ms exec regression) |
+| Pipeline-internal filter chains | NOT RECOVERED | Multi-join filter propagation requires single pipeline |
+| build_side_has_filter optimization | NOT RECOVERED | Opt-15 reverted (bundled with Opt-14 regression) |
+
+---
+
+## Opt-13: Remove Dead Eager Temp Stats Scan (DONE)
+
+### What
+
+The full temp table scan at `duckdb_adapter.cpp:1795-1851` computed per-column
+min/max stats into `StoredTempResult::column_stats`. **These stats are dead code**:
+- `TempCollectionStatistics` (the only consumer) is disabled (line 218, causes
+  +0.416s optimizer regression — see Opt-12a)
+- `GetTempTableMinMax` (line 2373) and `InjectTempTableJoinStats` (line 6092)
+  both re-scan the collection independently — they don't use `column_stats`
+
+### Files Changed (AQP Middleware, branch topdown_fix)
+
+| File | Change |
+|------|--------|
+| `src/adapters/duckdb_adapter.cpp` (lines 1782-1785) | Removed ~70-line eager scan loop, replaced with `std::vector<...> col_stats;` |
+
+### Expected Impact
+
+50-150ms MW reduction across 113 JOB queries (one full collection scan per temp
+table removed). The 147ms estimate came from the gap decomposition analysis.
+
+### Correctness
+
+All 113 JOB queries pass correctness verification.
+
+### Actual Measurement (Opt-13 standalone, Opt-14+15 reverted)
+
+Dataset: `measure/job_result/opt_13/`. 15 runs, skip first 5 warmup, mean of 10.
+All 113 JOB queries. Baseline: `measure/job_result/perf_baseline/` (Opt-10+11+kBF=2M).
+
+| Config | Total(s) | MW(s) | Exec(s) |
+|--------|:--------:|:-----:|:-------:|
+| Baseline NB | 10.355 | 0.673 | 9.681 |
+| Baseline None | 9.604 | 0.003 | 9.601 |
+| Opt-13 NB | 10.314 | 0.545 | 9.770 |
+| Opt-13 None | 9.471 | 0.003 | 9.468 |
+
+| Metric | Value |
+|--------|------:|
+| NB total change | **-0.040s** (10.355 → 10.314) |
+| NB MW change | **-0.129s** (0.673 → 0.545) |
+| NB exec change | +0.089s (9.681 → 9.770, measurement variance) |
+| None-split change | -0.133s (9.604 → 9.471, measurement variance) |
+| Gap (NB - None) | +0.843s (+8.9%) vs baseline +0.750s (+7.8%) |
+
+The MW reduction (-129ms) matches the expected range (50-150ms). The gap widened
+by +0.093s due to measurement variance in both NB execution and none-split total.
+Opt-13 does not modify any code path used by none-split.
+
+MW overhead breakdown (opt_13): ExtractIR 460ms, SQL parse 37ms, extra_mat 16ms,
+SQL gen 10ms, UpdateIR 10ms, prepare_mw 9ms, misc 4ms. Total: 545ms.
+
+The extra_materialization dropped from 147ms → 16ms (-131ms), confirming the eager
+temp stats scan was the source of the overhead.
+
+### Top 10 Remaining Gaps (opt_13, NB slower)
+
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 8c | 0.226 | 0.388 | +0.162 |
+| 19d | 0.207 | 0.350 | +0.143 |
+| 6d | 0.068 | 0.156 | +0.088 |
+| 10c | 0.172 | 0.252 | +0.081 |
+| 30b | 0.043 | 0.121 | +0.078 |
+| 22a | 0.073 | 0.151 | +0.078 |
+| 30a | 0.114 | 0.176 | +0.062 |
+| 9d | 0.158 | 0.216 | +0.059 |
+| 31c | 0.123 | 0.180 | +0.057 |
+| 22b | 0.055 | 0.109 | +0.054 |
+
+Top 5 queries where NB is faster:
+
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 7c | 0.489 | 0.183 | -0.306 |
+| 11d | 0.271 | 0.063 | -0.208 |
+| 22d | 0.243 | 0.138 | -0.105 |
+| 17d | 0.178 | 0.077 | -0.101 |
+| 17c | 0.118 | 0.048 | -0.070 |
+
+Query distribution: 24 NB faster, 84 NB slower, 5 neutral (within 1ms).
+
+---
+
+## Opt-14: Selectivity Check for Middleware BFs (REVERTED)
+
+### What
+
+DuckDB wraps native JFP bloom filters in `SelectivityOptionalFilter` (threshold
+0.25, check 75 vectors) that auto-disables ineffective filters. Middleware BFs at
+`physical_table_scan.cpp:209-264` were always-on. Added a simple selectivity
+counter to `AQPBloomScanFilter`: after N chunks, if accepted/total > threshold,
+disable the BF for the rest of the scan.
+
+### Files Changed (DuckDB, branch AQP_JIT_152)
+
+| File | Change |
+|------|--------|
+| `src/include/duckdb/execution/aqp_jit.hpp` | Added `sel_vectors_seen`, `sel_tuples_accepted`, `sel_tuples_total`, `sel_disabled` fields + `UpdateSelectivity()` method to `AQPBloomScanFilter` |
+| `src/execution/operator/scan/physical_table_scan.cpp` | Skip disabled BFs, call `UpdateSelectivity()` after each BF application |
+
+### Expected Impact
+
+10-25ms improvement by disabling ineffective BFs on large temp tables (prevents
+scan overhead on BFs with >25% selectivity).
+
+### Correctness
+
+All 113 JOB queries pass correctness verification.
+
+---
+
+## Opt-15: Fix `IsFiltering()` for LOGICAL_CHUNK_GET (REVERTED)
+
+### What
+
+`IsFiltering()` at `join_filter_pushdown_optimizer.cpp:210-230` had no case for
+`LOGICAL_CHUNK_GET`, returning false when temp table is build side. This prevented
+DuckDB's native JFP from creating BFs in joins where temp is the build side.
+
+### Files Changed (DuckDB, branch AQP_JIT_152)
+
+| File | Change |
+|------|--------|
+| `src/optimizer/join_filter_pushdown_optimizer.cpp` | Added `case LOGICAL_CHUNK_GET: return true;` to `IsFiltering()` |
+
+### Expected Impact
+
+0-15ms. Temp tables are already filtered results; `estimated_cardinality` is
+accurate (set to actual row count), `probe_larger_than_build` guard works correctly.
+
+### Correctness
+
+All 113 JOB queries pass correctness verification.
+
+---
+
+## Opt-13+14+15 Combined Performance Results (Opt-14+15 REVERTED)
+
+### Measurement
+
+Dataset: `measure/job_result/opt_13_14_15/`. 15 runs, skip first 5 warmup, mean
+of 10. All 113 JOB queries. Baseline: `measure/job_result/perf_baseline/`
+(= perf_current re-measured, Opt-10+11+kBF=2M).
+
+### Results
+
+| Config | Total(s) | MW(s) | Exec(s) |
+|--------|:--------:|:-----:|:-------:|
+| Baseline NB | 10.355 | 0.673 | 9.681 |
+| Baseline None | 9.604 | 0.003 | 9.601 |
+| Opt-13+14+15 NB | 10.256 | 0.542 | 9.714 |
+| Opt-13+14+15 None | 9.456 | 0.003 | 9.453 |
+
+### NB-Only Impact (independent of none-split measurement variance)
+
+| Metric | Value |
+|--------|------:|
+| NB total change | **-0.098s** (10.355 → 10.256) |
+| NB MW change | **-0.131s** (0.673 → 0.542) |
+| NB exec change | **+0.033s** (9.681 → 9.714) |
+
+### None-Split Measurement Variance
+
+None-split got -0.148s faster, spread across 54 queries at 1-7ms each. This is
+measurement variance (system load/thermal), NOT a code change effect — Opt-13/14/15
+don't modify any code path that none-split uses.
+
+### Gap Analysis
+
+| Metric | Value |
+|--------|------:|
+| Baseline gap (NB-None) | +0.750s (+7.8%) |
+| Opt-13+14+15 gap (NB-None) | +0.800s (+8.5%) |
+| Gap change | +0.050s (widened) |
+
+The gap widening is entirely due to none-split measurement variance (-0.148s).
+NB itself improved by -0.098s.
+
+### Expectation vs Measured
+
+| Opt | Expected | Measured | Match? |
+|-----|----------|----------|--------|
+| Opt-13 (MW reduction) | 50-150ms | **131ms** | YES — within expected range |
+| Opt-14 (exec improvement) | 10-25ms | **-33ms (regression)** | NO — see analysis below |
+| Opt-15 (exec improvement) | 0-15ms | (included in Opt-14) | Cannot isolate |
+
+### Opt-14+15 Execution Regression Analysis
+
+The +33ms NB execution regression is concentrated in queries with large temp tables:
+
+| Query | Base exec | Opt exec | Delta |
+|-------|:---------:|:--------:|:-----:|
+| 19a | 0.139s | 0.155s | +16.2ms |
+| 9d | 0.210s | 0.226s | +15.3ms |
+| 8c | 0.372s | 0.387s | +15.2ms |
+| 22d | 0.118s | 0.125s | +7.3ms |
+| 6d | 0.151s | 0.158s | +7.1ms |
+| 8d | 0.093s | 0.098s | +5.7ms |
+| 19d | 0.343s | 0.349s | +5.5ms |
+| 19c | 0.144s | 0.149s | +5.1ms |
+| 10c | 0.247s | 0.251s | +4.8ms |
+
+Hypothesis: Opt-15 (`IsFiltering()` returning true for temp tables) enables native
+JFP to create additional BFs for joins where temp is build side. These new BFs may
+overlap with the middleware's BFs (Opt-11), causing redundant filtering work. The
+selectivity check (Opt-14) auto-disables the middleware BFs but the native BFs
+also go through SelectivityOptionalFilter sampling, adding overhead.
+
+Alternative: Opt-15 changes join ordering decisions by altering which joins get
+`build_side_has_filter=true`, affecting DuckDB's cost model.
+
+### MW Reduction Distribution (Opt-13)
+
+All 113 queries show MW reduction (1.0-6.1ms per query). Top beneficiaries:
+
+| Query | Base MW | Opt MW | Delta |
+|-------|:-------:|:------:|:-----:|
+| 13d | 9.6ms | 3.6ms | -6.1ms |
+| 22d | 19.8ms | 14.8ms | -5.0ms |
+| 22c | 19.0ms | 14.8ms | -4.2ms |
+| 22a | 18.6ms | 14.8ms | -3.8ms |
+| 12c | 6.3ms | 2.6ms | -3.7ms |
+
+Queries with more split iterations or larger temp tables see bigger MW savings.
+
+### Top 10 Remaining Gaps (Opt-13+14+15)
+
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 19d | 0.208 | 0.355 | +0.147 |
+| 8c | 0.250 | 0.388 | +0.138 |
+| 6d | 0.067 | 0.159 | +0.093 |
+| 10c | 0.171 | 0.252 | +0.082 |
+| 30b | 0.041 | 0.118 | +0.077 |
+| 22a | 0.073 | 0.149 | +0.076 |
+| 9d | 0.160 | 0.228 | +0.068 |
+| 30a | 0.110 | 0.177 | +0.067 |
+| 19a | 0.104 | 0.164 | +0.060 |
+| 31c | 0.120 | 0.178 | +0.058 |
+
+Top 5 queries where NB is faster:
+
+| Query | none (s) | node (s) | Gap (s) |
+|-------|:--------:|:--------:|:-------:|
+| 7c | 0.533 | 0.181 | -0.353 |
+| 11d | 0.285 | 0.061 | -0.225 |
+| 22d | 0.247 | 0.138 | -0.109 |
+| 17d | 0.176 | 0.076 | -0.100 |
+| 17c | 0.117 | 0.047 | -0.070 |
+
+### Conclusion
+
+**Node-based is still NOT faster than none-split.** Opt-14+15 caused a small
+execution regression (+33ms), concentrated on the exact queries with the largest
+gaps (8c, 9d, 19a). Opt-13 successfully reduced MW overhead by ~129ms.
+
+**Decision**: Opt-14+15 REVERTED — regression on highest-gap queries. Only Opt-13 kept.
+
+### Final State (opt_13 remeasurement, 2026-07-01)
+
+With Opt-10+11+13 and kBF=2M (Opt-14+15 reverted):
+- none-split: 9.471s, node-based: 10.314s, gap: +0.843s (+8.9%)
+- NB MW overhead: 545ms (ExtractIR 460ms dominant)
+- Recovery from original +1.035s baseline: -0.285s gap (Opt-10+11) + -0.129s MW (Opt-13)
+- Node-based is still 8.9% slower than none-split on DuckDB 1.5.2
+
+---
+
+## Opt-3 Removal: Column Stats Infrastructure Cleanup (DONE)
+
+### What
+
+Opt-3 (originally added in commit `9228d79`, DuckDB commit `d251231`) injected
+per-column min/max statistics into `LogicalColumnDataGet::column_stats` so that
+DuckDB's statistics propagator (`propagate_get.cpp`) could use them during join
+ordering. This was effective on DuckDB 1.3.2 but **had zero measurable effect on
+DuckDB 1.5.2** — A/B testing the 10 heaviest queries (8 runs each, 3 warmup)
+showed deltas of -8.4ms to +8.0ms, all within noise.
+
+The stats infrastructure involved two paths:
+- **Path A (Opt-3, active)**: StoredTempResult::column_stats → node_based_splitter
+  → MergeDataChunk → LogicalColumnDataGet::column_stats → propagate_get.cpp
+- **Path B (Opt-12a, disabled)**: StoredTempResult::column_stats →
+  TempCollectionBind → TempCollectionStatistics callback (caused +0.416s regression)
+
+Both paths shared the same eager per-column min/max scan in
+`ExecuteSQLandCreateTempTable` and `ExecuteSpeculativeAndCreateTempTable`, which
+scanned the entire ColumnDataCollection to compute column statistics. This scan
+was the dominant cost captured by `extra_materialization` in the MW breakdown.
+
+### Why No Effect on 1.5.2
+
+DuckDB 1.5.2's optimizer relies on bloom filters and adaptive
+`SelectivityOptionalFilter` for join-time filtering. These mechanisms are
+pipeline-internal and ignore per-column min/max from LogicalColumnDataGet. The
+column stats only affected the cost model for join ordering, but the cardinality
+estimate alone (already provided via `EstimateCardinality`) gives the optimizer
+sufficient information.
+
+### Files Changed
+
+#### AQP Middleware (branch topdown_fix)
+
+| File | Change |
+|------|--------|
+| `include/adapters/duckdb_adapter.h` | Removed `column_stats` field from `StoredTempResult`, removed `TempCollectionStatistics` declaration |
+| `src/adapters/duckdb_adapter.cpp` | Removed `column_stats` from `TempCollectionFunctionData`, removed `TempCollectionStatistics` function definition, removed eager stats scan from `ExecuteSQLandCreateTempTable` and `ExecuteSpeculativeAndCreateTempTable`, removed `column_stats` copying in `TempCollectionBind` |
+| `src/split/node_based_splitter.cpp` | Removed col_stats_copy construction and `column_stats` parameter from `MergeDataChunk` call |
+
+#### DuckDB (branch AQP_JIT_152)
+
+| File | Change |
+|------|--------|
+| `src/include/duckdb/planner/operator/logical_column_data_get.hpp` | Removed `column_stats` field |
+| `src/optimizer/statistics/operator/propagate_get.cpp` | Removed 9-line Opt-3 stats injection block from `PropagateStatistics(LogicalColumnDataGet&)` |
+| `src/include/duckdb/optimizer/query_split/subquery_preparer.hpp` | Removed `column_stats` parameter from `MergeDataChunk` declaration |
+| `src/optimizer/query_split/subquery_preparer.cpp` | Removed `column_stats` parameter from `MergeDataChunk` definition |
+
+### Correctness
+
+All 113 JOB queries pass correctness verification. Both AQP_middleware and DuckDB
+build successfully.
+
+### Performance Results (opt_13_fix, 2026-07-01)
+
+Dataset: `measure/job_result/opt_13_fix/`. 15 runs, skip first 5 warmup, mean of 10.
+All 113 JOB queries. Baseline: `measure/job_result/perf_baseline/` (Opt-10+11+kBF=2M).
+
+| Config | Total(s) | MW(s) | Exec(s) |
+|--------|:--------:|:-----:|:-------:|
+| Baseline NB | 10.355 | 0.673 | 9.681 |
+| Baseline None | 9.604 | 0.003 | 9.601 |
+| opt_13_fix NB | 10.162 | 0.535 | 9.627 |
+| opt_13_fix None | 9.533 | 0.003 | 9.529 |
+
+| Metric | Value |
+|--------|------:|
+| NB total change | **-0.193s** (10.355 → 10.162) |
+| NB MW change | **-0.138s** (0.673 → 0.535) |
+| NB exec change | -0.054s (9.681 → 9.627, measurement variance) |
+| None-split change | -0.071s (9.604 → 9.533, measurement variance) |
+| Gap (NB - None) | +0.629s (+6.6%) vs baseline +0.750s (+7.8%) |
+
+MW overhead breakdown (opt_13_fix): ExtractIR 451ms, SQL parse 36ms, extra_mat 16ms,
+SQL gen 10ms, UpdateIR 9ms, prepare_mw 10ms, misc 4ms. Total: 535ms.
+
+The extra_materialization dropped from 147ms → 16ms (-131ms), confirming the eager
+stats scan was the source of the overhead. This matches the Opt-13 measurement but
+is now a clean code deletion rather than dead code skipping.
+
+### Note on Opt-13
+
+Opt-13 previously removed only the eager scan in `ExecuteSQLandCreateTempTable` while
+keeping the `column_stats` field and the stats injection path in DuckDB. With Opt-3
+fully removed, the Opt-13 change is subsumed — the entire column_stats infrastructure
+is gone, making Opt-13 a no-op on the current code.
+
+### Measurement Data Locations (updated)
+
+| Dataset | Path | What |
+|---------|------|------|
+| Pre-Opt-10 baseline | `perf_all_passes/` | Before any optimizations |
+| JFP disabled | `perf_disable_jfp/` | Baseline with JFP optimizer pass disabled |
+| Opt-10+11+kBF=2M | `perf_baseline/` | Baseline for Opt-13+14+15 |
+| Opt-12abc (failed) | `perf_gap1_gap2_fix/` | Including stats regression |
+| Opt-12b+12c (failed) | `perf_12b_12c/` | Transitive BF regression |
+| Opt-13+14+15 | `opt_13_14_15/` | Opt-14+15 reverted |
+| Opt-13 (prev code) | `duckdb_152_perf/` | Opt-10+11+13, kBF=2M |
+| Opt-3 removed | `opt_13_fix/` | Opt-10+11+kBF=2M, Opt-3 removed |
+| **Opt-17 (current code)** | **`opt_17/`** | **IsFiltering fix for temp table BF pushdown** |
+
+## Opt-16: Transitive BF via Join Graph Analysis (INVESTIGATED, ABANDONED)
+
+### What
+
+Parse join predicates into an equality graph, BFS from temp columns to find ALL
+transitively-reachable base table columns, inject BFs on those. The hypothesis
+was that this would recover ~800ms+ of the +629ms gap.
+
+### Investigation Result
+
+Estimated ~135-180ms total improvement, NOT 800ms.
+
+Analysis (EXPLAIN ANALYZE across all 113 JOB queries):
+- 29 new eligible transitive BF targets across 20 queries
+- DuckDB's own JFP already handles most transitive paths internally: 8/11 tested
+  target tables scan **identical row counts** in none-split and node-based
+- Only 19d shows major scan difference: cast_info 6.3M(NB) vs 1.09M(none)
+- Pre-filtered table simulation (upper bound, DuckDB CLI):
+  19d: 283ms -> 218ms = **65ms**; 10c: 174ms -> 121ms = **53ms**
+- BF-adjusted (25% false positive overhead): 19d ~49ms, 10c ~40ms
+- Remaining 18 queries: estimated ~50ms combined
+- Total: ~135ms realistic, ~180ms optimistic with cascading effects
+
+### Why So Little
+
+DuckDB 1.5.2's JFP pushes BFs at each hash join independently. When
+`temp1.movie_id = title.id` and `ci.movie_id = title.id` appear in the same
+query, the hash join for `ci join title` already pushes a BF to ci -- our
+transitive BF would be redundant. Only 19d has a plan structure where the JFP
+BF from title's join is less selective than our temp-derived BF.
+
+### Code Reference
+
+`find_join_partner` at `ir_query_splitter.cpp:2827-2878` (SQL text matching,
+finds only direct partners). Graph-based analysis would replace this with
+`build_equality_graph` + BFS. Analysis script: `/tmp/analyze_transitive_bf.py`.
+
+### Decision
+
+NOT IMPLEMENTED. Cost/benefit ratio too low -- ~135ms improvement for significant
+implementation effort, while the gap was +629ms.
+
+### Post-Opt-17 Re-evaluation (2025-07-01)
+
+After Opt-17 reduced the gap to -453ms (NB wins), re-evaluated whether Opt-16
+could improve remaining per-query gaps.
+
+#### Separate experiment: DuckDB IsFiltering 2M threshold (NOT Opt-16)
+
+Raised IsFiltering threshold from 500K to 2M to test DuckDB's **native JFP**
+bloom filter pushdown for larger temps. NOTE: this is a DIFFERENT mechanism from
+Opt-16. DuckDB native JFP creates BFs at hash join nodes from hash table entries.
+Opt-16 proposes middleware-built BFs from temp table column values. The 2M
+threshold test does NOT validate or invalidate Opt-16.
+
+**Results (opt_17_2M/ dataset)**: +330ms regression (load-adjusted). 14 queries
+regressed >5ms, 0 improved. Root cause: hash-table-derived BFs from 1.15M-row
+temps have high FPR. Reverted to 500K.
+
+#### Opt-16 re-evaluation: EXPLAIN ANALYZE on all gap queries
+
+Ran EXPLAIN ANALYZE on all top gap queries to check if their transitive target
+tables have different scan counts between NB and none-split:
+
+| Query | Gap(ms) | Transitive target | Scan NB vs None | Opt-16 helps? |
+|-------|:-------:|-------------------|:---------------:|:-------------:|
+| 19d | +143 | ci (temp→title→ci) | **6.3M vs 1.1M** | **YES** |
+| 8c | +129 | ci (DIRECT, MW BF exists) | 1.1M vs 1.5M (NB better!) | NO |
+| 10c | +74 | ci (temp→title→ci) | 8.1M vs 8.1M (identical) | NO |
+| 9d | +56 | ci (temp→ci direct+transitive) | 6.5M vs 6.1M (~same) | NO |
+| 24a | +23 | ci/mi (temp→mi→ci) | mi: 122K→3M | marginal |
+| 8d | +22 | ci (DIRECT, MW BF exists) | 100K vs 100K (identical) | NO |
+| 19c | +15 | mi (DIRECT, MW BF exists!) | mi: 573K→3M | NO (BF not selective) |
+| 16c | +10 | ci (temp→title→ci) | 108K vs 108K (identical) | NO |
+
+Key findings:
+1. **Only 19d** has a verified large scan difference that a transitive BF could fix.
+   Estimated benefit: ~50-80ms (query gap is 143ms; rest is join order differences).
+2. **8c, 8d, 19c** already have DIRECT MW BFs. Gaps come from join order/plan diffs.
+3. **10c, 9d, 16c** have identical ci scans. Gaps from hash join plan differences.
+4. **19c** already has MW BF on movie_info but it's not selective (572K unique
+   movie_ids → 7.4M/14.8M mi rows match, 50%).
+
+#### Root cause of remaining gaps: missing column statistics
+
+Critical discovery: `scan_temp_collection` has NO `statistics` callback. DuckDB's
+join order optimizer receives no min/max or distinct count for temp table columns.
+The distinct count defaults to cardinality (1,153,798) instead of the real value
+(538,535). This produces suboptimal join orders — verified by comparing CLI temp
+table (with stats) vs MW plan. Most remaining gaps (8c, 10c, 9d, 19c) are from
+JOIN ORDER differences, not missing BFs.
+
+Adding a `statistics` callback to `scan_temp_collection` that returns actual
+min/max/distinct from the in-memory ColumnDataCollection would be higher-impact
+than Opt-16. (Not yet implemented — see Opt-18 below.)
+
+### Final Decision
+
+NOT IMPLEMENTED. Only 19d would benefit (~50-80ms). Total realistic improvement
+across all 113 queries: ~100-150ms optimistic. Implementation effort significant
+(build equality graph from SQL, BFS for transitive paths). Cost/benefit ratio
+still low. The remaining gaps are dominated by join ordering differences, not
+missing BFs. Note: adding column statistics to `scan_temp_collection` was already
+tried as Opt-3 (Path A: LogicalColumnDataGet::column_stats, zero effect on 1.5.2)
+and Opt-12a (Path B: func.statistics_extended callback, +0.416s regression). See
+"Opt-3 Removal" section. DuckDB 1.5.2's optimizer does not use per-column min/max
+from table functions for join ordering — cardinality alone is sufficient for its
+cost model. The join order differences are inherent to the split query structure.
+
+Measurement data: `measure/job_result/opt_17_2M/`
+
+## Opt-17: IsFiltering Fix for Temp Table BF Pushdown (DONE)
+
+### What
+
+`IsFiltering()` in DuckDB's `join_filter_pushdown_optimizer.cpp:210` returned
+`false` for temp tables (custom table functions like `scan_temp_collection` from
+the middleware's `IN_MEM_TMP_TABLE` path). This prevented `build_side_has_filter`
+from being set on hash joins where a temp table is on the build side, blocking
+Bloom Filter creation in `CanUseBloomFilter()` at `physical_hash_join.cpp:793`.
+
+**Root cause chain**:
+1. Middleware creates temp tables via custom `scan_temp_collection` table function
+2. These appear as `LOGICAL_GET` nodes with no `table_filters` (no WHERE clause)
+3. `IsFiltering()` only checked `get.table_filters.filters.empty()` for LOGICAL_GET
+4. Returns false -> `build_side_has_filter = false`
+5. `CanUseBloomFilter()` requires `build_side_has_filter && probe_larger_then_build`
+6. No BF created -> cast_info (36M rows) scanned without BF filtering
+
+**Discovery process**: Added diagnostic fprintf to `GenerateJoinFilters` and
+`IsFiltering`. Discovered that middleware temp tables appear as `LOGICAL_GET`
+(type 25, via custom table function), NOT `LOGICAL_CHUNK_GET` (type 26). Initial
+fix targeting LOGICAL_CHUNK_GET had no effect because the wrong operator type was
+targeted.
+
+### Fix
+
+DuckDB `src/optimizer/join_filter_pushdown_optimizer.cpp`, two changes:
+
+**LOGICAL_GET** (line 217-220):
+```cpp
+if (!get.function.filter_pushdown && get.has_estimated_cardinality &&
+    get.estimated_cardinality > 0 && get.estimated_cardinality <= 500000) {
+    return true;
+}
+```
+For LOGICAL_GET nodes whose table function does not support filter pushdown (i.e.,
+custom table functions like `scan_temp_collection`, not regular base tables), treat
+them as "filtering" if they have small estimated cardinality (<=500K rows). The
+`!get.function.filter_pushdown` guard ensures regular base tables (which have
+`filter_pushdown` set) are completely unaffected.
+
+**LOGICAL_CHUNK_GET** (line 223-227):
+```cpp
+case LogicalOperatorType::LOGICAL_CHUNK_GET: {
+    auto &chunk_get = op->Cast<LogicalColumnDataGet>();
+    auto card = chunk_get.collection ? chunk_get.collection->Count() : 0;
+    return card > 0 && card <= 500000;
+}
+```
+Covers DuckDB's internal temp materialization path (ColumnDataCollection).
+
+### Design Decisions
+
+1. **`!get.function.filter_pushdown` guard**: Regular base tables (SEQ_SCAN) have
+   `filter_pushdown` set. Custom table functions (scan_temp_collection) do not. This
+   guard ensures the cardinality heuristic only applies to non-base-table scans,
+   preventing unwanted BFs on dimension tables like role_type (12 rows) or
+   company_type (4 rows) in none-split queries.
+
+2. **500K threshold**: All middleware temp tables are <=1.15M rows. The threshold
+   covers all typical temp tables while avoiding poorly-selective BFs from very large
+   temps. The cardinality function on scan_temp_collection returns exact row counts.
+
+3. **Broad vs targeted approach**: First attempt used `estimated_cardinality <= 500000`
+   without the `!filter_pushdown` guard. This affected none-split by creating
+   additional BFs for small dimension tables on the build side. Adding the guard
+   made the fix none-split-neutral (verified: none-split delta is +1.8ms/query mean,
+   pure system noise with stdev 2.8ms).
+
+### Files Changed (DuckDB, branch AQP_JIT_152)
+
+| File | Change |
+|------|--------|
+| `src/optimizer/join_filter_pushdown_optimizer.cpp` | Added LOGICAL_GET cardinality heuristic (lines 217-220) and LOGICAL_CHUNK_GET case (lines 223-227) in `IsFiltering()` |
+
+### Correctness
+
+All 113 JOB queries produce identical results between node-based and none-split.
+Verified by running both paths and comparing output line-by-line.
+
+### Performance Results (opt_17, 2026-07-01)
+
+Dataset: `measure/job_result/opt_17/`. 15 runs, skip first 5 warmup, mean of 10.
+All 113 JOB queries. Baseline: `measure/job_result/opt_13_fix/` (pre-Opt-17).
+
+| Config | Total(s) | MW(s) | Exec(s) |
+|--------|:--------:|:-----:|:-------:|
+| Pre-Opt-17 NB | 10.162 | 0.535 | 9.627 |
+| Pre-Opt-17 None | 9.533 | 0.003 | 9.529 |
+| **Opt-17 NB** | **9.282** | **0.537** | **8.744** |
+| Opt-17 None | 9.734 | 0.003 | 9.731 |
+
+| Metric | Value |
+|--------|------:|
+| NB exec improvement | **-0.883s** (9.627 -> 8.744) |
+| None-split exec change | +0.202s (system load noise, +1.8ms/query mean, stdev 2.8ms) |
+| Gap (NB - None) | **-0.453s** (-4.6%) vs pre-Opt-17 +0.629s (+6.6%) |
+| Gap improvement | **-1.082s** |
+
+None-split is unaffected by this fix (`!get.function.filter_pushdown` guard ensures
+regular base tables bypass the cardinality heuristic). The +202ms none-split increase
+is uniform system load noise (104/113 queries within +/-5ms of their baseline).
+
+### Per-Query NB Exec Impact (top 15 improvements, ms)
+
+| Query | Pre-Opt-17 | Opt-17 | Delta | Mechanism |
+|-------|-----------|--------|-------|-----------|
+| 31c | 159 | 87 | **-72** | BF on cast_info from temp(2 rows) |
+| 30a | 169 | 106 | **-63** | BF on cast_info from temp |
+| 30b | 115 | 54 | **-61** | BF on cast_info from temp(28 rows) |
+| 25a | 150 | 112 | **-38** | BF on cast_info from temp |
+| 30c | 148 | 115 | **-33** | BF on cast_info from temp |
+| 18b | 124 | 98 | **-26** | BF on cast_info from temp |
+| 24b | 65 | 40 | **-25** | BF from temp |
+| 25c | 164 | 138 | **-25** | BF from temp |
+| 7a | 57 | 35 | **-22** | BF from temp |
+| 5c | 94 | 72 | **-22** | BF from temp |
+| 26b | 67 | 45 | **-22** | BF from temp |
+| 26a | 108 | 90 | **-18** | BF from temp |
+| 20c | 101 | 83 | **-18** | BF from temp |
+| 20b | 110 | 92 | **-18** | BF from temp |
+| 6b | 58 | 41 | **-17** | BF from temp |
+
+Total NB exec change across 113 queries: **-883ms**.
+No meaningful regressions (max: 17f +7ms, within system noise).
+NB faster than None on 45/113 queries, slower on 68/113 (but NB-faster queries
+have larger per-query deltas).
+
+### Optimization Summary (updated)
+
+| Optimization | Gap Change | Status |
+|-------------|-----------|--------|
+| Pre-Opt-10 baseline | +1.035s | -- |
+| Opt-10 (JFP for CHUNK_GET targets) | -0.067s gap | DONE |
+| Opt-11 + kBF=2M (cross-boundary BFs) | -0.218s gap | DONE |
+| Opt-3 removed (column stats cleanup) | -0.138s MW | DONE |
+| Opt-16 (transitive BF, investigated) | ~50-80ms (19d only) | ABANDONED (re-verified: only 19d benefits, rest is join order) |
+| **Opt-17 (IsFiltering for temp tables)** | **-1.082s gap** | **DONE** |
+| **Total recovery** | **+1.035 -> -0.453** | **NB wins** |
+
+### Measurement Data Locations (updated)
+
+| Dataset | Path | What |
+|---------|------|------|
+| Pre-Opt-10 baseline | `perf_all_passes/` | Before any optimizations |
+| JFP disabled | `perf_disable_jfp/` | Baseline with JFP optimizer pass disabled |
+| Opt-10+11+kBF=2M | `perf_baseline/` | Baseline for Opt-13+14+15 |
+| Opt-12abc (failed) | `perf_gap1_gap2_fix/` | Including stats regression |
+| Opt-12b+12c (failed) | `perf_12b_12c/` | Transitive BF regression |
+| Opt-13+14+15 | `opt_13_14_15/` | Opt-14+15 reverted |
+| Opt-13 (prev code) | `duckdb_152_perf/` | Opt-10+11+13, kBF=2M |
+| Opt-3 removed (pre-Opt-17) | `opt_13_fix/` | Opt-10+11+kBF=2M, Opt-3 removed |
+| **Opt-17 (current code)** | **`opt_17/`** | **IsFiltering fix, NB faster than None** |
+| Opt-17 + 2M threshold (failed) | `opt_17_2M/` | 2M IsFiltering threshold, +330ms regression |
