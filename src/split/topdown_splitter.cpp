@@ -354,6 +354,8 @@ void TopDownSplitter::FetchMissingLeafCardinalities(
     sqls.push_back(std::move(sql));
   }
   if (!sqls.empty()) {
+    if (bg_mode_)
+      return;
     auto costs = adapter_->BatchGetEstimatedCosts(sqls);
     for (size_t i = 0; i < costs.size() && i < missing.size(); i++) {
       double base = costs[i].second;
@@ -1396,7 +1398,6 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
   return updated;
 }
 
-#ifdef HAVE_DUCKDB
 void TopDownSplitter::MovePreprocessState(CrossQueryPrepResult &out) {
   out.td_table_card = std::move(table_card_);
   out.td_table_index_to_name = std::move(table_index_to_name_);
@@ -1436,7 +1437,6 @@ void TopDownSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
   current_join_pairs_ = std::move(prep.td_current_join_pairs);
   is_relationship_ = std::move(prep.td_is_relationship);
 }
-#endif
 
 void TopDownSplitter::PrePopulateBaseCountCache() {
   auto rows = distinct_cache_.GetAllCachedRowCounts();

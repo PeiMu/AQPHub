@@ -41,16 +41,36 @@ namespace middleware { struct CachedQueryPlan; }
 
 namespace middleware {
 
-#ifdef HAVE_DUCKDB
 struct CrossQueryPrepResult {
-  std::unique_ptr<duckdb::Connection> bg_conn;
-  std::unique_ptr<duckdb::Planner> bg_planner;
-
+  // Engine-agnostic fields
   std::string sql;
   std::string query_name;
 
   std::unique_ptr<SubqueryExtraction> first_extraction;
   std::string first_sub_sql;
+
+  // SDS (TOP_DOWN) cross-query prep fields (engine-agnostic)
+  std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
+  std::map<unsigned int, double> td_table_card;
+  std::map<unsigned int, std::string> td_table_index_to_name;
+  unsigned int td_max_table_index = 0;
+  std::map<unsigned int, std::pair<std::string, double>> td_mark_in;
+  std::set<unsigned int> td_mark_locked;
+  std::unordered_map<std::string, double> td_col_distinct_hints;
+  JoinGraph td_join_graph;
+  std::vector<std::pair<unsigned int, unsigned int>> td_current_join_pairs;
+  std::vector<bool> td_is_relationship;
+  int td_split_iteration = 0;
+  std::set<unsigned int> td_executed_tables;
+
+  bool success = false;
+  std::string error;
+  double prep_time_us = 0.0;
+
+#ifdef HAVE_DUCKDB
+  // DuckDB-specific fields
+  std::unique_ptr<duckdb::Connection> bg_conn;
+  std::unique_ptr<duckdb::Planner> bg_planner;
 
   duckdb::unique_ptr<duckdb::LogicalOperator> remaining_plan;
   std::unique_ptr<duckdb::QuerySplit> qs;
@@ -62,36 +82,15 @@ struct CrossQueryPrepResult {
   duckdb::unique_ptr<duckdb::LogicalOperator> last_sibling_node;
   bool merge_sibling_expr = false;
   duckdb::vector<duckdb::LogicalType> sub_plan_types;
+#endif
 
-  // Phase 2: bg-compiled first sub-query
-#if defined(HAVE_LLVM)
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   std::unique_ptr<duckdb::PreparedStatement> prepared;
   bool has_prepare = false;
   std::unique_ptr<DuckDBAdapter::QjitSpecCompiled> qjit_spec;
   bool has_qjit = false;
 #endif
-
-  // SDS (TOP_DOWN) cross-query prep fields
-  std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
-  std::map<unsigned int, double> td_table_card;
-  std::map<unsigned int, std::string> td_table_index_to_name;
-  unsigned int td_max_table_index = 0;
-  std::map<unsigned int, std::pair<std::string, double>> td_mark_in;
-  std::set<unsigned int> td_mark_locked;
-  std::unordered_map<std::string, double> td_col_distinct_hints;
-  JoinGraph td_join_graph;
-  std::vector<std::pair<unsigned int, unsigned int>> td_current_join_pairs;
-  std::vector<bool> td_is_relationship;
-  // Set when the bg thread already ran iteration 1's SplitIR (SDS): the main
-  // splitter must resume as if that iteration happened.
-  int td_split_iteration = 0;
-  std::set<unsigned int> td_executed_tables;
-
-  bool success = false;
-  std::string error;
-  double prep_time_us = 0.0;
 };
-#endif
 
 // Mapping entry for column index updates
 struct ColumnMapping {
@@ -147,11 +146,11 @@ public:
   // Statistics
   int GetIterationCount() const { return iteration_count_; }
 
-#ifdef HAVE_DUCKDB
   // §7.2 Cross-query latency hiding
   void SetCrossQueryPrep(std::unique_ptr<CrossQueryPrepResult> prep) {
     active_cross_query_prep_ = std::move(prep);
   }
+#ifdef HAVE_DUCKDB
 #if defined(HAVE_LLVM)
   static std::unique_ptr<CrossQueryPrepResult>
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
@@ -179,10 +178,19 @@ public:
                           DuckDBAdapter *duck, const ParamConfig &config);
 #endif
 #endif
+#ifdef HAVE_POSTGRES
+  static std::unique_ptr<CrossQueryPrepResult>
+  PrepareNextQueryTopDownPG(const std::string &sql_path,
+                            EngineAdapter *adapter,
+                            const ParamConfig &config);
+#endif
 
 private:
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
   QueryResult ReplayQueryPlan(const CachedQueryPlan &cached);
+#endif
+#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
+  QueryResult ReplayQueryPlanPG(const PgCachedQueryPlan &cached);
 #endif
 
   // === IR-based Iterative Split-Execute Loop (all strategies) ===
@@ -416,7 +424,6 @@ private:
       const std::string &temp_table_name,
       const std::vector<int32_t> &aqp_dtypes,
       const std::vector<std::string> &col_names,
-      const std::string &explain_json,
       uint64_t est_card, bool post_execute);
 #endif
   // Phase B: run real SplitIR(i+1) AFTER UpdateRemainingIR to produce
@@ -434,9 +441,9 @@ private:
   double pending_extract_us_ = 0.0;
 #endif
 
-#ifdef HAVE_DUCKDB
   std::unique_ptr<CrossQueryPrepResult> active_cross_query_prep_;
 
+#ifdef HAVE_DUCKDB
   // Lazy CSR (7.3b): build FlatTable + CSR from DuckDB ColumnDataCollection
   // on demand, only when a kernel iteration actually needs the temp.
   void EnsureKernelTempReady(const std::string &temp_name);

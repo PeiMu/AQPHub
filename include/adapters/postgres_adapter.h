@@ -31,6 +31,34 @@
 using json = nlohmann::json;
 
 namespace middleware {
+
+#ifdef HAVE_LLVM
+struct PgCachedSubquery {
+  bool is_query_jit = false;
+  bool is_interpreter_fallback = false;
+  std::string cache_key;
+  std::string fn_name;
+  std::vector<qjit::QjitColumnRef> source_cols;
+  std::vector<std::string> source_tables;
+  std::vector<bool> source_is_temp;
+  std::vector<int> source_block_skip_cols;
+  std::vector<size_t> step_col_counts;
+  std::vector<uint32_t> ht_tuple_sizes;
+  std::vector<uint32_t> ht_key0_offsets;
+  std::vector<qjit::QjitAggCellDesc> agg_descs;
+  std::vector<int> agg_output_cells;
+  std::vector<qjit::QjitTable::ColumnDesc> out_descs;
+  std::vector<uint8_t> params_buf;
+  std::string sql;
+  std::string temp_table_name;
+};
+
+struct PgCachedQueryPlan {
+  std::vector<PgCachedSubquery> subqueries;
+  PgCachedSubquery final_query;
+};
+#endif
+
 class PostgreSQLAdapter : public EngineAdapter {
 public:
   explicit PostgreSQLAdapter(const std::string &connection_string);
@@ -87,6 +115,8 @@ public:
 #ifdef HAVE_LLVM
   void SetQueryJit(bool enable, int threads, int morsel) {
     query_jit_ = enable;
+    if (enable)
+      session_query_jit_ = true;
     query_jit_threads_ = threads;
     query_jit_morsel_ = morsel;
   }
@@ -120,6 +150,13 @@ public:
     std::vector<int> agg_output_cells;
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
     std::vector<uint8_t> params_buf;
+    std::string replay_cache_key;
+    std::string replay_fn_name;
+    std::vector<qjit::QjitColumnRef> replay_source_cols;
+    std::vector<std::string> replay_source_tables;
+    std::vector<bool> replay_source_is_temp;
+    std::vector<int> replay_source_block_skip_cols;
+    std::vector<size_t> replay_step_col_counts;
   };
 
   struct QjitSpecCompiled {
@@ -132,7 +169,6 @@ public:
       const std::string &temp_table_name,
       const std::vector<int32_t> &aqp_dtypes,
       const std::vector<std::string> &col_names,
-      const std::string &explain_json,
       uint64_t est_card,
       bool post_execute)>;
   void SetPostPrepareHook(PostPrepareHook hook) {
@@ -156,13 +192,32 @@ public:
   }
 
   std::unique_ptr<QjitSpecCompiled>
-  SpeculativeQueryJitCompileFromJSON(const std::string &sql,
-                                     const std::string &explain_json,
-                                     const std::string &label,
-                                     unsigned int sub_plan_id,
-                                     aqp_jit::IrToLlvmCompiler *spec_comp);
+  SpeculativeQueryJitCompile(
+      const std::string &sql,
+      const std::unordered_map<std::string, int64_t> &temp_card_snapshot,
+      const std::string &label,
+      unsigned int sub_plan_id,
+      aqp_jit::IrToLlvmCompiler *spec_comp);
+
+  void AnnotateBuildSidesByCard(ir_sql_converter::AQPStmt &ir);
+
+  uint64_t EstimateIRCard(const ir_sql_converter::AQPStmt &ir) const;
 
   void RegisterQjitRuntimeSymbols(aqp_jit::IrToLlvmCompiler *comp);
+
+  static std::unordered_map<std::string, PgCachedQueryPlan> &PgQueryPlanCache();
+  void BeginPlanRecording() {
+    plan_recording_active_ = true;
+    plan_recording_.clear();
+  }
+  void EndPlanRecording() { plan_recording_active_ = false; }
+  bool IsPlanRecording() const { return plan_recording_active_; }
+  std::vector<PgCachedSubquery> &GetPlanRecording() {
+    return plan_recording_;
+  }
+  int64_t ReplayQjitSubquery(const PgCachedSubquery &sub,
+                              bool update_temp_card);
+  QueryResult ReplayQjitFinal(const PgCachedSubquery &sub);
 #endif
 
 private:
@@ -170,10 +225,6 @@ private:
   json parse_tree;
 
 #ifdef HAVE_LLVM
-  void AnnotateBuildSidesFromExplain(const std::string &sql,
-                                     ir_sql_converter::AQPStmt &ir,
-                                     std::string *out_json = nullptr);
-
   std::unique_ptr<QjitCompiled>
   TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
                      const qjit::QjitAnalysisResult &analysis,
@@ -194,6 +245,7 @@ private:
                                        bool update_temp_card);
 
   bool query_jit_ = false;
+  bool session_query_jit_ = false;
   int query_jit_threads_ = 0;
   int query_jit_morsel_ = 20000;
   const middleware::storage::StoragePlan *qjit_storage_plan_ = nullptr;
@@ -214,6 +266,9 @@ private:
   PostPrepareHook post_prepare_hook_;
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
   long spec_wait_extra_us_ = 0;
+  std::vector<PgCachedSubquery> plan_recording_;
+  bool plan_recording_active_ = false;
+  void EnsureJITCompiler();
 #endif
 };
 } // namespace middleware

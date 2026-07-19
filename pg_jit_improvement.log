@@ -1,0 +1,147 @@
+# PostgreSQL Query-JIT Improvement Log
+
+## Completed TODOs (from CLAUDE.md)
+
+### TODO 1: Full TopDown support for PostgreSQL — DONE
+
+TopDown/SDS splitting is fully operational for PostgreSQL. Completed:
+- (a) DistinctCache uses `pg_stats`/`pg_class` catalog lookups for PG instead of full table scans
+- (b) PrecomputeNextExtraction enabled for TOP_DOWN (pre-computes SplitIR(i+1) during Execute(i),
+  launches bg JIT compile for both PG and DuckDB)
+- (c) Cross-query prep for PG (`PrepareNextQueryTopDownPG`): background Preprocess + pre-split
+  of next query while current executes. `CrossQueryPrepResult` moved outside `#ifdef HAVE_DUCKDB`.
+- Golden file generated: `pg_job_topdown_golden.txt` (111/113 pass; 33a/33b fail due to PG
+  63-char identifier limit on long column name chains from many split iterations)
+- `run_job.sh` quoting fix: `${db_arg}` -> `"${db_arg}"` for PG connection strings with spaces
+
+Key files changed:
+- `include/split/ir_query_splitter.h`: `CrossQueryPrepResult` made engine-agnostic
+- `include/split/topdown_splitter.h`: removed `#ifdef HAVE_DUCKDB` guards on cross-query methods
+- `src/split/topdown_splitter.cpp`: `MovePreprocessState`/`InitFromCrossQueryPrep` ungated
+- `src/split/ir_query_splitter.cpp`: `PrepareNextQueryTopDownPG`, cross-query consumption
+- `src/aqp_middleware.cpp`: PG cross-query prep launch/consume in RunBenchmark
+- `measure/run_job.sh`, `measure/measure_breakdown_time_job.sh`: quoting fix
+
+### TODO 2: DistinctCache for PostgreSQL — DONE
+
+All three DistinctCache methods now use PG catalog lookups:
+- `Get()`: `pg_stats.n_distinct` joined with `pg_class.reltuples` (handles negative n_distinct)
+- `GetRowCount()`: `pg_class.reltuples`
+- `GetCorrelation()`: `pg_stats.correlation` (was already implemented)
+
+Key files changed:
+- `src/split/distinct_cache.cpp`: engine-dispatch via `GetEngineName()` for PG vs DuckDB
+
+### TODO 3: ReplayQueryPlan / ReplayQjitSubquery for PostgreSQL — DONE
+
+Plan replay (`jit_cache >= 3`) now works for PostgreSQL. Implemented:
+- `PgCachedSubquery` / `PgCachedQueryPlan` structs in `postgres_adapter.h` (separate from
+  DuckDB's `CachedSubquery` which has `duckdb::LogicalType types` -- PG doesn't need it)
+- `replay_*` fields added to PG's `QjitCompiled` struct, captured in `TryCompileQueryJit`
+  and `SpeculativeQueryJitCompile` after successful LLVM compilation
+- `BeginPlanRecording()` / `EndPlanRecording()` / `PgQueryPlanCache()` on `PostgreSQLAdapter`
+- `ReplayQjitSubquery()`: looks up cached fn via `LookupCachedFn`, reconstructs plan,
+  resolves sources, runs JIT, stores in `qjit_temps_`, materializes to PG temp table
+- `ReplayQjitFinal()`: same but returns `QueryResult` directly (no materialization)
+- `EnsureJITCompiler()`: lazy init extracted from `TryCompileQueryJit` for replay path
+- Recording hooks in 5 locations: spec-HIT, inline-compile, native fallback, JIT final,
+  native final
+- `ReplayQueryPlanPG()` in `ir_query_splitter.cpp`: mirrors DuckDB's `ReplayQueryPlan`
+  with PG adapter dispatch
+- Zero changes to DuckDB code -- all PG code under `#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)`
+
+Key files changed:
+- `include/adapters/postgres_adapter.h`: `PgCachedSubquery`, `PgCachedQueryPlan`, replay fields
+- `src/adapters/postgres_adapter.cpp`: `ReplayQjitSubquery`, `ReplayQjitFinal`, `EnsureJITCompiler`, recording hooks
+- `src/split/ir_query_splitter.cpp`: `ReplayQueryPlanPG`, plan cache store/lookup
+
+### TODO 4: Cross-query prep for PostgreSQL — DONE
+
+Implemented as part of TODO 1(c). `PrepareNextQueryTopDownPG` runs bg Preprocess + pre-split
+on a background thread. `CrossQueryPrepResult` is now engine-agnostic (DuckDB-specific fields
+guarded within the struct). Consumption code in `ir_query_splitter.cpp` and `aqp_middleware.cpp`
+has relaxed `#ifdef` guards to support both engines.
+
+Key files changed:
+- `include/split/ir_query_splitter.h`: `CrossQueryPrepResult` restructured
+- `src/split/ir_query_splitter.cpp`: `PrepareNextQueryTopDownPG`
+- `src/aqp_middleware.cpp`: `pg_for_cross` launch logic
+
+### TODO 6: Eliminate EXPLAIN round-trip for PG JIT build-side annotation — DONE
+
+Removed `EXPLAIN (FORMAT JSON)` round-trip from PG query-JIT path. Replaced with
+in-process cardinality-based build-side selection.
+
+What was removed:
+- `AnnotateBuildSidesFromExplain` (EXPLAIN query + JSON parse + recursive annotation)
+- `ExtractEstimatedRows` (JSON parse for root estimated rows)
+- `SpeculativeQueryJitCompileFromJSON` (accepted JSON string, re-parsed on bg thread)
+- Helper functions: `CollectIRSourceIndices`, `BuildTableNameToIndex`,
+  `CollectRelationNames`, `AnnotateFromExplainRec`
+
+What replaced them:
+- `AnnotateBuildSidesByCard`: delegates directly to `AnnotateUnannotatedJoinsByCard`
+  (cardinality-based, no EXPLAIN needed)
+- `EstimateIRCard`: wraps `EstimateSubtreeCard` for `est_card` in `post_prepare_hook_`
+- `SpeculativeQueryJitCompile`: accepts `temp_card_snapshot` (thread-safe copy of
+  `temp_table_card_`) instead of JSON string. Calls `AnnotateUnannotatedJoinsByCard`
+  on bg thread with the snapshot.
+- `GetTempTableCardSnapshot()` added to `EngineAdapter` base class for thread-safe
+  snapshot capture.
+
+Performance benefit: eliminates per sub-query 1 PG round-trip (~1-3ms), 2 full JSON
+parses (~3-37 KB each), 1 JSON string copy into bg-thread lambda.
+
+Key files changed:
+- `include/adapters/db_adapter.h`: `GetTempTableCardSnapshot()`
+- `include/adapters/postgres_adapter.h`: API signature changes
+- `src/adapters/postgres_adapter.cpp`: removed EXPLAIN code, new cardinality-based methods
+- `src/split/ir_query_splitter.cpp`: updated `LaunchSpeculativeCompilePG`, `PostPrepareHook`
+
+## Bug Fixes Applied During Review
+
+### ReplayQueryPlanPG timing column count (fixed)
+
+`ReplayQueryPlanPG` wrote 2 header zeros (`parse_sql, preprocess`) but TOP_DOWN
+needs 3 (`parse_sql, convert_plan_to_ir, preprocess`). Fixed to write 3 zeros so
+`plot_middleware_jit.py` parses the CSV correctly.
+
+File: `src/split/ir_query_splitter.cpp` (line ~1661)
+
+### ReplayQjitSubquery missing ANALYZE on temp table (fixed)
+
+`ReplayQjitSubquery` called `MaterializeQjitTempToPostgreSQL(name, false)`, skipping
+`ANALYZE` on the replayed temp table. Without statistics, PG's planner defaulted to
+bad cardinality estimates for the final query's join against the temp table, causing
+15-17x slowdowns on queries with large intermediates (10c, 12a, 15c, 15d, 17e).
+
+Fix: pass `update_temp_card` parameter (from `config_.enable_update_temp_card`, default
+true) through `ReplayQjitSubquery` so ANALYZE runs on replayed temp tables — consistent
+with how `ExecuteSQLandCreateTempTable` handles it.
+
+Impact: NB+full+spec went from 0.67x (regression) to 1.25x (matches NB+tmpl).
+
+Files:
+- `include/adapters/postgres_adapter.h`: added `update_temp_card` param to `ReplayQjitSubquery`
+- `src/adapters/postgres_adapter.cpp`: pass through to `MaterializeQjitTempToPostgreSQL`
+- `src/split/ir_query_splitter.cpp`: pass `config_.enable_update_temp_card` at call site
+
+## Performance Results (JOB, 110 queries, PG 8 iters = 3 warmup + 5 measured)
+
+| Config | Total (ms) | vs no-split | vs NB-nojit | W/L vs NB-nojit |
+|--------|-----------|-------------|-------------|-----------------|
+| no-split+no-jit | 185,093 | 1.00x | 0.52x | — |
+| NB+no-jit | 95,529 | 1.94x | 1.00x | — |
+| TD+no-jit | 105,882 | 1.75x | 0.90x | — |
+| NB+tmpl | 76,465 | 2.42x | 1.25x | 64W/46L |
+| TD+tmpl | 106,549 | 1.74x | 0.90x | 38W/72L |
+| NB+full+spec | 76,201 | 2.43x | 1.25x | 91W/19L |
+| TD+full+spec | 106,021 | 1.75x | 0.90x | 47W/63L |
+
+Key findings:
+- NB+template-cache and NB+full+spec are tied (~76s, 1.25x vs NB-nojit)
+- TPDE compilation is so fast that template-cache already eliminates most compile cost,
+  leaving only ~0.4% for full-cache to save (middleware overhead)
+- TopDown splitting regresses on PG (~0.90x) regardless of JIT — extra PG round-trips dominate
+- NB big winners: 26c (79.6x), 17c (61.6x) — queries where PG native plans are bad
+- NB big losers: 12b (0.10x), 4c (0.12x) — selective queries where PG uses indexes but JIT does full scans

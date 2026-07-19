@@ -48,16 +48,24 @@ Fields in each sub-query entry:
   - payload_prune, prefetch, batch_probe, skip_hash_cmp: true/false
     (only emitted when they differ from the default)
 
-Warm-row selection: drops first 5 runs (warmup), uses last 10 runs.
+Warm-row selection: PG uses 3 warmup + 5 runs (8 total),
+  others use 5 warmup + 10 runs (15 total).
+  Fallback: rows[1:] if too few rows.
 Aggregation: arithmetic mean per column (matches plot_middleware_jit.py).
 
 CSV layout (verified):
   - head columns: 4 for node-based/none, 5 for topdown/relationship-center
   - per iteration group: 6 columns (jit present) or 5 (no jit)
     head + N*group_size + tail = total columns per row
-  - warm rows: rows[5:] if len > 6, else rows[1:]
 """
 import json, os, re, sys
+
+
+def _iter_params(path):
+    base = os.path.basename(path)
+    if base.startswith('postgresql_') or base.startswith('postgres_'):
+        return 8, 3
+    return 15, 5
 
 
 def mean(vals):
@@ -89,7 +97,8 @@ def parse_csv(path, hasjit=True, head=4):
     tail = 4 if hasjit else 3
     out = {}
     for q, rows in raw.items():
-        warm = rows[5:] if len(rows) > 6 else rows[1:]
+        repeat, warmup = _iter_params(path)
+        warm = rows[warmup:] if len(rows) > warmup + 1 else rows[1:]
         lens = [len(r) for r in warm]
         if not lens:
             continue

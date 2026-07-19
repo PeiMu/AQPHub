@@ -1,6 +1,3 @@
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 ========================================
 Running Benchmark: /home/pei/Project/benchmarks/imdb_job-postgres/queries
@@ -9,34 +6,16 @@ Found 113 SQL file(s)
 
 --- Iteration 0 ---
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/10a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 Actor|12 Rounds|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/10b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 NULL|NULL|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/10c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
@@ -47,23 +26,11 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/11a.sql
 Rows: 1, Columns: 3
 Churchill Films|followed by|Batman Beyond|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/11b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 Filmlance International AB|follows|The Money Man|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/11c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -74,138 +41,61 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/11d.sql
 Rows: 1, Columns: 3
 13th Street|(1954) (UK) (TV)|24|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/12a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 10th Grade Reunion Films|8.1|3:20|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/12b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 $10,000|Birdemic: Shock and Terror|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/12c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 101st Street Productions|7.1|$1.11|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/13a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 Afghanistan:24 June 2012|1.0|00|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/13b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 501audio|1.8|5 Time Champion|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/13c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 DL Sites|1.8|Champion|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/13d.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 01 Entertainment|1.0|****|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/14a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 1.0|$lowdown|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/14b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 6.4|Of Dolls and Murder|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/14c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 1.0|$lowdown|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/15a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 USA:12 June 2006|Battlestar Galactica: The Resistance|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/15b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id" will be truncated to "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_t"
-NOTICE:  identifier "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_type_id" will be truncated to "temp4_22_temp3_20_temp2_18_temp1_16_movie_companies_5_company_t"
 
 === Query Results ===
 Rows: 1, Columns: 2
@@ -221,12 +111,6 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/15d.sql
 Rows: 1, Columns: 2
 06/05: The Sixth of May|06/05|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/16a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
@@ -252,34 +136,16 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/17a.sql
 Rows: 1, Columns: 2
 Baaca, John|Baaca, John|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/17b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 Zaa, Charlie|Zaa, Charlie|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/17c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 Xainte, Arnaud|Xainte, Arnaud|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/17d.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
@@ -295,86 +161,31 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/17f.sql
 Rows: 1, Columns: 1
 2X, Benjamin|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/18a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 $1,000|10|40 Days and 40 Nights|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/18b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 Horror|8.1|Agorable|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/18c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 Action|10|?|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/19a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 Angeline, Moriah|Blue Harvest|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/19b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_27_temp5_25_temp4_23_temp3_21_temp2_19_temp1_17_title_9_title" will be truncated to "temp6_27_temp5_25_temp4_23_temp3_21_temp2_19_temp1_17_title_9_t"
 
 === Query Results ===
 Rows: 1, Columns: 2
 Jolie, Angelina|Kung Fu Panda|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/19c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
@@ -385,45 +196,21 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/19d.sql
 Rows: 1, Columns: 2
 Aaron, Caroline|$9.99|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 (as Indo-British Films Ltd.) (presents)|A Clockwork Orange|1934|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/1b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 (as Grosvenor Park) (presents)|Disaster Movie|2008|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/1c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 (co-production)|Intouchables|2011|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/1d.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -434,12 +221,6 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/20a.sql
 Rows: 1, Columns: 1
 Disaster Movie|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/20b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
@@ -465,69 +246,21 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/21c.sql
 Rows: 1, Columns: 3
 Churchill Films|followed by|Batman Beyond|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/22a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 01 Distribution|2.1|12 Rounds|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/22b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 Boll Kino Beteiligungs GmbH & Co. KG|3.0|As Good as Dead|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/22c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 01 Distribution|1.9|10,000 BC|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/22d.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -543,12 +276,6 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/23b.sql
 Rows: 1, Columns: 2
 movie|The Big Mope|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/23c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
@@ -559,101 +286,36 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/24a.sql
 Rows: 1, Columns: 3
 Additional Voices|Baker, Andrea|Baiohazâdo 6|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/24b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_"
-NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_"
-NOTICE:  identifier "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_"
-NOTICE:  identifier "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_"
-NOTICE:  identifier "temp9_35_temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_title_11_title" will be truncated to "temp9_35_temp8_33_temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_"
 
 === Query Results ===
 Rows: 1, Columns: 3
 Tigress|Jolie, Angelina|Kung Fu Panda 2|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/25a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_movie_info_idx_5_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_movie_info_idx_5_i"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Horror|10|Abdallah, Damon|1000 Year Sleep|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/25b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_temp1_20_movie_info_4_info" will be truncated to "temp6_30_temp5_28_temp4_26_temp3_24_temp2_22_temp1_20_movie_inf"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Horror|138|Campbell, Jeremiah|Vampire Boys|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/25c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 4
 Action|10|Aakeson, Kim Fupz|$|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/26a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Aaron Fleischman|7.1|Acereda, Hermie|3:10 to Yuma|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/26b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_i"
-NOTICE:  identifier "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_i"
-NOTICE:  identifier "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_inf"
-NOTICE:  identifier "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_inf"
-NOTICE:  identifier "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_movie_info_idx_8_info" will be truncated to "temp7_31_temp6_29_temp5_27_temp4_25_temp3_23_temp2_21_temp1_19_"
 
 === Query Results ===
 Rows: 1, Columns: 3
 Bank Manager|8.2|Inception|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/26c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_i"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_8_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_11_"
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -664,12 +326,6 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/27a.sql
 Rows: 1, Columns: 3
 Det Danske Filminstitut|followed by|Öga för öga|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/27b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -680,135 +336,26 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/27c.sql
 Rows: 1, Columns: 3
 Det Danske Filminstitut|followed by|Öga för öga|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/28a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
-NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_inf"
-NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_title" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_"
 
 === Query Results ===
 Rows: 1, Columns: 3
 01 Distribuzione|2.9|(#1.1)|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/28b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_inf"
-NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_movie_info_idx_11_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp1_21_"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_"
-NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_title_13_title" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_"
 
 === Query Results ===
 Rows: 1, Columns: 3
 20th Century Fox|6.6|(#1.1)|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/28c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_"
-NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_11_info" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_inf"
-NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_title" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_13_"
 
 === Query Results ===
 Rows: 1, Columns: 3
 01 Distribuzione|1.9|(#1.1)|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/29a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
-NOTICE:  identifier "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
-NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24"
-NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp7_36_temp6_34_temp5_32_char_name_4_name" will be truncated to "temp11_44_temp10_42_temp9_40_temp7_36_temp6_34_temp5_32_char_na"
-NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24"
-NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp4_30_temp3_28_temp2_2"
 
 === Query Results ===
 Rows: 1, Columns: 3
 Queen|Andrews, Julie|Shrek 2|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/29b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
-NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_"
-NOTICE:  identifier "temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_"
-NOTICE:  identifier "temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_"
-NOTICE:  identifier "temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_"
-NOTICE:  identifier "temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_"
-NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28"
-NOTICE:  identifier "temp10_42_temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp10_42_temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28"
-NOTICE:  identifier "temp11_44_temp10_42_temp9_40_temp8_38_temp6_34_temp5_32_temp4_30_temp3_28_temp2_26_temp1_24_title_16_title" will be truncated to "temp11_44_temp10_42_temp9_40_temp8_38_temp6_34_temp5_32_temp4_3"
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -819,31 +366,16 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/29c.sql
 Rows: 1, Columns: 3
 Lola|Andrews, Julie|Hoodwinked!|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/2a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 008 - Agent wider Willen|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/2b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 007 in Rio|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/2c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
@@ -854,89 +386,31 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/2d.sql
 Rows: 1, Columns: 1
 002 agenti segretissimi|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/30a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_i"
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_i"
-NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_info_idx_8_info" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp1_23_movie_inf"
-NOTICE:  identifier "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_11_title" will be truncated to "temp7_35_temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_title_11_"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Horror|100356|Abrams, J.J.|16 Blocks|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/30b.sql
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_movie_info_idx_8_info" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_movie_info_idx_8_i"
-NOTICE:  identifier "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_temp1_23_title_11_title" will be truncated to "temp6_33_temp5_31_temp4_29_temp3_27_temp2_25_temp1_23_title_11_"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Horror|194782|Shannon, Damian|Freddy vs. Jason|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/30c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp5_33_temp4_31_temp3_29_temp2_27_temp1_25_movie_info_idx_8_info" will be truncated to "temp5_33_temp4_31_temp3_29_temp2_27_temp1_25_movie_info_idx_8_i"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Action|100356|Abernathy, Lewis|$|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/31a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_i"
-NOTICE:  identifier "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_i"
-NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_inf"
-NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_inf"
-NOTICE:  identifier "temp8_36_temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_movie_info_idx_7_info" will be truncated to "temp8_36_temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp1_22_"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Horror|1040|Agnew, Jim|2001 Maniacs|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/31b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_movie_info_idx_7_info" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_movie_info_idx_7_i"
-NOTICE:  identifier "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_10_title" will be truncated to "temp7_34_temp6_32_temp5_30_temp4_28_temp3_26_temp2_24_title_10_"
 
 === Query Results ===
 Rows: 1, Columns: 4
 Horror|129755|Bousman, Darren Lynn|Saw|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/31c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_i"
-NOTICE:  identifier "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_i"
-NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_inf"
-NOTICE:  identifier "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_inf"
-NOTICE:  identifier "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_movie_info_idx_7_info" will be truncated to "temp8_38_temp7_36_temp6_34_temp5_32_temp4_30_temp3_28_temp1_24_"
 
 === Query Results ===
 Rows: 1, Columns: 4
@@ -952,169 +426,61 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/32b.sql
 Rows: 1, Columns: 3
 alternate language version of|12 oz. Mouse|100 Greatest Cartoons|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/33a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 6
 495 Productions|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/33b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_movie_inf"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_title_13_title" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp3_25_temp2_23_temp1_21_"
 
 === Query Results ===
 Rows: 1, Columns: 6
 MTV Netherlands|495 Productions|3.3|2.7|A Double Shot at Love|A Shot at Love with Tila Tequila|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/33c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_"
-NOTICE:  identifier "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_inf"
-NOTICE:  identifier "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_inf"
-NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_"
-NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_i"
-NOTICE:  identifier "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_"
-NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_"
-NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_i"
-NOTICE:  identifier "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_info_idx_9_info" will be truncated to "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_movie_in"
-NOTICE:  identifier "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_"
-NOTICE:  identifier "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27_temp2_23_temp1_21_movie_info_idx_10_info" will be truncated to "temp10_39_temp9_37_temp8_35_temp7_33_temp6_31_temp5_29_temp4_27"
 
 === Query Results ===
 Rows: 1, Columns: 6
 2BE|495 Productions|1.3|1.0|Abenteuer 1900 - Leben im Gutshaus|Abenteuer 1927 - Sommerfrische|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/3a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 2 Days in New York|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/3b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 300: Rise of an Empire|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/3c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 00 Schneider - Jagd auf Nihil Baxter|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/4a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 5.1|20-seiki shônen: Dai 2 shô - Saigo no kibô|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/4b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 9.1|Batman: Arkham City|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/4c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 2.1|00 Schneider - Jagd auf Nihil Baxter|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/5a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 NULL|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/5b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
 NULL|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/5c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 1
@@ -1135,12 +501,6 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/6c.sql
 Rows: 1, Columns: 3
 marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/6d.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
@@ -1166,40 +526,16 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/7b.sql
 Rows: 1, Columns: 2
 De Palma, Brian|Dressed to Kill|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/7c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 50 Cent|Aames has a son, Christopher, with his first wife. Aames met his second wife, 'Maylo McCaslin' (qv), in 1984 on the set of _"Rocky Road" (1985)_ (qv), a cable sitcom in which she starred. They live in rural Olathe, Kansas with their daughter, Harleigh.|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/8a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
 Chambers, Linda|Bushi no ichibun|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/8b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 2
@@ -1215,40 +551,16 @@ Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/8d.sql
 Rows: 1, Columns: 2
 100% Birgitta|?|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/9a.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 3
 AJ|additional voices|Blue Harvest|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/9b.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 4
 AJ|Airport Announcer|Bassett, Angela|Blue Harvest|
 Run /home/pei/Project/benchmarks/imdb_job-postgres/queries/9c.sql
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
-WARNING:  database "imdb" has a collation version mismatch
-DETAIL:  The database was created using collation version 2.36, but the operating system provides version 2.41.
-HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE imdb REFRESH COLLATION VERSION, or build PostgreSQL with the right library version.
 
 === Query Results ===
 Rows: 1, Columns: 4

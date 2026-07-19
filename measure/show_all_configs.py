@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Show performance breakdown of all node-based configs in job_result/.
 
-Uses the same parser as plot_middleware_jit.py (drop 5 warmup, mean of 10).
+Uses the same parser as plot_middleware_jit.py (PG: 3 warmup + 5 runs, others: 5 warmup + 10 runs).
 Columns: middleware overhead, jit compile, execute, end-to-end total (all in seconds).
 
 Usage: python3 show_all_configs.py [split]
@@ -10,8 +10,16 @@ Usage: python3 show_all_configs.py [split]
 import csv, json, os, re, sys
 
 
+def _iter_params(csv_file):
+    base = os.path.basename(csv_file)
+    if base.startswith('postgresql_') or base.startswith('postgres_'):
+        return 8, 3
+    return 15, 5
+
+
 def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
     """Copied from plot_middleware_jit.py — canonical parser."""
+    repeat, warmup = _iter_params(csv_file)
     results = {}
     if has_jit:
         group_columns = ["extract_next_sub-IR", "generate_sub-SQL",
@@ -31,7 +39,7 @@ def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
                     continue
                 sql_name = match.group(1)
                 perf_rows = []
-                for _ in range(15):
+                for _ in range(repeat):
                     try:
                         perf_row = next(reader)
                         if not is_node_based:
@@ -107,9 +115,9 @@ def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
                     except (StopIteration, ValueError, IndexError):
                         break
 
-                if len(perf_rows) < 6:
+                if len(perf_rows) < warmup + 1:
                     continue
-                valid = perf_rows[5:]
+                valid = perf_rows[warmup:]
 
                 overhead = 0.0
                 jit_total = 0.0

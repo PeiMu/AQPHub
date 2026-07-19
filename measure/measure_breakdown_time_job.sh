@@ -76,7 +76,11 @@ log_name=time_log.csv
 dir="$JOB_PATH/queries"
 container_name="umbra_benchmark"
 
-iteration=15 # 5 warm up, 10 runs
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    iteration=8  # 3 warm up, 5 runs
+else
+    iteration=15 # 5 warm up, 10 runs
+fi
 
 ########################################
 # DB connection
@@ -275,7 +279,7 @@ fi
 
 $cmd_prefix ../build_release/aqp_middleware \
   --engine="${engine}" \
-  ${db_arg} \
+  "${db_arg}" \
   "${helper_db_arg}" \
   --schema=$JOB_PATH/schema.sql \
   --fkeys=$JOB_PATH/fkeys.sql \

@@ -64,8 +64,18 @@ double DistinctCache::Get(EngineAdapter &adapter, const std::string &table,
   double distinct = -1.0;
   if (SafeIdentifier(table) && SafeIdentifier(column)) {
     try {
-      auto result = adapter.ExecuteSQL("SELECT COUNT(DISTINCT \"" + column +
-                                       "\") FROM \"" + table + "\";");
+      std::string sql;
+      if (adapter.GetEngineName() == "PostgreSQL") {
+        sql = "SELECT CASE WHEN s.n_distinct >= 0 THEN s.n_distinct "
+              "ELSE -s.n_distinct * c.reltuples END "
+              "FROM pg_stats s JOIN pg_class c ON c.relname = s.tablename "
+              "WHERE s.tablename='" + table + "' AND s.attname='" +
+              column + "';";
+      } else {
+        sql = "SELECT COUNT(DISTINCT \"" + column + "\") FROM \"" + table +
+              "\";";
+      }
+      auto result = adapter.ExecuteSQL(sql);
       if (result.num_rows >= 1 && !result.rows.empty() &&
           !result.rows[0].empty())
         distinct = std::strtod(result.rows[0][0].c_str(), nullptr);
@@ -126,7 +136,13 @@ double DistinctCache::GetRowCount(EngineAdapter &adapter,
   double rows = -1.0;
   if (SafeIdentifier(table)) {
     try {
-      auto result = adapter.ExecuteSQL("SELECT COUNT(*) FROM \"" + table + "\";");
+      std::string sql;
+      if (adapter.GetEngineName() == "PostgreSQL") {
+        sql = "SELECT reltuples FROM pg_class WHERE relname='" + table + "';";
+      } else {
+        sql = "SELECT COUNT(*) FROM \"" + table + "\";";
+      }
+      auto result = adapter.ExecuteSQL(sql);
       if (result.num_rows >= 1 && !result.rows.empty() &&
           !result.rows[0].empty())
         rows = std::strtod(result.rows[0][0].c_str(), nullptr);

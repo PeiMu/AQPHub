@@ -279,7 +279,7 @@ fi
 
 $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
     --engine="${engine}" \
-    ${db_arg} \
+    "${db_arg}" \
     "${helper_db_arg}" \
     --schema=$JOB_PATH/schema.sql \
     --fkeys=$JOB_PATH/fkeys.sql \

@@ -10,6 +10,13 @@ Usage: python3 verify_tuned_detail.py [query] [split]
 import csv, json, os, re, sys
 
 
+def _iter_params(path):
+    base = os.path.basename(path)
+    if base.startswith('postgresql_') or base.startswith('postgres_'):
+        return 8, 3
+    return 15, 5
+
+
 def mean(vals):
     xs = list(vals)
     return sum(xs) / len(xs)
@@ -38,7 +45,8 @@ def parse_per_subquery(path, hasjit=True, head=4):
     tail = 4 if hasjit else 3
     out = {}
     for q, rows in raw.items():
-        warm = rows[5:] if len(rows) > 6 else rows[1:]
+        _, warmup = _iter_params(path)
+        warm = rows[warmup:] if len(rows) > warmup + 1 else rows[1:]
         lens = [len(r) for r in warm]
         if not lens:
             continue

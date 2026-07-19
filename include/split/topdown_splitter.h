@@ -26,9 +26,7 @@
 
 namespace middleware {
 
-#ifdef HAVE_DUCKDB
 struct CrossQueryPrepResult;
-#endif
 
 class TopDownSplitter : public FKBasedSplitter {
 public:
@@ -48,10 +46,8 @@ public:
 
   std::string GetStrategyName() const override { return "TopDown"; }
 
-#ifdef HAVE_DUCKDB
   void InitFromCrossQueryPrep(CrossQueryPrepResult &prep);
   void MovePreprocessState(CrossQueryPrepResult &out);
-#endif
 
   void PrePopulateBaseCountCache();
 

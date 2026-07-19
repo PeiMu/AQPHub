@@ -236,6 +236,10 @@ public:
   // std::string intermediate_table_name, int64_t created_table_size
   std::unordered_map<std::string, int64_t> temp_table_card_;
 
+  std::unordered_map<std::string, int64_t> GetTempTableCardSnapshot() const {
+    return temp_table_card_;
+  }
+
   bool enable_timing_ = false;
 };
 } // namespace middleware
