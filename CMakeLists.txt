@@ -312,11 +312,22 @@ if (EXISTS ${POSTGRES_ROOT})
         target_compile_definitions(split_lib PUBLIC HAVE_POSTGRES)
 
         target_link_libraries(postgres_adapter PUBLIC ${LIBPQ_LIB} split_lib util_lib)
+        if (TARGET aqp_jit_lib)
+            target_link_libraries(postgres_adapter PUBLIC qjit_lib aqp_jit_lib storage_lib)
+        endif()
 
         add_executable(test_postgres examples/test_postgres.cpp)
         target_link_libraries(test_postgres PRIVATE postgres_adapter split_lib)
 
         message(STATUS "PostgreSQL adapter: ENABLED")
+
+        # Add HAVE_POSTGRES and libpq to storage_lib so
+        # StoragePlan::LoadFromPostgreSQL can use libpq-fe.h.
+        if (TARGET storage_lib)
+            target_compile_definitions(storage_lib PUBLIC HAVE_POSTGRES)
+            target_include_directories(storage_lib PUBLIC ${POSTGRES_ROOT}/include)
+            target_link_libraries(storage_lib PUBLIC ${LIBPQ_LIB})
+        endif()
     else ()
         message(WARNING "LIBPQ_LIB not found")
     endif ()

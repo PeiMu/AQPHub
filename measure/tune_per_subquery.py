@@ -19,10 +19,12 @@ Each candidate config is defined by:
     skip_hash_cmp) — future sweeps; currently all use global defaults.
 
 Usage:
-  python3 tune_per_subquery.py [--bench=dsb] [split]
+  python3 tune_per_subquery.py [split] [--engine=ENGINE] [--bench=BENCH]
+                               [--result-dir=DIR]
 
-  --bench: job (default) | dsb  (selects job_result/ vs dsb_result/)
-  split: node-based (default) | none | topdown | relationship-center
+  split:   node-based (default) | none | relationship-center
+  engine:  duckdb (default) | postgresql
+  bench:   job (default) | dsb
 
 Candidate configs are defined in CONFIGS below.  Each entry specifies
 the CSV filename, whether it has a jit_compile column, and the flag
@@ -52,7 +54,7 @@ Warm-row selection: drops first 5 runs (warmup), uses last 10 runs.
 Aggregation: arithmetic mean per column (matches plot_middleware_jit.py).
 
 CSV layout (verified):
-  - head columns: 4 for node-based/none, 5 for topdown/relationship-center
+  - head columns: 4 for node-based/none, 5 for relationship-center
   - per iteration group: 6 columns (jit present) or 5 (no jit)
     head + N*group_size + tail = total columns per row
   - warm rows: rows[5:] if len > 6, else rows[1:]
@@ -72,7 +74,7 @@ def parse_csv(path, hasjit=True, head=4):
     cur = None
     for line in open(path):
         if line.startswith("Running"):
-            cur = re.search(r"/([0-9a-z_]+)\.sql", line).group(1)
+            cur = re.search(r"/([0-9a-z]+)\.sql", line).group(1)
             raw[cur] = []
             continue
         if cur is None:
@@ -145,123 +147,164 @@ def parse_csv(path, hasjit=True, head=4):
 
 DEFAULTS = dict(compile_mode=0, simd=False)
 
-def make_configs(split):
-    """Build the candidate config list for a given split."""
+def make_configs(split, engine="duckdb"):
+    """Build the candidate config list for a given split and engine."""
+    e = engine
+
+    # PostgreSQL only supports query-jit (no expr/operator/pipeline)
+    if engine == "postgresql":
+        return [
+            dict(label="interp",
+                 filename=f"{e}_{split}_none_off_breakdown_time_log.csv",
+                 hasjit=False, flags=dict()),
+            dict(label="query_full",
+                 filename=f"{e}_{split}_query_none_breakdown_time_log.csv",
+                 hasjit=True, flags=dict()),
+            dict(label="query_fastisel",
+                 filename=f"{e}_{split}_query_none_fcfastisel_breakdown_time_log.csv",
+                 hasjit=True, flags=dict(compile_mode=1)),
+            dict(label="query_tpde",
+                 filename=f"{e}_{split}_query_none_fctpde_breakdown_time_log.csv",
+                 hasjit=True, flags=dict(compile_mode=2)),
+        ]
+
     return [
         # ---- Interpreter (no JIT) ----
         dict(label="interp",
-             filename=f"duckdb_{split}_none_off_breakdown_time_log.csv",
+             filename=f"{e}_{split}_none_off_breakdown_time_log.csv",
              hasjit=False, flags=dict()),
 
         # ---- expr-jit ----
         dict(label="expr",
-             filename=f"duckdb_{split}_expr_none_llvm_breakdown_time_log.csv",
+             filename=f"{e}_{split}_expr_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
         # dict(label="expr_simd",
-        #      filename=f"duckdb_{split}_expr_auto_llvm_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_expr_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         dict(label="expr_fastisel",
-             filename=f"duckdb_{split}_expr_none_fastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_expr_none_fcfastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
         # dict(label="expr_fastisel_simd",
-        #      filename=f"duckdb_{split}_expr_auto_fastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_expr_auto_fcfastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
         dict(label="expr_tpde",
-             filename=f"duckdb_{split}_expr_none_tpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_expr_none_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- operator-jit ----
         dict(label="operator",
-             filename=f"duckdb_{split}_operator_none_llvm_breakdown_time_log.csv",
+             filename=f"{e}_{split}_operator_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
         # dict(label="operator_simd",
-        #      filename=f"duckdb_{split}_operator_auto_llvm_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_operator_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         dict(label="operator_fastisel",
-             filename=f"duckdb_{split}_operator_none_fastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_operator_none_fcfastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
         # dict(label="operator_fastisel_simd",
-        #      filename=f"duckdb_{split}_operator_auto_fastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_operator_auto_fcfastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
         dict(label="operator_tpde",
-             filename=f"duckdb_{split}_operator_none_tpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_operator_none_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- pipeline-jit ----
         dict(label="pipeline",
-             filename=f"duckdb_{split}_pipeline_none_llvm_breakdown_time_log.csv",
+             filename=f"{e}_{split}_pipeline_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
         # dict(label="pipeline_simd",
-        #      filename=f"duckdb_{split}_pipeline_auto_llvm_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_pipeline_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         dict(label="pipeline_fastisel",
-             filename=f"duckdb_{split}_pipeline_none_fastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_pipeline_none_fcfastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
         # dict(label="pipeline_fastisel_simd",
-        #      filename=f"duckdb_{split}_pipeline_auto_fastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_pipeline_auto_fcfastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
         dict(label="pipeline_tpde",
-             filename=f"duckdb_{split}_pipeline_none_tpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_pipeline_none_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- query-jit (full LLVM backend) ----
         dict(label="query_full",
-             filename=f"duckdb_{split}_query_none_llvm_breakdown_time_log.csv",
+             filename=f"{e}_{split}_query_none_breakdown_time_log.csv",
              hasjit=True, flags=dict()),
 
         # ---- query-jit (FastISel backend) ----
         dict(label="query_fastisel",
-             filename=f"duckdb_{split}_query_none_fastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_query_none_fcfastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
 
         # ---- query-jit (TPDE fast backend) ----
         dict(label="query_tpde",
-             filename=f"duckdb_{split}_query_none_tpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_query_none_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- query-jit with skip_hash_cmp=off ----
         dict(label="query_full",
-             filename=f"duckdb_{split}_query_none_noskiphashcmp_llvm_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_breakdown_time_log.csv",
              hasjit=True, flags=dict(skip_hash_cmp="off")),
         dict(label="query_fastisel",
-             filename=f"duckdb_{split}_query_none_noskiphashcmp_fastisel_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_fcfastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1, skip_hash_cmp="off")),
         dict(label="query_tpde",
-             filename=f"duckdb_{split}_query_none_noskiphashcmp_tpde_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
 
         # ---- query-jit SIMD (ROF two-phase; TPDE excluded — ROF disabled) ----
         # dict(label="query_full_simd",
-        #      filename=f"duckdb_{split}_query_auto_llvm_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_query_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         # dict(label="query_fastisel_simd",
-        #      filename=f"duckdb_{split}_query_auto_fastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_query_auto_fcfastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
 
         # ---- future configs (uncomment when CSVs exist) ----
         # dict(label="pipeline",
-        #      filename=f"duckdb_{split}_pipeline_none_nopayprune_llvm_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_pipeline_none_nopayprune_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(payload_prune=False)),
+        # dict(label="query_tpde",
+        #      filename=f"{e}_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
+        #      hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
     ]
 
 
 def main():
     bench = "job"
+    result_dir_override = None
+    split = "node-based"
+    engine = "duckdb"
     positional = []
     for a in sys.argv[1:]:
         if a.startswith("--bench="):
             bench = a.split("=", 1)[1]
-        else:
+        elif a.startswith("--result-dir="):
+            result_dir_override = a.split("=", 1)[1]
+        elif a.startswith("--engine="):
+            engine = a.split("=", 1)[1]
+        elif not a.startswith("-"):
             positional.append(a)
-    split = positional[0] if positional else "node-based"
-    result_dir = "dsb_result" if bench == "dsb" else "job_result"
+
+    if positional:
+        split = positional[0]
+
+    # Determine the result directory
+    if result_dir_override:
+        result_dir = result_dir_override
+    elif bench == "dsb":
+        result_dir = "dsb_result"
+    elif engine == "postgresql":
+        result_dir = "pg_result"
+    else:
+        result_dir = "job_result"
+
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 5 if split in ("relationship-center", "topdown") else 4
 
-    CONFIGS = make_configs(split)
+    CONFIGS = make_configs(split, engine)
 
     data = {}
-    config_flags = {}  # label → flags dict
+    config_flags = {}  # label -> flags dict
     for cfg in CONFIGS:
         label = cfg["label"]
         p = os.path.join(base, cfg["filename"])

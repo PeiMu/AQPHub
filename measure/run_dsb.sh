@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
+# DSB scale factor: set DSB_SF=100 to run against dsb_100.db.
+# Defaults to 10, keeping all existing paths/filenames unchanged.
+DSB_SF=${DSB_SF:-10}
+if [[ "$DSB_SF" == "10" ]]; then
+    result_dir="dsb_result"
+    storage_cache="/tmp/dsb_storage_plan.cache"
+else
+    result_dir="dsb_result_sf${DSB_SF}"
+    storage_cache="/tmp/dsb_sf${DSB_SF}_storage_plan.cache"
+fi
+
 engine=$1
 split=$2
 jit_level=$3
@@ -62,7 +76,7 @@ fi
 # Storage plan flags. Only query-jit consumes the storage plan.
 storage_flags=""
 if [[ "$jit_level" == "query" ]]; then
-    storage_flags="--storage-plan --storage-cache=/tmp/dsb_storage_plan.cache"
+    storage_flags="--storage-plan --storage-cache=${storage_cache}"
 fi
 
 if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
@@ -80,20 +94,20 @@ container_name="umbra_benchmark"
 ########################################
 # DB connection
 ########################################
-if [[ "$engine" == "postgres" ]]; then
-    db_conn="host=localhost port=5432 dbname=dsb_10 user=postgres"
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    db_conn="${PG_CONN}"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="/home/pei/Project/duckdb/measure/dsb_10.db"
+    db_conn="${DSB_DUCKDB_DB:-/home/pei/Project/duckdb/measure/dsb_${DSB_SF}.db}"
 
 elif [[ "$engine" == "umbra" ]]; then
-    db_conn="host=localhost port=15432 user=postgres password=postgres"
+    db_conn="${UMBRA_CONN}"
 
 elif [[ "$engine" == "mariadb" ]]; then
-    db_conn="host=localhost dbname=dsb_10 user=dsb_10"
+    db_conn="${MARIADB_CONN:-host=localhost dbname=dsb_${DSB_SF} user=dsb_${DSB_SF}}"
 
 elif [[ "$engine" == "opengauss" ]]; then
-    db_conn="host=localhost port=7654 dbname=dsb_10 user=dsb_10 password=dsb_10"
+    db_conn="${OPENGAUSS_CONN:-host=localhost port=7654 dbname=dsb_${DSB_SF} user=dsb_${DSB_SF} password=dsb_${DSB_SF}}"
 
 elif [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     db_conn=""
@@ -105,16 +119,15 @@ fi
 
 # For node-based split on non-DuckDB backends, pass the DuckDB helper DB
 # for planning.  For DuckDB itself the flag is unused.
-# lingo-db-runtime always needs the helper DB (DuckDB optimizes, LingoDB executes).
 helper_db_arg=""
 if [[ "$engine" == "lingo-db-runtime" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/dsb_10.db"
+    helper_db_path="${DSB_DUCKDB_DB:-/home/pei/Project/duckdb/measure/dsb_${DSB_SF}.db}"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_path="/home/pei/Project/duckdb/measure/dsb_10.db"
+    helper_db_path="${DSB_DUCKDB_DB:-/home/pei/Project/duckdb/measure/dsb_${DSB_SF}.db}"
     helper_db_arg="--helper-db-path=${helper_db_path}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_path="host=localhost port=5432 dbname=dsb_10 user=postgres"
+    helper_db_path="${PG_CONN:-host=localhost port=5432 dbname=dsb_${DSB_SF} user=postgres}"
     helper_db_arg="--helper-db-path=${helper_db_path} --estimator=postgres"
 fi
 
@@ -129,11 +142,11 @@ start_umbra() {
         --network=host \
         --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
-        -v "$DSB_PATH/code/tools/out_10/csv":/benchmark/csv:ro \
+        -v "$DSB_PATH/code/tools/out_${DSB_SF}/csv":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_${DSB_SF}.db >/dev/null
 
     wait_for_umbra
     load_umbra_dsb_data
@@ -142,8 +155,9 @@ start_umbra() {
 load_umbra_dsb_data() {
     echo "Loading schema and CSV data into Umbra..."
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
-        -f "$DSB_PATH/scripts/create_tables.sql"
-    (cd "$DSB_PATH/code/tools" && python3 "$DSB_PATH/scripts/load_data_umbra.py")
+        -f "$DSB_SCHEMA"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$DSB_IMPORT_CSV"
     echo "Data loading done."
 }
 
@@ -156,15 +170,14 @@ stop_umbra() {
 ########################################
 # Start / Stop PostgreSQL
 ########################################
-Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data_18_3
+  ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data_18_3 -m smart -s
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s
 }
 rm_pg_log() {
-  rm $Project_path/logfile
+  rm -f "${PG_LOG}"
 }
 
 ########################################
@@ -196,8 +209,6 @@ cleanup() {
         mariadb_stop
     elif [[ "$engine" == "opengauss" ]]; then
         opengauss_stop
-    elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
-        :
     else
 	      pg_stop
     fi
@@ -219,10 +230,14 @@ wait_for_umbra() {
 # Prepare logs
 ########################################
 rm -f "${log_name}"
-rm -f "dsb_result/${log_name}"
+rm -f "${result_dir}/${log_name}"
 
-mkdir -p dsb_result
+mkdir -p "${result_dir}"
 shopt -s nullglob
+
+#echo "compiling..."
+#bash ./compile.sh >> compile.log 2>&1
+#echo "compilation done"
 
 ########################################
 # Start Umbra if needed
@@ -233,8 +248,6 @@ elif [[ "$engine" == "mariadb" ]]; then
     mariadb_start
 elif [[ "$engine" == "opengauss" ]]; then
     opengauss_start
-elif [[ "$engine" == "duckdb" || "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
-    :
 else
     pg_start
 fi
@@ -246,11 +259,11 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u dsb_10 -D dsb_10 < /home/pei/Project/benchmarks/dsb-postgres/analyze_mariadb_dsb_table.sql
+    mariadb -u dsb_${DSB_SF} -D dsb_${DSB_SF} < "${DSB_PATH}/analyze_mariadb_dsb_table.sql"
 elif [[ "$engine" == "postgres" ]]; then
-    psql -U postgres -d dsb_10 -c "ANALYZE;"
+    psql -U postgres -d dsb_${DSB_SF} -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
-    sudo -i -u opengauss gsql -d dsb_10 -U dsb_10 --host=localhost -p 7654 -W dsb_10 -c "ANALYZE;"
+    sudo -i -u opengauss gsql -d dsb_${DSB_SF} -U dsb_${DSB_SF} --host=localhost -p 7654 -W dsb_${DSB_SF} -c "ANALYZE;"
 fi
 echo "ANALYZE done"
 
@@ -268,27 +281,27 @@ db_arg="--db=${db_conn}"
 lingodb_flags=""
 if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     db_arg="--in-memory"
-    lingodb_flags="--csv-dir=$DSB_PATH/code/tools/out_10/lingo_db_csv --lingodb-mode=${lingodb_mode}"
+    lingodb_flags="--csv-dir=$DSB_PATH/code/tools/out_${DSB_SF}/lingo_db_csv --lingodb-mode=${lingodb_mode}"
 fi
 
-$cmd_prefix ../build_release/aqp_middleware \
-    --engine="${engine}" \
-    ${db_arg} \
-    "${helper_db_arg}" \
-    --schema=$DSB_PATH/scripts/create_tables.sql \
-    --fkeys=$DSB_PATH/code/tools/tpcds_ri.sql \
-    --split="${split}" \
-    ${lingodb_flags} \
-    --no-analyze --jit-level=${jit_level} --jit-simd=${jit_simd} \
-    ${jit_extra_flags} \
-    ${storage_flags} \
-    --benchmark \
-    "${dir}" \
-    2>&1 | tee -a "$log_name"
+for sql in $(find "$dir" -type f -name "*.sql" | sort); do
+    echo "Running benchmark for $sql..." | tee -a "$log_name"
+
+    $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
+        --engine="${engine}" \
+        --db="${db_conn}" \
+        "${helper_db_arg}" \
+        --schema="${DSB_PATH}/scripts/create_tables.sql" \
+        --fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql" \
+        --split="${split}" \
+        --no-analyze \
+        "${sql}" \
+        2>&1 | tee -a "$log_name"
+done
 end=$(date +%s%N)
 elapsed_ns=$((end - start))
 elapsed_ms=$((elapsed_ns / 1000000))
 
 echo "${engine} runs: ${elapsed_ms} ms"
 
-mv "${log_name}" dsb_result/
+mv "${log_name}" "${result_dir}"/

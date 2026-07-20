@@ -9,13 +9,16 @@
 # Output: CSV files in $OUT_DIR, one per (strategy, mode) combination.
 # Then run: python3 tune_kernel_threshold.py to analyze.
 
-set -euo pipefail
+set -e
 
-MEASURE_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
+MEASURE_DIR="${SCRIPT_DIR}"
 AQP_DIR="$(dirname "$MEASURE_DIR")"
 BUILD="$AQP_DIR/build_release"
-BENCHMARK_DIR="/home/pei/Project/benchmarks/imdb_job-postgres"
-DB="/home/pei/Project/duckdb/measure/imdb.db"
+BENCHMARK_DIR="${IMDB_BENCH}"
+DB="${DUCKDB_DB}"
 
 REPEAT=${1:-5}   # default 5 repeats (drop first 2 as warmup in analysis)
 OUT_DIR="$MEASURE_DIR/tuning_data"

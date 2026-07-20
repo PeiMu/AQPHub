@@ -77,14 +77,17 @@ def parse_per_subquery(path, hasjit=True, head=4):
 def main():
     bench = "job"
     positional = []
+    result_dir_override = None
     for a in sys.argv[1:]:
         if a.startswith("--bench="):
             bench = a.split("=", 1)[1]
+        elif a.startswith("--result-dir="):
+            result_dir_override = a.split("=", 1)[1]
         else:
             positional.append(a)
     query = positional[0] if len(positional) > 0 else "10a"
     split = positional[1] if len(positional) > 1 else "node-based"
-    result_dir = "dsb_result" if bench == "dsb" else "job_result"
+    result_dir = result_dir_override or ("dsb_result" if bench == "dsb" else "job_result")
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 4
 

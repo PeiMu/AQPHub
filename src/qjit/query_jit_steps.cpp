@@ -371,6 +371,9 @@ QjitAnalysisResult AnalyzeQueryJit(const AQPStmt &root,
   } else {
     fprintf(stderr, "[AQP-QJIT] reject:%s label=%s\n",
             a.result.reject_reason.c_str(), label.c_str());
+    if (a.result.reject_reason.find("CrossProduct") != std::string::npos)
+      fprintf(stderr, "[AQP-QJIT] WARNING: query-jit does not support "
+              "CrossProduct nodes, falling back to interpreter\n");
   }
 #endif
   return a.result;

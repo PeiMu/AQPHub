@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -21,6 +22,83 @@ struct QueryResult {
 
   QueryResult() : num_rows(0), num_columns(0) {}
 };
+
+// DuckDB's optimizer adds prefix-range predicates for LIKE patterns
+// (e.g. LIKE 'USA:%' → col >= 'USA:' AND col < 'USA;').  These rely on
+// C-locale byte ordering and produce wrong results on engines whose
+// default collation is not C (PostgreSQL en_GB.UTF-8, MariaDB utf8mb4,
+// etc.).  Strip them before generating SQL for external engines; the
+// LIKE clause already provides the correct filter.
+//
+// Pattern detected per qual_vec entry:
+//   LogicalAnd(LogicalAnd(col >= prefix, col < prefix'), IS NOT NULL(col))
+// where prefix' is prefix with the last byte incremented by 1.
+inline void StripCollationDependentRangeQuals(ir_sql_converter::AQPStmt &ir) {
+  namespace irc = ir_sql_converter;
+
+  auto is_prefix_range = [](const irc::AQPExpr *expr) -> bool {
+    if (!expr || expr->GetNodeType() != irc::LogicalExprNode)
+      return false;
+    auto *outer = static_cast<const irc::SimplestLogicalExpr *>(expr);
+    if (outer->GetLogicalOp() != irc::LogicalAnd)
+      return false;
+    // right must be IS NOT NULL
+    if (!outer->right_expr ||
+        outer->right_expr->GetNodeType() != irc::IsNullExprNode)
+      return false;
+    if (outer->right_expr->GetSimplestExprType() != irc::NonNullType)
+      return false;
+    // left must be AND(col >= prefix, col < prefix')
+    if (!outer->left_expr ||
+        outer->left_expr->GetNodeType() != irc::LogicalExprNode)
+      return false;
+    auto *inner = static_cast<const irc::SimplestLogicalExpr *>(
+        outer->left_expr.get());
+    if (inner->GetLogicalOp() != irc::LogicalAnd)
+      return false;
+    if (!inner->left_expr || !inner->right_expr)
+      return false;
+    // left child: col >= prefix (GreaterEqual, VarConstComparison)
+    if (inner->left_expr->GetNodeType() != irc::VarConstComparisonNode ||
+        inner->left_expr->GetSimplestExprType() != irc::GreaterEqual)
+      return false;
+    // right child: col < prefix' (LessThan, VarConstComparison)
+    if (inner->right_expr->GetNodeType() != irc::VarConstComparisonNode ||
+        inner->right_expr->GetSimplestExprType() != irc::LessThan)
+      return false;
+    auto *ge = static_cast<const irc::SimplestVarConstComparison *>(
+        inner->left_expr.get());
+    auto *lt = static_cast<const irc::SimplestVarConstComparison *>(
+        inner->right_expr.get());
+    if (!ge->const_var || !lt->const_var)
+      return false;
+    if (ge->const_var->GetType() != irc::StringVar ||
+        lt->const_var->GetType() != irc::StringVar)
+      return false;
+    std::string lo = ge->const_var->GetStringValue();
+    std::string hi = lt->const_var->GetStringValue();
+    if (lo.empty() || lo.size() != hi.size())
+      return false;
+    // hi must be lo with the last byte incremented by 1
+    if (hi.substr(0, hi.size() - 1) != lo.substr(0, lo.size() - 1))
+      return false;
+    return static_cast<unsigned char>(hi.back()) ==
+           static_cast<unsigned char>(lo.back()) + 1;
+  };
+
+  // Remove matching quals from this node's qual_vec.
+  auto &qv = ir.qual_vec;
+  qv.erase(std::remove_if(qv.begin(), qv.end(),
+               [&](const std::unique_ptr<irc::AQPExpr> &q) {
+                 return is_prefix_range(q.get());
+               }),
+           qv.end());
+
+  // Recurse into children.
+  for (auto &child : ir.children)
+    if (child)
+      StripCollationDependentRangeQuals(*child);
+}
 
 // Strip trailing ';' and whitespace so an "EXPLAIN ..." prefix produces a
 // single statement. Used by ExplainAnalyze overrides across adapters.
@@ -46,10 +124,14 @@ public:
   // Convert logical plan to IR
   virtual std::unique_ptr<ir_sql_converter::AQPStmt> ConvertPlanToIR() = 0;
 
-  // Convert IR to SQL
+  // Convert IR to SQL.
+  // Strips DuckDB's collation-dependent prefix-range quals before
+  // generating SQL so external engines with non-C collation get
+  // correct results.  Harmless for DuckDB (re-optimization re-adds).
   std::string GenerateSQL(ir_sql_converter::AQPStmt &simplest_stmt,
                           int query_id, bool save_file = false,
                           const std::string &sql_path = "") {
+    StripCollationDependentRangeQuals(simplest_stmt);
     auto sql = ir_sql_converter::ConvertIRToSQL(simplest_stmt, query_id,
                                                 save_file, sql_path);
     return sql;

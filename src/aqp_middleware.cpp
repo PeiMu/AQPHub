@@ -4,6 +4,8 @@
  * strategies
  */
 
+#include <unistd.h>
+
 #include "adapters/db_adapter.h"
 #include "split/ir_query_splitter.h"
 #include "storage/storage_plan.h"
@@ -16,6 +18,10 @@
 #ifdef HAVE_LLVM
 #include "jit/ir_to_llvm.h"
 #endif
+#endif
+
+#ifdef HAVE_LLVM
+#include <llvm/Support/ManagedStatic.h>
 #endif
 
 #ifdef HAVE_POSTGRES
@@ -280,6 +286,24 @@ void ExecuteSingleQuery(
                                 config.query_jit_threads,
                                 config.query_jit_morsel);
         duckdb_adp->SetQueryJitStoragePlan(storage_plan);
+      }
+#endif
+#ifdef HAVE_POSTGRES
+      auto *pg_adp = dynamic_cast<PostgreSQLAdapter *>(adapter);
+      if (pg_adp) {
+#ifdef HAVE_LLVM
+        pg_adp->SetQueryJit((config.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+                            config.query_jit_threads, config.query_jit_morsel);
+        pg_adp->SetQueryJitStoragePlan(storage_plan);
+        pg_adp->SetCompileMode(config.compile_mode);
+        pg_adp->SetSkipHashCmp(config.jit_skip_hash_cmp);
+        pg_adp->SetJitFlags(config.jit_flags);
+        pg_adp->SetJITCache(config.jit_cache);
+        pg_adp->SetJITCacheDir(config.jit_cache_dir);
+        pg_adp->SetJITDebug(config.enable_debug_print);
+        pg_adp->SetJITPrefetch(config.jit_prefetch,
+                               config.jit_prefetch_distance);
+#endif
       }
 #endif
 
@@ -730,14 +754,24 @@ int main(int argc, char **argv) {
             config.storage_cache_path, /*skip_indexes=*/!need_indexes);
       }
       if (!loaded_from_cache) {
+#ifdef HAVE_POSTGRES
+        if (config.engine == BackendEngine::POSTGRESQL) {
+          auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter.get());
+          storage_plan_ptr->LoadFromPostgreSQL(pg->GetConnection());
+        } else
+#endif
 #ifdef HAVE_DUCKDB
-        if (config.engine != BackendEngine::DUCKDB) {
+        if (config.engine == BackendEngine::DUCKDB) {
+          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter.get());
+          storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
+        } else
+#endif
+        {
           throw std::runtime_error(
-              "--storage-plan without a pre-built cache requires --engine=duckdb. "
-              "Build the cache first with: --engine=duckdb --storage-cache=<path>");
+              "--storage-plan without a pre-built cache requires "
+              "--engine=duckdb or --engine=postgresql. "
+              "Build the cache first with: --storage-cache=<path>");
         }
-        auto *duck = dynamic_cast<DuckDBAdapter *>(adapter.get());
-        storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
         if (need_indexes) {
           if (!config.fkeys_path.empty()) {
             storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
@@ -752,10 +786,6 @@ int main(int argc, char **argv) {
         if (!config.storage_cache_path.empty()) {
           storage_plan_ptr->SaveToFile(config.storage_cache_path);
         }
-#else
-        throw std::runtime_error(
-            "--storage-plan requires a pre-built cache (--storage-cache=<path>)");
-#endif
       } else if (need_indexes) {
         // Trimmed cache (built by a query-jit run) detection: rebuild the
         // index sections kernel-path needs.
@@ -828,10 +858,17 @@ int main(int argc, char **argv) {
     ir_sql_converter::CleanupSchemaParser();
 #endif
 
-    return return_code;
+    adapter.reset();
+
+#ifdef HAVE_LLVM
+    llvm::llvm_shutdown();
+#endif
+
+    // _exit() skips __cxa_finalize which double-frees inside libLLVM.so.20
+    _exit(return_code);
 
   } catch (const std::exception &e) {
     std::cerr << "\nError: " << e.what() << std::endl;
-    return 1;
+    _exit(1);
   }
 }

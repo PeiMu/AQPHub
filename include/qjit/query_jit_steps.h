@@ -186,6 +186,8 @@ struct QjitQueryPlan {
 
   std::vector<QjitSortCol> order_by; // peeled ORDER BY spec (empty = none)
   int64_t limit = -1; // peeled LIMIT value (-1 = no limit)
+  // Non-owning pointer to the IR, used by PG adapter for column name lookup.
+  const ir_sql_converter::AQPStmt *ir = nullptr;
 };
 
 // Strict builder. Returns true and fills `out` when every construct is

@@ -146,13 +146,16 @@ def analyze_middleware_breakdown(csv_file, has_jit, is_node_based):
 def main():
     bench = "job"
     positional = []
+    result_dir_override = None
     for a in sys.argv[1:]:
         if a.startswith("--bench="):
             bench = a.split("=", 1)[1]
+        elif a.startswith("--result-dir="):
+            result_dir_override = a.split("=", 1)[1]
         else:
             positional.append(a)
     split = positional[0] if positional else "node-based"
-    result_dir = "dsb_result" if bench == "dsb" else "job_result"
+    result_dir = result_dir_override or ("dsb_result" if bench == "dsb" else "job_result")
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     is_nb = split == "node-based"
 

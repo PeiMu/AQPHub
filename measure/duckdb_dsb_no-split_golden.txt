@@ -15,8 +15,6 @@ NULL|
 Rows: 0, Columns: 4
 Rows: 1, Columns: 6
 NULL|NULL|NULL|NULL|NULL|NULL|
-Rows: 1, Columns: 12
-bar|1|180|Hickory |Suite 320 |Plainview|43604     |8346|2450819|2450859|8179|2450819|
 Rows: 100, Columns: 2
 AAAAAAAAAMNGAAAA|Ha                            , Richard             |
 AAAAAAAABIMBFAAA|Stack                         , Dinah               |
@@ -135,6 +133,3 @@ NULL|NULL|NULL|NULL|
 Rows: 0, Columns: 4
 Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
-Rows: 0, Columns: 5
-Rows: 1, Columns: 6
-NULL|NULL|NULL|NULL|NULL|NULL|

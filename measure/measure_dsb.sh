@@ -1,30 +1,34 @@
 #!/bin/bash
 
-mkdir -p dsb_result/
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
+# DSB scale factor: set DSB_SF=100 to run against the SF-100 database.
+# Defaults to 10, keeping all existing paths/filenames unchanged.
+DSB_SF=${DSB_SF:-10}
+if [[ "$DSB_SF" == "10" ]]; then
+    result_dir="dsb_result"
+else
+    result_dir="dsb_result_sf${DSB_SF}"
+fi
+
+mkdir -p "${result_dir}"/
 rm -rf compile.log
 
 engine=$1
 split=$2
-jit_level=$3
-jit_simd=$4
-payload_prune=${5:-on}
-prefetch=${6:-on}
-batch_probe=${7:-on}
-skip_hash_cmp=${8:-all}   # off | all (legacy: on=all)
-cache=${9:-off}
 
 ########################################
 # Start / Stop PostgreSQL
 ########################################
-Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data_18_3
+  ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data_18_3 -m smart -s
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s
 }
 rm_pg_log() {
-  rm $Project_path/logfile
+  rm -f "${PG_LOG}"
 }
 
 ########################################
@@ -39,11 +43,11 @@ start_umbra() {
         --network=host \
         --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
-        -v "$DSB_PATH/code/tools/out_10/csv":/benchmark/csv:ro \
+        -v "$DSB_PATH/code/tools/out_${DSB_SF}/csv":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_${DSB_SF}.db >/dev/null
 
     wait_for_umbra
     load_umbra_dsb_data
@@ -52,8 +56,9 @@ start_umbra() {
 load_umbra_dsb_data() {
     echo "Loading schema and CSV data into Umbra..."
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
-        -f "$DSB_PATH/scripts/create_tables.sql"
-    (cd "$DSB_PATH/code/tools" && python3 "$DSB_PATH/scripts/load_data_umbra.py")
+        -f "$DSB_SCHEMA"
+    PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres \
+        -f "$DSB_IMPORT_CSV"
     echo "Data loading done."
 }
 
@@ -134,15 +139,14 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u dsb_10 -D dsb_10 < /home/pei/Project/benchmarks/dsb-postgres/analyze_mariadb_dsb_table.sql
+    mariadb -u dsb_${DSB_SF} -D dsb_${DSB_SF} < "${DSB_PATH}/analyze_mariadb_dsb_table.sql"
 elif [[ "$engine" == "postgres" ]]; then
-    psql -U postgres -d dsb_10 -c "ANALYZE;"
+    psql -U postgres -d dsb_${DSB_SF} -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
-    sudo -i -u opengauss gsql -d dsb_10 -U dsb_10 --host=localhost -p 7654 -W dsb_10 -c "ANALYZE;"
+    sudo -i -u opengauss gsql -d dsb_${DSB_SF} -U dsb_${DSB_SF} --host=localhost -p 7654 -W dsb_${DSB_SF} -c "ANALYZE;"
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_dsb.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
-    "${payload_prune}" "${prefetch}" "${batch_probe}" "${skip_hash_cmp}" "${cache}"
+cd "${SCRIPT_DIR}" && bash ./hyperfine_dsb.sh "${engine}" "${split}"
 
-#mv compile.log dsb_result/.
+#mv compile.log job_result/.

@@ -268,8 +268,10 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
     table_names.push_back(table_result->GetValue(0, i).ToString());
   }
 
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Loading " << table_names.size()
             << " tables into flat arrays..." << std::endl;
+#endif
 
   for (const auto &tname : table_names) {
     // Get column info
@@ -396,12 +398,14 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
       }
     }
 
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   " << tname << ": " << row_count
               << " rows, " << col_names.size() << " cols, "
               << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
               << (table.dense_pk ? " [dense_pk]" : "")
               << (!table.pk_to_row.empty() ? " [pk_to_row]" : "")
               << std::endl;
+#endif
 
     tables_[tname] = std::move(table);
   }
@@ -413,10 +417,229 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Flat table loading complete in " << ms
             << " ms, total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
+#endif
 }
+
+#ifdef HAVE_POSTGRES
+#include <libpq-fe.h>
+
+void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
+  auto start = std::chrono::high_resolution_clock::now();
+
+  PGresult *table_result = PQexec(
+      conn,
+      "SELECT table_name FROM information_schema.tables "
+      "WHERE table_schema='public' AND table_type='BASE TABLE' "
+      "ORDER BY table_name");
+  if (PQresultStatus(table_result) != PGRES_TUPLES_OK) {
+    std::string err = PQerrorMessage(conn);
+    PQclear(table_result);
+    throw std::runtime_error("Failed to enumerate tables: " + err);
+  }
+
+  std::vector<std::string> table_names;
+  for (int i = 0; i < PQntuples(table_result); i++)
+    table_names.emplace_back(PQgetvalue(table_result, i, 0));
+  PQclear(table_result);
+
+#ifndef NDEBUG
+  std::cerr << "[StoragePlan] Loading " << table_names.size()
+            << " tables from PostgreSQL into flat arrays..." << std::endl;
+#endif
+
+  for (const auto &tname : table_names) {
+    std::string col_sql =
+        "SELECT column_name, data_type, is_nullable "
+        "FROM information_schema.columns WHERE table_name='" +
+        tname + "' ORDER BY ordinal_position";
+    PGresult *col_result = PQexec(conn, col_sql.c_str());
+    if (PQresultStatus(col_result) != PGRES_TUPLES_OK) {
+      std::string err = PQerrorMessage(conn);
+      PQclear(col_result);
+      throw std::runtime_error("Failed to get columns for " + tname +
+                                ": " + err);
+    }
+
+    std::vector<std::string> col_names;
+    std::vector<FlatColumnType> col_types;
+    std::vector<bool> col_nullable;
+    for (int i = 0; i < PQntuples(col_result); i++) {
+      col_names.emplace_back(PQgetvalue(col_result, i, 0));
+      std::string dtype = PQgetvalue(col_result, i, 1);
+      bool nullable = std::string(PQgetvalue(col_result, i, 2)) == "YES";
+
+      // Map PostgreSQL types to FlatColumnType
+      if (dtype == "integer" || dtype == "bigint" || dtype == "smallint" ||
+          dtype == "int" || dtype == "date") {
+        col_types.push_back(FlatColumnType::INT32);
+      } else {
+        col_types.push_back(FlatColumnType::VARCHAR);
+      }
+      col_nullable.push_back(nullable);
+    }
+    PQclear(col_result);
+
+    std::string count_sql = "SELECT count(*) FROM " + tname;
+    PGresult *count_result = PQexec(conn, count_sql.c_str());
+    uint64_t row_count = 0;
+    if (PQresultStatus(count_result) == PGRES_TUPLES_OK &&
+        PQntuples(count_result) > 0)
+      row_count = std::stoull(PQgetvalue(count_result, 0, 0));
+    PQclear(count_result);
+
+    FlatTable table;
+    table.table_name = tname;
+    table.row_count = row_count;
+    table.column_names = col_names;
+    table.columns.resize(col_names.size());
+
+    for (size_t ci = 0; ci < col_names.size(); ci++) {
+      std::string order_clause;
+      if (std::find(col_names.begin(), col_names.end(), "id") !=
+          col_names.end())
+        order_clause = " ORDER BY id";
+      std::string data_sql =
+          "SELECT " + col_names[ci] + " FROM " + tname + order_clause;
+      PGresult *data_result = PQexec(conn, data_sql.c_str());
+      if (PQresultStatus(data_result) != PGRES_TUPLES_OK) {
+        std::string err = PQerrorMessage(conn);
+        PQclear(data_result);
+        throw std::runtime_error("Failed to load column " + col_names[ci] +
+                                  " from " + tname + ": " + err);
+      }
+
+      FlatColumn col;
+      col.type = col_types[ci];
+      col.row_count = row_count;
+      col.nullable = col_nullable[ci];
+      int nrows = PQntuples(data_result);
+
+      if (col_types[ci] == FlatColumnType::INT32) {
+        col.data = std::make_unique<char[]>(sizeof(int32_t) * row_count);
+        auto *dest = reinterpret_cast<int32_t *>(col.data.get());
+        if (col.nullable) {
+          size_t bitmask_size = (row_count + 63) / 64;
+          col.null_bitmap = std::make_unique<uint64_t[]>(bitmask_size);
+          std::memset(col.null_bitmap.get(), 0xFF,
+                      bitmask_size * sizeof(uint64_t));
+          for (int r = 0; r < nrows; r++) {
+            if (PQgetisnull(data_result, r, 0)) {
+              dest[r] = 0;
+              col.SetNull(r);
+            } else {
+              dest[r] = std::atoi(PQgetvalue(data_result, r, 0));
+            }
+          }
+        } else {
+          for (int r = 0; r < nrows; r++)
+            dest[r] = std::atoi(PQgetvalue(data_result, r, 0));
+        }
+      } else {
+        // VARCHAR: data stores uint32_t[row_count+1] offsets,
+        // string_pool stores the contiguous string bytes.
+        uint64_t total_bytes = 0;
+        for (int r = 0; r < nrows; r++) {
+          if (!PQgetisnull(data_result, r, 0))
+            total_bytes += std::strlen(PQgetvalue(data_result, r, 0));
+        }
+        col.data = std::make_unique<char[]>(
+            sizeof(uint32_t) * (row_count + 1));
+        auto *offsets = reinterpret_cast<uint32_t *>(col.data.get());
+        col.string_pool = std::make_unique<char[]>(total_bytes);
+        col.string_pool_size = total_bytes;
+        if (col.nullable) {
+          size_t bitmask_size = (row_count + 63) / 64;
+          col.null_bitmap = std::make_unique<uint64_t[]>(bitmask_size);
+          std::memset(col.null_bitmap.get(), 0xFF,
+                      bitmask_size * sizeof(uint64_t));
+        }
+        uint32_t offset = 0;
+        for (int r = 0; r < nrows; r++) {
+          offsets[r] = offset;
+          if (PQgetisnull(data_result, r, 0)) {
+            if (col.nullable)
+              col.SetNull(r);
+          } else {
+            const char *val = PQgetvalue(data_result, r, 0);
+            size_t len = std::strlen(val);
+            std::memcpy(col.string_pool.get() + offset, val, len);
+            offset += len;
+          }
+        }
+        offsets[row_count] = offset;
+      }
+
+      PQclear(data_result);
+      table.columns[ci] = std::move(col);
+    }
+
+    // Compute PK metadata for "id" column
+    int id_col = table.FindColumn("id");
+    if (id_col >= 0 && col_types[id_col] == FlatColumnType::INT32) {
+      int32_t max_id = 0;
+      const auto *id_data =
+          reinterpret_cast<const int32_t *>(table.columns[id_col].data.get());
+      for (uint64_t r = 0; r < row_count; r++) {
+        if (id_data[r] > max_id)
+          max_id = id_data[r];
+      }
+      table.max_pk = max_id;
+      if (row_count > 0 && max_id == static_cast<int32_t>(row_count)) {
+        int32_t min_id = max_id;
+        for (uint64_t r = 0; r < row_count; r++) {
+          if (id_data[r] < min_id)
+            min_id = id_data[r];
+        }
+        bool in_order = (min_id == 1);
+        if (in_order) {
+          for (uint64_t r = 0; r < row_count && in_order; r++) {
+            if (id_data[r] != static_cast<int32_t>(r + 1))
+              in_order = false;
+          }
+        }
+        if (in_order)
+          table.dense_pk = true;
+      }
+      if (!table.dense_pk) {
+        table.pk_to_row.assign(static_cast<size_t>(max_id) + 1, 0);
+        for (uint64_t r = 0; r < row_count; r++) {
+          int32_t pk = id_data[r];
+          if (pk >= 0)
+            table.pk_to_row[pk] = static_cast<uint32_t>(r);
+        }
+      }
+    }
+
+#ifndef NDEBUG
+    std::cerr << "[StoragePlan]   " << tname << ": " << row_count
+              << " rows, " << col_names.size() << " cols, "
+              << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
+              << (table.dense_pk ? " [dense_pk]" : "")
+              << (!table.pk_to_row.empty() ? " [pk_to_row]" : "")
+              << std::endl;
+#endif
+
+    tables_[tname] = std::move(table);
+  }
+
+  loaded_ = true;
+  dim_cache_.Build(tables_);
+
+  auto end = std::chrono::high_resolution_clock::now();
+  auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+          .count();
+#ifndef NDEBUG
+  std::cerr << "[StoragePlan] PostgreSQL flat table loading complete in " << ms
+            << " ms, total memory: " << (GetMemoryUsage() / (1024 * 1024))
+            << " MB" << std::endl;
+#endif
+}
+#endif // HAVE_POSTGRES
 
 void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
   if (!loaded_) {
@@ -475,21 +698,27 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
 
       int fk_col_idx = fk_tbl.FindColumn(fk_column);
       if (fk_col_idx < 0) {
+#ifndef NDEBUG
         std::cerr << "[StoragePlan] Warning: FK column " << fk_column
                   << " not found in " << current_table << std::endl;
+#endif
         continue;
       }
 
       if (fk_tbl.columns[fk_col_idx].type != FlatColumnType::INT32) {
+#ifndef NDEBUG
         std::cerr << "[StoragePlan] Warning: FK column " << fk_column
                   << " in " << current_table
                   << " is not INT32, skipping CSR" << std::endl;
+#endif
         continue;
       }
 
       if (pk_tbl.max_pk < 0) {
+#ifndef NDEBUG
         std::cerr << "[StoragePlan] Warning: PK table " << pk_table
                   << " has no max_pk, skipping CSR" << std::endl;
+#endif
         continue;
       }
 
@@ -497,11 +726,13 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
                            current_table, fk_column, pk_table, pk_column);
 
       std::string key = current_table + "." + fk_column;
+#ifndef NDEBUG
       std::cerr << "[StoragePlan]   CSR " << key << " → " << pk_table
                 << "." << pk_column << ": row_ptr="
                 << (csr.row_ptr_size * 8 / (1024 * 1024)) << " MB, col_idx="
                 << (csr.col_idx_size * 4 / (1024 * 1024)) << " MB"
                 << std::endl;
+#endif
 
       csr_indexes_[key] = std::move(csr);
       csr_count++;
@@ -517,9 +748,11 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
   for (const auto &kv : csr_indexes_)
     total_csr_mem += kv.second.GetMemoryUsage();
 
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Built " << csr_count << " CSR indexes in "
             << ms << " ms, total CSR memory: "
             << (total_csr_mem / (1024 * 1024)) << " MB" << std::endl;
+#endif
 }
 
 void StoragePlan::BuildSortedIndices() {
@@ -551,17 +784,21 @@ void StoragePlan::BuildSortedIndices() {
       continue;
     std::string key = tname + "." + cname;
     sorted_indices_[key] = BuildSortedIndex(it->second, cname);
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   Sorted index: " << key << " ("
               << sorted_indices_[key].sorted_perm.size() << " entries)"
               << std::endl;
+#endif
   }
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Built " << sorted_indices_.size()
             << " sorted indices in " << ms << " ms" << std::endl;
+#endif
 }
 
 const SortedIndex *
@@ -631,10 +868,12 @@ void StoragePlan::BuildInvertedIndices() {
 
     std::string key = spec.dim_table + "->" + spec.target_table +
                       "." + spec.bridge_table + "." + spec.bridge_fk_col;
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   Inverted index: " << key
               << " (" << inv.target_vals_size << " entries, "
               << (inv.GetMemoryUsage() / (1024 * 1024)) << " MB)"
               << std::endl;
+#endif
 
     inverted_indices_[key] = std::move(inv);
     count++;
@@ -642,8 +881,10 @@ void StoragePlan::BuildInvertedIndices() {
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Built " << count << " inverted indices in "
             << ms << " ms" << std::endl;
+#endif
 }
 
 const InvertedIndex *
@@ -696,6 +937,7 @@ uint64_t StoragePlan::GetMemoryUsage() const {
 }
 
 void StoragePlan::PrintSummary() const {
+#ifndef NDEBUG
   std::cerr << "\n=== StoragePlan Summary ===" << std::endl;
   std::cerr << "Tables: " << tables_.size() << std::endl;
   for (const auto &kv : tables_) {
@@ -716,6 +958,7 @@ void StoragePlan::PrintSummary() const {
   std::cerr << "Total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
   std::cerr << "===========================" << std::endl;
+#endif
 }
 
 // ─── Binary cache format ─────────────────────────────────────────────────────
@@ -846,8 +1089,10 @@ void StoragePlan::SaveToFile(const std::string &path) const {
   fclose(f);
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Saved cache to " << path << " in " << ms << " ms"
             << std::endl;
+#endif
 }
 
 bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
@@ -1038,6 +1283,7 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Loaded cache from " << path << " in " << ms
             << " ms (" << tables_.size() << " tables, " << csr_indexes_.size()
             << " CSR indexes, " << sorted_indices_.size() << " sorted indices, "
@@ -1045,6 +1291,7 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
             << (GetMemoryUsage() / (1024 * 1024)) << " MB"
             << (skip_indexes ? ", index sections skipped" : "") << ")"
             << std::endl;
+#endif
 
   return true;
 }

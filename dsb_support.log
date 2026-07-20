@@ -513,3 +513,44 @@ if (!last_extraction_standalone_ && temp_table_cardinality == 0 &&
 ### Phase 6 Remaining: query050_spj — OUT OF SCOPE
 
 **Problem:** query050_spj (+187ms, 2.14x regression) — cross-table date range filter creates huge intermediate when split. Requires changing DuckDB's internal `QuerySplit::Split()` decisions, not fixable from middleware.
+
+## Jit branch merge + script refactoring (2026-07-20)
+
+### Merged `jit` branch into `support_dsb`
+
+The `jit` branch added PostgreSQL query-jit support (12 commits). Merge required resolving conflicts in:
+- `include/qjit/query_jit_steps.h`: combined `order_by`/`limit` fields (support_dsb) with `ir` pointer (jit)
+- `src/split/ir_query_splitter.cpp`: combined TOP_DOWN support (support_dsb) with multi-engine dispatch for DuckDB + PostgreSQL (jit)
+- 5 shared measure helper scripts: combined DSB_SF parametrization + extended JIT flags (support_dsb) with env.sh sourcing + PostgreSQL engine support (jit)
+
+### Script renaming (engine-specific breakdown/correctness scripts)
+
+| Old name | New name |
+|----------|----------|
+| `breakdown_measurement_script_job.sh` | `breakdown_measurement_script_job_duckdb.sh` |
+| `breakdown_measurement_script_dsb.sh` | `breakdown_measurement_script_dsb_duckdb.sh` |
+| `breakdown_measurement_script_pg.sh` | `breakdown_measurement_script_job_postgres.sh` |
+| `correctness_test_job.sh` | `correctness_test_job_duckdb.sh` |
+| `correctness_test_dsb.sh` | `correctness_test_dsb_duckdb.sh` |
+| `correctness_test_pg.sh` | `correctness_test_job_postgres.sh` |
+
+### New scripts created
+
+- `breakdown_measurement_script_dsb_postgres.sh` — 73 configs: interpreter baselines + query-jit × 3 compile-mode × 4 cache × 2 spec + tune, for {none, node-based, topdown}
+- `correctness_test_dsb_postgres.sh` — 65 configs: same matrix as JOB postgres correctness test, adapted for DSB
+
+### Updates to existing postgres scripts
+
+- `breakdown_measurement_script_job_postgres.sh`: added topdown section (33 new configs), total 73 configs
+- `correctness_test_job_postgres.sh`: removed skip_hash_cmp={off,single} and simd=auto (6 configs removed), added topdown (25 configs), total 64 configs
+
+### Source code changes
+
+- `src/storage/storage_plan.cpp`: guarded all 24 diagnostic `std::cerr` prints with `#ifndef NDEBUG` (18 guard blocks)
+- `src/adapters/postgres_adapter.cpp`: 8 error-path prints left intentionally unguarded (error handlers for COPY/CREATE/run failures)
+
+### Decisions on record (from CLAUDE.md)
+
+- DSB golden files: `duckdb_dsb_node-based_golden.txt` / `duckdb_dsb_topdown_golden.txt` deleted (2026-07-18) — unused by any script
+- Cross-query-prep guard loss root cause confirmed (2026-07-20): IR→SQL→parse→optimize→IR round-trip in `SpeculativeQueryJitCompile` changes join nesting, `PlanJoinFilterPushdown` finds fewer guards. NOT a CachedSubquery metadata issue — guards are baked into LLVM machine code.
+- query050_spj, query102, query102_spj removed from DSB set (2026-07-18)

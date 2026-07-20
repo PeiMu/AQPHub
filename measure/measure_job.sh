@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/env.sh"
+
 mkdir -p job_result/
 rm -rf compile.log
 
@@ -16,15 +19,14 @@ cache=${9:-off}
 ########################################
 # Start / Stop PostgreSQL
 ########################################
-Project_path=/home/pei/Project/project_bins
 pg_start() {
-  pg_ctl start -l $Project_path/logfile -D $Project_path/data_18_3
+  ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
 }
 pg_stop() {
-  pg_ctl stop -D $Project_path/data_18_3 -m smart -s
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s
 }
 rm_pg_log() {
-  rm $Project_path/logfile
+  rm -f "${PG_LOG}"
 }
 
 ########################################
@@ -135,15 +137,15 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u imdb -D imdb < /home/pei/Project/benchmarks/imdb_job-postgres/analyze_mariadb_table.sql
+    mariadb -u imdb -D imdb < "${IMDB_BENCH}/analyze_mariadb_table.sql"
 elif [[ "$engine" == "postgres" ]]; then
-    psql -U pei -d imdb -c "ANALYZE;"
+    ${PG_BIN}/psql -d "${PG_CONN}" -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
     sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 -c "ANALYZE;"
 fi
 echo "ANALYZE done"
 
-cd ../measure && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
+cd "${SCRIPT_DIR}" && bash ./hyperfine_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
     "${payload_prune}" "${prefetch}" "${batch_probe}" "${skip_hash_cmp}" "${cache}"
 
 #mv compile.log job_result/.
