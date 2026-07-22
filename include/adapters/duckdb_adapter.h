@@ -435,6 +435,8 @@ public:
     std::vector<qjit::QjitAggCellDesc> agg_descs;
     std::vector<int> agg_output_cells;
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
+    std::vector<qjit::QjitSortCol> order_by;
+    int64_t limit = -1;
     std::vector<uint8_t> params_buf; // template cache mode 2: runtime constants
     // §7.3b plan-replay cache: source info for ResolveQjitSources
     std::string replay_cache_key;

@@ -174,13 +174,22 @@ void CollectMarkInfo(
         return;
       }
       if (jt == ir_sql_converter::SimplestJoinType::Semi ||
-          jt == ir_sql_converter::SimplestJoinType::Anti) {
-        std::cerr << "[SDS] WARNING: "
-                  << (jt == ir_sql_converter::SimplestJoinType::Semi ? "SEMI"
-                                                                     : "ANTI")
+          jt == ir_sql_converter::SimplestJoinType::Anti ||
+          jt == ir_sql_converter::SimplestJoinType::Left ||
+          jt == ir_sql_converter::SimplestJoinType::Right ||
+          jt == ir_sql_converter::SimplestJoinType::Full) {
+        const char *jt_names[] = {"SEMI", "ANTI", "LEFT", "RIGHT", "FULL"};
+        int jt_idx = (jt == ir_sql_converter::SimplestJoinType::Semi)    ? 0
+                   : (jt == ir_sql_converter::SimplestJoinType::Anti)    ? 1
+                   : (jt == ir_sql_converter::SimplestJoinType::Left)    ? 2
+                   : (jt == ir_sql_converter::SimplestJoinType::Right)   ? 3
+                                                                         : 4;
+#ifndef NDEBUG
+        std::cerr << "[SDS] WARNING: " << jt_names[jt_idx]
                   << " join detected in IR; locking subtree tables "
-                     "(cardinality model does not handle SEMI/ANTI natively)"
+                     "(cardinality model does not handle this natively)"
                   << std::endl;
+#endif
         CollectMarkLockedTables(node, locked, /*under_mark=*/true);
         return;
       }
@@ -507,7 +516,10 @@ void TopDownSplitter::CollectEdges(
       auto jt = join->GetSimplestJoinType();
       if (jt != ir_sql_converter::SimplestJoinType::Mark &&
           jt != ir_sql_converter::SimplestJoinType::Semi &&
-          jt != ir_sql_converter::SimplestJoinType::Anti) {
+          jt != ir_sql_converter::SimplestJoinType::Anti &&
+          jt != ir_sql_converter::SimplestJoinType::Left &&
+          jt != ir_sql_converter::SimplestJoinType::Right &&
+          jt != ir_sql_converter::SimplestJoinType::Full) {
         for (const auto &cond : join->join_conditions) {
           if (cond)
             add_edge(cond.get());
@@ -1443,6 +1455,25 @@ void TopDownSplitter::PrePopulateBaseCountCache() {
   for (auto &kv : rows) {
     if (base_count_cache_.find(kv.first) == base_count_cache_.end())
       base_count_cache_[kv.first] = kv.second;
+  }
+}
+
+void TopDownSplitter::CompleteMissingCardinalities(
+    std::unique_ptr<ir_sql_converter::AQPStmt> &ir) {
+  FetchMissingLeafCardinalities(ir.get());
+  for (auto &[t, info] : mark_in_) {
+    auto it = table_card_.find(t);
+    if (it == table_card_.end())
+      continue;
+    double flat = std::max(it->second / kSemiSelectivity, 1.0);
+    double distinct = distinct_cache_.Get(*adapter_, GetTableName(t),
+                                          info.first);
+    double est = flat;
+    if (distinct > 0.0) {
+      double cand = std::ceil(it->second * info.second / distinct);
+      est = std::max(est, std::min(it->second, std::max(cand, 1.0)));
+    }
+    it->second = est;
   }
 }
 

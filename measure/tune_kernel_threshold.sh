@@ -9,7 +9,7 @@
 # Output: CSV files in $OUT_DIR, one per (strategy, mode) combination.
 # Then run: python3 tune_kernel_threshold.py to analyze.
 
-set -euo pipefail
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"

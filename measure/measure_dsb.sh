@@ -3,7 +3,16 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
-mkdir -p dsb_result/
+# DSB scale factor: set DSB_SF=100 to run against the SF-100 database.
+# Defaults to 10, keeping all existing paths/filenames unchanged.
+DSB_SF=${DSB_SF:-10}
+if [[ "$DSB_SF" == "10" ]]; then
+    result_dir="dsb_result"
+else
+    result_dir="dsb_result_sf${DSB_SF}"
+fi
+
+mkdir -p "${result_dir}"/
 rm -rf compile.log
 
 engine=$1
@@ -34,11 +43,11 @@ start_umbra() {
         --network=host \
         --tmpfs /var/db:rw,size=16g \
         -v /tmp:/tmp \
-        -v "$DSB_CSV_DIR":/benchmark/csv:ro \
+        -v "$DSB_PATH/code/tools/out_${DSB_SF}/csv":/benchmark/csv:ro \
         --ulimit nofile=1048576:1048576 \
         --ulimit memlock=8388608:8388608 \
         umbradb/umbra:latest \
-        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_10.db >/dev/null
+        umbra-server --address 0.0.0.0 --port 15432 /var/db/dsb_${DSB_SF}.db >/dev/null
 
     wait_for_umbra
     load_umbra_dsb_data
@@ -130,11 +139,11 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u dsb_10 -D dsb_10 < "${DSB_PATH}/analyze_mariadb_dsb_table.sql"
+    mariadb -u dsb_${DSB_SF} -D dsb_${DSB_SF} < "${DSB_PATH}/analyze_mariadb_dsb_table.sql"
 elif [[ "$engine" == "postgres" ]]; then
-    psql -U postgres -d dsb_10 -c "ANALYZE;"
+    psql -U postgres -d dsb_${DSB_SF} -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
-    sudo -i -u opengauss gsql -d dsb_10 -U dsb_10 --host=localhost -p 7654 -W dsb_10 -c "ANALYZE;"
+    sudo -i -u opengauss gsql -d dsb_${DSB_SF} -U dsb_${DSB_SF} --host=localhost -p 7654 -W dsb_${DSB_SF} -c "ANALYZE;"
 fi
 echo "ANALYZE done"
 

@@ -3,6 +3,8 @@
 
 #include <fstream>
 #include <iomanip>
+#include <regex>
+#include <set>
 #include <sstream>
 
 #include <arrow/api.h>
@@ -425,23 +427,29 @@ void LingoDBAdapter::LoadTablesFromCSV(const std::string &schema_path,
                           std::istreambuf_iterator<char>());
   schema_file.close();
 
-  // Extract table names from CREATE TABLE statements
+  // Extract table names from CREATE TABLE statements (case-insensitive)
+  std::string schema_lower = schema_sql;
+  std::transform(schema_lower.begin(), schema_lower.end(), schema_lower.begin(),
+                 ::tolower);
   std::vector<std::string> table_names;
   std::string::size_type pos = 0;
-  while ((pos = schema_sql.find("CREATE TABLE", pos)) != std::string::npos) {
+  while ((pos = schema_lower.find("create table", pos)) != std::string::npos) {
     auto start = pos + 13;
-    while (start < schema_sql.size() && schema_sql[start] == ' ')
+    while (start < schema_lower.size() && schema_lower[start] == ' ')
       start++;
     auto end = start;
-    while (end < schema_sql.size() && schema_sql[end] != ' ' &&
-           schema_sql[end] != '(')
+    while (end < schema_lower.size() && schema_lower[end] != ' ' &&
+           schema_lower[end] != '(' && schema_lower[end] != '\n' &&
+           schema_lower[end] != '\r')
       end++;
     if (end > start)
-      table_names.push_back(schema_sql.substr(start, end - start));
+      table_names.push_back(schema_lower.substr(start, end - start));
     pos = end;
   }
 
   // Execute CREATE TABLE statements (skip COPY, SET, etc.)
+  // Skip tables with unsupported types (e.g. SQL TIME — lingodb hangs on it).
+  std::set<std::string> skipped_tables;
   std::istringstream stream(schema_sql);
   std::string statement;
   std::string line;
@@ -456,19 +464,60 @@ void LingoDBAdapter::LoadTablesFromCSV(const std::string &schema_path,
       std::transform(lower_stmt.begin(), lower_stmt.end(), lower_stmt.begin(),
                      ::tolower);
       if (lower_stmt.find("create table") != std::string::npos) {
-        ExecuteSingleSQL(statement);
+        // Check for unsupported column types
+        bool has_unsupported = false;
+        std::istringstream col_stream(lower_stmt);
+        std::string col_line;
+        while (std::getline(col_stream, col_line)) {
+          std::string ct = col_line;
+          ct.erase(0, ct.find_first_not_of(" \t"));
+          // Match "colname  time  ," or "colname  time  )" patterns
+          if (std::regex_search(ct, std::regex("\\btime\\b")) &&
+              ct.find("time_sk") == std::string::npos &&
+              ct.find("time_id") == std::string::npos &&
+              ct.find("time_dim") == std::string::npos &&
+              ct.find("timestamp") == std::string::npos &&
+              ct.find("create table") == std::string::npos) {
+            has_unsupported = true;
+            break;
+          }
+        }
+        if (has_unsupported) {
+          // Extract table name to skip its CSV load too
+          auto tpos = lower_stmt.find("create table");
+          if (tpos != std::string::npos) {
+            auto ts = tpos + 13;
+            while (ts < lower_stmt.size() && lower_stmt[ts] == ' ') ts++;
+            auto te = ts;
+            while (te < lower_stmt.size() && lower_stmt[te] != ' ' &&
+                   lower_stmt[te] != '(') te++;
+            if (te > ts)
+              skipped_tables.insert(lower_stmt.substr(ts, te - ts));
+          }
+#ifndef NDEBUG
+          std::cerr << "[LingoDB] Skipping table with unsupported type (time)"
+                    << std::endl;
+#endif
+        } else {
+          ExecuteSingleSQL(statement);
+        }
       }
       statement.clear();
     }
   }
 
-  // Load CSV data using COPY (same convention as DuckDB adapter)
+  // Load CSV data using COPY
   if (!csv_dir.empty()) {
     for (const auto &table_name : table_names) {
+      if (skipped_tables.count(table_name))
+        continue;
       std::string csv_path = csv_dir;
       if (!csv_path.empty() && csv_path.back() != '/')
         csv_path += '/';
       csv_path += table_name + ".csv";
+      std::ifstream check(csv_path);
+      if (!check.good())
+        continue;
       std::string copy_sql = "copy " + table_name + " from '" + csv_path +
                              "' csv escape '\\';\n";
       ExecuteSingleSQL(copy_sql);

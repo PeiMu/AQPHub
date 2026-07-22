@@ -19,10 +19,12 @@ Each candidate config is defined by:
     skip_hash_cmp) — future sweeps; currently all use global defaults.
 
 Usage:
-  python3 tune_per_subquery.py [split] [--engine=ENGINE]
+  python3 tune_per_subquery.py [split] [--engine=ENGINE] [--bench=BENCH]
+                               [--result-dir=DIR]
 
   split:   node-based (default) | none | topdown | relationship-center
   engine:  duckdb (default) | postgresql
+  bench:   job (default) | dsb
 
 Candidate configs are defined in CONFIGS below.  Each entry specifies
 the CSV filename, whether it has a jit_compile column, and the flag
@@ -168,10 +170,10 @@ def make_configs(split, engine="duckdb"):
                  filename=f"{e}_{split}_query_none_breakdown_time_log.csv",
                  hasjit=True, flags=dict()),
             dict(label="query_fastisel",
-                 filename=f"{e}_{split}_query_none_fcfastisel_breakdown_time_log.csv",
+                 filename=f"{e}_{split}_query_none_fastisel_breakdown_time_log.csv",
                  hasjit=True, flags=dict(compile_mode=1)),
             dict(label="query_tpde",
-                 filename=f"{e}_{split}_query_none_fctpde_breakdown_time_log.csv",
+                 filename=f"{e}_{split}_query_none_tpde_breakdown_time_log.csv",
                  hasjit=True, flags=dict(compile_mode=2)),
         ]
 
@@ -270,24 +272,48 @@ def make_configs(split, engine="duckdb"):
         # dict(label="pipeline",
         #      filename=f"{e}_{split}_pipeline_none_nopayprune_llvm_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(payload_prune=False)),
+        # dict(label="query_tpde",
+        #      filename=f"{e}_{split}_query_none_noskiphashcmp_tpde_breakdown_time_log.csv",
+        #      hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
     ]
 
 
 def main():
+    bench = "job"
+    result_dir_override = None
     split = "node-based"
     engine = "duckdb"
-    for arg in sys.argv[1:]:
-        if arg.startswith("--engine="):
-            engine = arg.split("=", 1)[1]
-        elif not arg.startswith("-"):
-            split = arg
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_result")
+    positional = []
+    for a in sys.argv[1:]:
+        if a.startswith("--bench="):
+            bench = a.split("=", 1)[1]
+        elif a.startswith("--result-dir="):
+            result_dir_override = a.split("=", 1)[1]
+        elif a.startswith("--engine="):
+            engine = a.split("=", 1)[1]
+        elif not a.startswith("-"):
+            positional.append(a)
+
+    if positional:
+        split = positional[0]
+
+    # Determine the result directory
+    if result_dir_override:
+        result_dir = result_dir_override
+    elif bench == "dsb":
+        result_dir = "dsb_result"
+    elif engine == "postgresql":
+        result_dir = "pg_result"
+    else:
+        result_dir = "job_result"
+
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 5 if split in ("relationship-center", "topdown") else 4
 
     CONFIGS = make_configs(split, engine)
 
     data = {}
-    config_flags = {}  # label → flags dict
+    config_flags = {}  # label -> flags dict
     for cfg in CONFIGS:
         label = cfg["label"]
         p = os.path.join(base, cfg["filename"])

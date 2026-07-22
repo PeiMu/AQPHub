@@ -54,16 +54,6 @@ static FlatColumn LoadColumnINT32(duckdb::MaterializedQueryResult &result,
           dst[row_offset + r] = src[r];
         }
       }
-    } else if (phys_type == duckdb::PhysicalType::INT64) {
-      auto *src = duckdb::FlatVector::GetData<int64_t>(vec);
-      for (uint64_t r = 0; r < chunk->size(); r++) {
-        if (nullable && !validity.RowIsValid(r)) {
-          dst[row_offset + r] = 0;
-          col.SetNull(row_offset + r);
-        } else {
-          dst[row_offset + r] = static_cast<int32_t>(src[r]);
-        }
-      }
     } else if (phys_type == duckdb::PhysicalType::INT16) {
       auto *src = duckdb::FlatVector::GetData<int16_t>(vec);
       for (uint64_t r = 0; r < chunk->size(); r++) {
@@ -84,6 +74,93 @@ static FlatColumn LoadColumnINT32(duckdb::MaterializedQueryResult &result,
           dst[row_offset + r] = static_cast<int32_t>(src[r]);
         }
       }
+    } else {
+      throw std::runtime_error(
+          "StoragePlan unsupported: physical type of " +
+          result.types[col_idx].ToString() +
+          " cannot be loaded into an INT32 flat column without truncation");
+    }
+
+    row_offset += chunk->size();
+  }
+
+  return col;
+}
+
+static FlatColumn LoadColumnINT64(duckdb::MaterializedQueryResult &result,
+                                  size_t col_idx, uint64_t total_rows,
+                                  bool nullable) {
+  FlatColumn col;
+  col.type = FlatColumnType::INT64;
+  col.row_count = total_rows;
+  col.nullable = nullable;
+  col.data = std::make_unique<char[]>(total_rows * sizeof(int64_t));
+
+  if (nullable) {
+    uint64_t bitmap_words = (total_rows + 63) / 64;
+    col.null_bitmap = std::make_unique<uint64_t[]>(bitmap_words);
+    std::memset(col.null_bitmap.get(), 0xFF,
+                bitmap_words * sizeof(uint64_t));
+  }
+
+  auto *dst = reinterpret_cast<int64_t *>(col.data.get());
+  uint64_t row_offset = 0;
+
+  for (;;) {
+    auto chunk = result.Fetch();
+    if (!chunk || chunk->size() == 0)
+      break;
+    chunk->Flatten();
+    auto &vec = chunk->data[col_idx];
+    auto &validity = duckdb::FlatVector::Validity(vec);
+
+    auto phys_type = result.types[col_idx].InternalType();
+
+    if (phys_type == duckdb::PhysicalType::INT64) {
+      auto *src = duckdb::FlatVector::GetData<int64_t>(vec);
+      for (uint64_t r = 0; r < chunk->size(); r++) {
+        if (nullable && !validity.RowIsValid(r)) {
+          dst[row_offset + r] = 0;
+          col.SetNull(row_offset + r);
+        } else {
+          dst[row_offset + r] = src[r];
+        }
+      }
+    } else if (phys_type == duckdb::PhysicalType::INT32) {
+      auto *src = duckdb::FlatVector::GetData<int32_t>(vec);
+      for (uint64_t r = 0; r < chunk->size(); r++) {
+        if (nullable && !validity.RowIsValid(r)) {
+          dst[row_offset + r] = 0;
+          col.SetNull(row_offset + r);
+        } else {
+          dst[row_offset + r] = static_cast<int64_t>(src[r]);
+        }
+      }
+    } else if (phys_type == duckdb::PhysicalType::INT16) {
+      auto *src = duckdb::FlatVector::GetData<int16_t>(vec);
+      for (uint64_t r = 0; r < chunk->size(); r++) {
+        if (nullable && !validity.RowIsValid(r)) {
+          dst[row_offset + r] = 0;
+          col.SetNull(row_offset + r);
+        } else {
+          dst[row_offset + r] = static_cast<int64_t>(src[r]);
+        }
+      }
+    } else if (phys_type == duckdb::PhysicalType::INT8) {
+      auto *src = duckdb::FlatVector::GetData<int8_t>(vec);
+      for (uint64_t r = 0; r < chunk->size(); r++) {
+        if (nullable && !validity.RowIsValid(r)) {
+          dst[row_offset + r] = 0;
+          col.SetNull(row_offset + r);
+        } else {
+          dst[row_offset + r] = static_cast<int64_t>(src[r]);
+        }
+      }
+    } else {
+      throw std::runtime_error(
+          "StoragePlan unsupported: physical type of " +
+          result.types[col_idx].ToString() +
+          " cannot be loaded into an INT64 flat column");
     }
 
     row_offset += chunk->size();
@@ -191,8 +268,10 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
     table_names.push_back(table_result->GetValue(0, i).ToString());
   }
 
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Loading " << table_names.size()
             << " tables into flat arrays..." << std::endl;
+#endif
 
   for (const auto &tname : table_names) {
     // Get column info
@@ -213,13 +292,36 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
       std::string dtype = col_info->GetValue(1, i).ToString();
       bool is_nullable = col_info->GetValue(2, i).ToString() == "YES";
 
-      // Map DuckDB types to FlatColumnType
-      if (dtype == "INTEGER" || dtype == "BIGINT" || dtype == "SMALLINT" ||
-          dtype == "TINYINT" || dtype == "INT") {
+      // Map DuckDB types to FlatColumnType by their PHYSICAL representation.
+      // DATE is physically INT32 (days since epoch); TIME is INT64 (µs);
+      // DECIMAL(p,s) is INT16/INT32/INT64/INT128 depending on precision.
+      if (dtype == "INTEGER" || dtype == "SMALLINT" || dtype == "TINYINT" ||
+          dtype == "INT" || dtype == "DATE") {
         col_types.push_back(FlatColumnType::INT32);
-      } else {
-        // VARCHAR, TEXT, CHARACTER VARYING, etc.
+      } else if (dtype == "BIGINT" || dtype == "TIME") {
+        col_types.push_back(FlatColumnType::INT64);
+      } else if (dtype.rfind("DECIMAL(", 0) == 0) {
+        int precision = std::stoi(dtype.substr(8));
+        if (precision <= 9) {
+          col_types.push_back(FlatColumnType::INT32);
+        } else if (precision <= 18) {
+          col_types.push_back(FlatColumnType::INT64);
+        } else {
+          throw std::runtime_error(
+              "StoragePlan unsupported: column " + tname + "." +
+              col_names.back() + " has type " + dtype +
+              " (precision > 18 is physically INT128)");
+        }
+      } else if (dtype == "VARCHAR" || dtype == "TEXT" ||
+                 dtype.rfind("VARCHAR", 0) == 0 ||
+                 dtype.rfind("CHAR", 0) == 0 ||
+                 dtype.rfind("CHARACTER", 0) == 0) {
         col_types.push_back(FlatColumnType::VARCHAR);
+      } else {
+        throw std::runtime_error(
+            "StoragePlan unsupported: column " + tname + "." +
+            col_names.back() + " has type " + dtype +
+            "; no FlatColumnType mapping");
       }
       col_nullable.push_back(is_nullable);
     }
@@ -250,6 +352,9 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
 
       if (col_types[ci] == FlatColumnType::INT32) {
         table.columns[ci] = LoadColumnINT32(*data_result, 0, row_count,
+                                            col_nullable[ci]);
+      } else if (col_types[ci] == FlatColumnType::INT64) {
+        table.columns[ci] = LoadColumnINT64(*data_result, 0, row_count,
                                             col_nullable[ci]);
       } else {
         table.columns[ci] = LoadColumnVARCHAR(*data_result, 0, row_count,
@@ -293,12 +398,14 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
       }
     }
 
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   " << tname << ": " << row_count
               << " rows, " << col_names.size() << " cols, "
               << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
               << (table.dense_pk ? " [dense_pk]" : "")
               << (!table.pk_to_row.empty() ? " [pk_to_row]" : "")
               << std::endl;
+#endif
 
     tables_[tname] = std::move(table);
   }
@@ -310,9 +417,11 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Flat table loading complete in " << ms
             << " ms, total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
+#endif
 }
 
 #ifdef HAVE_POSTGRES
@@ -337,8 +446,10 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
     table_names.emplace_back(PQgetvalue(table_result, i, 0));
   PQclear(table_result);
 
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Loading " << table_names.size()
             << " tables from PostgreSQL into flat arrays..." << std::endl;
+#endif
 
   for (const auto &tname : table_names) {
     std::string col_sql =
@@ -361,7 +472,6 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
       std::string dtype = PQgetvalue(col_result, i, 1);
       bool nullable = std::string(PQgetvalue(col_result, i, 2)) == "YES";
 
-      // Map PostgreSQL types to FlatColumnType
       if (dtype == "integer" || dtype == "bigint" || dtype == "smallint" ||
           dtype == "int" || dtype == "date") {
         col_types.push_back(FlatColumnType::INT32);
@@ -503,12 +613,14 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
       }
     }
 
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   " << tname << ": " << row_count
               << " rows, " << col_names.size() << " cols, "
               << (table.GetMemoryUsage() / (1024 * 1024)) << " MB"
               << (table.dense_pk ? " [dense_pk]" : "")
               << (!table.pk_to_row.empty() ? " [pk_to_row]" : "")
               << std::endl;
+#endif
 
     tables_[tname] = std::move(table);
   }
@@ -520,9 +632,11 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] PostgreSQL flat table loading complete in " << ms
             << " ms, total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
+#endif
 }
 #endif // HAVE_POSTGRES
 
@@ -583,21 +697,27 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
 
       int fk_col_idx = fk_tbl.FindColumn(fk_column);
       if (fk_col_idx < 0) {
+#ifndef NDEBUG
         std::cerr << "[StoragePlan] Warning: FK column " << fk_column
                   << " not found in " << current_table << std::endl;
+#endif
         continue;
       }
 
       if (fk_tbl.columns[fk_col_idx].type != FlatColumnType::INT32) {
+#ifndef NDEBUG
         std::cerr << "[StoragePlan] Warning: FK column " << fk_column
                   << " in " << current_table
                   << " is not INT32, skipping CSR" << std::endl;
+#endif
         continue;
       }
 
       if (pk_tbl.max_pk < 0) {
+#ifndef NDEBUG
         std::cerr << "[StoragePlan] Warning: PK table " << pk_table
                   << " has no max_pk, skipping CSR" << std::endl;
+#endif
         continue;
       }
 
@@ -605,11 +725,13 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
                            current_table, fk_column, pk_table, pk_column);
 
       std::string key = current_table + "." + fk_column;
+#ifndef NDEBUG
       std::cerr << "[StoragePlan]   CSR " << key << " → " << pk_table
                 << "." << pk_column << ": row_ptr="
                 << (csr.row_ptr_size * 8 / (1024 * 1024)) << " MB, col_idx="
                 << (csr.col_idx_size * 4 / (1024 * 1024)) << " MB"
                 << std::endl;
+#endif
 
       csr_indexes_[key] = std::move(csr);
       csr_count++;
@@ -625,9 +747,11 @@ void StoragePlan::BuildCSRIndexes(const std::string &fkeys_path) {
   for (const auto &kv : csr_indexes_)
     total_csr_mem += kv.second.GetMemoryUsage();
 
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Built " << csr_count << " CSR indexes in "
             << ms << " ms, total CSR memory: "
             << (total_csr_mem / (1024 * 1024)) << " MB" << std::endl;
+#endif
 }
 
 void StoragePlan::BuildSortedIndices() {
@@ -659,17 +783,21 @@ void StoragePlan::BuildSortedIndices() {
       continue;
     std::string key = tname + "." + cname;
     sorted_indices_[key] = BuildSortedIndex(it->second, cname);
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   Sorted index: " << key << " ("
               << sorted_indices_[key].sorted_perm.size() << " entries)"
               << std::endl;
+#endif
   }
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
           .count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Built " << sorted_indices_.size()
             << " sorted indices in " << ms << " ms" << std::endl;
+#endif
 }
 
 const SortedIndex *
@@ -739,10 +867,12 @@ void StoragePlan::BuildInvertedIndices() {
 
     std::string key = spec.dim_table + "->" + spec.target_table +
                       "." + spec.bridge_table + "." + spec.bridge_fk_col;
+#ifndef NDEBUG
     std::cerr << "[StoragePlan]   Inverted index: " << key
               << " (" << inv.target_vals_size << " entries, "
               << (inv.GetMemoryUsage() / (1024 * 1024)) << " MB)"
               << std::endl;
+#endif
 
     inverted_indices_[key] = std::move(inv);
     count++;
@@ -750,8 +880,10 @@ void StoragePlan::BuildInvertedIndices() {
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Built " << count << " inverted indices in "
             << ms << " ms" << std::endl;
+#endif
 }
 
 const InvertedIndex *
@@ -804,6 +936,7 @@ uint64_t StoragePlan::GetMemoryUsage() const {
 }
 
 void StoragePlan::PrintSummary() const {
+#ifndef NDEBUG
   std::cerr << "\n=== StoragePlan Summary ===" << std::endl;
   std::cerr << "Tables: " << tables_.size() << std::endl;
   for (const auto &kv : tables_) {
@@ -824,6 +957,7 @@ void StoragePlan::PrintSummary() const {
   std::cerr << "Total memory: " << (GetMemoryUsage() / (1024 * 1024))
             << " MB" << std::endl;
   std::cerr << "===========================" << std::endl;
+#endif
 }
 
 // ─── Binary cache format ─────────────────────────────────────────────────────
@@ -831,6 +965,7 @@ void StoragePlan::PrintSummary() const {
 // Per table: name_len(4) name(name_len) row_count(8) max_pk(4) num_cols(4)
 //   Per column: type(1) nullable(1) row_count(8)
 //     INT32:   data[row_count * 4]
+//     INT64:   data[row_count * 8]        (version >= 4)
 //     VARCHAR: pool_size(8) offsets[(row_count+1) * 4] pool[pool_size]
 //     if nullable: bitmap[((row_count+63)/64) * 8]
 //     name_len(4) name(name_len)
@@ -840,7 +975,7 @@ void StoragePlan::PrintSummary() const {
 //          col_idx_size(8) col_idx[col_idx_size * 4]
 
 static constexpr uint64_t CACHE_MAGIC = 0x41515053544F5245ULL; // "AQPSTORE"
-static constexpr uint32_t CACHE_VERSION = 3;
+static constexpr uint32_t CACHE_VERSION = 4;
 
 static void WriteStr(FILE *f, const std::string &s) {
   uint32_t len = static_cast<uint32_t>(s.size());
@@ -893,6 +1028,8 @@ void StoragePlan::SaveToFile(const std::string &path) const {
 
       if (col.type == FlatColumnType::INT32) {
         fwrite(col.data.get(), sizeof(int32_t), col.row_count, f);
+      } else if (col.type == FlatColumnType::INT64) {
+        fwrite(col.data.get(), sizeof(int64_t), col.row_count, f);
       } else {
         fwrite(&col.string_pool_size, 8, 1, f);
         fwrite(col.data.get(), sizeof(uint32_t), col.row_count + 1, f);
@@ -951,8 +1088,10 @@ void StoragePlan::SaveToFile(const std::string &path) const {
   fclose(f);
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Saved cache to " << path << " in " << ms << " ms"
             << std::endl;
+#endif
 }
 
 bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
@@ -994,6 +1133,9 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
       if (col.type == FlatColumnType::INT32) {
         col.data = std::make_unique<char[]>(col.row_count * sizeof(int32_t));
         fread(col.data.get(), sizeof(int32_t), col.row_count, f);
+      } else if (col.type == FlatColumnType::INT64) {
+        col.data = std::make_unique<char[]>(col.row_count * sizeof(int64_t));
+        fread(col.data.get(), sizeof(int64_t), col.row_count, f);
       } else {
         fread(&col.string_pool_size, 8, 1, f);
         col.data = std::make_unique<char[]>((col.row_count + 1) * sizeof(uint32_t));
@@ -1140,6 +1282,7 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
 
   auto end = std::chrono::high_resolution_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+#ifndef NDEBUG
   std::cerr << "[StoragePlan] Loaded cache from " << path << " in " << ms
             << " ms (" << tables_.size() << " tables, " << csr_indexes_.size()
             << " CSR indexes, " << sorted_indices_.size() << " sorted indices, "
@@ -1147,6 +1290,7 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
             << (GetMemoryUsage() / (1024 * 1024)) << " MB"
             << (skip_indexes ? ", index sections skipped" : "") << ")"
             << std::endl;
+#endif
 
   return true;
 }

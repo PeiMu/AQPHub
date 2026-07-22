@@ -1152,6 +1152,20 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 #endif
 
+  // Capture original output column count for projection trim after split.
+  original_output_col_count_ = 0;
+  if (whole_ir) {
+    auto *root = whole_ir.get();
+    while (root &&
+           root->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           root->children.size() == 1)
+      root = root->children[0].get();
+    if (root && root->GetNodeType() ==
+                    ir_sql_converter::SimplestNodeType::ProjectionNode)
+      original_output_col_count_ = root->target_list.size();
+  }
+
   // === Phase 4: Iterative Split-Execute Loop ===
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Phase 4: Iterative Split-Execute Loop"
@@ -1194,6 +1208,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     } else {
       auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
       td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+      td_splitter->CompleteMissingCardinalities(remaining_ir);
 #if defined(HAVE_LLVM)
       precomputed_extraction_ =
           std::move(active_cross_query_prep_->first_extraction);
@@ -1236,6 +1251,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                << (preprocess_time / 1000.0) << ", ";
       log_file.close();
     }
+  }
+
+  // Node-based: capture original col count AFTER Preprocess/InitFromCrossQueryPrep.
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    auto *nb = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+    if (nb && nb->GetOriginalOutputColumnCount() > 0)
+      original_output_col_count_ = nb->GetOriginalOutputColumnCount();
   }
 
   all_inner_joins_ =
@@ -1361,6 +1383,24 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
               << (spec_wait_us_ / 1000.0) << "\n";
   }
 #endif
+
+  // === Projection trim: fix extra columns from split machinery ===
+  if (original_output_col_count_ > 0 && remaining_ir) {
+    auto *proj = remaining_ir.get();
+    while (proj &&
+           proj->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           !proj->children.empty())
+      proj = proj->children[0].get();
+    if (proj &&
+        proj->GetNodeType() ==
+            ir_sql_converter::SimplestNodeType::ProjectionNode &&
+        proj->target_list.size() > original_output_col_count_) {
+      proj->target_list.resize(original_output_col_count_);
+      if (!proj->expr_target_list.empty())
+        proj->expr_target_list.resize(original_output_col_count_);
+    }
+  }
 
   // === Final Execution ===
   if (!remaining_ir) {

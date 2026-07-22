@@ -1136,7 +1136,9 @@ static Value *EmitVarConst(CompileCtx &cc,
                            const SimplestVarConstComparison *cmp) {
   int col_idx = cc.FindColIdx(*cmp->attr);
   if (col_idx < 0)
-    return ConstantInt::getTrue(cc.llctx); // fallback: accept
+    throw std::runtime_error(
+        "AQP-JIT unsupported: filter column '" + cmp->attr->GetColumnName() +
+        "' not found in chunk schema (would pass all rows)");
 
   const ColSchema &cs = cc.schema[col_idx];
   Value *data = cc.col_data[col_idx];
@@ -2270,9 +2272,10 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
     return expr->negated ? cc.b.CreateNot(match) : match;
   }
 
-  // Unsupported dtype for IN — pass all
-  return expr->negated ? ConstantInt::getFalse(cc.llctx)
-                       : ConstantInt::getTrue(cc.llctx);
+  throw std::runtime_error(
+      "AQP-JIT unsupported: IN-list over unsupported column dtype for '" +
+      (expr->attr ? expr->attr->GetColumnName() : std::string("<null>")) +
+      "' (would pass all rows)");
 }
 
 // Arithmetic expression: left OP right → numeric result
@@ -2281,12 +2284,14 @@ static Value *EmitIn(CompileCtx &cc, const SimplestInExpr *expr) {
 // For use in projection context (future), the result is stored directly.
 static Value *EmitArith(CompileCtx &cc, const SimplestArithExpr *expr) {
   if (!expr || !expr->left || !expr->right)
-    return ConstantInt::get(cc.i32(), 0);
+    throw std::runtime_error(
+        "AQP-JIT unsupported: arithmetic expression with missing operand");
 
   Value *lhs = EmitExpr(cc, expr->left.get());
   Value *rhs = EmitExpr(cc, expr->right.get());
   if (!lhs || !rhs)
-    return ConstantInt::get(cc.i32(), 0);
+    throw std::runtime_error(
+        "AQP-JIT unsupported: arithmetic operand failed to compile");
 
   // Determine if floating point based on result type
   bool is_fp = (expr->result_type == ir_sql_converter::FloatVar);
@@ -2323,18 +2328,21 @@ static Value *EmitArith(CompileCtx &cc, const SimplestArithExpr *expr) {
   case ir_sql_converter::ArithMod:
     return cc.b.CreateFRem(lhs, rhs, "mod");
   default:
-    return ConstantInt::get(cc.i32(), 0);
+    throw std::runtime_error(
+        "AQP-JIT unsupported: arithmetic operator " +
+        std::to_string(static_cast<int>(expr->arith_op)));
   }
 }
 
 // Type cast: child → target_type
 static Value *EmitCast(CompileCtx &cc, const SimplestCastExpr *expr) {
   if (!expr || !expr->child)
-    return ConstantInt::get(cc.i32(), 0);
+    throw std::runtime_error("AQP-JIT unsupported: cast with missing child");
 
   Value *child = EmitExpr(cc, expr->child.get());
   if (!child)
-    return ConstantInt::get(cc.i32(), 0);
+    throw std::runtime_error(
+        "AQP-JIT unsupported: cast child failed to compile");
 
   Type *src_ty = child->getType();
   Type *dst_ty;
@@ -2352,7 +2360,9 @@ static Value *EmitCast(CompileCtx &cc, const SimplestCastExpr *expr) {
     dst_ty = cc.i32();
     break;
   default:
-    return child; // no-op cast
+    throw std::runtime_error(
+        "AQP-JIT unsupported: cast to var type " +
+        std::to_string(static_cast<int>(expr->target_type)));
   }
 
   if (src_ty == dst_ty)
@@ -2380,13 +2390,16 @@ static Value *EmitCast(CompileCtx &cc, const SimplestCastExpr *expr) {
     else
       return cc.b.CreateFPTrunc(child, dst_ty, "cast_fptrunc");
   }
-  return child; // fallback: no-op
+  throw std::runtime_error(
+      "AQP-JIT unsupported: cast between incompatible LLVM types");
 }
 
 // Main expression dispatch
 static Value *EmitExpr(CompileCtx &cc, const AQPExpr *expr) {
   if (!expr)
-    return ConstantInt::getTrue(cc.llctx);
+    throw std::runtime_error(
+        "AQP-JIT unsupported: null expression in filter (would pass all "
+        "rows)");
 
   switch (expr->GetNodeType()) {
   case VarConstComparisonNode: {
@@ -2437,7 +2450,10 @@ static Value *EmitExpr(CompileCtx &cc, const AQPExpr *expr) {
   case CastExprNode:
     return EmitCast(cc, static_cast<const SimplestCastExpr *>(expr));
   default:
-    return ConstantInt::getTrue(cc.llctx); // unknown: pass all rows
+    throw std::runtime_error(
+        "AQP-JIT unsupported: expression node type " +
+        std::to_string(static_cast<int>(expr->GetNodeType())) +
+        " in filter (would pass all rows)");
   }
 }
 

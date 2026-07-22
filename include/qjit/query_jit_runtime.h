@@ -283,7 +283,7 @@ private:
 // QjitAggState — ungrouped aggregates: per-worker cells + Merge.
 // ---------------------------------------------------------------------------
 
-enum class QjitAggFn : uint8_t { Min, Max, Sum, Count, CountStar };
+enum class QjitAggFn : uint8_t { Min, Max, Sum, Count, CountStar, Average };
 enum class QjitAggDType : uint8_t { I64, F64, Str };
 
 struct QjitAggCellDesc {
