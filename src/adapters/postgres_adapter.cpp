@@ -1057,8 +1057,12 @@ bool PostgreSQLAdapter::BuildOutputDescsFromIR(
       if (cell.fn == qjit::QjitAggFn::Count ||
           cell.fn == qjit::QjitAggFn::CountStar) {
         dt = AQP_DTYPE_INT64;
+      } else if (cell.fn == qjit::QjitAggFn::Average) {
+        dt = AQP_DTYPE_DOUBLE;
       } else if (cell.arg.dtype == AQP_DTYPE_INT32) {
         dt = AQP_DTYPE_INT32;
+      } else if (cell.arg.dtype == AQP_DTYPE_INT64) {
+        dt = AQP_DTYPE_INT64;
       } else if (cell.arg.dtype == AQP_DTYPE_VARCHAR) {
         dt = AQP_DTYPE_VARCHAR;
       } else {
@@ -1070,16 +1074,26 @@ bool PostgreSQLAdapter::BuildOutputDescsFromIR(
     compiled.agg_output_cells = plan.agg_output_cells;
     compiled.agg_descs.reserve(last.agg_cells.size());
     for (const auto &cell : last.agg_cells) {
-      qjit::QjitAggDType adt =
-          (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
-              ? qjit::QjitAggDType::Str
-              : qjit::QjitAggDType::I64;
+      qjit::QjitAggDType adt;
+      if (cell.fn == qjit::QjitAggFn::Average)
+        adt = (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+                  ? qjit::QjitAggDType::Str
+                  : (cell.has_arg && (cell.arg.dtype == AQP_DTYPE_DOUBLE ||
+                                      cell.arg.dtype == AQP_DTYPE_FLOAT))
+                        ? qjit::QjitAggDType::F64
+                        : qjit::QjitAggDType::I64;
+      else
+        adt = (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+                  ? qjit::QjitAggDType::Str
+                  : qjit::QjitAggDType::I64;
       compiled.agg_descs.push_back({cell.fn, adt});
     }
   } else {
     for (size_t i = 0; i < last.outputs.size(); i++) {
       int32_t dt = last.outputs[i].dtype;
-      if (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_VARCHAR) {
+      if (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_INT64 &&
+          dt != AQP_DTYPE_VARCHAR && dt != AQP_DTYPE_DOUBLE &&
+          dt != AQP_DTYPE_FLOAT) {
         reason = "output:unsupported-dtype";
         return false;
       }
@@ -1263,6 +1277,9 @@ PostgreSQLAdapter::ExecuteQueryJitFinal(QjitCompiled &compiled) {
         row_data.push_back(std::to_string(qtable.GetI32(col, r)));
       } else if (qtable.Col(col).dtype == AQP_DTYPE_INT64) {
         row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+      } else if (qtable.Col(col).dtype == AQP_DTYPE_DOUBLE ||
+                 qtable.Col(col).dtype == AQP_DTYPE_FLOAT) {
+        row_data.push_back(std::to_string(qtable.GetF64(col, r)));
       } else {
         QjitString s = qtable.GetStr(col, r);
         row_data.emplace_back(qjit::StringData(s), qjit::StringLen(s));

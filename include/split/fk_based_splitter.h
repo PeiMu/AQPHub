@@ -101,10 +101,11 @@ class FKBasedSplitter : public AQPSplitter, public AQPSelector {
 public:
   FKBasedSplitter(EngineAdapter *adapter, BackendEngine engine,
                   SplitStrategy strategy, bool enable_analyze,
-                  const std::string &fkeys_path = "")
+                  const std::string &fkeys_path = "",
+                  const std::string &pg_connection = "")
       : AQPSplitter(adapter), engine_(engine), strategy_(strategy),
         enable_analyze_(enable_analyze),
-        fk_extractor_(adapter, engine, fkeys_path) {}
+        fk_extractor_(adapter, engine, fkeys_path, pg_connection) {}
 
   void Preprocess(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
 
@@ -233,9 +234,10 @@ protected:
 class MinSubquerySplitter : public FKBasedSplitter {
 public:
   MinSubquerySplitter(EngineAdapter *adapter, BackendEngine engine,
-                      bool enable_analyze, const std::string &fkeys_path = "")
+                      bool enable_analyze, const std::string &fkeys_path = "",
+                      const std::string &pg_connection = "")
       : FKBasedSplitter(adapter, engine, SplitStrategy::MIN_SUBQUERY,
-                        enable_analyze, fkeys_path) {}
+                        enable_analyze, fkeys_path, pg_connection) {}
 
   std::unique_ptr<SubqueryExtraction>
   SplitIR(ir_sql_converter::AQPStmt *remaining_ir) override;
@@ -255,9 +257,10 @@ class RelationshipCenterSplitter : public FKBasedSplitter {
 public:
   RelationshipCenterSplitter(EngineAdapter *adapter, BackendEngine engine,
                              bool enable_analyze,
-                             const std::string &fkeys_path = "")
+                             const std::string &fkeys_path = "",
+                             const std::string &pg_connection = "")
       : FKBasedSplitter(adapter, engine, SplitStrategy::RELATIONSHIP_CENTER,
-                        enable_analyze, fkeys_path) {}
+                        enable_analyze, fkeys_path, pg_connection) {}
 
   std::unique_ptr<SubqueryExtraction>
   SplitIR(ir_sql_converter::AQPStmt *remaining_ir) override;
@@ -277,9 +280,10 @@ private:
 class EntityCenterSplitter : public FKBasedSplitter {
 public:
   EntityCenterSplitter(EngineAdapter *adapter, BackendEngine engine,
-                       bool enable_analyze, const std::string &fkeys_path = "")
+                       bool enable_analyze, const std::string &fkeys_path = "",
+                       const std::string &pg_connection = "")
       : FKBasedSplitter(adapter, engine, SplitStrategy::ENTITY_CENTER,
-                        enable_analyze, fkeys_path) {}
+                        enable_analyze, fkeys_path, pg_connection) {}
 
   std::unique_ptr<SubqueryExtraction>
   SplitIR(ir_sql_converter::AQPStmt *remaining_ir) override;

@@ -62,8 +62,10 @@ private:
 class ForeignKeyExtractor {
 public:
   explicit ForeignKeyExtractor(EngineAdapter *adapter, BackendEngine engine,
-                               const std::string &fkeys_path = "")
-      : adapter_(adapter), engine_(engine), fkeys_path_(fkeys_path) {}
+                               const std::string &fkeys_path = "",
+                               const std::string &pg_connection = "")
+      : adapter_(adapter), engine_(engine), fkeys_path_(fkeys_path),
+        pg_connection_(pg_connection) {}
 
   // Extract foreign keys for all tables in the given set
   ForeignKeyGraph ExtractForTables(const std::set<std::string> &table_names);
@@ -89,6 +91,7 @@ private:
   EngineAdapter *adapter_;
   BackendEngine engine_;
   std::string fkeys_path_;
+  std::string pg_connection_;
 };
 
 } // namespace middleware

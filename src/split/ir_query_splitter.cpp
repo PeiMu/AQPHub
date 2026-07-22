@@ -78,17 +78,20 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
 
   case SplitStrategy::MIN_SUBQUERY:
     splitter_ = std::make_unique<MinSubquerySplitter>(
-        adapter, config.engine, config.enable_analyze, config.fkeys_path);
+        adapter, config.engine, config.enable_analyze, config.fkeys_path,
+        config.helper_db);
     break;
 
   case SplitStrategy::RELATIONSHIP_CENTER:
     splitter_ = std::make_unique<RelationshipCenterSplitter>(
-        adapter, config.engine, config.enable_analyze, config.fkeys_path);
+        adapter, config.engine, config.enable_analyze, config.fkeys_path,
+        config.helper_db);
     break;
 
   case SplitStrategy::ENTITY_CENTER:
     splitter_ = std::make_unique<EntityCenterSplitter>(
-        adapter, config.engine, config.enable_analyze, config.fkeys_path);
+        adapter, config.engine, config.enable_analyze, config.fkeys_path,
+        config.helper_db);
     break;
 
   case SplitStrategy::NODE_BASED: {
@@ -4008,6 +4011,56 @@ void IRQuerySplitter::UpdateExprIndices(
     }
     return;
   }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *in_expr = dynamic_cast<ir_sql_converter::SimplestInExpr *>(expr);
+    if (in_expr && in_expr->attr) {
+      auto updated =
+          UpdateAttrIndices(in_expr->attr.get(), temp_table, old_table_indices);
+      if (updated) {
+        in_expr->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *arith = dynamic_cast<ir_sql_converter::SimplestArithExpr *>(expr);
+    if (arith) {
+      UpdateExprIndices(arith->left.get(), temp_table, old_table_indices);
+      UpdateExprIndices(arith->right.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *cast = dynamic_cast<ir_sql_converter::SimplestCastExpr *>(expr);
+    if (cast) {
+      UpdateExprIndices(cast->child.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ExprNode) {
+    auto *general =
+        dynamic_cast<ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (general) {
+      UpdateExprIndices(general->left_expr.get(), temp_table,
+                        old_table_indices);
+      UpdateExprIndices(general->right_expr.get(), temp_table,
+                        old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ConstVarNode) {
+    return;
+  }
+
+  throw std::runtime_error(
+      "IRQuerySplitter unsupported: expression node type " +
+      std::to_string(static_cast<int>(node_type)) +
+      " in UpdateExprIndices; column indices would go stale");
 }
 
 std::unique_ptr<ir_sql_converter::SimplestAttr>
