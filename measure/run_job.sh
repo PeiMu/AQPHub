@@ -59,7 +59,7 @@ elif [[ "$jit_cache" != "off" ]]; then
     flag_suffix+="_jitcache_${jit_cache//-/_}"
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 
 # Storage plan flags. Only query-jit consumes the storage plan (FlatTable

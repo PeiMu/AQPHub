@@ -83,7 +83,11 @@ log_name=time_log.csv
 dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
 container_name="umbra_benchmark"
 
-iteration=15 # 5 warm up, 10 runs
+if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+    iteration=8  # 3 warm up, 5 runs
+else
+    iteration=15 # 5 warm up, 10 runs
+fi
 
 ########################################
 # DB connection

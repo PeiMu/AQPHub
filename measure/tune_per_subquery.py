@@ -161,10 +161,10 @@ def make_configs(split, engine="duckdb"):
                  filename=f"{e}_{split}_query_none_breakdown_time_log.csv",
                  hasjit=True, flags=dict()),
             dict(label="query_fastisel",
-                 filename=f"{e}_{split}_query_none_fcfastisel_breakdown_time_log.csv",
+                 filename=f"{e}_{split}_query_none_fastisel_breakdown_time_log.csv",
                  hasjit=True, flags=dict(compile_mode=1)),
             dict(label="query_tpde",
-                 filename=f"{e}_{split}_query_none_fctpde_breakdown_time_log.csv",
+                 filename=f"{e}_{split}_query_none_tpde_breakdown_time_log.csv",
                  hasjit=True, flags=dict(compile_mode=2)),
         ]
 
@@ -182,13 +182,13 @@ def make_configs(split, engine="duckdb"):
         #      filename=f"{e}_{split}_expr_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         dict(label="expr_fastisel",
-             filename=f"{e}_{split}_expr_none_fcfastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_expr_none_fastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
         # dict(label="expr_fastisel_simd",
-        #      filename=f"{e}_{split}_expr_auto_fcfastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_expr_auto_fastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
         dict(label="expr_tpde",
-             filename=f"{e}_{split}_expr_none_fctpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_expr_none_tpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- operator-jit ----
@@ -199,13 +199,13 @@ def make_configs(split, engine="duckdb"):
         #      filename=f"{e}_{split}_operator_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         dict(label="operator_fastisel",
-             filename=f"{e}_{split}_operator_none_fcfastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_operator_none_fastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
         # dict(label="operator_fastisel_simd",
-        #      filename=f"{e}_{split}_operator_auto_fcfastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_operator_auto_fastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
         dict(label="operator_tpde",
-             filename=f"{e}_{split}_operator_none_fctpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_operator_none_tpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- pipeline-jit ----
@@ -216,13 +216,13 @@ def make_configs(split, engine="duckdb"):
         #      filename=f"{e}_{split}_pipeline_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         dict(label="pipeline_fastisel",
-             filename=f"{e}_{split}_pipeline_none_fcfastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_pipeline_none_fastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
         # dict(label="pipeline_fastisel_simd",
-        #      filename=f"{e}_{split}_pipeline_auto_fcfastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_pipeline_auto_fastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
         dict(label="pipeline_tpde",
-             filename=f"{e}_{split}_pipeline_none_fctpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_pipeline_none_tpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- query-jit (full LLVM backend) ----
@@ -232,12 +232,12 @@ def make_configs(split, engine="duckdb"):
 
         # ---- query-jit (FastISel backend) ----
         dict(label="query_fastisel",
-             filename=f"{e}_{split}_query_none_fcfastisel_breakdown_time_log.csv",
+             filename=f"{e}_{split}_query_none_fastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1)),
 
         # ---- query-jit (TPDE fast backend) ----
         dict(label="query_tpde",
-             filename=f"{e}_{split}_query_none_fctpde_breakdown_time_log.csv",
+             filename=f"{e}_{split}_query_none_tpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2)),
 
         # ---- query-jit with skip_hash_cmp=off ----
@@ -245,10 +245,10 @@ def make_configs(split, engine="duckdb"):
              filename=f"duckdb_{split}_query_none_noskiphashcmp_breakdown_time_log.csv",
              hasjit=True, flags=dict(skip_hash_cmp="off")),
         dict(label="query_fastisel",
-             filename=f"duckdb_{split}_query_none_noskiphashcmp_fcfastisel_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_fastisel_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=1, skip_hash_cmp="off")),
         dict(label="query_tpde",
-             filename=f"duckdb_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
+             filename=f"duckdb_{split}_query_none_noskiphashcmp_tpde_breakdown_time_log.csv",
              hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
 
         # ---- query-jit SIMD (ROF two-phase; TPDE excluded — ROF disabled) ----
@@ -256,7 +256,7 @@ def make_configs(split, engine="duckdb"):
         #      filename=f"{e}_{split}_query_auto_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(simd=True)),
         # dict(label="query_fastisel_simd",
-        #      filename=f"{e}_{split}_query_auto_fcfastisel_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_query_auto_fastisel_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=1, simd=True)),
 
         # ---- future configs (uncomment when CSVs exist) ----
@@ -264,7 +264,7 @@ def make_configs(split, engine="duckdb"):
         #      filename=f"{e}_{split}_pipeline_none_nopayprune_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(payload_prune=False)),
         # dict(label="query_tpde",
-        #      filename=f"{e}_{split}_query_none_noskiphashcmp_fctpde_breakdown_time_log.csv",
+        #      filename=f"{e}_{split}_query_none_noskiphashcmp_tpde_breakdown_time_log.csv",
         #      hasjit=True, flags=dict(compile_mode=2, skip_hash_cmp="off")),
     ]
 

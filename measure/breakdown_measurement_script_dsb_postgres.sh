@@ -33,7 +33,7 @@ QUERY_DIR="${DSB_PATH}/code/tools/1_instance_out_aqp/1/"
 
 STORAGE_CACHE_DSB="/tmp/dsb_sf${SF}_storage_plan_pg.cache"
 
-ITERATION=15  # 5 warm-up, 10 measured
+ITERATION=8  # 3 warm-up, 5 measured
 
 cd "${PROJECT}/measure"
 
@@ -85,7 +85,7 @@ run_pg_dsb_breakdown() {
     flag_suffix+="_jitcache_${jit_cache//-/_}"
   fi
   [[ "$spec_jit" != "off" ]] && flag_suffix+="_spec${spec_jit}"
-  [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
+  [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
   [[ -n "$tune_config" ]] && flag_suffix+="_tuned"
 
   local log_name="time_log.csv"

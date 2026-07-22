@@ -295,7 +295,7 @@ for entry in "${CONFIGS[@]}"; do
   echo "=== Testing: ${config_label} ==="
 
   fc_suffix=""
-  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_fc${compile_mode}"
+  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
   shc_suffix=""
   [[ "$skip_hash_cmp" != "all" ]] && shc_suffix="_shc${skip_hash_cmp}"
   simd_suffix=""

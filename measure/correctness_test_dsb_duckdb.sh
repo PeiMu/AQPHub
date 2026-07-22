@@ -377,7 +377,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
     cache_suffix="_jitcache_${jit_cache_mode//-/_}"
   fi
   fc_suffix=""
-  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_fc${compile_mode}"
+  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
   if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     output="${result_dir}/aqp_middleware_${engine}_${jit_level}_${split}_dsb.txt"
   else

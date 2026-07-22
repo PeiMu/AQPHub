@@ -32,7 +32,7 @@ SCHEMA="${JOB_PATH}/schema.sql"
 FKEYS="${JOB_PATH}/fkeys.sql"
 QUERY_DIR="${JOB_PATH}/queries"
 
-ITERATION=15  # 5 warm-up, 10 measured
+ITERATION=8  # 3 warm-up, 5 measured
 
 cd "${PROJECT}/measure"
 mkdir -p job_result
@@ -79,7 +79,7 @@ run_pg_breakdown() {
     flag_suffix+="_jitcache_${jit_cache//-/_}"
   fi
   [[ "$spec_jit" != "off" ]] && flag_suffix+="_spec${spec_jit}"
-  [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_fc${compile_mode}"
+  [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
   [[ -n "$tune_config" ]] && flag_suffix+="_tuned"
 
   local log_name="time_log.csv"

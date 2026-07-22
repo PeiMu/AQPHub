@@ -554,3 +554,96 @@ The `jit` branch added PostgreSQL query-jit support (12 commits). Merge required
 - DSB golden files: `duckdb_dsb_node-based_golden.txt` / `duckdb_dsb_topdown_golden.txt` deleted (2026-07-18) — unused by any script
 - Cross-query-prep guard loss root cause confirmed (2026-07-20): IR→SQL→parse→optimize→IR round-trip in `SpeculativeQueryJitCompile` changes join nesting, `PlanJoinFilterPushdown` finds fewer guards. NOT a CachedSubquery metadata issue — guards are baked into LLVM machine code.
 - query050_spj, query102, query102_spj removed from DSB set (2026-07-18)
+
+---
+
+## Latent Bugs — Not Triggered by Current DSB/JOB Queries (2026-07-22)
+
+The following bugs exist in code but are confirmed NOT triggered by any
+of the 22 DSB queries or 113 JOB queries. Logged here for future reference.
+
+### 1. HT payload layout truncates INT64/DOUBLE to 4 bytes
+
+**Location:**
+- `src/qjit/query_jit_steps.cpp:1198`: `AssignOffsets()` hardcodes `off += 4`
+  for all non-VARCHAR HT payload columns.
+- `src/jit/ir_to_llvm.cpp:10083`: HT payload write uses `loc_value_i32()`
+  (loads/stores 4 bytes via i32 pointer) for all non-VARCHAR payloads.
+
+**Impact:** If a hash join carries INT64 or DOUBLE columns as payloads,
+values are silently truncated to 32 bits. Adjacent payload columns overlap.
+
+**Why not triggered:** JOB has no BIGINT columns. The only DSB DECIMAL(15,2)
+column (`promotion.p_cost`, stored as INT64) is unused by any query.
+All current DSB payload columns fit in INT32 (DECIMAL precision <= 9).
+
+**Fix needed:** `AssignOffsets()` should use `DtypeElemSize()` for payload
+offset calculation. `loc_value_i32` should dispatch to i64 load/store for
+INT64/DOUBLE payloads.
+
+### 2. ORDER BY dtype wrong for Average aggregates
+
+**Location:** `src/qjit/query_jit_steps.cpp:1388`
+
+Uses `agg_cells[cell].arg.dtype` (input column type, e.g., INT32) instead
+of the output dtype (DOUBLE for AVG). The sort comparator would use
+`strtol` instead of `strtod` for fractional AVG values.
+
+**Why not triggered:** The JIT only accepts ungrouped aggregates (single-row
+output). All DSB queries with ORDER BY also have GROUP BY, so JIT rejects
+them with `agg:grouped`. No ungrouped-AVG query has ORDER BY.
+
+### 3. DOUBLE ORDER BY uses lexicographic comparison
+
+**Location:** `src/adapters/duckdb_adapter.cpp` sort comparator (else branch)
+
+The sort comparator falls through to `va.compare(vb)` (string comparison)
+for DOUBLE columns. Would produce wrong ordering (e.g., "9.0" > "10.0").
+
+**Why not triggered:** Same as #2 — all DOUBLE ORDER BY columns are in
+grouped-aggregate queries rejected by JIT.
+
+### 4. NULLS ordering wrong for DESC
+
+**Location:** `src/adapters/duckdb_adapter.cpp` sort comparator
+
+Hardcoded NULLS LAST for all sort directions. SQL standard defaults to
+NULLS FIRST for DESC. Would misorder NULL-containing DESC columns.
+
+**Why not triggered:** DESC ORDER BY appears in query019, query091 — both
+rejected by `agg:grouped`.
+
+### 5. Missing CaseExprNodeType in UpdateExprIndices / CloneExpr / CollectAttrsFromExpr
+
+**Location:**
+- `src/split/ir_query_splitter.cpp`: `UpdateExprIndices()` throws on
+  `CaseExprNodeType`
+- `src/split/ir_utils.cpp`: `CloneExpr()` and `CollectAttrsFromExpr()`
+  throw on `CaseExprNodeType`
+
+**Why not triggered:** No DSB query has CASE expressions in WHERE clause
+predicates (`qual_vec`). CASE appears only inside `agg_fn_exprs` (e.g.,
+`SUM(CASE WHEN ...)`) which is handled by `RewriteExprAttrs` in
+fk_based_splitter.cpp.
+
+### 6. Missing FunctionExprNodeType in UpdateExprIndices
+
+**Location:** `src/split/ir_query_splitter.cpp`: `UpdateExprIndices()`
+throws on `FunctionExprNodeType`.
+
+**Why not triggered:** No DSB query has function calls in WHERE clause
+predicates. Functions appear only in projections (`expr_target_list`)
+and GROUP BY (`group_exprs`), handled by `RewriteExprAttrs`.
+
+### query032 DELIM_JOIN split fallback (FIXED 2026-07-22)
+
+query032 has a correlated subquery converted to DELIM_JOIN by DuckDB.
+When node-based split tries to re-Split the plan, DuckDB's internal
+join ordering throws `InternalException("Unable to find delim scan
+stats!")`. Previously this was not caught by the split-loop fallback
+(which only matched "Prepare failed" and "unsupported").
+
+**Fix:** Widened the fallback catch in `ExecuteWithSplit`
+(ir_query_splitter.cpp:1073) to also match "Query failed" and
+"Unable to find". query032 now falls back to direct SQL execution
+correctly.
