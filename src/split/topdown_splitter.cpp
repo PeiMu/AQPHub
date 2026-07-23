@@ -93,6 +93,24 @@ void ForEachJoinPredicate(const ir_sql_converter::AQPExpr *expr,
   }
 }
 
+// Decompose AND-conjuncts and invoke cb on each leaf (non-AND) expression.
+// Unlike ForEachJoinPredicate which only visits VarComparison leaves, this
+// visits every conjunct regardless of type.
+template <typename Callback>
+void ForEachConjunct(const ir_sql_converter::AQPExpr *expr, Callback &&cb) {
+  if (!expr)
+    return;
+  if (expr->GetNodeType() == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
+    auto *le = dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    if (le && le->GetLogicalOp() == ir_sql_converter::LogicalAnd) {
+      ForEachConjunct(le->left_expr.get(), cb);
+      ForEachConjunct(le->right_expr.get(), cb);
+      return;
+    }
+  }
+  cb(expr);
+}
+
 void CollectMarkLockedTables(const ir_sql_converter::AQPStmt *node,
                              std::set<unsigned int> &locked,
                              bool under_mark = false) {
@@ -202,8 +220,9 @@ void CollectMarkInfo(
 } // namespace
 
 TopDownSplitter::TopDownSplitter(EngineAdapter *adapter,
+                                 BackendEngine engine,
                                  bool apply_engine_settings)
-    : FKBasedSplitter(adapter, BackendEngine::DUCKDB, SplitStrategy::TOP_DOWN,
+    : FKBasedSplitter(adapter, engine, SplitStrategy::TOP_DOWN,
                       /*enable_analyze=*/false, /*fkeys_path=*/"") {
   // B2 (2026-07-11): SDS sub-SQLs are simple star joins; ~52% of DuckDB's
   // Prepare() cost is the optimizer pipeline, spread thinly across passes
@@ -566,9 +585,46 @@ static bool CollectExprTables(const ir_sql_converter::AQPExpr *e,
   }
 }
 
+// Check whether a single (non-AND) expression conjunct references 2+ tables
+// and is not a simple VarComparison (which is handled as a join edge).
+// If so, those tables must stay in the same cluster.
+static void CheckColocateConjunct(
+    const ir_sql_converter::AQPExpr *expr,
+    std::vector<std::set<unsigned int>> &groups) {
+  if (!expr)
+    return;
+  auto nt = expr->GetNodeType();
+  // Decompose AND into individual conjuncts — PG IR chains independent
+  // single-table filters into one LogicalAnd tree in qual_vec[0].
+  if (nt == ir_sql_converter::SimplestNodeType::LogicalExprNode) {
+    auto *le = dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(expr);
+    if (le && le->GetLogicalOp() == ir_sql_converter::LogicalAnd) {
+      CheckColocateConjunct(le->left_expr.get(), groups);
+      CheckColocateConjunct(le->right_expr.get(), groups);
+      return;
+    }
+  }
+  // VarComparison is a join edge, not a colocate constraint.
+  if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode)
+    return;
+  std::set<unsigned int> expr_tables;
+  bool ok = CollectExprTables(expr, expr_tables);
+#ifndef NDEBUG
+  std::cout << "[SDS]   conjunct node_type=" << (int)nt
+            << " ok=" << ok << " tables={";
+  for (auto t : expr_tables)
+    std::cout << t << " ";
+  std::cout << "}" << std::endl;
+#endif
+  if (ok && expr_tables.size() >= 2)
+    groups.push_back(expr_tables);
+}
+
 // Collect sets of table indices that MUST stay in the same cluster because
 // they share unsplittable predicates (general comparisons, OR clauses
 // spanning multiple tables). Each entry is a set of >= 2 table indices.
+// LogicalAnd is decomposed so that independent single-table filters chained
+// by AND (common in PG IR) do not create false colocate constraints.
 static void CollectMustColocateSets(
     const ir_sql_converter::AQPStmt *node,
     std::vector<std::set<unsigned int>> &groups) {
@@ -580,24 +636,8 @@ static void CollectMustColocateSets(
             << node->qual_vec.size() << " children=" << node->children.size()
             << std::endl;
 #endif
-  for (const auto &qual : node->qual_vec) {
-    std::set<unsigned int> expr_tables;
-    bool ok = CollectExprTables(qual.get(), expr_tables);
-#ifndef NDEBUG
-    std::cout << "[SDS]   qual node_type=" << (int)qual->GetNodeType()
-              << " ok=" << ok << " tables={";
-    for (auto t : expr_tables)
-      std::cout << t << " ";
-    std::cout << "}" << std::endl;
-#endif
-    if (ok && expr_tables.size() >= 2) {
-      auto nt = qual->GetNodeType();
-      bool is_simple_join_pred =
-          (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode);
-      if (!is_simple_join_pred)
-        groups.push_back(expr_tables);
-    }
-  }
+  for (const auto &qual : node->qual_vec)
+    CheckColocateConjunct(qual.get(), groups);
   for (const auto &child : node->children)
     CollectMustColocateSets(child.get(), groups);
 }
@@ -647,10 +687,17 @@ void TopDownSplitter::CollectEdges(
       }
     }
   }
-  for (const auto &qual : node->qual_vec) {
-    ForEachJoinPredicate(qual.get(), add_edge);
+  // Add non-equality connectivity edges for cross-table general expressions
+  // (e.g., BETWEEN with date arithmetic). Decompose LogicalAnd first so that
+  // independent single-table filters chained by AND (common in PG IR) do not
+  // create spurious edges.
+  auto add_general_edges =
+      [&](const ir_sql_converter::AQPExpr *expr) {
+    auto nt = expr->GetNodeType();
+    if (nt == ir_sql_converter::SimplestNodeType::VarComparisonNode)
+      return;
     std::set<unsigned int> expr_tables;
-    if (CollectExprTables(qual.get(), expr_tables) && expr_tables.size() >= 2) {
+    if (CollectExprTables(expr, expr_tables) && expr_tables.size() >= 2) {
       std::vector<unsigned int> tvec(expr_tables.begin(), expr_tables.end());
       for (size_t i = 0; i < tvec.size(); ++i) {
         for (size_t j = i + 1; j < tvec.size(); ++j) {
@@ -669,6 +716,10 @@ void TopDownSplitter::CollectEdges(
         }
       }
     }
+  };
+  for (const auto &qual : node->qual_vec) {
+    ForEachJoinPredicate(qual.get(), add_edge);
+    ForEachConjunct(qual.get(), add_general_edges);
   }
 
   for (const auto &child : node->children)

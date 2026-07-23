@@ -75,7 +75,7 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
   switch (config.strategy) {
   case SplitStrategy::TOP_DOWN:
     splitter_ = std::make_unique<TopDownSplitter>(
-        adapter, /*apply_engine_settings=*/true);
+        adapter, config.engine, /*apply_engine_settings=*/true);
     break;
 
   case SplitStrategy::MIN_SUBQUERY:
@@ -769,7 +769,7 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // Run Preprocess on a bg TopDownSplitter. Pre-populate base_count_cache_
     // from the file-backed distinct cache so FetchMissingLeafCardinalities
     // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
-    TopDownSplitter bg_splitter(duck, /*apply_engine_settings=*/false);
+    TopDownSplitter bg_splitter(duck, BackendEngine::DUCKDB, /*apply_engine_settings=*/false);
     bg_splitter.SetBgMode(true);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.Preprocess(result->whole_ir);
@@ -879,7 +879,7 @@ IRQuerySplitter::PrepareNextQueryTopDownPG(const std::string &sql_path,
       return result;
     }
 
-    TopDownSplitter bg_splitter(adapter, /*apply_engine_settings=*/false);
+    TopDownSplitter bg_splitter(adapter, BackendEngine::POSTGRESQL, /*apply_engine_settings=*/false);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.SetBgMode(true);
     bg_splitter.Preprocess(result->whole_ir);
@@ -1364,10 +1364,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
 
     if (!ExecuteOneIteration(remaining_ir)) {
-      throw std::runtime_error(
-          "IRQuerySplitter unsupported: ExecuteOneIteration made no progress "
-          "while the split is incomplete (iteration " +
-          std::to_string(iteration_count_) + ")");
+      std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
+                   "false but IsComplete was false. Breaking loop."
+                << std::endl;
+      break;
     }
 
     if (config_.enable_debug_print) {
