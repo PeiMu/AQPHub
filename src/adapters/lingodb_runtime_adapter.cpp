@@ -111,6 +111,13 @@ public:
                   "_" + colName;
         else
           alias = "t" + std::to_string(attr->GetTableIndex()) + "_" + colName;
+        if (alias.size() > 63) {
+          uint64_t h = 14695981039346656037ULL;
+          for (unsigned char c : alias) { h ^= c; h *= 1099511628211ULL; }
+          char buf[18];
+          snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+          alias = std::string("c_") + buf;
+        }
 
         colRefAttrs.push_back(colRef);
         colNameAttrs.push_back(builder.getStringAttr(alias));

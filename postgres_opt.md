@@ -315,7 +315,7 @@ Build hazards:
 ### Single query end-to-end
 
 Take a simple JOB query (e.g., 1a -- single join), run with
-`./build_release/aqp_middleware ...` (check reference in measure/run_job.sh). Compare result
+`./build_release/aqp_middleware ...` (check reference in measure/run_aqp.sh job). Compare result
 to golden output.
 
 ### Full JOB correctness

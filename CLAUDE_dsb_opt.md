@@ -91,7 +91,7 @@ Build hazards:
 Scripts are named `{type}_{benchmark}_{engine}.sh`:
 - `breakdown_measurement_script_{job,dsb}_{duckdb,postgres}.sh` — full performance sweep
 - `correctness_test_{job,dsb}_{duckdb,postgres}.sh` — correctness verification
-- `hyperfine_{job,dsb}.sh`, `measure_{job,dsb}.sh`, `run_{job,dsb}.sh`, `measure_breakdown_time_{job,dsb}.sh` — engine-agnostic helpers (accept engine as parameter)
+- `hyperfine_aqp.sh {job,dsb}`, `run_aqp.sh {job,dsb}`, `measure_breakdown_time_aqp.sh {job,dsb}` — unified engine-agnostic helpers (accept benchmark and engine as parameters)
 
 ### PostgreSQL query-jit
 - Only `query` jit-level supported (no expr/operator/pipeline-jit)
@@ -105,7 +105,7 @@ Scripts are named `{type}_{benchmark}_{engine}.sh`:
 ### Single query end-to-end
 
 Take a simple JOB query (e.g., 1a — single join), run with
-`./build_release/aqp_middleware ...` (check reference in measure/run_job.sh). Compare result to golden output.
+`./build_release/aqp_middleware ...` (check reference in measure/run_aqp.sh job). Compare result to golden output.
 
 ### Full correctness
 

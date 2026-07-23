@@ -1577,16 +1577,31 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
               if (ch)
                 stack.push_back(ch.get());
           }
+          auto truncate_col = [](std::string name) -> std::string {
+            constexpr size_t kMaxLen = 63;
+            if (name.size() > kMaxLen) {
+              uint64_t h = 14695981039346656037ULL;
+              for (unsigned char c : name) {
+                h ^= c;
+                h *= 1099511628211ULL;
+              }
+              char buf[18];
+              snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+              return std::string("c_") + buf;
+            }
+            return name;
+          };
           for (const auto &attr : fast_ir->target_list) {
             auto it = leaf_names.find(attr->GetTableIndex());
             if (it != leaf_names.end() && !it->second.empty())
-              plan_names.push_back(it->second + "_" +
-                                   std::to_string(attr->GetTableIndex()) +
-                                   "_" + attr->GetColumnName());
+              plan_names.push_back(truncate_col(
+                  it->second + "_" +
+                  std::to_string(attr->GetTableIndex()) +
+                  "_" + attr->GetColumnName()));
             else
-              plan_names.push_back("t" +
-                                   std::to_string(attr->GetTableIndex()) +
-                                   "_" + attr->GetColumnName());
+              plan_names.push_back(truncate_col(
+                  "t" + std::to_string(attr->GetTableIndex()) +
+                  "_" + attr->GetColumnName()));
           }
         }
         if (plan_names.size() != plan_types.size()) {

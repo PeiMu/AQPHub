@@ -105,9 +105,9 @@ off the critical path.
 ```bash
 cd measure
 # uniform q_tpde + template cache (current best single-run)
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template off tpde
+bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all single-run-template off tpde
 # tuned + template cache
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on all single-run-template off llvm job_result/tuned_per_subquery_node-based.json
+bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all single-run-template off llvm job_result/tuned_per_subquery_node-based.json
 # parse ONLY with the canonical parser:
 # /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
 ```

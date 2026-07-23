@@ -12,11 +12,11 @@
 #                  × 2 spec(off/recompile)                 = 32
 #   = 73 configs
 #
-# Uses measure_breakdown_time_job_pg.sh as the per-config runner.
-# Arg order (same as measure_breakdown_time_job.sh):
-#   1=engine 2=split 3=jit_level 4=jit_simd
-#   5=payload_prune 6=prefetch 7=batch_probe 8=skip_hash_cmp
-#   9=jit_cache 10=spec_jit 11=compile_mode 12=tune_config
+# Uses run_pg_breakdown() helper (self-contained in this script).
+# Arg order (same positional layout as measure_breakdown_time_aqp.sh job):
+#   1=bench 2=engine 3=split 4=jit_level 5=jit_simd
+#   6=payload_prune 7=prefetch 8=batch_probe 9=skip_hash_cmp
+#   10=jit_cache 11=spec_jit 12=compile_mode 13=tune_config
 #
 set -e
 
@@ -79,7 +79,7 @@ run_pg_breakdown() {
     flag_suffix+="_jitcache_${jit_cache//-/_}"
   fi
   [[ "$spec_jit" != "off" ]] && flag_suffix+="_spec${spec_jit}"
-  [[ "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
+  [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
   [[ -n "$tune_config" ]] && flag_suffix+="_tuned"
 
   local log_name="time_log.csv"

@@ -326,7 +326,7 @@ then compare it with the splitted result.
 We use `std::chrono::high_resolution_clock::time_point` to measure the function-level performance breakdown.
 you can enable this by `--timing`.
 The time will be saved in `time_log.csv`. 
-You can also run script `bash ./measure_breakdown_time_job.sh` to measure all engines with all split strategies.
+You can also run script `bash ./measure_breakdown_time_aqp.sh job` to measure all engines with all split strategies.
 
 ### Debug print
 
@@ -430,26 +430,26 @@ Arguments 5-12 are optional.
 ### Run a single benchmark pass
 
 ```bash
-bash ./run_job.sh duckdb none pipeline none
+bash ./run_aqp.sh job duckdb none pipeline none
 ```
 
 ### Measure performance breakdown (per-query timing)
 
 ```bash
-bash ./measure_breakdown_time_job.sh duckdb node-based query none
+bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none
 ```
 
 ### Examples with compile mode and spec-jit
 
 ```bash
 # Query-jit with TPDE backend
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on on off off tpde
+bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off tpde
 
 # Query-jit with spec-jit=recompile (bg=LLVM O2, miss=TPDE)
-bash ./measure_breakdown_time_job.sh duckdb node-based query none on on on on off recompile tpde
+bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off recompile tpde
 
 # Per-subquery tuned config
-bash ./measure_breakdown_time_job.sh duckdb node-based query none \
+bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none \
     on on on on off off off job_result/tuned_per_subquery_node-based.json
 ```
 
@@ -547,16 +547,16 @@ Different sub-queries within a split query benefit from different JIT configurat
 ```bash
 cd measure/
 # Each config produces a CSV in job_result/
-bash measure_breakdown_time_job.sh duckdb node-based none none       # interp
-bash measure_breakdown_time_job.sh duckdb node-based expr none  on on on on off off  # expr
-bash measure_breakdown_time_job.sh duckdb node-based expr auto  on on on on off off  # expr_simd
-bash measure_breakdown_time_job.sh duckdb node-based operator none on on on on off off  # operator
-bash measure_breakdown_time_job.sh duckdb node-based operator auto on on on on off off  # operator_simd
-bash measure_breakdown_time_job.sh duckdb node-based pipeline none on on on on off off  # pipeline
-bash measure_breakdown_time_job.sh duckdb node-based pipeline auto on on on on off off  # pipeline_simd
-bash measure_breakdown_time_job.sh duckdb node-based query none on on on on off off  # query_full
-bash measure_breakdown_time_job.sh duckdb node-based query none on on on on off off fastisel  # query_fastisel
-bash measure_breakdown_time_job.sh duckdb node-based query none on on on on off off tpde  # query_tpde
+bash measure_breakdown_time_aqp.sh job duckdb node-based none none       # interp
+bash measure_breakdown_time_aqp.sh job duckdb node-based expr none  on on on on off off  # expr
+bash measure_breakdown_time_aqp.sh job duckdb node-based expr auto  on on on on off off  # expr_simd
+bash measure_breakdown_time_aqp.sh job duckdb node-based operator none on on on on off off  # operator
+bash measure_breakdown_time_aqp.sh job duckdb node-based operator auto on on on on off off  # operator_simd
+bash measure_breakdown_time_aqp.sh job duckdb node-based pipeline none on on on on off off  # pipeline
+bash measure_breakdown_time_aqp.sh job duckdb node-based pipeline auto on on on on off off  # pipeline_simd
+bash measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off  # query_full
+bash measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off fastisel  # query_fastisel
+bash measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off tpde  # query_tpde
 ```
 
 2. Run the tuning script:
@@ -570,7 +570,7 @@ This reads all available breakdown CSVs, picks the config with the lowest jit+ex
 3. Measure the tuned config:
 
 ```bash
-bash measure_breakdown_time_job.sh duckdb node-based query none \
+bash measure_breakdown_time_aqp.sh job duckdb node-based query none \
     on on on on off off off \
     job_result/tuned_per_subquery_node-based.json
 ```

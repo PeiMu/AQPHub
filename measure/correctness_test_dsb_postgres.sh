@@ -317,7 +317,8 @@ for entry in "${CONFIGS[@]}"; do
   config_label="split=${split} jit=${jit_level} compile=${compile_mode} shc=${skip_hash_cmp} simd=${simd} cache=${jit_cache} spec=${spec_jit}"
   echo "=== Testing: ${config_label} ==="
 
-  fc_suffix="_${compile_mode}"
+  fc_suffix=""
+  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
   shc_suffix=""
   [[ "$skip_hash_cmp" != "all" ]] && shc_suffix="_shc${skip_hash_cmp}"
   simd_suffix=""

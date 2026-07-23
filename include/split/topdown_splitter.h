@@ -26,7 +26,9 @@
 
 namespace middleware {
 
+#ifdef HAVE_DUCKDB
 struct CrossQueryPrepResult;
+#endif
 
 class TopDownSplitter : public FKBasedSplitter {
 public:
@@ -34,7 +36,6 @@ public:
   // trim) from the ctor. MUST be false when constructing on a background
   // thread (cross-query prep) — the adapter connection is not thread-safe.
   explicit TopDownSplitter(EngineAdapter *adapter,
-                           BackendEngine engine = BackendEngine::DUCKDB,
                            bool apply_engine_settings = true);
 
   void Preprocess(std::unique_ptr<ir_sql_converter::AQPStmt> &ir) override;
@@ -46,8 +47,10 @@ public:
 
   std::string GetStrategyName() const override { return "TopDown"; }
 
+#ifdef HAVE_DUCKDB
   void InitFromCrossQueryPrep(CrossQueryPrepResult &prep);
   void MovePreprocessState(CrossQueryPrepResult &out);
+#endif
 
   void PrePopulateBaseCountCache();
   void CompleteMissingCardinalities(std::unique_ptr<ir_sql_converter::AQPStmt> &ir);

@@ -289,8 +289,8 @@ Tail: `generate_final_sub_sql, jit_compile_final, final_exe, show_output`
 
 Timer uses `chrono_toc` which resets `*start_time = current_time` — each column is a lap timer, no overlap.
 
-**Quick test**: `bash run_job.sh duckdb node-based pipeline o1 none` + diff against golden.
+**Quick test**: `bash run_aqp.sh job duckdb node-based pipeline o1 none` + diff against golden.
 
-**Full measurement**: `bash measure_breakdown_time_job.sh duckdb node-based pipeline o1 none` (~28 min).
+**Full measurement**: `bash measure_breakdown_time_aqp.sh job duckdb node-based pipeline o1 none` (~28 min).
 
 **Target queries**: 8c (worst regression), 9d, 16b, 29c (many iters), 19d.

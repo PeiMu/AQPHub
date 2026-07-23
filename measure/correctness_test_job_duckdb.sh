@@ -429,7 +429,7 @@ declare -a FAILED_CONFIGS=()
 FAIL_LOG="job_result/correctness_failures.log"
 : > "$FAIL_LOG"
 
-# --- Run JIT-level configs via run_job.sh ---
+# --- Run JIT-level configs via run_aqp.sh job ---
 for entry in "${JIT_CONFIGS[@]}"; do
   IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
@@ -438,7 +438,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   skip_hash_cmp=${skip_hash_cmp:-on}
   echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} ==="
 
-  bash run_job.sh "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
+  bash run_aqp.sh job "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
        on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}"
 
   shc_suffix=""
@@ -451,7 +451,8 @@ for entry in "${JIT_CONFIGS[@]}"; do
   elif [[ "$jit_cache_mode" != "off" ]]; then
     cache_suffix="_jitcache_${jit_cache_mode//-/_}"
   fi
-  fc_suffix="_${compile_mode}"
+  fc_suffix=""
+  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
   if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
@@ -519,7 +520,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   echo ""
 done
 
-# --- Run kernel-path configs via run_job_kernel.sh ---
+# --- Run kernel-path configs via run_job_kernel.sh (no unified equivalent yet) ---
 for entry in "${KERNEL_CONFIGS[@]}"; do
   IFS='|' read -r engine split kernel_path jit_simd golden <<< "$entry"
   echo "=== Testing: engine=${engine} split=${split} kernel-path=${kernel_path} ==="
@@ -572,7 +573,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   golden="duckdb_job_node-based_golden.txt"
 
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on off off llvm "$TUNE_JSON"
 
   config_label="tune-config node-based spec=off"
@@ -611,7 +612,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-strict, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on single-run-strict off llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=strict spec=off"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_strict_tuned_job.txt"
@@ -649,7 +650,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-template, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on single-run-template off llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=template spec=off"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_template_tuned_job.txt"
@@ -687,7 +688,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=full, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on full off llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=full spec=off"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_full_tuned_job.txt"
@@ -730,7 +731,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   config_label="tune-config node-based spec=recompile"
 
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on off recompile llvm "$TUNE_JSON"
 
   output="job_result/aqp_middleware_duckdb_node-based_query_none_specrecompile_tuned_job.txt"
@@ -768,7 +769,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-strict, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on single-run-strict recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=strict spec=recompile"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_strict_specrecompile_tuned_job.txt"
@@ -806,7 +807,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-template, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=template spec=recompile"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
@@ -844,7 +845,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=full, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb node-based query none \
+  bash run_aqp.sh job duckdb node-based query none \
        on on on on full recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=full spec=recompile"
   output="job_result/aqp_middleware_duckdb_node-based_query_none_jitcache_full_specrecompile_tuned_job.txt"
@@ -893,7 +894,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + spec=off, cache=off
   echo "=== Testing: per-subquery tune-config (topdown, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on off off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown spec=off"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_tuned_job.txt"
@@ -931,7 +932,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-strict, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on single-run-strict off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=strict spec=off"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_jitcache_single_run_strict_tuned_job.txt"
@@ -969,7 +970,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-template, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=template spec=off"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_jitcache_single_run_template_tuned_job.txt"
@@ -1007,7 +1008,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=full, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit off) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on full off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=full spec=off"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_jitcache_full_tuned_job.txt"
@@ -1048,7 +1049,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (topdown, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on off recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown spec=recompile"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_specrecompile_tuned_job.txt"
@@ -1086,7 +1087,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-strict, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on single-run-strict recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=strict spec=recompile"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_jitcache_single_run_strict_specrecompile_tuned_job.txt"
@@ -1124,7 +1125,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-template, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=template spec=recompile"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
@@ -1162,7 +1163,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=full, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit=recompile) ==="
   ((total++))
-  bash run_job.sh duckdb topdown query none \
+  bash run_aqp.sh job duckdb topdown query none \
        on on on on full recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=full spec=recompile"
   output="job_result/aqp_middleware_duckdb_topdown_query_none_jitcache_full_specrecompile_tuned_job.txt"

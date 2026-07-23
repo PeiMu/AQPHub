@@ -158,7 +158,7 @@ The kernel already implements this pattern via `KernelJoinStep::use_direct_pk`
 #### Verification
 - Build: `cmake --build build_release -j$(nproc)`
 - Correctness: `bash measure/correctness_test_job_duckdb.sh`
-- Performance: `bash measure/measure_breakdown_time_job.sh duckdb node-based query none on on on all full off llvm`
+- Performance: `bash measure/measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all full off llvm`
 
 #### Queries to verify (run in IMDB DuckDB database)
 ```sql
@@ -633,7 +633,7 @@ Build hazards:
 ### Step 2: Single query end-to-end
 
 Take a simple JOB query that related to our changes (e.g., 1a — single join), run with
-`./build_release/aqp_middleware ...` (check reference in measure/run_job.sh). Compare result to DuckDB golden output.
+`./build_release/aqp_middleware ...` (check reference in measure/run_aqp.sh job). Compare result to DuckDB golden output.
 
 ### Step 4: Full JOB correctness
 
@@ -660,7 +660,7 @@ For more flags, check measure/correctness_test.sh.
 - CSV format: unchanged (no new columns), parseable by /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
 - No new print statements; existing LIKE debug trace guarded by `#ifndef NDEBUG`
 - Check if need changes to measure/*.sh or measure/*.py
-- Performance (top 15 worst LIKE queries): measure/measure_breakdown_time_job.sh with correct configs
+- Performance (top 15 worst LIKE queries): measure/measure_breakdown_time_aqp.sh job with correct configs
 
 ---
 
@@ -673,7 +673,7 @@ cd /home/pei/Project/AQP_middleware/measure
 python3 find_top_queries.py --top=15 job_result/duckdb_node-based_query_none_jitcache_full_llvm_breakdown_time_log.csv
 
 # Run a single measurement config (12 args):
-bash measure/measure_breakdown_time_job.sh duckdb node-based query none on on on all full off llvm
+bash measure/measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all full off llvm
 
 # Correctness test:
 bash measure/correctness_test_job_duckdb.sh

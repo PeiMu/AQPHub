@@ -5,10 +5,12 @@
 #include "split/ir_query_splitter.h"
 #include "kernel/pipeline_kernel.h"
 #include "jit/aqp_jit_abi.h"
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <stdexcept>
 
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
@@ -73,7 +75,7 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
   switch (config.strategy) {
   case SplitStrategy::TOP_DOWN:
     splitter_ = std::make_unique<TopDownSplitter>(
-        adapter, config.engine, /*apply_engine_settings=*/true);
+        adapter, /*apply_engine_settings=*/true);
     break;
 
   case SplitStrategy::MIN_SUBQUERY:
@@ -767,8 +769,8 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // Run Preprocess on a bg TopDownSplitter. Pre-populate base_count_cache_
     // from the file-backed distinct cache so FetchMissingLeafCardinalities
     // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
-    TopDownSplitter bg_splitter(duck, BackendEngine::DUCKDB,
-                                /*apply_engine_settings=*/false);
+    TopDownSplitter bg_splitter(duck, /*apply_engine_settings=*/false);
+    bg_splitter.SetBgMode(true);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.Preprocess(result->whole_ir);
 
@@ -781,7 +783,6 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // identically. Must run BEFORE MovePreprocessState (PlanNext reads
     // table_card_ etc.).
     static const bool no_presplit = std::getenv("AQP_TD_NO_PRESPLIT") != nullptr;
-    bg_splitter.SetBgMode(true);
     try {
       if (!no_presplit && !bg_splitter.IsComplete(result->whole_ir.get())) {
         auto extraction = bg_splitter.SplitIR(result->whole_ir.get());
@@ -878,8 +879,7 @@ IRQuerySplitter::PrepareNextQueryTopDownPG(const std::string &sql_path,
       return result;
     }
 
-    TopDownSplitter bg_splitter(adapter, BackendEngine::POSTGRESQL,
-                                /*apply_engine_settings=*/false);
+    TopDownSplitter bg_splitter(adapter, /*apply_engine_settings=*/false);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.SetBgMode(true);
     bg_splitter.Preprocess(result->whole_ir);
@@ -1174,7 +1174,23 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     std::cout << "[IRQuerySplitter] Phase 4: Iterative Split-Execute Loop"
               << std::endl;
   }
-  auto result = ExecuteSplitLoop(std::move(whole_ir));
+  QueryResult result;
+  try {
+    result = ExecuteSplitLoop(std::move(whole_ir));
+  } catch (const std::runtime_error &e) {
+    std::string msg = e.what();
+    if (msg.find("Prepare failed") != std::string::npos ||
+        msg.find("unsupported") != std::string::npos) {
+      if (config_.enable_debug_print) {
+        std::cerr << "[AQP-SPLIT] Split-loop failed: " << msg
+                  << "\n  -> falling back to direct execution of original SQL\n";
+      }
+      adapter_->ResetQueryState();
+      result = adapter_->ExecuteSQL(sql);
+    } else {
+      throw;
+    }
+  }
 
   if (config_.enable_debug_print) {
     std::cout
@@ -1348,10 +1364,10 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
 
     if (!ExecuteOneIteration(remaining_ir)) {
-      std::cerr << "[IRQuerySplitter] Warning: ExecuteOneIteration returned "
-                   "false but IsComplete was false. Breaking loop."
-                << std::endl;
-      break;
+      throw std::runtime_error(
+          "IRQuerySplitter unsupported: ExecuteOneIteration made no progress "
+          "while the split is incomplete (iteration " +
+          std::to_string(iteration_count_) + ")");
     }
 
     if (config_.enable_debug_print) {
@@ -3843,11 +3859,23 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
   }
 
   if (!extra_where.empty()) {
-    size_t semi = sub_sql.rfind(';');
-    if (semi != std::string::npos)
-      sub_sql.insert(semi, extra_where);
-    else
-      sub_sql += extra_where;
+    size_t insert_pos = std::string::npos;
+    std::string norm_sql = sub_sql;
+    std::transform(norm_sql.begin(), norm_sql.end(), norm_sql.begin(), ::tolower);
+    std::replace(norm_sql.begin(), norm_sql.end(), '\n', ' ');
+    std::replace(norm_sql.begin(), norm_sql.end(), '\r', ' ');
+    std::replace(norm_sql.begin(), norm_sql.end(), '\t', ' ');
+    for (const char *kw : {" order by ", " group by ", " having ", " limit "}) {
+      size_t pos = norm_sql.rfind(kw);
+      if (pos != std::string::npos &&
+          (insert_pos == std::string::npos || pos < insert_pos))
+        insert_pos = pos;
+    }
+    if (insert_pos == std::string::npos) {
+      size_t semi = sub_sql.rfind(';');
+      insert_pos = (semi != std::string::npos) ? semi : sub_sql.size();
+    }
+    sub_sql.insert(insert_pos, extra_where);
     if (config_.enable_debug_print)
       std::cerr << "[RANGE-SQL] injected: " << extra_where << "\n";
   }
@@ -4082,10 +4110,11 @@ IRQuerySplitter::UpdateAttrIndices(
   int new_col_idx = temp_table.FindNewColumnIndex(old_table_idx, old_col_idx);
 
   if (new_col_idx < 0) {
-    std::cerr << "[UpdateAttrIndices] Warning: Column [" << old_table_idx << "."
-              << old_col_idx << "] (" << attr->GetColumnName()
-              << ") not found in temp table mapping" << std::endl;
-    return nullptr;
+    throw std::runtime_error(
+        "IRQuerySplitter unsupported: column [" +
+        std::to_string(old_table_idx) + "." + std::to_string(old_col_idx) +
+        "] (" + attr->GetColumnName() +
+        ") not found in temp table mapping during index update");
   }
 
   // Use the column name from column_mappings which matches SQL generator's
@@ -4317,6 +4346,13 @@ void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
   flat->columns.resize(types.size());
 
   for (size_t c = 0; c < types.size(); c++) {
+    if (types[c] != duckdb::LogicalType::INTEGER &&
+        types[c] != duckdb::LogicalType::BIGINT &&
+        types[c].id() != duckdb::LogicalTypeId::VARCHAR)
+      return;
+  }
+
+  for (size_t c = 0; c < types.size(); c++) {
     auto &col = flat->columns[c];
     col.row_count = flat->row_count;
     col.nullable = false;
@@ -4460,6 +4496,13 @@ void IRQuerySplitter::EnsureKernelTempReadyNoCsr(const std::string &temp_name) {
   flat->column_names = stored->column_names;
   auto types = coll.Types();
   flat->columns.resize(types.size());
+
+  for (size_t c = 0; c < types.size(); c++) {
+    if (types[c] != duckdb::LogicalType::INTEGER &&
+        types[c] != duckdb::LogicalType::BIGINT &&
+        types[c].id() != duckdb::LogicalTypeId::VARCHAR)
+      return;
+  }
 
   for (size_t c = 0; c < types.size(); c++) {
     auto &col = flat->columns[c];

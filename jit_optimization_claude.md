@@ -850,7 +850,7 @@ The remaining bottleneck is **split strategy quality**, not JIT:
 4. `include/adapters/duckdb_adapter.h` — Declared `ResetQueryState()` override, `LoadTablesFromCSV()`
 5. `src/adapters/duckdb_adapter.cpp` — Implemented `ResetQueryState()` (clears temp_collections_, planner, plan, JIT state; preserves db/conn/jit_compiler_) and `LoadTablesFromCSV()` (parses CREATE TABLE names from schema.sql, executes schema, COPY FROM CSV)
 6. `src/aqp_middleware.cpp` — Repeat loop in `main()` for single-query mode; `--in-memory` path in `CreateAdapter()` that opens `:memory:` and calls `LoadTablesFromCSV()`
-7. `measure/measure_breakdown_time_job.sh` — Replaced inner `for i in {1..15}` loop with single invocation using `--repeat=${iteration}`
+7. `measure/measure_breakdown_time_aqp.sh job` — Replaced inner `for i in {1..15}` loop with single invocation using `--repeat=${iteration}`
 
 **Key design decisions**:
 - `ResetQueryState()` does NOT reset `db`, `conn`, or `jit_compiler_` — these survive across iterations. The replacement scan function pointer (`&temp_collections_`) remains valid because the map object address is unchanged.

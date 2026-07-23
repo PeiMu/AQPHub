@@ -85,7 +85,7 @@ run_pg_dsb_breakdown() {
     flag_suffix+="_jitcache_${jit_cache//-/_}"
   fi
   [[ "$spec_jit" != "off" ]] && flag_suffix+="_spec${spec_jit}"
-  [[ "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
+  [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
   [[ -n "$tune_config" ]] && flag_suffix+="_tuned"
 
   local log_name="time_log.csv"

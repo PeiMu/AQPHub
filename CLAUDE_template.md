@@ -56,7 +56,7 @@ Build hazards:
 ### Step 2: Single query end-to-end
 
 Take a simple JOB query that related to our changes (e.g., 1a — single join), run with
-`./build_release/aqp_middleware ...` (check reference in measure/run_job.sh). Compare result to DuckDB golden output.
+`./build_release/aqp_middleware ...` (check reference in measure/run_aqp.sh job). Compare result to DuckDB golden output.
 
 ### Step 4: Full JOB correctness
 
@@ -83,4 +83,4 @@ For more flags, check measure/correctness_test.sh.
 - CSV format: unchanged (no new columns), parseable by /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
 - No new print statements; existing LIKE debug trace guarded by `#ifndef NDEBUG`
 - Check if need changes to measure/*.sh or measure/*.py
-- Performance (top 15 worst LIKE queries): measure/measure_breakdown_time_job.sh with correct configs 
+- Performance (top 15 worst LIKE queries): measure/measure_breakdown_time_aqp.sh job with correct configs 
