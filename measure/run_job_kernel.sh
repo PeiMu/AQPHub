@@ -33,7 +33,7 @@ flag_suffix=""
 [[ "$skip_hash_cmp"  == "off" ]] && flag_suffix+="_noskiphashcmp"
 
 # Storage plan flags (always enabled for kernel path)
-storage_flags="--storage-plan --storage-cache=/tmp/imdb_storage_plan.cache"
+storage_flags="--storage-plan --storage-cache=${STORAGE_CACHE_DUCKDB_JOB}"
 
 # Kernel path implies operator-level JIT
 jit_level_flag="operator"
@@ -50,10 +50,10 @@ container_name="umbra_benchmark"
 # DB connection
 ########################################
 if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
-    db_conn="${PG_CONN}"
+    db_conn="${PG_CONN_JOB}"
 
 elif [[ "$engine" == "duckdb" ]]; then
-    db_conn="${DUCKDB_DB}"
+    db_conn="${DUCKDB_DB_JOB}"
 
 elif [[ "$engine" == "umbra" ]]; then
     db_conn="${UMBRA_CONN}"
@@ -76,9 +76,9 @@ fi
 # for planning.  For DuckDB itself the flag is unused.
 helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
-    helper_db_arg="--helper-db-path=${DUCKDB_DB}"
+    helper_db_arg="--helper-db-path=${DUCKDB_DB_JOB}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
+    helper_db_arg="--helper-db-path=${PG_CONN_JOB} --estimator=postgres"
 fi
 
 ########################################
@@ -209,9 +209,9 @@ echo "ANALYZING..."
 if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
-    mariadb -u imdb -D imdb < "${IMDB_BENCH}/analyze_mariadb_table.sql"
+    mariadb -u imdb -D imdb < "${JOB_PATH}/analyze_mariadb_table.sql"
 elif [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
-    ${PG_BIN}/psql -d "${PG_CONN}" -c "ANALYZE;"
+    ${PG_BIN}/psql -d "${PG_CONN_JOB}" -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
     sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 -c "ANALYZE;"
 fi

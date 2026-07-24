@@ -300,7 +300,7 @@ def main():
     # Determine the result directory
     if result_dir_override:
         result_dir = result_dir_override
-    elif bench == "dsb":
+    elif bench is not None and bench.startswith("dsb"):
         result_dir = "dsb_result"
     elif engine == "postgresql":
         result_dir = "pg_result"

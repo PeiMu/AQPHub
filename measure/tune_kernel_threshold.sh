@@ -17,8 +17,8 @@ source "${SCRIPT_DIR}/env.sh"
 MEASURE_DIR="${SCRIPT_DIR}"
 AQP_DIR="$(dirname "$MEASURE_DIR")"
 BUILD="$AQP_DIR/build_release"
-BENCHMARK_DIR="${IMDB_BENCH}"
-DB="${DUCKDB_DB}"
+BENCHMARK_DIR="${JOB_PATH}"
+DB="${DUCKDB_DB_JOB}"
 
 REPEAT=${1:-5}   # default 5 repeats (drop first 2 as warmup in analysis)
 OUT_DIR="$MEASURE_DIR/tuning_data"

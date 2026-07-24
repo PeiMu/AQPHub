@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/env.sh"
 
 bench=$1
 engine=$2
@@ -18,21 +17,30 @@ compile_mode=${12:-llvm}   # llvm | fastisel | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON
 
 if [[ -z "$bench" || -z "$engine" || -z "$split" ]]; then
-    echo "Usage: $0 <job|dsb> <engine> <split> <jit_level> <jit_simd> [flags...]"
+    echo "Usage: $0 <job|dsb_10|dsb_100> <engine> <split> <jit_level> <jit_simd> [flags...]"
     echo "  engine: duckdb | postgres | umbra | mariadb | opengauss | lingodb | lingo-db-runtime"
     echo "  split:  none | node-based | topdown | relationship-center | entity-center | min-subquery"
     exit 1
 fi
 
 ########################################
+# Parse dsb_<SF> bench argument
+########################################
+if [[ "$bench" == dsb_* ]]; then
+    DSB_SF="${bench#dsb_}"
+    bench="dsb"
+fi
+export DSB_SF
+
+source "${SCRIPT_DIR}/env.sh"
+
+########################################
 # Benchmark-specific paths
 ########################################
-DSB_SF=${DSB_SF:-10}
-
 if [[ "$bench" == "job" ]]; then
     result_dir="job_result"
-    pg_analyze_db="${PG_CONN}"
-    analyze_mariadb_cmd="mariadb -u imdb -D imdb < \"${IMDB_BENCH}/analyze_mariadb_table.sql\""
+    pg_analyze_db="${PG_CONN_JOB}"
+    analyze_mariadb_cmd="mariadb -u imdb -D imdb < \"${JOB_PATH}/analyze_mariadb_table.sql\""
     opengauss_db="imdb"
     opengauss_user="imdb"
     opengauss_pw="imdb_132"
@@ -46,7 +54,7 @@ elif [[ "$bench" == "dsb" ]]; then
     else
         result_dir="dsb_result_sf${DSB_SF}"
     fi
-    pg_analyze_db="dsb_${DSB_SF}"
+    pg_analyze_db="${PG_CONN_DSB}"
     analyze_mariadb_cmd="mariadb -u dsb_${DSB_SF} -D dsb_${DSB_SF} < \"${DSB_PATH}/analyze_mariadb_dsb_table.sql\""
     opengauss_db="dsb_${DSB_SF}"
     opengauss_user="dsb_${DSB_SF}"
@@ -56,7 +64,7 @@ elif [[ "$bench" == "dsb" ]]; then
     umbra_schema="$DSB_SCHEMA"
     umbra_import="$DSB_IMPORT_CSV"
 else
-    echo "Unknown benchmark: $bench (expected job or dsb)"
+    echo "Unknown benchmark: $bench (expected job, dsb_10, or dsb_100)"
     exit 1
 fi
 
@@ -149,7 +157,7 @@ cleanup() {
     elif [[ "$engine" == "mariadb" ]]; then
         mariadb_stop
         pg_stop
-    elif [[ "$engine" == "postgres" ]]; then
+    elif [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
         pg_stop
     elif [[ "$engine" == "opengauss" ]]; then
         opengauss_stop
@@ -165,7 +173,7 @@ if [[ "$engine" == "umbra" ]]; then
 elif [[ "$engine" == "mariadb" ]]; then
     mariadb_start
     pg_start
-elif [[ "$engine" == "postgres" ]]; then
+elif [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
     pg_start
 elif [[ "$engine" == "opengauss" ]]; then
     opengauss_start
@@ -179,7 +187,7 @@ if [[ "$engine" == "umbra" ]]; then
     PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 elif [[ "$engine" == "mariadb" ]]; then
     eval "$analyze_mariadb_cmd"
-elif [[ "$engine" == "postgres" ]]; then
+elif [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
     ${PG_BIN}/psql -d "${pg_analyze_db}" -c "ANALYZE;"
 elif [[ "$engine" == "opengauss" ]]; then
     sudo -i -u opengauss gsql -d "${opengauss_db}" -U "${opengauss_user}" \

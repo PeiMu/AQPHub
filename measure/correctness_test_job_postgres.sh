@@ -52,11 +52,11 @@ run_pg_job() {
   local extra_flags=""
 
   if [[ "$jit_level" == "query" ]]; then
-    storage_flags="--storage-plan --storage-cache=${STORAGE_CACHE}"
+    storage_flags="--storage-plan --storage-cache=${STORAGE_CACHE_PG_JOB}"
   fi
 
   if [[ "$split" == "node-based" || "$split" == "topdown" ]]; then
-    helper_flag="--helper-db-path=${DUCKDB_DB}"
+    helper_flag="--helper-db-path=${DUCKDB_DB_JOB}"
   fi
 
   if [[ "$compile_mode" != "llvm" ]]; then
@@ -92,7 +92,7 @@ run_pg_job() {
 
   "${BINARY}" \
     --engine=postgresql \
-    --db="${PG_CONN}" \
+    --db="${PG_CONN_JOB}" \
     ${helper_flag} \
     --schema="${SCHEMA}" \
     --fkeys="${FKEYS}" \
@@ -105,6 +105,38 @@ run_pg_job() {
     "${QUERY_DIR}" \
     2>&1 | tee "$output_file"
 }
+
+# ============================================================
+# PostgreSQL start/stop
+# ============================================================
+pg_start() {
+  if ! ${PG_BIN}/pg_isready -h localhost >/dev/null 2>&1; then
+    echo "Starting PostgreSQL..."
+    ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
+    until ${PG_BIN}/pg_isready -h localhost >/dev/null 2>&1; do
+      sleep 0.5
+    done
+    echo "PostgreSQL is ready."
+  else
+    echo "PostgreSQL already running."
+  fi
+}
+
+pg_stop() {
+  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s 2>/dev/null || true
+}
+
+cleanup() { pg_stop; }
+trap cleanup EXIT
+
+# ============================================================
+# Start PG + ANALYZE
+# ============================================================
+pg_start
+
+echo "ANALYZING..."
+${PG_BIN}/psql -d "${PG_CONN_JOB}" -c "ANALYZE;"
+echo "ANALYZE done"
 
 # ============================================================
 # Step 1: Generate golden files (interpreter baseline)

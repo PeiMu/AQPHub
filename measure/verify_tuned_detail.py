@@ -95,7 +95,7 @@ def main():
             positional.append(a)
     query = positional[0] if len(positional) > 0 else "10a"
     split = positional[1] if len(positional) > 1 else "node-based"
-    result_dir = result_dir_override or ("dsb_result" if bench == "dsb" else "job_result")
+    result_dir = result_dir_override or ("dsb_result" if bench is not None and bench.startswith("dsb") else "job_result")
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 4
 

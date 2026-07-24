@@ -31,7 +31,7 @@ mariadb_stop() {
 # ANALYZE
 ########################################
 echo "ANALYZING..."
-mariadb -u imdb -D imdb < "${IMDB_BENCH}/analyze_mariadb_table.sql"
+mariadb -u imdb -D imdb < "${JOB_PATH}/analyze_mariadb_table.sql"
 echo "ANALYZE done"
 
 #dir="$JOB_PATH/mariadb_queries"

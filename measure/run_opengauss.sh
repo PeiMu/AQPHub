@@ -31,7 +31,7 @@ opengauss_start
 # ANALYZE
 ########################################
 echo "ANALYZING..."
-sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < "${IMDB_BENCH}/analyze_table.sql"
+sudo -i -u opengauss gsql -d imdb -U imdb --host=localhost -p 7654 -W imdb_132 < "${JOB_PATH}/analyze_table.sql"
 echo "ANALYZE done"
 
 #dir="$JOB_PATH/opengauss_queries"

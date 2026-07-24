@@ -4,8 +4,10 @@
 # Tests [none-split, node-based, topdown] x [none-jit, query-jit] against golden files.
 #
 # Usage:
-#   bash correctness_test_dsb_postgres.sh              # generate golden + run all tests
-#   bash correctness_test_dsb_postgres.sh --test-only  # skip golden generation, run tests only
+#   bash correctness_test_dsb_postgres.sh [SF] [--test-only]
+#   bash correctness_test_dsb_postgres.sh              # SF=10, generate golden + run all tests
+#   bash correctness_test_dsb_postgres.sh 100           # SF=100, generate golden + run all tests
+#   bash correctness_test_dsb_postgres.sh 10 --test-only  # SF=10, skip golden generation
 #
 set -uo pipefail
 
@@ -14,19 +16,25 @@ set -uo pipefail
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DSB_SF="${1:-10}"
 source "${SCRIPT_DIR}/env.sh"
 
 SCHEMA="${DSB_PATH}/scripts/create_tables.sql"
 FKEYS="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
 QUERY_DIR="${DSB_PATH}/code/tools/1_instance_out_aqp/1/"
 
-STORAGE_CACHE_DSB="/tmp/dsb_storage_plan_pg.cache"
+STORAGE_CACHE_DSB="${STORAGE_CACHE_PG_DSB}"
 
 # Output filter: strip log/timing/debug lines so only query results remain.
 FILTER='grep -v -E "^Running|^==|^Execution|^$|^waiting|^server|^ANALYZ|^NOTICE:|^\[AQP|^\[Storage|^\[CSR|^\[Dim|^\[RelationshipCenter|^\[IRQuerySplitter|^  [a-z_]*: [0-9]* rows$|^Found [0-9]|^Run |^Passed:|^Failed:|^Total |^Benchmark|^Average|^--- Iteration|^same engine|^embed data|no version information available"'
 
 cd "${PROJECT}/measure"
-mkdir -p dsb_result
+if [[ "$DSB_SF" == "10" ]]; then
+  RESULT_DIR="dsb_result"
+else
+  RESULT_DIR="dsb_result_sf${DSB_SF}"
+fi
+mkdir -p "${RESULT_DIR}"
 
 GOLDEN_NOSPLIT="pg_dsb_no-split_golden.txt"
 GOLDEN_NB="pg_dsb_node-based_golden.txt"
@@ -56,7 +64,7 @@ run_pg_dsb() {
   fi
 
   if [[ "$split" == "node-based" || "$split" == "topdown" ]]; then
-    helper_flag="--helper-db-path=${DSB_DUCKDB_DB}"
+    helper_flag="--helper-db-path=${DUCKDB_DB_DSB}"
   fi
 
   if [[ "$compile_mode" != "llvm" ]]; then
@@ -92,7 +100,7 @@ run_pg_dsb() {
 
   "${BINARY}" \
     --engine=postgresql \
-    --db="${PG_CONN}" \
+    --db="${PG_CONN_DSB}" \
     ${helper_flag} \
     --schema="${SCHEMA}" \
     --fkeys="${FKEYS}" \
@@ -135,13 +143,13 @@ trap cleanup EXIT
 pg_start
 
 echo "ANALYZING..."
-${PG_BIN}/psql -d "${PG_CONN}" -c "ANALYZE;"
+${PG_BIN}/psql -d "${PG_CONN_DSB}" -c "ANALYZE;"
 echo "ANALYZE done"
 
 # ============================================================
 # Step 1: Generate golden files (interpreter baseline)
 # ============================================================
-generate_golden=${1:-}
+generate_golden=${2:-}
 if [[ "$generate_golden" != "--test-only" ]]; then
   echo "========================================"
   echo "Generating golden: no-split, none-jit"
@@ -304,7 +312,7 @@ passed=0
 failed=0
 total=${#CONFIGS[@]}
 declare -a FAILED_CONFIGS=()
-FAIL_LOG="dsb_result/correctness_pg_dsb_failures.log"
+FAIL_LOG="${RESULT_DIR}/correctness_pg_dsb_failures.log"
 : > "$FAIL_LOG"
 
 for entry in "${CONFIGS[@]}"; do
@@ -327,7 +335,7 @@ for entry in "${CONFIGS[@]}"; do
   [[ "$jit_cache" != "off" ]] && cache_suffix="_cache_${jit_cache//-/_}"
   spec_suffix=""
   [[ "$spec_jit" != "off" ]] && spec_suffix="_spec_${spec_jit}"
-  output="dsb_result/pg_${split}_${jit_level}${fc_suffix}${shc_suffix}${simd_suffix}${cache_suffix}${spec_suffix}_dsb.txt"
+  output="${RESULT_DIR}/pg_${split}_${jit_level}${fc_suffix}${shc_suffix}${simd_suffix}${cache_suffix}${spec_suffix}_dsb.txt"
   run_pg_dsb "${split}" "${jit_level}" "${output}" "${compile_mode}" "${skip_hash_cmp}" "${simd}" "${jit_cache}" "${spec_jit}"
 
   if [[ ! -f "$output" ]]; then
@@ -389,14 +397,14 @@ for entry in "${CONFIGS[@]}"; do
 done
 
 # --- Per-subquery tune-config correctness for node-based (if JSON exists) ---
-TUNE_JSON="dsb_result/tuned_per_subquery_node-based.json"
+TUNE_JSON="${RESULT_DIR}/tuned_per_subquery_node-based.json"
 if [[ -f "$TUNE_JSON" ]]; then
   golden="${GOLDEN_NB}"
 
   # Tune + spec=off, cache=off
   echo "=== Testing: per-subquery tune-config (node-based, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off off off "$TUNE_JSON"
   config_label="tune-config node-based spec=off"
   if [[ ! -f "$output" ]]; then
@@ -433,7 +441,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-strict, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_cache_single_run_strict_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_strict_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off single-run-strict off "$TUNE_JSON"
   config_label="tune-config node-based cache=strict spec=off"
   if [[ ! -f "$output" ]]; then
@@ -470,7 +478,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-template, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_cache_single_run_template_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_template_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off single-run-template off "$TUNE_JSON"
   config_label="tune-config node-based cache=template spec=off"
   if [[ ! -f "$output" ]]; then
@@ -507,7 +515,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=full, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_cache_full_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_cache_full_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off full off "$TUNE_JSON"
   config_label="tune-config node-based cache=full spec=off"
   if [[ ! -f "$output" ]]; then
@@ -547,7 +555,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (node-based, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_spec_recompile_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off off recompile "$TUNE_JSON"
   config_label="tune-config node-based spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -584,7 +592,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-strict, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_cache_single_run_strict_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_strict_spec_recompile_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off single-run-strict recompile "$TUNE_JSON"
   config_label="tune-config node-based cache=strict spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -621,7 +629,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-template, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_cache_single_run_template_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_template_spec_recompile_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off single-run-template recompile "$TUNE_JSON"
   config_label="tune-config node-based cache=template spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -658,7 +666,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=full, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_node-based_query_cache_full_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_node-based_query_cache_full_spec_recompile_tuned_dsb.txt"
   run_pg_dsb node-based query "${output}" llvm all off full recompile "$TUNE_JSON"
   config_label="tune-config node-based cache=full spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -699,14 +707,14 @@ else
 fi
 
 # --- Per-subquery tune-config correctness for topdown (if JSON exists) ---
-TUNE_JSON_TD="dsb_result/tuned_per_subquery_topdown.json"
+TUNE_JSON_TD="${RESULT_DIR}/tuned_per_subquery_topdown.json"
 if [[ -f "$TUNE_JSON_TD" ]]; then
   golden="${GOLDEN_NOSPLIT}"
 
   # Tune + spec=off, cache=off
   echo "=== Testing: per-subquery tune-config (topdown, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off off off "$TUNE_JSON_TD"
   config_label="tune-config topdown spec=off"
   if [[ ! -f "$output" ]]; then
@@ -743,7 +751,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-strict, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_cache_single_run_strict_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_strict_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off single-run-strict off "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=strict spec=off"
   if [[ ! -f "$output" ]]; then
@@ -780,7 +788,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-template, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_cache_single_run_template_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_template_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off single-run-template off "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=template spec=off"
   if [[ ! -f "$output" ]]; then
@@ -817,7 +825,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=full, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit off) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_cache_full_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_cache_full_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off full off "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=full spec=off"
   if [[ ! -f "$output" ]]; then
@@ -857,7 +865,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (topdown, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_spec_recompile_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off off recompile "$TUNE_JSON_TD"
   config_label="tune-config topdown spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -894,7 +902,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-strict, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_cache_single_run_strict_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_strict_spec_recompile_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off single-run-strict recompile "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=strict spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -931,7 +939,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-template, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_cache_single_run_template_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_template_spec_recompile_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off single-run-template recompile "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=template spec=recompile"
   if [[ ! -f "$output" ]]; then
@@ -968,7 +976,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=full, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit=recompile) ==="
   ((total++))
-  output="dsb_result/pg_topdown_query_cache_full_spec_recompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/pg_topdown_query_cache_full_spec_recompile_tuned_dsb.txt"
   run_pg_dsb topdown query "${output}" llvm all off full recompile "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=full spec=recompile"
   if [[ ! -f "$output" ]]; then

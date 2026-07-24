@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/env.sh"
 
 bench=$1
 engine=$2
@@ -18,30 +17,34 @@ compile_mode=${12:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 
 ########################################
+# Parse dsb_<SF> bench argument
+########################################
+if [[ "$bench" == dsb_* ]]; then
+    DSB_SF="${bench#dsb_}"
+    bench="dsb"
+fi
+
+source "${SCRIPT_DIR}/env.sh"
+
+########################################
 # Benchmark-specific paths
 ########################################
-DSB_SF=${DSB_SF:-10}
-
 if [[ "$bench" == "job" ]]; then
     dir="$JOB_PATH/queries"
     schema="$JOB_PATH/schema.sql"
     fkeys="$JOB_PATH/fkeys.sql"
     result_dir="job_result"
     log_suffix="_job.txt"
-    duckdb_db="${DUCKDB_DB}"
-    if [[ "$DSB_SF" == "10" ]]; then
-        storage_cache="/tmp/imdb_storage_plan.cache"
-    else
-        storage_cache="/tmp/imdb_storage_plan.cache"
-    fi
-    storage_cache_pg="${STORAGE_CACHE:-/tmp/imdb_storage_plan_pg.cache}"
+    duckdb_db="${DUCKDB_DB_JOB}"
+    storage_cache="${STORAGE_CACHE_DUCKDB_JOB}"
+    storage_cache_pg="${STORAGE_CACHE_PG_JOB}"
     csv_dir="$JOB_PATH/lingo_db_csv"
     umbra_csv_mount="$JOB_PATH/csv"
     umbra_db_name="imdb.db"
     umbra_schema="$JOB_PATH/schema.sql"
     umbra_import="$JOB_PATH/import_umbra_csv.sql"
-    analyze_mariadb_cmd="mariadb -u imdb -D imdb < \"${IMDB_BENCH}/analyze_mariadb_table.sql\""
-    pg_analyze_db="${PG_CONN}"
+    analyze_mariadb_cmd="mariadb -u imdb -D imdb < \"${JOB_PATH}/analyze_mariadb_table.sql\""
+    pg_analyze_db="${PG_CONN_JOB}"
     opengauss_db="imdb"
     opengauss_user="imdb"
     opengauss_pw="imdb_132"
@@ -55,26 +58,25 @@ elif [[ "$bench" == "dsb" ]]; then
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then
         result_dir="dsb_result"
-        storage_cache="/tmp/dsb_storage_plan.cache"
     else
         result_dir="dsb_result_sf${DSB_SF}"
-        storage_cache="/tmp/dsb_sf${DSB_SF}_storage_plan.cache"
     fi
     log_suffix="_dsb.txt"
-    duckdb_db="${DSB_DUCKDB_DB:-/home/pei/Project/duckdb/measure/dsb_${DSB_SF}.db}"
-    storage_cache_pg="${storage_cache}"
+    duckdb_db="${DUCKDB_DB_DSB}"
+    storage_cache="${STORAGE_CACHE_DUCKDB_DSB}"
+    storage_cache_pg="${STORAGE_CACHE_PG_DSB}"
     csv_dir="$DSB_PATH/code/tools/out_${DSB_SF}/lingo_db_csv"
     umbra_csv_mount="$DSB_PATH/code/tools/out_${DSB_SF}/csv"
     umbra_db_name="dsb_${DSB_SF}.db"
     umbra_schema="$DSB_SCHEMA"
     umbra_import="$DSB_IMPORT_CSV"
     analyze_mariadb_cmd="mariadb -u dsb_${DSB_SF} -D dsb_${DSB_SF} < \"${DSB_PATH}/analyze_mariadb_dsb_table.sql\""
-    pg_analyze_db="dsb_${DSB_SF}"
+    pg_analyze_db="${PG_CONN_DSB}"
     opengauss_db="dsb_${DSB_SF}"
     opengauss_user="dsb_${DSB_SF}"
     opengauss_pw="dsb_${DSB_SF}"
 else
-    echo "Usage: $0 <job|dsb> <engine> <split> <jit_level> <jit_simd> [flags...]"
+    echo "Usage: $0 <job|dsb_10|dsb_100> <engine> <split> <jit_level> <jit_simd> [flags...]"
     exit 1
 fi
 
@@ -155,7 +157,11 @@ container_name="umbra_benchmark"
 # DB connection
 ########################################
 if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
-    db_conn="${PG_CONN}"
+    if [[ "$bench" == "job" ]]; then
+        db_conn="${PG_CONN_JOB}"
+    else
+        db_conn="${PG_CONN_DSB}"
+    fi
 elif [[ "$engine" == "duckdb" ]]; then
     db_conn="${duckdb_db}"
 elif [[ "$engine" == "umbra" ]]; then
@@ -189,9 +195,9 @@ elif [[ ("$split" == "node-based" || "$split" == "topdown") && "$engine" != "duc
     helper_db_arg="--helper-db-path=${duckdb_db}"
 elif [[ "$engine" == "mariadb" ]]; then
     if [[ "$bench" == "job" ]]; then
-        helper_db_arg="--helper-db-path=${PG_CONN} --estimator=postgres"
+        helper_db_arg="--helper-db-path=${PG_CONN_JOB} --estimator=postgres"
     else
-        helper_db_arg="--helper-db-path=${PG_CONN:-host=localhost port=5432 dbname=dsb_${DSB_SF} user=postgres} --estimator=postgres"
+        helper_db_arg="--helper-db-path=${PG_CONN_DSB} --estimator=postgres"
     fi
 fi
 

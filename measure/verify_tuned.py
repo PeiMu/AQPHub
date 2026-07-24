@@ -81,7 +81,7 @@ def main():
         else:
             positional.append(a)
     split = positional[0] if positional else "node-based"
-    result_dir = result_dir_override or ("dsb_result" if bench == "dsb" else "job_result")
+    result_dir = result_dir_override or ("dsb_result" if bench is not None and bench.startswith("dsb") else "job_result")
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     is_nb = split == "node-based"
 
