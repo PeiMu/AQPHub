@@ -286,12 +286,14 @@ std::vector<ForeignKey> ForeignKeyExtractor::ExtractFromPostgreSQL(
         engine_ == BackendEngine::UMBRA) {
       // Reuse the existing adapter connection
       result = adapter_->ExecuteSQL(query);
-    } else {
-      // DuckDB: need a separate PostgreSQL connection for FK metadata
-      // fixme: pass the config.pg_connection
-      auto postgres_adapter = std::make_unique<PostgreSQLAdapter>(
-          "host=localhost port=5432 dbname=imdb user=imdb");
+    } else if (!pg_connection_.empty()) {
+      auto postgres_adapter =
+          std::make_unique<PostgreSQLAdapter>(pg_connection_);
       result = postgres_adapter->ExecuteSQL(query);
+    } else {
+      std::cerr << "[ForeignKeyExtractor] No PostgreSQL connection configured "
+                   "for FK metadata (use --helper-db=<connstr>)\n";
+      return fks;
     }
 
     for (const auto &row : result.rows) {

@@ -266,6 +266,16 @@ bool CanEvalAllFilters(
         if (col_type != FlatColumnType::INT32 &&
             col_type != FlatColumnType::VARCHAR)
           return false;
+        // Value types must match the column type, otherwise EvalOnePredicate
+        // would find no match and wrongly evaluate the IN to false for every
+        // row (e.g. DATE columns are stored INT32 but carry StringVar values).
+        for (const auto &v : in_expr->values) {
+          if (col_type == FlatColumnType::INT32 && v->GetType() != IntVar)
+            return false;
+          if (col_type == FlatColumnType::VARCHAR &&
+              v->GetType() != StringVar)
+            return false;
+        }
         continue;
       }
 

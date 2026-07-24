@@ -17,7 +17,7 @@ DSB_DUCKDB_DB="${DSB_DUCKDB_DB:-/home/pei/Project/duckdb/measure/dsb_10.db}"
 PG_CONN="${PG_CONN:-host=localhost port=5432 dbname=imdb user=imdb}"
 PG_HOME="${PG_HOME:-/home/pei/Project/project_bins}"
 PG_BIN="${PG_BIN:-${PG_HOME}/bin}"
-PG_DATA="${PG_DATA:-${PG_HOME}/data}"
+PG_DATA="${PG_DATA:-${PG_HOME}/data_18_3}"
 PG_LOG="${PG_LOG:-${PG_HOME}/logfile}"
 
 export LD_LIBRARY_PATH=${PG_HOME}/lib:${LD_LIBRARY_PATH:-}

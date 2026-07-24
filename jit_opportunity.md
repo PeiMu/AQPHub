@@ -25,7 +25,7 @@ unchanged (+0.35 s for none-split, +0.07 s for node-based).
 HASH_JOIN probe has JIT infrastructure (batch probe + prefetch in
 `ir_to_llvm.cpp:6092-6280`).  The pipeline-jit measurements already have
 `--jit-batch-probe` and `--jit-prefetch` enabled (defaults are `on` in
-`measure_breakdown_time_job.sh`), yet hash join time is unchanged.  The
+`measure_breakdown_time_aqp.sh job`), yet hash join time is unchanged.  The
 prefetch infrastructure is active but **not effective at current default
 distances (entry=24, row=12)** on this workload.
 
@@ -154,7 +154,7 @@ Prefetch granularity:
 ### Optimization O2 -- Tune Prefetch Distances
 
 Batch probe + prefetch are already ON in pipeline-jit measurements (defaults
-`on` in `measure_breakdown_time_job.sh`), but show no improvement at the
+`on` in `measure_breakdown_time_aqp.sh job`), but show no improvement at the
 default distances (entry=24, row=12).  Sweep a wider range of distances on
 representative queries with large HTs to find the effective range, or
 determine that the DuckDB-native vectorized probe is fundamentally hard to

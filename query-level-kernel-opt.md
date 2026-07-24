@@ -299,7 +299,7 @@ parsed with `analyze_none_split_breakdown(csv_file, has_jit=False)`
 **Quick test**:
 ```bash
 cd measure
-bash run_job.sh duckdb node-based query o1 none
+bash run_aqp.sh job duckdb node-based query o1 none
 ```
 
 **Full correctness**:
@@ -311,7 +311,7 @@ bash check_correctness_duckdb_jit.sh
 **Full benchmark** (~28 min):
 ```bash
 cd measure
-bash measure_breakdown_time_job.sh duckdb node-based query o1 none
+bash measure_breakdown_time_aqp.sh job duckdb node-based query o1 none
 ```
 
 **Target queries**: 16b (6 iters, large temps), 29c (12 iters, many small temps), 8c (4 iters, DuckDB fallback), 19d (8 iters), 10c (mixed).

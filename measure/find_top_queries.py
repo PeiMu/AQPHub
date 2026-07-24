@@ -68,29 +68,33 @@ def main():
             args.append(a)
 
     if not args:
-        args = [os.path.join(os.path.dirname(__file__), "job_result")]
+        script_dir = os.path.dirname(__file__)
+        args = []
+        for d in ["job_result", "dsb_result"]:
+            p = os.path.join(script_dir, d)
+            if os.path.isdir(p):
+                args.append(p)
+        if not args:
+            args = [os.path.join(script_dir, "job_result")]
 
-    target = args[0]
-
-    if os.path.isdir(target):
-        files = sorted(glob.glob(os.path.join(target, "*_breakdown_time_log.csv")))
-        if not files:
-            print(f"No breakdown_time_log.csv files found in {target}")
-            sys.exit(1)
-        for f in files:
-            results = parse_breakdown_csv(f)
+    for target in args:
+        if os.path.isdir(target):
+            files = sorted(glob.glob(os.path.join(target, "*_breakdown_time_log.csv")))
+            if not files:
+                print(f"No breakdown_time_log.csv files found in {target}")
+                continue
+            for f in files:
+                results = parse_breakdown_csv(f)
+                if results:
+                    print_top_queries(results, f, top_n)
+        elif os.path.isfile(target):
+            results = parse_breakdown_csv(target)
             if results:
-                print_top_queries(results, f, top_n)
-    elif os.path.isfile(target):
-        results = parse_breakdown_csv(target)
-        if results:
-            print_top_queries(results, target, top_n)
+                print_top_queries(results, target, top_n)
+            else:
+                print(f"No query data found in {target}")
         else:
-            print(f"No query data found in {target}")
-            sys.exit(1)
-    else:
-        print(f"Not found: {target}")
-        sys.exit(1)
+            print(f"Not found: {target}")
 
 
 if __name__ == "__main__":

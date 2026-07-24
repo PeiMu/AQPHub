@@ -402,6 +402,10 @@ PipelineKernelPlan AnalyzePipelineKernel(
       if (out.col_idx < 0)
         return plan;
       out.type = scan_leaf->flat->columns[out.col_idx].type;
+      // Emit paths only handle INT32/VARCHAR; bail so DuckDB executes.
+      if (out.type != FlatColumnType::INT32 &&
+          out.type != FlatColumnType::VARCHAR)
+        return plan;
       out.name = col_name;
       output_cols.push_back(out);
     }
@@ -608,6 +612,9 @@ PipelineKernelPlan AnalyzePipelineKernel(
       out.col_idx = scan_leaf->flat->FindColumn(col_name);
       if (out.col_idx < 0) return plan;
       out.type = scan_leaf->flat->columns[out.col_idx].type;
+      if (out.type != FlatColumnType::INT32 &&
+          out.type != FlatColumnType::VARCHAR)
+        return plan;
     } else {
       // Find which join step has this table as build table
       auto leaf_it = ir_to_leaf.find(tbl_idx);
@@ -621,6 +628,9 @@ PipelineKernelPlan AnalyzePipelineKernel(
       out.col_idx = build_t->FindColumn(col_name);
       if (out.col_idx < 0) return plan;
       out.type = build_t->columns[out.col_idx].type;
+      if (out.type != FlatColumnType::INT32 &&
+          out.type != FlatColumnType::VARCHAR)
+        return plan;
       step_needs_inner[step_idx] = true;
     }
     output_cols.push_back(out);

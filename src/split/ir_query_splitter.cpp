@@ -5,10 +5,12 @@
 #include "split/ir_query_splitter.h"
 #include "kernel/pipeline_kernel.h"
 #include "jit/aqp_jit_abi.h"
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <stdexcept>
 
 #ifdef HAVE_DUCKDB
 #include "adapters/duckdb_adapter.h"
@@ -78,17 +80,20 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
 
   case SplitStrategy::MIN_SUBQUERY:
     splitter_ = std::make_unique<MinSubquerySplitter>(
-        adapter, config.engine, config.enable_analyze, config.fkeys_path);
+        adapter, config.engine, config.enable_analyze, config.fkeys_path,
+        config.helper_db);
     break;
 
   case SplitStrategy::RELATIONSHIP_CENTER:
     splitter_ = std::make_unique<RelationshipCenterSplitter>(
-        adapter, config.engine, config.enable_analyze, config.fkeys_path);
+        adapter, config.engine, config.enable_analyze, config.fkeys_path,
+        config.helper_db);
     break;
 
   case SplitStrategy::ENTITY_CENTER:
     splitter_ = std::make_unique<EntityCenterSplitter>(
-        adapter, config.engine, config.enable_analyze, config.fkeys_path);
+        adapter, config.engine, config.enable_analyze, config.fkeys_path,
+        config.helper_db);
     break;
 
   case SplitStrategy::NODE_BASED: {
@@ -764,8 +769,8 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // Run Preprocess on a bg TopDownSplitter. Pre-populate base_count_cache_
     // from the file-backed distinct cache so FetchMissingLeafCardinalities
     // never calls adapter_->BatchGetEstimatedCosts (unsafe from bg thread).
-    TopDownSplitter bg_splitter(duck, BackendEngine::DUCKDB,
-                                /*apply_engine_settings=*/false);
+    TopDownSplitter bg_splitter(duck, BackendEngine::DUCKDB, /*apply_engine_settings=*/false);
+    bg_splitter.SetBgMode(true);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.Preprocess(result->whole_ir);
 
@@ -778,7 +783,6 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     // identically. Must run BEFORE MovePreprocessState (PlanNext reads
     // table_card_ etc.).
     static const bool no_presplit = std::getenv("AQP_TD_NO_PRESPLIT") != nullptr;
-    bg_splitter.SetBgMode(true);
     try {
       if (!no_presplit && !bg_splitter.IsComplete(result->whole_ir.get())) {
         auto extraction = bg_splitter.SplitIR(result->whole_ir.get());
@@ -875,8 +879,7 @@ IRQuerySplitter::PrepareNextQueryTopDownPG(const std::string &sql_path,
       return result;
     }
 
-    TopDownSplitter bg_splitter(adapter, BackendEngine::POSTGRESQL,
-                                /*apply_engine_settings=*/false);
+    TopDownSplitter bg_splitter(adapter, BackendEngine::POSTGRESQL, /*apply_engine_settings=*/false);
     bg_splitter.PrePopulateBaseCountCache();
     bg_splitter.SetBgMode(true);
     bg_splitter.Preprocess(result->whole_ir);
@@ -1152,12 +1155,42 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 #endif
 
+  // Capture original output column count for projection trim after split.
+  original_output_col_count_ = 0;
+  if (whole_ir) {
+    auto *root = whole_ir.get();
+    while (root &&
+           root->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           root->children.size() == 1)
+      root = root->children[0].get();
+    if (root && root->GetNodeType() ==
+                    ir_sql_converter::SimplestNodeType::ProjectionNode)
+      original_output_col_count_ = root->target_list.size();
+  }
+
   // === Phase 4: Iterative Split-Execute Loop ===
   if (config_.enable_debug_print) {
     std::cout << "[IRQuerySplitter] Phase 4: Iterative Split-Execute Loop"
               << std::endl;
   }
-  auto result = ExecuteSplitLoop(std::move(whole_ir));
+  QueryResult result;
+  try {
+    result = ExecuteSplitLoop(std::move(whole_ir));
+  } catch (const std::runtime_error &e) {
+    std::string msg = e.what();
+    if (msg.find("Prepare failed") != std::string::npos ||
+        msg.find("unsupported") != std::string::npos) {
+      if (config_.enable_debug_print) {
+        std::cerr << "[AQP-SPLIT] Split-loop failed: " << msg
+                  << "\n  -> falling back to direct execution of original SQL\n";
+      }
+      adapter_->ResetQueryState();
+      result = adapter_->ExecuteSQL(sql);
+    } else {
+      throw;
+    }
+  }
 
   if (config_.enable_debug_print) {
     std::cout
@@ -1194,6 +1227,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     } else {
       auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
       td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+      td_splitter->CompleteMissingCardinalities(remaining_ir);
 #if defined(HAVE_LLVM)
       precomputed_extraction_ =
           std::move(active_cross_query_prep_->first_extraction);
@@ -1236,6 +1270,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
                << (preprocess_time / 1000.0) << ", ";
       log_file.close();
     }
+  }
+
+  // Node-based: capture original col count AFTER Preprocess/InitFromCrossQueryPrep.
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    auto *nb = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+    if (nb && nb->GetOriginalOutputColumnCount() > 0)
+      original_output_col_count_ = nb->GetOriginalOutputColumnCount();
   }
 
   all_inner_joins_ =
@@ -1361,6 +1402,24 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
               << (spec_wait_us_ / 1000.0) << "\n";
   }
 #endif
+
+  // === Projection trim: fix extra columns from split machinery ===
+  if (original_output_col_count_ > 0 && remaining_ir) {
+    auto *proj = remaining_ir.get();
+    while (proj &&
+           proj->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           !proj->children.empty())
+      proj = proj->children[0].get();
+    if (proj &&
+        proj->GetNodeType() ==
+            ir_sql_converter::SimplestNodeType::ProjectionNode &&
+        proj->target_list.size() > original_output_col_count_) {
+      proj->target_list.resize(original_output_col_count_);
+      if (!proj->expr_target_list.empty())
+        proj->expr_target_list.resize(original_output_col_count_);
+    }
+  }
 
   // === Final Execution ===
   if (!remaining_ir) {
@@ -3800,11 +3859,23 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
   }
 
   if (!extra_where.empty()) {
-    size_t semi = sub_sql.rfind(';');
-    if (semi != std::string::npos)
-      sub_sql.insert(semi, extra_where);
-    else
-      sub_sql += extra_where;
+    size_t insert_pos = std::string::npos;
+    std::string norm_sql = sub_sql;
+    std::transform(norm_sql.begin(), norm_sql.end(), norm_sql.begin(), ::tolower);
+    std::replace(norm_sql.begin(), norm_sql.end(), '\n', ' ');
+    std::replace(norm_sql.begin(), norm_sql.end(), '\r', ' ');
+    std::replace(norm_sql.begin(), norm_sql.end(), '\t', ' ');
+    for (const char *kw : {" order by ", " group by ", " having ", " limit "}) {
+      size_t pos = norm_sql.rfind(kw);
+      if (pos != std::string::npos &&
+          (insert_pos == std::string::npos || pos < insert_pos))
+        insert_pos = pos;
+    }
+    if (insert_pos == std::string::npos) {
+      size_t semi = sub_sql.rfind(';');
+      insert_pos = (semi != std::string::npos) ? semi : sub_sql.size();
+    }
+    sub_sql.insert(insert_pos, extra_where);
     if (config_.enable_debug_print)
       std::cerr << "[RANGE-SQL] injected: " << extra_where << "\n";
   }
@@ -3968,6 +4039,56 @@ void IRQuerySplitter::UpdateExprIndices(
     }
     return;
   }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::InExprNode) {
+    auto *in_expr = dynamic_cast<ir_sql_converter::SimplestInExpr *>(expr);
+    if (in_expr && in_expr->attr) {
+      auto updated =
+          UpdateAttrIndices(in_expr->attr.get(), temp_table, old_table_indices);
+      if (updated) {
+        in_expr->attr = std::move(updated);
+      }
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ArithExprNode) {
+    auto *arith = dynamic_cast<ir_sql_converter::SimplestArithExpr *>(expr);
+    if (arith) {
+      UpdateExprIndices(arith->left.get(), temp_table, old_table_indices);
+      UpdateExprIndices(arith->right.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CastExprNode) {
+    auto *cast = dynamic_cast<ir_sql_converter::SimplestCastExpr *>(expr);
+    if (cast) {
+      UpdateExprIndices(cast->child.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ExprNode) {
+    auto *general =
+        dynamic_cast<ir_sql_converter::SimplestGeneralComparison *>(expr);
+    if (general) {
+      UpdateExprIndices(general->left_expr.get(), temp_table,
+                        old_table_indices);
+      UpdateExprIndices(general->right_expr.get(), temp_table,
+                        old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::ConstVarNode) {
+    return;
+  }
+
+  throw std::runtime_error(
+      "IRQuerySplitter unsupported: expression node type " +
+      std::to_string(static_cast<int>(node_type)) +
+      " in UpdateExprIndices; column indices would go stale");
 }
 
 std::unique_ptr<ir_sql_converter::SimplestAttr>
@@ -3989,10 +4110,11 @@ IRQuerySplitter::UpdateAttrIndices(
   int new_col_idx = temp_table.FindNewColumnIndex(old_table_idx, old_col_idx);
 
   if (new_col_idx < 0) {
-    std::cerr << "[UpdateAttrIndices] Warning: Column [" << old_table_idx << "."
-              << old_col_idx << "] (" << attr->GetColumnName()
-              << ") not found in temp table mapping" << std::endl;
-    return nullptr;
+    throw std::runtime_error(
+        "IRQuerySplitter unsupported: column [" +
+        std::to_string(old_table_idx) + "." + std::to_string(old_col_idx) +
+        "] (" + attr->GetColumnName() +
+        ") not found in temp table mapping during index update");
   }
 
   // Use the column name from column_mappings which matches SQL generator's
@@ -4224,6 +4346,13 @@ void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
   flat->columns.resize(types.size());
 
   for (size_t c = 0; c < types.size(); c++) {
+    if (types[c] != duckdb::LogicalType::INTEGER &&
+        types[c] != duckdb::LogicalType::BIGINT &&
+        types[c].id() != duckdb::LogicalTypeId::VARCHAR)
+      return;
+  }
+
+  for (size_t c = 0; c < types.size(); c++) {
     auto &col = flat->columns[c];
     col.row_count = flat->row_count;
     col.nullable = false;
@@ -4367,6 +4496,13 @@ void IRQuerySplitter::EnsureKernelTempReadyNoCsr(const std::string &temp_name) {
   flat->column_names = stored->column_names;
   auto types = coll.Types();
   flat->columns.resize(types.size());
+
+  for (size_t c = 0; c < types.size(); c++) {
+    if (types[c] != duckdb::LogicalType::INTEGER &&
+        types[c] != duckdb::LogicalType::BIGINT &&
+        types[c].id() != duckdb::LogicalTypeId::VARCHAR)
+      return;
+  }
 
   for (size_t c = 0; c < types.size(); c++) {
     auto &col = flat->columns[c];

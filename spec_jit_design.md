@@ -245,7 +245,7 @@ Check time_log.csv for per-phase timing. Verify by unit tests first, then measur
 Quick (~2 min):
 ```bash
 cd /home/pei/Project/AQPHub/measure
-bash run_job.sh duckdb node-based pipeline o1 none
+bash run_aqp.sh job duckdb node-based pipeline o1 none
 filter='grep -v "^Running\|^==\|^Execution\|^$\|^waiting\|^server\|^ANALYZ\|^duckdb runs:\|^(base)"'
 diff <(eval $filter job_result/aqp_middleware_duckdb_node-based_pipeline_o1_none_job.txt) \
      <(eval $filter duckdb_job_node-based_golden.txt)
@@ -261,7 +261,7 @@ If any error, debug with ../build_debug/aqp_middleware (or c++ -O0 -g) first, th
 Do NOT do ANYTHING when running performance measurement to avoid noise.
 ```bash
 cd /home/pei/Project/AQPHub/measure
-bash measure_breakdown_time_job.sh duckdb node-based pipeline o1 none
+bash measure_breakdown_time_aqp.sh job duckdb node-based pipeline o1 none
 ```
 
 ### 6. If slower or neutral

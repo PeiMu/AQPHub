@@ -295,6 +295,10 @@ void QjitAggState::UpdateI64(size_t i, int64_t v) {
   case QjitAggFn::Sum:
     c.i64 += v;
     break;
+  case QjitAggFn::Average:
+    c.i64 += v;
+    c.count++;
+    break;
   case QjitAggFn::Count:
   case QjitAggFn::CountStar:
     c.count++;
@@ -316,6 +320,10 @@ void QjitAggState::UpdateF64(size_t i, double v) {
     break;
   case QjitAggFn::Sum:
     c.f64 += v;
+    break;
+  case QjitAggFn::Average:
+    c.f64 += v;
+    c.count++;
     break;
   case QjitAggFn::Count:
   case QjitAggFn::CountStar:
@@ -386,6 +394,13 @@ void QjitAggState::Merge(const QjitAggState &other) {
         c.f64 += o.f64;
       else
         c.i64 += o.i64;
+      break;
+    case QjitAggFn::Average:
+      if (descs_[i].dtype == QjitAggDType::F64)
+        c.f64 += o.f64;
+      else
+        c.i64 += o.i64;
+      c.count += o.count;
       break;
     case QjitAggFn::Count:
     case QjitAggFn::CountStar:

@@ -14,7 +14,7 @@ bool ends_with_sql(const std::string &filename) {
   return filename.substr(filename.length() - 4) == ".sql";
 }
 
-// Helper function to get all .sql files from a directory
+// Helper function to get all .sql files from a directory (recurses into subdirs)
 std::vector<std::string> get_sql_files(const std::string &directory) {
   std::vector<std::string> sql_files;
 
@@ -23,23 +23,21 @@ std::vector<std::string> get_sql_files(const std::string &directory) {
     throw std::runtime_error("Cannot open directory: " + directory);
   }
 
+  std::string base = directory;
+  if (base.back() != '/') base += '/';
+
   struct dirent *entry;
   while ((entry = readdir(dir)) != nullptr) {
     std::string filename = entry->d_name;
+    if (filename == "." || filename == "..") continue;
 
-    // Skip . and ..
-    if (filename == "." || filename == "..") {
-      continue;
-    }
+    std::string full_path = base + filename;
 
-    // Check if it's a .sql file
     if (ends_with_sql(filename)) {
-      std::string full_path = directory;
-      if (full_path.back() != '/') {
-        full_path += '/';
-      }
-      full_path += filename;
       sql_files.push_back(full_path);
+    } else if (entry->d_type == DT_DIR) {
+      auto sub = get_sql_files(full_path);
+      sql_files.insert(sql_files.end(), sub.begin(), sub.end());
     }
   }
 

@@ -161,6 +161,12 @@ struct QjitStep {
   std::vector<QjitAggCellPlan> agg_cells;
 };
 
+struct QjitSortCol {
+  int col_idx;     // index into result columns
+  bool ascending;
+  int32_t dtype;   // AQP_DTYPE_* for type-aware comparison
+};
+
 struct QjitQueryPlan {
   // Out-of-line special members: owned_exprs holds forward-declared AQPExpr.
   QjitQueryPlan();
@@ -177,6 +183,9 @@ struct QjitQueryPlan {
   // Synthesized filter expressions (mark-join IN-list rewrite) referenced
   // by QjitStepOp::filter; owned here so they outlive codegen.
   std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> owned_exprs;
+
+  std::vector<QjitSortCol> order_by; // peeled ORDER BY spec (empty = none)
+  int64_t limit = -1; // peeled LIMIT value (-1 = no limit)
   // Non-owning pointer to the IR, used by PG adapter for column name lookup.
   const ir_sql_converter::AQPStmt *ir = nullptr;
 };
