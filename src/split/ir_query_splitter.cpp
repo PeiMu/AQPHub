@@ -2530,7 +2530,11 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   }
 
   // TOP_DOWN has no Phase A peek — launch bg compile from Phase B result.
+  // NODE_BASED uses Phase A (LaunchSpeculativeCompile) which already manages
+  // the spec_compilers_ ping-pong; a second launch here would break the
+  // alternation invariant and race with the zombie from Phase A.
   if (!pending_spec_ && precomputed_extraction_ &&
+      config_.strategy == SplitStrategy::TOP_DOWN &&
       (config_.jit_flags & AQP_JIT_QUERY_JIT) && config_.spec_jit != 0) {
     int next_tune_key = iteration_count_;
     uint32_t spec_jit_flags = config_.jit_flags;

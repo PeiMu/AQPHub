@@ -9,142 +9,23 @@
 #   bash correctness_test_dsb_postgres.sh 100           # SF=100, generate golden + run all tests
 #   bash correctness_test_dsb_postgres.sh 10 --test-only  # SF=10, skip golden generation
 #
+# Config format:
+#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode[|skip_hash_cmp]]]]
+#   compile_mode defaults to llvm, skip_hash_cmp defaults to on(=all) when omitted.
+#
 set -uo pipefail
 
-# ============================================================
-# Environment -- source machine-specific paths from env.sh
-# ============================================================
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DSB_SF="${1:-10}"
-source "${SCRIPT_DIR}/env.sh"
-
-SCHEMA="${DSB_PATH}/scripts/create_tables.sql"
-FKEYS="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
-QUERY_DIR="${DSB_PATH}/code/tools/1_instance_out_aqp/1/"
-
-STORAGE_CACHE_DSB="${STORAGE_CACHE_PG_DSB}"
-
-# Output filter: strip log/timing/debug lines so only query results remain.
-FILTER='grep -v -E "^Running|^==|^Execution|^$|^waiting|^server|^ANALYZ|^NOTICE:|^\[AQP|^\[Storage|^\[CSR|^\[Dim|^\[RelationshipCenter|^\[IRQuerySplitter|^  [a-z_]*: [0-9]* rows$|^Found [0-9]|^Run |^Passed:|^Failed:|^Total |^Benchmark|^Average|^--- Iteration|^same engine|^embed data|no version information available"'
-
-cd "${PROJECT}/measure"
 if [[ "$DSB_SF" == "10" ]]; then
   RESULT_DIR="dsb_result"
 else
   RESULT_DIR="dsb_result_sf${DSB_SF}"
 fi
-mkdir -p "${RESULT_DIR}"
+
+FILTER='grep -v -E "^Running|^==|^Execution|^$|^waiting|^server|^ANALYZ|^NOTICE:|^\[AQP|^\[Storage|^\[CSR|^\[Dim|^\[RelationshipCenter|^\[IRQuerySplitter|^  [a-z_]*: [0-9]* rows$|^Found [0-9]|^Run |^Passed:|^Failed:|^Total |^Benchmark|^Average|^--- Iteration|^same engine|^embed data|no version information available"'
 
 GOLDEN_NOSPLIT="pg_dsb_no-split_golden.txt"
 GOLDEN_NB="pg_dsb_node-based_golden.txt"
-
-# ============================================================
-# Helper: run all DSB queries with given flags, write output
-# ============================================================
-run_pg_dsb() {
-  local split="$1"
-  local jit_level="$2"
-  local output_file="$3"
-  local compile_mode="${4:-llvm}"
-  local skip_hash_cmp="${5:-all}"
-  local simd="${6:-off}"
-  local jit_cache="${7:-off}"
-  local spec_jit="${8:-off}"
-  local tune_config="${9:-}"
-
-  local split_flag="--split=${split}"
-  local jit_flag="--jit-level=${jit_level}"
-  local storage_flags=""
-  local helper_flag=""
-  local extra_flags=""
-
-  if [[ "$jit_level" == "query" ]]; then
-    storage_flags="--storage-plan --storage-cache=${STORAGE_CACHE_DSB}"
-  fi
-
-  if [[ "$split" == "node-based" || "$split" == "topdown" ]]; then
-    helper_flag="--helper-db-path=${DUCKDB_DB_DSB}"
-  fi
-
-  if [[ "$compile_mode" != "llvm" ]]; then
-    extra_flags="--compile-mode=${compile_mode}"
-  fi
-
-  if [[ "$skip_hash_cmp" != "all" ]]; then
-    extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
-  fi
-
-  if [[ "$simd" != "off" ]]; then
-    extra_flags+=" --jit-simd=${simd}"
-  fi
-
-  if [[ "$jit_cache" != "off" ]]; then
-    if [[ "$jit_cache" == "on" ]]; then
-      extra_flags+=" --jit-cache"
-    else
-      extra_flags+=" --jit-cache=${jit_cache}"
-    fi
-  fi
-  [[ "$jit_cache" == "full" ]] && extra_flags+=" --repeat=2"
-
-  if [[ "$spec_jit" != "off" ]]; then
-    extra_flags+=" --spec-jit=${spec_jit}"
-  fi
-
-  if [[ -n "$tune_config" ]]; then
-    extra_flags+=" --tune-config=${tune_config}"
-  fi
-
-  rm -f "$output_file"
-
-  "${BINARY}" \
-    --engine=postgresql \
-    --db="${PG_CONN_DSB}" \
-    ${helper_flag} \
-    --schema="${SCHEMA}" \
-    --fkeys="${FKEYS}" \
-    ${split_flag} \
-    ${jit_flag} \
-    --no-analyze \
-    ${storage_flags} \
-    ${extra_flags} \
-    --benchmark \
-    "${QUERY_DIR}" \
-    2>&1 | tee -a "$output_file"
-}
-
-# ============================================================
-# PostgreSQL start/stop
-# ============================================================
-pg_start() {
-  if ! ${PG_BIN}/pg_isready -h localhost >/dev/null 2>&1; then
-    echo "Starting PostgreSQL..."
-    ${PG_BIN}/pg_ctl start -l "${PG_LOG}" -D "${PG_DATA}"
-    until ${PG_BIN}/pg_isready -h localhost >/dev/null 2>&1; do
-      sleep 0.5
-    done
-    echo "PostgreSQL is ready."
-  else
-    echo "PostgreSQL already running."
-  fi
-}
-
-pg_stop() {
-  ${PG_BIN}/pg_ctl stop -D "${PG_DATA}" -m smart -s 2>/dev/null || true
-}
-
-cleanup() { pg_stop; }
-trap cleanup EXIT
-
-# ============================================================
-# Start PG + ANALYZE
-# ============================================================
-pg_start
-
-echo "ANALYZING..."
-${PG_BIN}/psql -d "${PG_CONN_DSB}" -c "ANALYZE;"
-echo "ANALYZE done"
 
 # ============================================================
 # Step 1: Generate golden files (interpreter baseline)
@@ -154,13 +35,15 @@ if [[ "$generate_golden" != "--test-only" ]]; then
   echo "========================================"
   echo "Generating golden: no-split, none-jit"
   echo "========================================"
-  run_pg_dsb none none "${GOLDEN_NOSPLIT}"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql none none none
+  cp "${RESULT_DIR}/aqp_middleware_postgresql_none_none_none_dsb.txt" "${GOLDEN_NOSPLIT}"
   echo ""
 
   echo "========================================"
   echo "Generating golden: node-based, none-jit"
   echo "========================================"
-  run_pg_dsb node-based none "${GOLDEN_NB}"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based none none
+  cp "${RESULT_DIR}/aqp_middleware_postgresql_node-based_none_none_dsb.txt" "${GOLDEN_NB}"
   echo ""
 fi
 
@@ -176,192 +59,190 @@ done
 # ============================================================
 # Step 2: Test configs
 # ============================================================
-# Config format: split|jit_level|golden_file|compile_mode|skip_hash_cmp|simd|jit_cache|spec_jit
-# Defaults: llvm, all, off, off, off
-#
-# PostgreSQL only supports query-jit (no expr/operator/pipeline).
-# No payload_prune, prefetch, batch_probe flags.
-CONFIGS=(
+JIT_CONFIGS=(
   # ============================================================
   # Interpreter baseline (should match golden exactly)
   # ============================================================
-  "none|none|${GOLDEN_NOSPLIT}"
-  "node-based|none|${GOLDEN_NB}"
+  "postgresql|none|none|none|${GOLDEN_NOSPLIT}"
+  "postgresql|node-based|none|none|${GOLDEN_NB}"
 
   # ============================================================
   # Query-jit, compile_mode=llvm (default)
   # ============================================================
-  "none|query|${GOLDEN_NOSPLIT}"
-  "node-based|query|${GOLDEN_NB}"
+  "postgresql|none|query|none|${GOLDEN_NOSPLIT}"
+  "postgresql|node-based|query|none|${GOLDEN_NB}"
 
   # ============================================================
   # Query-jit, compile_mode=fastisel
   # ============================================================
-  "none|query|${GOLDEN_NOSPLIT}|fastisel"
-  "node-based|query|${GOLDEN_NB}|fastisel"
+  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|||fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|||fastisel"
 
   # ============================================================
   # Query-jit, compile_mode=tpde
   # ============================================================
-  "none|query|${GOLDEN_NOSPLIT}|tpde"
-  "node-based|query|${GOLDEN_NB}|tpde"
+  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|||tpde"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|||tpde"
 
   # ============================================================
-  # Query-jit, jit_cache=single-run-strict
-  # (none-split omitted: single-run cache only helps across sub-queries)
+  # jit-cache=single-run-strict
   # ============================================================
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|single-run-strict"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|single-run-strict"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|single-run-strict"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict|fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict|tpde"
 
   # ============================================================
-  # Query-jit, jit_cache=single-run-template
-  # (none-split omitted: single-run cache only helps across sub-queries)
+  # jit-cache=single-run-template
   # ============================================================
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|single-run-template"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|single-run-template"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|single-run-template"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|tpde"
 
   # ============================================================
-  # Query-jit, jit_cache=full (with --repeat=2 for cold+warm)
+  # jit-cache=full (with --repeat=2 for cold+warm)
   # ============================================================
-  "none|query|${GOLDEN_NOSPLIT}|llvm|all|off|full"
-  "none|query|${GOLDEN_NOSPLIT}|fastisel|all|off|full"
-  "none|query|${GOLDEN_NOSPLIT}|tpde|all|off|full"
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|full"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|full"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|full"
+  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full"
+  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full|fastisel"
+  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full|tpde"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full|fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full|tpde"
 
   # ============================================================
-  # Speculative JIT, recompile (TPDE on miss)
+  # Speculative JIT, recompile
   # ============================================================
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|off|recompile"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|off|recompile"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|off|recompile"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile||fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile||tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=single-run-strict
   # ============================================================
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|single-run-strict|recompile"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|single-run-strict|recompile"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|single-run-strict|recompile"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict|fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict|tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=single-run-template
   # ============================================================
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|single-run-template|recompile"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|single-run-template|recompile"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|single-run-template|recompile"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=full
   # ============================================================
-  "node-based|query|${GOLDEN_NB}|llvm|all|off|full|recompile"
-  "node-based|query|${GOLDEN_NB}|fastisel|all|off|full|recompile"
-  "node-based|query|${GOLDEN_NB}|tpde|all|off|full|recompile"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full|fastisel"
+  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full|tpde"
 
   # ============================================================
   # topdown (SDS) -- uses the same no-split golden (ground truth)
   # ============================================================
 
   # Interpreter baseline
-  "topdown|none|${GOLDEN_NOSPLIT}"
+  "postgresql|topdown|none|none|${GOLDEN_NOSPLIT}"
 
   # Query-jit (llvm / fastisel / tpde)
-  "topdown|query|${GOLDEN_NOSPLIT}"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|||fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|||tpde"
 
   # jit-cache=single-run-strict (query x llvm / fastisel / tpde)
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|single-run-strict"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|single-run-strict"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|single-run-strict"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-strict"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-strict|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-strict|tpde"
 
   # jit-cache=single-run-template (query x llvm / fastisel / tpde)
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|single-run-template"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|single-run-template"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|single-run-template"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|tpde"
 
   # jit-cache=full (query x llvm / fastisel / tpde)
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|full"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|full"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|full"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full|tpde"
 
   # Speculative JIT, recompile (query x llvm / fastisel / tpde)
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|off|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|off|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|off|recompile"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile||fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile||tpde"
 
   # Speculative JIT, recompile + jit_cache=single-run-strict
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|single-run-strict|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|single-run-strict|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|single-run-strict|recompile"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-strict"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-strict|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-strict|tpde"
 
   # Speculative JIT, recompile + jit_cache=single-run-template
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|single-run-template|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|single-run-template|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|single-run-template|recompile"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|tpde"
 
   # Speculative JIT, recompile + jit_cache=full
-  "topdown|query|${GOLDEN_NOSPLIT}|llvm|all|off|full|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|fastisel|all|off|full|recompile"
-  "topdown|query|${GOLDEN_NOSPLIT}|tpde|all|off|full|recompile"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full|tpde"
 )
 
 passed=0
 failed=0
-total=${#CONFIGS[@]}
+total=${#JIT_CONFIGS[@]}
+
+# Clear disk JIT cache to ensure clean slate
+rm -rf /dev/shm/aqp_jit_cache/
 declare -a FAILED_CONFIGS=()
 FAIL_LOG="${RESULT_DIR}/correctness_pg_dsb_failures.log"
+mkdir -p "${RESULT_DIR}"
 : > "$FAIL_LOG"
 
-for entry in "${CONFIGS[@]}"; do
-  IFS='|' read -r split jit_level golden compile_mode skip_hash_cmp simd jit_cache spec_jit <<< "$entry"
+# --- Run JIT-level configs via run_aqp.sh dsb_${DSB_SF} ---
+for entry in "${JIT_CONFIGS[@]}"; do
+  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp <<< "$entry"
+  spec_jit_mode=${spec_jit_mode:-off}
+  jit_cache_mode=${jit_cache_mode:-off}
   compile_mode=${compile_mode:-llvm}
-  skip_hash_cmp=${skip_hash_cmp:-all}
-  simd=${simd:-off}
-  jit_cache=${jit_cache:-off}
-  spec_jit=${spec_jit:-off}
-  config_label="split=${split} jit=${jit_level} compile=${compile_mode} shc=${skip_hash_cmp} simd=${simd} cache=${jit_cache} spec=${spec_jit}"
-  echo "=== Testing: ${config_label} ==="
+  skip_hash_cmp=${skip_hash_cmp:-on}
+  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} ==="
 
+  bash run_aqp.sh "dsb_${DSB_SF}" "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
+       on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}"
+
+  shc_suffix=""
+  [[ "$skip_hash_cmp" == "off" ]] && shc_suffix="_noskiphashcmp"
+  spec_suffix=""
+  [[ "$spec_jit_mode" != "off" ]] && spec_suffix="_spec${spec_jit_mode}"
+  cache_suffix=""
+  if [[ "$jit_cache_mode" == "on" ]]; then
+    cache_suffix="_jitcache"
+  elif [[ "$jit_cache_mode" != "off" ]]; then
+    cache_suffix="_jitcache_${jit_cache_mode//-/_}"
+  fi
   fc_suffix=""
   [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
-  shc_suffix=""
-  [[ "$skip_hash_cmp" != "all" ]] && shc_suffix="_shc${skip_hash_cmp}"
-  simd_suffix=""
-  [[ "$simd" != "off" ]] && simd_suffix="_simd${simd}"
-  cache_suffix=""
-  [[ "$jit_cache" != "off" ]] && cache_suffix="_cache_${jit_cache//-/_}"
-  spec_suffix=""
-  [[ "$spec_jit" != "off" ]] && spec_suffix="_spec_${spec_jit}"
-  output="${RESULT_DIR}/pg_${split}_${jit_level}${fc_suffix}${shc_suffix}${simd_suffix}${cache_suffix}${spec_suffix}_dsb.txt"
-  run_pg_dsb "${split}" "${jit_level}" "${output}" "${compile_mode}" "${skip_hash_cmp}" "${simd}" "${jit_cache}" "${spec_jit}"
+  output="${RESULT_DIR}/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}_dsb.txt"
+
+  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp}"
 
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("${config_label}  [output missing: $output]")
-    echo "--- ${config_label} ---" >> "$FAIL_LOG"
+    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
     echo "output file not found: $output" >> "$FAIL_LOG"
     echo "" >> "$FAIL_LOG"
     ((failed++))
-    echo ""
     continue
   fi
   if [[ ! -f "$golden" ]]; then
     echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("${config_label}  [golden missing: $golden]")
-    echo "--- ${config_label} ---" >> "$FAIL_LOG"
+    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
     echo "golden file not found: $golden" >> "$FAIL_LOG"
     echo "" >> "$FAIL_LOG"
     ((failed++))
-    echo ""
     continue
   fi
 
-  # For --jit-cache=full (--repeat=2): compare BOTH iterations against golden.
-  # Iter 0 = normal path, iter 1 = replay path. Both must match.
-  if [[ "$jit_cache" == "full" ]]; then
+  if [[ "$jit_cache_mode" == "full" ]]; then
     d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
     d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
     if [[ -z "$d0" && -z "$d1" ]]; then
@@ -371,8 +252,8 @@ for entry in "${CONFIGS[@]}"; do
       echo "  FAIL: differences found"
       [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
       [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
-      FAILED_CONFIGS+=("${config_label}")
-      echo "--- ${config_label} ---" >> "$FAIL_LOG"
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
       [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
       [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
@@ -386,8 +267,8 @@ for entry in "${CONFIGS[@]}"; do
     else
       echo "  FAIL: differences found"
       echo "$d" | head -30
-      FAILED_CONFIGS+=("${config_label}")
-      echo "--- ${config_label} ---" >> "$FAIL_LOG"
+      FAILED_CONFIGS+=("$config_label")
+      echo "--- $config_label ---" >> "$FAIL_LOG"
       echo "$d" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
@@ -404,9 +285,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + spec=off, cache=off
   echo "=== Testing: per-subquery tune-config (node-based, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off off off "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on off off llvm "$TUNE_JSON"
   config_label="tune-config node-based spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -441,9 +323,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-strict, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_strict_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off single-run-strict off "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on single-run-strict off llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=strict spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_strict_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -478,9 +361,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-template, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_template_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off single-run-template off "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on single-run-template off llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=template spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -515,9 +399,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=full, spec=off
   echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_cache_full_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off full off "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on full off llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=full spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_full_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -555,9 +440,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (node-based, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off off recompile "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on off recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -592,9 +478,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-strict, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_strict_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off single-run-strict recompile "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on single-run-strict recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=strict spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_strict_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -629,9 +516,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=single-run-template, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_cache_single_run_template_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off single-run-template recompile "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on single-run-template recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=template spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -666,9 +554,10 @@ if [[ -f "$TUNE_JSON" ]]; then
   # Tune + cache=full, spec=recompile
   echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_node-based_query_cache_full_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb node-based query "${output}" llvm all off full recompile "$TUNE_JSON"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+       on on on on full recompile llvm "$TUNE_JSON"
   config_label="tune-config node-based cache=full spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -714,9 +603,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + spec=off, cache=off
   echo "=== Testing: per-subquery tune-config (topdown, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off off off "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on off off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -751,9 +641,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-strict, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_strict_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off single-run-strict off "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on single-run-strict off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=strict spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_strict_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -788,9 +679,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-template, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_template_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off single-run-template off "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on single-run-template off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=template spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -825,9 +717,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=full, spec=off
   echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit off) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_cache_full_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off full off "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on full off llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=full spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_full_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -865,9 +758,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (topdown, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off off recompile "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on off recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -902,9 +796,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-strict, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_strict_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off single-run-strict recompile "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on single-run-strict recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=strict spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_strict_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -939,9 +834,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=single-run-template, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_cache_single_run_template_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off single-run-template recompile "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=template spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -976,9 +872,10 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   # Tune + cache=full, spec=recompile
   echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit=recompile) ==="
   ((total++))
-  output="${RESULT_DIR}/pg_topdown_query_cache_full_spec_recompile_tuned_dsb.txt"
-  run_pg_dsb topdown query "${output}" llvm all off full recompile "$TUNE_JSON_TD"
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+       on on on on full recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config topdown cache=full spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")

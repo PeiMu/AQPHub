@@ -1,0 +1,256 @@
+
+========================================
+Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/
+========================================
+Found 22 SQL file(s)
+
+--- Iteration 0 ---
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018/query018_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 10
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 11
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
+
+=== Query Results ===
+Rows: 5, Columns: 5
+9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+9009012|maximaxi #12                                      |698|eingn stcally                                     |1477.80|
+9006002|corpmaxi #2                                       |277|ationationable                                    |1390.75|
+9002012|importomaxi #12                                   |190|barn stought                                      |657.90|
+9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+9002010|190|225.63|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025/query025_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 7
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 10
+NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 8
+AAAAAAAAAAIDAAAA|MI|3|1.00|0.00|0.00|67|1325690|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query032/query032_0.sql
+
+Test FAILED for query032_0.sql
+Error: Failed to create temp table: ERROR:  syntax error at or near "IN"
+LINE 3: ...ct_id IN ('214', '376', '518', '755', '996') AND (IN (...) O...
+                                                             ^
+
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040/query040_0.sql
+
+Test FAILED for query040_0.sql
+Error: Query execution failed: ERROR:  type "double" does not exist
+LINE 1: ...mp2_14.temp1_12_catalog_sales_0_cs_sales_price AS DOUBLE) - ...
+                                                             ^
+
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MO|AAAAAAAAAKOBAAAA|2853|749270|2853|749270|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084/query084_0.sql
+
+=== Query Results ===
+Rows: 100, Columns: 2
+AAAAAAAAAMNGAAAA|Ha, Richard|
+AAAAAAAABIMBFAAA|Stack, Dinah|
+AAAAAAAABIMBFAAA|Stack, Dinah|
+AAAAAAAABIMBFAAA|Stack, Dinah|
+AAAAAAAABIMBFAAA|Stack, Dinah|
+AAAAAAAABIMIAAAA|Green, Kenneth|
+AAAAAAAABIMIAAAA|Green, Kenneth|
+AAAAAAAABIMIAAAA|Green, Kenneth|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACFLDFAAA|Yanez, Vera|
+AAAAAAAACOIKDAAA|Mills, Susan|
+AAAAAAAACOIKDAAA|Mills, Susan|
+AAAAAAAACOIKDAAA|Mills, Susan|
+AAAAAAAACOIKDAAA|Mills, Susan|
+AAAAAAAACOIKDAAA|Mills, Susan|
+AAAAAAAACOIKDAAA|Mills, Susan|
+AAAAAAAADKFOGAAA|Bates, Donald|
+AAAAAAAADKFOGAAA|Bates, Donald|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADNFDEAAA|Wise, Robert|
+AAAAAAAADPJAHAAA|Nelson, Andrew|
+AAAAAAAADPJAHAAA|Nelson, Andrew|
+AAAAAAAADPJAHAAA|Nelson, Andrew|
+AAAAAAAAEFIIFAAA|Pierson, Linda|
+AAAAAAAAEFIIFAAA|Pierson, Linda|
+AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
+AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
+AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
+AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
+AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
+AAAAAAAAFEONCAAA|Bartlett, Neal|
+AAAAAAAAFEONCAAA|Bartlett, Neal|
+AAAAAAAAFEONCAAA|Bartlett, Neal|
+AAAAAAAAFEONCAAA|Bartlett, Neal|
+AAAAAAAAFEONCAAA|Bartlett, Neal|
+AAAAAAAAFEONCAAA|Bartlett, Neal|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFFCHAAAA|Hamilton, Margorie|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAFOJJHAAA|Dominquez, Don|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGDBJGAAA|Carey, Herman|
+AAAAAAAAGHLFFAAA|Rose, Alma|
+AAAAAAAAGIFIGAAA|Rich, Anne|
+AAAAAAAAGPDGHAAA|Ferguson, Virginia|
+AAAAAAAAHGIAHAAA|Cantwell, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAHJFFGAAA|Washington, William|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AAAAAAAAAEPDCAAA|12297|219|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
+
+=== Query Results ===
+Rows: 11, Columns: 4
+Did not fit|3.0000000000000000|54.3600000000000000|37.6300000000000000|
+Did not like the mod|54.0000000000000000|814.9600000000000000|24.6000000000000000|
+Does not work with a|62.0000000000000000|1142.4100000000000000|29.4100000000000000|
+Found a better price|3.0000000000000000|49.5400000000000000|67.1200000000000000|
+Lost my job|65.0000000000000000|777.6200000000000000|50.1600000000000000|
+Not working any more|5.0000000000000000|409.9800000000000000|46.8400000000000000|
+reason 23|69.0000000000000000|229.8700000000000000|14.0700000000000000|
+reason 32|63.0000000000000000|2541.3000000000000000|50.7000000000000000|
+reason 36|44.0000000000000000|3643.4900000000000000|52.1900000000000000|
+reason 38|5.0000000000000000|64.3500000000000000|94.1700000000000000|
+unauthoized purchase|8.0000000000000000|729.1200000000000000|50.6200000000000000|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 7
+3|49.54|14.07|11391|436887|309595|309595|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
+
+=== Query Results ===
+Rows: 6, Columns: 4
+AAAAAAAAIAAAAAAA|California|Wayne Ray|4978.13|
+AAAAAAAAHAAAAAAA|Pacific Northwest|Alden Snyder|3811.91|
+AAAAAAAAGBAAAAAA|Hawaii/Alaska_1|Travis Wilson|2369.90|
+AAAAAAAAEAAAAAAA|North Midwest|Larry Mccray|1640.11|
+AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+AAAAAAAABAAAAAAA|NY Metro|Bob Belcher|100.47|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+AAAAAAAABAAAAAAA|California|Alden Snyder|46.70|4970|328629|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099/query099_0.sql
+
+=== Query Results ===
+Rows: 4, Columns: 8
+Bad cards must make.|LIBRARY                       |Hawaii/Alaska_1|0|2|0|0|0|
+Bad cards must make.|LIBRARY                       |NY Metro|20|21|17|0|0|
+Conventional childr|LIBRARY                       |Hawaii/Alaska_1|0|1|1|0|0|
+Conventional childr|LIBRARY                       |NY Metro|88|88|95|0|0|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 5
+Bad cards must make.|LIBRARY                       |Hawaii/Alaska_1|410689|3271|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
+
+=== Query Results ===
+Rows: 0, Columns: 3
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100_spj/query100_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
+
+Test FAILED for query101_0.sql
+Error: Failed to create temp table: ERROR:  type "double" does not exist
+LINE 3: WHERE ((CAST(store_sales_0.ss_sales_price AS DOUBLE) / CAST(...
+                                                     ^
+
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
+
+Test FAILED for query101_spj_0.sql
+Error: Failed to create temp table: ERROR:  type "double" does not exist
+LINE 3: WHERE ((CAST(store_sales_0.ss_sales_price AS DOUBLE) / CAST(...
+                                                     ^
+
+
+========================================
+Benchmark Summary
+========================================
+Total queries: 22
+Passed: 18
+Failed: 4
+========================================
+
+========================================
+Execution completed
+========================================

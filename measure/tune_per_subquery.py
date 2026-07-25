@@ -167,7 +167,7 @@ def make_configs(split, engine="duckdb"):
                  filename=f"{e}_{split}_none_off_breakdown_time_log.csv",
                  hasjit=False, flags=dict()),
             dict(label="query_full",
-                 filename=f"{e}_{split}_query_none_breakdown_time_log.csv",
+                 filename=f"{e}_{split}_query_none_llvm_breakdown_time_log.csv",
                  hasjit=True, flags=dict()),
             dict(label="query_fastisel",
                  filename=f"{e}_{split}_query_none_fastisel_breakdown_time_log.csv",

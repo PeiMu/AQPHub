@@ -132,7 +132,7 @@ elif [[ "$jit_cache" != "off" ]]; then
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
-[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
+[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
 
 log_name=time_log.csv
 container_name="umbra_benchmark"
