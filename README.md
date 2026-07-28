@@ -14,7 +14,9 @@ Clang-20 and LLVM-20 are required because the JIT compiler and LingoDB adapter d
 
 ## Clone Project
 ```bash
-git clone --recurse-submodules git@github.com:PeiMu/AQPHub.git
+git clone git@github.com:PeiMu/AQPHub.git
+cd AQPHub
+git submodule update --init --recursive
 ```
 
 ## How to compile
