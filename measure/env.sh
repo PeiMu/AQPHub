@@ -45,6 +45,6 @@ PG_LOG="${PG_LOG:-${PG_HOME}/logfile}"
 
 export LD_LIBRARY_PATH=${PG_HOME}/lib:${LD_LIBRARY_PATH:-}
 
-UMBRA_CONN="${UMBRA_CONN:-}"
+UMBRA_CONN="${UMBRA_CONN:-host=localhost port=15432 user=postgres password=postgres}"
 MARIADB_CONN="${MARIADB_CONN:-}"
 OPENGAUSS_CONN="${OPENGAUSS_CONN:-}"

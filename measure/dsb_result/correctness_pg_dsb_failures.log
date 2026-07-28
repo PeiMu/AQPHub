@@ -1,0 +1,620 @@
+--- engine=postgresql split=topdown jit=none simd=none compile=llvm spec=off cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=off cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=off cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=off cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=off cache=single-run-strict skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=off cache=single-run-strict skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=off cache=single-run-strict skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=off cache=single-run-template skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=off cache=single-run-template skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=off cache=single-run-template skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=off cache=full skip_hash_cmp=on ---
+iter0 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+iter1 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=off cache=full skip_hash_cmp=on ---
+iter0 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+iter1 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=off cache=full skip_hash_cmp=on ---
+iter0 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+iter1 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=recompile cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=recompile cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=recompile cache=off skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=recompile cache=single-run-strict skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=recompile cache=single-run-strict skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=recompile cache=single-run-strict skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=recompile cache=single-run-template skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=recompile cache=single-run-template skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=recompile cache=single-run-template skip_hash_cmp=on ---
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=llvm spec=recompile cache=full skip_hash_cmp=on ---
+iter0 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+iter1 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=fastisel spec=recompile cache=full skip_hash_cmp=on ---
+iter0 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+iter1 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+
+--- engine=postgresql split=topdown jit=query simd=none compile=tpde spec=recompile cache=full skip_hash_cmp=on ---
+iter0 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+iter1 diff:
+5a6
+> 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+8d8
+< 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+10c10
+< 9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
+---
+> 9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+18,19c18,19
+< Rows: 1, Columns: 1
+< 350033910.43|
+---
+> Test FAILED for query032_0.sql
+> Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+154d153
+< AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+158a158
+> AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
+

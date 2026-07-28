@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Drop OS page cache for reproducible cold-start measurement
+sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 

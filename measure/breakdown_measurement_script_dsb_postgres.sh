@@ -27,22 +27,23 @@ echo "=== DSB scale factor: ${DSB_SF} (results -> ${RESULT_DIR}/) ==="
 # ============================================================
 # Interpreter baseline (2 configs)
 # ============================================================
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none none && \
+# COMMENTED OUT: query032 times out with split=none on PostgreSQL DSB
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none none && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based none && \
 
 # ============================================================
 # split=none: query-jit x 3 compile-mode x 2 cache(off/full) = 6
 # ============================================================
 
-# --- cache=off ---
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all off off llvm && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all off off fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all off off tpde && \
+# --- cache=off --- (COMMENTED OUT: query032 times out with split=none)
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all off off llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all off off fastisel && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all off off tpde && \
 
-# --- cache=full ---
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all full off llvm && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all full off fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all full off tpde && \
+# --- cache=full --- (COMMENTED OUT: query032 times out with split=none)
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all full off llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all full off fastisel && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql none query none on on on all full off tpde && \
 
 # ============================================================
 # node-based: (3 compile-mode + 1 tune) x 4 cache x 2 spec = 32

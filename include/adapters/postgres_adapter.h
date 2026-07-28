@@ -220,9 +220,11 @@ public:
   QueryResult ReplayQjitFinal(const PgCachedSubquery &sub);
 #endif
 
-private:
+protected:
   PGconn *conn;
   json parse_tree;
+
+private:
 
 #ifdef HAVE_LLVM
   std::unique_ptr<QjitCompiled>

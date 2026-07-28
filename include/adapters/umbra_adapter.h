@@ -31,5 +31,11 @@ public:
 
   // Plain EXPLAIN ANALYZE (Umbra may reject the VERBOSE/BUFFERS options)
   std::string ExplainAnalyze(const std::string &sql) override;
+
+  void DropTempTable(const std::string &table_name) override;
+  void ResetQueryState() override;
+
+private:
+  std::string conn_string_;
 };
 } // namespace middleware

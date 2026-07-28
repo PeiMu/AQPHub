@@ -6,7 +6,7 @@
 namespace middleware {
 
 UmbraAdapter::UmbraAdapter(const std::string &connection_string)
-    : PostgreSQLAdapter(connection_string) {}
+    : PostgreSQLAdapter(connection_string), conn_string_(connection_string) {}
 
 void UmbraAdapter::SetTempTableCardinality(const std::string &temp_table_name,
                                            uint64_t estimated_rows) {
@@ -37,7 +37,6 @@ void UmbraAdapter::ExecuteSQLandCreateTempTable(
     bool update_temp_card) {
   CheckConnection();
 
-  // Create temp table with query results using CREATE TEMP TABLE AS
   std::string create_sql = "CREATE TEMP TABLE " + temp_table_name + " AS (" +
                            sql.substr(0, sql.size() - 1) + ");";
 #ifndef NDEBUG
@@ -54,7 +53,10 @@ void UmbraAdapter::ExecuteSQLandCreateTempTable(
   }
   PQclear(pg_result);
 
-  // Skip ANALYZE — Umbra auto-collects statistics on temp tables.
+  // Cardinality is looked up lazily in GetTempTableCardinality (via
+  // pg_class or COUNT(*)).  ResetQueryState uses reconnect to drop
+  // session temp tables, so temp_table_card_ doesn't need to be
+  // populated here.
 
 #ifndef NDEBUG
   std::cout << "[Umbra] Created temp table: " << temp_table_name << std::endl;
@@ -78,14 +80,17 @@ UmbraAdapter::GetTempTableCardinality(const std::string &temp_table_name) {
     int64_t reltuples = std::stoll(PQgetvalue(r, 0, 0));
     PQclear(r);
     if (reltuples >= 0) {
+      temp_table_card_[temp_table_name] = static_cast<uint64_t>(reltuples);
       return static_cast<uint64_t>(reltuples);
     }
   }
   if (r)
     PQclear(r);
 
-  // Fallback to COUNT(*) via parent
-  return PostgreSQLAdapter::GetTempTableCardinality(temp_table_name);
+  // Fallback to COUNT(*) via parent, then cache
+  uint64_t count = PostgreSQLAdapter::GetTempTableCardinality(temp_table_name);
+  temp_table_card_[temp_table_name] = count;
+  return count;
 }
 
 std::vector<std::pair<double, double>>
@@ -152,6 +157,45 @@ std::string UmbraAdapter::ExplainAnalyze(const std::string &sql) {
   } catch (const std::exception &e) {
     return std::string("EXPLAIN ANALYZE failed: ") + e.what();
   }
+}
+
+void UmbraAdapter::DropTempTable(const std::string &table_name) {
+  CheckConnection();
+  std::string drop_sql = "DROP TABLE IF EXISTS " + table_name;
+  PGresult *pg_result = PQexec(GetConnection(), drop_sql.c_str());
+  if (PQresultStatus(pg_result) != PGRES_COMMAND_OK) {
+#ifndef NDEBUG
+    std::cerr << "[Umbra] Warning: DROP TABLE " << table_name
+              << " failed (non-fatal): " << PQerrorMessage(GetConnection())
+              << std::endl;
+#endif
+  }
+  PQclear(pg_result);
+}
+
+void UmbraAdapter::ResetQueryState() {
+  // Umbra may hold an internal schema lock after query execution (background
+  // compaction on temp tables), causing both DROP and CREATE to fail with
+  // "could not lock the schema".  Reconnecting releases all session-scoped
+  // temp tables and clears the lock — no need to drop them individually.
+  temp_table_card_.clear();
+  parse_tree.clear();
+  subquery_index = 0;
+
+  if (conn) {
+    PQfinish(conn);
+    conn = nullptr;
+  }
+  conn = PQconnectdb(conn_string_.c_str());
+  if (CONNECTION_OK != PQstatus(conn)) {
+    std::string err = PQerrorMessage(conn);
+    PQfinish(conn);
+    conn = nullptr;
+    throw std::runtime_error("Umbra reconnect failed: " + err);
+  }
+  PGresult *r = PQexec(conn, "SET synchronous_commit = off");
+  if (r)
+    PQclear(r);
 }
 
 } // namespace middleware

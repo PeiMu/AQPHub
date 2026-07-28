@@ -468,20 +468,44 @@ Log filenames encode the active flags, e.g., `duckdb_node-based_query_none_tpde_
 | `find_top_queries.py` | `python3 find_top_queries.py [path] [--top=N]` | Rank queries by slowest median total |
 | `tune_kernel_threshold.py` | `python3 tune_kernel_threshold.py [dir]` | Kernel-path threshold analysis (PipelineKernel vs DuckDB) |
 
-### Native engine scripts
+### Measurement prerequisites
 
-We also provide scripts for running the native Umbra and MariaDB.
+The measurement scripts drop the OS page cache at startup for reproducible cold-start
+timing. This requires passwordless `sudo` for a single command. Set it up once:
 
 ```bash
-bash ./run_umbra.sh
-bash ./run_mariadb.sh
+sudo visudo -f /etc/sudoers.d/drop_caches
 ```
 
-Or measure their performance.
+Add the following line (replace `pei` with your username):
+
+```
+pei ALL=(ALL) NOPASSWD: /bin/sh -c echo 3 > /proc/sys/vm/drop_caches
+```
+
+Verify it works without a password prompt:
 
 ```bash
-bash ./measure_umbra.sh
-bash ./measure_mariadb.sh
+sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches' && echo "OK"
+```
+
+### Native engine scripts
+
+Scripts for running native engines (without middleware) on JOB or DSB benchmarks.
+
+```bash
+bash ./run_umbra.sh        # JOB only
+bash ./run_mariadb.sh      # JOB only
+bash ./run_opengauss.sh    # JOB only
+```
+
+Measure native engine performance (Way 2: all queries per iteration, 5 warmup + 10 measured):
+
+```bash
+bash ./measure_umbra.sh job        # JOB
+bash ./measure_umbra.sh dsb_10     # DSB SF10
+bash ./measure_mariadb.sh job
+bash ./measure_opengauss.sh job
 ```
 
 ## Tuning
