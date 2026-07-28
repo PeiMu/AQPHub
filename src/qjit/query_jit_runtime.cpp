@@ -424,6 +424,7 @@ QjitTable::QjitTable(std::vector<ColumnDesc> cols, uint32_t num_workers)
 uint32_t QjitTable::ElemSize(size_t col) const {
   switch (cols_[col].dtype) {
   case AQP_DTYPE_INT32:
+  case AQP_DTYPE_DATE:
     return 4;
   case AQP_DTYPE_INT64:
     return 8;
@@ -445,7 +446,7 @@ void QjitTable::AppendBytes(uint32_t worker, size_t col, const void *src) {
 }
 
 void QjitTable::AppendI32(uint32_t worker, size_t col, int32_t v) {
-  assert(cols_[col].dtype == AQP_DTYPE_INT32);
+  assert(cols_[col].dtype == AQP_DTYPE_INT32 || cols_[col].dtype == AQP_DTYPE_DATE);
   AppendBytes(worker, col, &v);
 }
 void QjitTable::AppendI64(uint32_t worker, size_t col, int64_t v) {

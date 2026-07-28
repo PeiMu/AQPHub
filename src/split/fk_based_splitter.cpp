@@ -1041,6 +1041,7 @@ FKBasedSplitter::BuildSubIRForCluster(
   // - Attributes needed for joins with tables OUTSIDE the cluster
   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> required_attrs;
   std::set<std::pair<unsigned int, unsigned int>> seen_attrs;
+  std::set<std::pair<unsigned int, std::string>> seen_attrs_by_name;
 
   // Helper to add a cluster attr to required_attrs if not already seen
   auto AddIfClusterAttr = [&](const ir_sql_converter::SimplestAttr *attr) {
@@ -1048,8 +1049,12 @@ FKBasedSplitter::BuildSubIRForCluster(
       return;
     if (cluster_tables.count(attr->GetTableIndex())) {
       auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
-      if (seen_attrs.find(key) == seen_attrs.end()) {
+      auto name_key = std::make_pair(attr->GetTableIndex(),
+                                     attr->GetColumnName());
+      if (seen_attrs.find(key) == seen_attrs.end() &&
+          seen_attrs_by_name.find(name_key) == seen_attrs_by_name.end()) {
         seen_attrs.insert(key);
+        seen_attrs_by_name.insert(name_key);
         required_attrs.push_back(
             std::make_unique<ir_sql_converter::SimplestAttr>(*attr));
       }
@@ -1164,8 +1169,12 @@ FKBasedSplitter::BuildSubIRForCluster(
   auto external_attrs = CollectExternalJoinAttrs(ir, cluster_tables);
   for (auto &attr : external_attrs) {
     auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
-    if (seen_attrs.find(key) == seen_attrs.end()) {
+    auto name_key = std::make_pair(attr->GetTableIndex(),
+                                   attr->GetColumnName());
+    if (seen_attrs.find(key) == seen_attrs.end() &&
+        seen_attrs_by_name.find(name_key) == seen_attrs_by_name.end()) {
       seen_attrs.insert(key);
+      seen_attrs_by_name.insert(name_key);
       required_attrs.push_back(std::move(attr));
     }
   }
@@ -2450,9 +2459,19 @@ FKBasedSplitter::UpdateRemainingIR(
 
   std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>> proj_target_list;
   std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> proj_expr_target_list;
-  if (!orig_agg && !orig_order && !orig_limit) {
-    proj_target_list = std::move(remaining_ir->target_list);
-    proj_expr_target_list = std::move(remaining_ir->expr_target_list);
+  if (!orig_agg) {
+    auto *proj_node = remaining_ir.get();
+    while (proj_node &&
+           proj_node->GetNodeType() !=
+               ir_sql_converter::SimplestNodeType::ProjectionNode &&
+           !proj_node->children.empty())
+      proj_node = proj_node->children[0].get();
+    if (proj_node &&
+        proj_node->GetNodeType() ==
+            ir_sql_converter::SimplestNodeType::ProjectionNode) {
+      proj_target_list = std::move(proj_node->target_list);
+      proj_expr_target_list = std::move(proj_node->expr_target_list);
+    }
   }
   auto proj_base = std::make_unique<ir_sql_converter::AQPStmt>(
       std::move(proj_children), std::move(proj_target_list),
@@ -2477,17 +2496,15 @@ FKBasedSplitter::UpdateRemainingIR(
     // only once (by the projection).
     std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
         agg_target_list;
+    std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>>
+        agg_expr_target_list;
     if (dup_proj_targets.empty()) {
-      for (const auto &grp : orig_agg->groups) {
+      for (const auto &t : orig_agg->target_list)
         agg_target_list.push_back(
-            std::make_unique<ir_sql_converter::SimplestAttr>(*grp));
-      }
-      for (const auto &fn_pair : orig_agg->agg_fns) {
-        if (fn_pair.first) {
-          agg_target_list.push_back(
-              std::make_unique<ir_sql_converter::SimplestAttr>(*fn_pair.first));
-        }
-      }
+            std::make_unique<ir_sql_converter::SimplestAttr>(*t));
+      for (const auto &e : orig_agg->expr_target_list)
+        agg_expr_target_list.push_back(
+            e ? ir_utils::CloneExpr(e.get()) : nullptr);
     }
 
     // Build Aggregate node - move groups and agg_fns directly from old IR
@@ -2497,6 +2514,8 @@ FKBasedSplitter::UpdateRemainingIR(
     auto agg_base = std::make_unique<ir_sql_converter::AQPStmt>(
         std::move(agg_children), std::move(agg_target_list),
         ir_sql_converter::SimplestNodeType::AggregateNode);
+    if (!agg_expr_target_list.empty())
+      agg_base->expr_target_list = std::move(agg_expr_target_list);
 
     result = std::make_unique<ir_sql_converter::SimplestAggregate>(
         std::move(agg_base), std::move(orig_agg->agg_fns),

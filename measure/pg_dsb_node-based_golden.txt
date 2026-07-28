@@ -52,11 +52,21 @@ LINE 3: ...ct_id IN ('214', '376', '518', '755', '996') AND (IN (...) O...
 
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040/query040_0.sql
 
-Test FAILED for query040_0.sql
-Error: Query execution failed: ERROR:  type "double" does not exist
-LINE 1: ...mp2_14.temp1_12_catalog_sales_0_cs_sales_price AS DOUBLE) - ...
-                                                             ^
-
+=== Query Results ===
+Rows: 13, Columns: 4
+MO|AAAAAAAABPPPAAAA|NULL|0|
+MO|AAAAAAAAECLAAAAA|0|15.779999999999998|
+MO|AAAAAAAAEGEIAAAA|-262.36|0|
+SC|AAAAAAAALMHEAAAA|0|-654.63|
+SC|AAAAAAAAONBGBAAA|-398.18|0|
+SD|AAAAAAAAAKOBAAAA|0|63.870000000000005|
+SD|AAAAAAAADFJBBAAA|0|-1308.47|
+SD|AAAAAAAAEFHGBAAA|-232.84999999999997|0|
+SD|AAAAAAAAGKOCAAAA|0|-809.27|
+SD|AAAAAAAAJBPAAAAA|0|-774.25|
+SD|AAAAAAAAKLFMAAAA|-961.99|0|
+TN|AAAAAAAACIPDBAAA|-2185.5|0|
+TN|AAAAAAAAGPNBAAAA|-877.36|0|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
 
 === Query Results ===
@@ -230,25 +240,20 @@ Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
 
-Test FAILED for query101_0.sql
-Error: Failed to create temp table: ERROR:  type "double" does not exist
-LINE 3: WHERE ((CAST(store_sales_0.ss_sales_price AS DOUBLE) / CAST(...
-                                                     ^
-
+=== Query Results ===
+Rows: 0, Columns: 4
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
 
-Test FAILED for query101_spj_0.sql
-Error: Failed to create temp table: ERROR:  type "double" does not exist
-LINE 3: WHERE ((CAST(store_sales_0.ss_sales_price AS DOUBLE) / CAST(...
-                                                     ^
-
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
 
 ========================================
 Benchmark Summary
 ========================================
 Total queries: 22
-Passed: 18
-Failed: 4
+Passed: 21
+Failed: 1
 ========================================
 
 ========================================

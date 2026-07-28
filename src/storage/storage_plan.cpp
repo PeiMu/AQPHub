@@ -467,6 +467,7 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
     std::vector<std::string> col_names;
     std::vector<FlatColumnType> col_types;
     std::vector<bool> col_nullable;
+    std::vector<bool> col_is_bpchar;
     for (int i = 0; i < PQntuples(col_result); i++) {
       col_names.emplace_back(PQgetvalue(col_result, i, 0));
       std::string dtype = PQgetvalue(col_result, i, 1);
@@ -479,6 +480,7 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
         col_types.push_back(FlatColumnType::VARCHAR);
       }
       col_nullable.push_back(nullable);
+      col_is_bpchar.push_back(dtype == "character");
     }
     PQclear(col_result);
 
@@ -496,11 +498,28 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
     table.column_names = col_names;
     table.columns.resize(col_names.size());
 
+    std::string order_col;
+    if (std::find(col_names.begin(), col_names.end(), "id") !=
+        col_names.end()) {
+      order_col = "id";
+    } else {
+      std::string pk_sql =
+          "SELECT a.attname FROM pg_index i "
+          "JOIN pg_attribute a ON a.attrelid = i.indrelid "
+          "AND a.attnum = i.indkey[0] "
+          "WHERE i.indrelid = '" + tname + "'::regclass "
+          "AND i.indisprimary AND array_length(i.indkey, 1) = 1";
+      PGresult *pk_result = PQexec(conn, pk_sql.c_str());
+      if (PQresultStatus(pk_result) == PGRES_TUPLES_OK &&
+          PQntuples(pk_result) > 0)
+        order_col = PQgetvalue(pk_result, 0, 0);
+      PQclear(pk_result);
+    }
+    std::string order_clause;
+    if (!order_col.empty())
+      order_clause = " ORDER BY " + order_col;
+
     for (size_t ci = 0; ci < col_names.size(); ci++) {
-      std::string order_clause;
-      if (std::find(col_names.begin(), col_names.end(), "id") !=
-          col_names.end())
-        order_clause = " ORDER BY id";
       std::string data_sql =
           "SELECT " + col_names[ci] + " FROM " + tname + order_clause;
       PGresult *data_result = PQexec(conn, data_sql.c_str());
@@ -540,10 +559,16 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
       } else {
         // VARCHAR: data stores uint32_t[row_count+1] offsets,
         // string_pool stores the contiguous string bytes.
+        const bool trim_spaces = col_is_bpchar[ci];
         uint64_t total_bytes = 0;
         for (int r = 0; r < nrows; r++) {
-          if (!PQgetisnull(data_result, r, 0))
-            total_bytes += std::strlen(PQgetvalue(data_result, r, 0));
+          if (!PQgetisnull(data_result, r, 0)) {
+            size_t len = std::strlen(PQgetvalue(data_result, r, 0));
+            if (trim_spaces)
+              while (len > 0 && PQgetvalue(data_result, r, 0)[len - 1] == ' ')
+                --len;
+            total_bytes += len;
+          }
         }
         col.data = std::make_unique<char[]>(
             sizeof(uint32_t) * (row_count + 1));
@@ -565,6 +590,9 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
           } else {
             const char *val = PQgetvalue(data_result, r, 0);
             size_t len = std::strlen(val);
+            if (trim_spaces)
+              while (len > 0 && val[len - 1] == ' ')
+                --len;
             std::memcpy(col.string_pool.get() + offset, val, len);
             offset += len;
           }

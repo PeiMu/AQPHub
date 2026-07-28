@@ -122,7 +122,10 @@ bool QjitExecutor::ResolveTempSource(const QjitTable &table,
       return false;
     }
     const QjitTable::ColumnDesc &cd = table.Col(ref.column_index);
-    if (cd.dtype != ref.expected_dtype) {
+    bool compat = (cd.dtype == ref.expected_dtype) ||
+                  (cd.dtype == AQP_DTYPE_DATE && ref.expected_dtype == AQP_DTYPE_INT32) ||
+                  (cd.dtype == AQP_DTYPE_INT32 && ref.expected_dtype == AQP_DTYPE_DATE);
+    if (!compat) {
       reason = "source:tmp-dtype:" + ref.column_name;
       return false;
     }

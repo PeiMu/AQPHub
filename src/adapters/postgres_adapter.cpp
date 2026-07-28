@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <ctime>
 
 #ifdef HAVE_LLVM
 
@@ -72,8 +73,10 @@ static void IrTargetListToDtypes(const ir_sql_converter::AQPStmt &ir,
     int32_t dt;
     switch (attr->GetType()) {
     case ir_sql_converter::IntVar:
-    case ir_sql_converter::Date:
       dt = attr->GetBitWidth() == 64 ? AQP_DTYPE_INT64 : AQP_DTYPE_INT32;
+      break;
+    case ir_sql_converter::Date:
+      dt = AQP_DTYPE_DATE;
       break;
     case ir_sql_converter::StringVar:
       dt = AQP_DTYPE_VARCHAR;
@@ -1100,6 +1103,16 @@ bool PostgreSQLAdapter::BuildOutputDescsFromIR(
       compiled.out_descs.push_back({dt, out_name(i)});
     }
   }
+  if (plan.ir) {
+    std::vector<int32_t> sem;
+    std::vector<std::string> names;
+    IrTargetListToDtypes(*plan.ir, sem, names);
+    for (size_t i = 0; i < compiled.out_descs.size() && i < sem.size(); i++) {
+      if (sem[i] == AQP_DTYPE_DATE &&
+          compiled.out_descs[i].dtype == AQP_DTYPE_INT32)
+        compiled.out_descs[i].dtype = AQP_DTYPE_DATE;
+    }
+  }
   return true;
 }
 
@@ -1312,7 +1325,9 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
     if (c > 0)
       create_sql += ", ";
     create_sql += qtable.Col(c).name + " ";
-    if (qtable.Col(c).dtype == AQP_DTYPE_INT32)
+    if (qtable.Col(c).dtype == AQP_DTYPE_DATE)
+      create_sql += "date";
+    else if (qtable.Col(c).dtype == AQP_DTYPE_INT32)
       create_sql += "integer";
     else if (qtable.Col(c).dtype == AQP_DTYPE_INT64)
       create_sql += "bigint";
@@ -1349,6 +1364,15 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
         line += '\t';
       if (!qtable.ValueValid(c, r)) {
         line += "\\N";
+      } else if (qtable.Col(c).dtype == AQP_DTYPE_DATE) {
+        int32_t epoch_days = qtable.GetI32(c, r);
+        time_t epoch_secs = static_cast<time_t>(epoch_days) * 86400;
+        struct tm tm_buf;
+        gmtime_r(&epoch_secs, &tm_buf);
+        char date_str[11];
+        snprintf(date_str, sizeof(date_str), "%04d-%02d-%02d",
+                 tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday);
+        line += date_str;
       } else if (qtable.Col(c).dtype == AQP_DTYPE_INT32) {
         line += std::to_string(qtable.GetI32(c, r));
       } else if (qtable.Col(c).dtype == AQP_DTYPE_INT64) {
