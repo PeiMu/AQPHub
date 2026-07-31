@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Umbra benchmark — Way 2: all queries per iteration.
-# Runs all queries once per iteration for N iterations (warmup + measured).
+# Runs all queries once per iteration for N iterations (measured).
 # Output: CSV matching measure_breakdown_time_aqp.sh format:
 #   "Running benchmark for <path>..." header per query,
 #   one row per iteration with a single wall-time value (ms).
@@ -104,19 +104,10 @@ echo "ANALYZING..."
 PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -c "ANALYZE;"
 echo "ANALYZE done"
 
-warmup=5
-measured=10
+measured=15
 
 # Collect sorted query list
 mapfile -t sql_files < <(find "$dir" -type f -name "*.sql" | sort)
-
-# Warmup iterations
-for w in $(seq 1 ${warmup}); do
-    echo "Warmup iteration ${w}/${warmup}..."
-    for sql in "${sql_files[@]}"; do
-        PGPASSWORD=postgres psql -p 15432 -h localhost -U postgres -f "$sql"
-    done
-done
 
 # Measured iterations — store times per query across iterations
 declare -A query_times

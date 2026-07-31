@@ -82,7 +82,10 @@ def parse_csv(path, hasjit=True, head=4):
     cur = None
     for line in open(path):
         if line.startswith("Running"):
-            cur = re.search(r"/([0-9a-z]+)\.sql", line).group(1)
+            m = re.search(r"/([0-9a-z_]+)\.sql", line)
+            if m is None:
+                continue
+            cur = m.group(1)
             raw[cur] = []
             continue
         if cur is None:
