@@ -5246,7 +5246,8 @@ static Function *BuildAggUpdateFunction(LLVMContext &llctx, Module &mod,
 // ---------------------------------------------------------------------------
 // Optimise the module (skipped in debug mode)
 // ---------------------------------------------------------------------------
-static void OptimiseModule(Module &mod, bool skip) {
+static void OptimiseModule(Module &mod, bool skip,
+                           FastCompileBackend fast = FastCompileBackend::OFF) {
   if (skip) return;
 
   PassBuilder pb;
@@ -5261,10 +5262,14 @@ static void OptimiseModule(Module &mod, bool skip) {
   pb.crossRegisterProxies(lam, fam, cgam, mam);
 
   FunctionPassManager fpm;
-  fpm.addPass(InstCombinePass());
-  fpm.addPass(ReassociatePass());
-  fpm.addPass(GVNPass());
-  fpm.addPass(SimplifyCFGPass());
+  if (fast == FastCompileBackend::TPDE) {
+    fpm.addPass(SimplifyCFGPass());
+  } else {
+    fpm.addPass(InstCombinePass());
+    fpm.addPass(ReassociatePass());
+    fpm.addPass(GVNPass());
+    fpm.addPass(SimplifyCFGPass());
+  }
 
   ModulePassManager mpm;
   mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
@@ -5276,9 +5281,8 @@ static void OptimiseModule(Module &mod, bool skip) {
 // ---------------------------------------------------------------------------
 IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd,
                                    FastCompileBackend fast)
-    // Fast tier skips the mid-end pipeline entirely (mirrors lingo-db's
-    // cheap backend, LLVMBackends.cpp:823-827).
-    : skip_opt_(debug || fast != FastCompileBackend::OFF), fast_mode_(fast),
+    // FastISel skips mid-end passes; TPDE runs SimplifyCFG only (OPT-8).
+    : skip_opt_(debug || fast == FastCompileBackend::FASTISEL), fast_mode_(fast),
       simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
       impl_(std::make_unique<Impl>(simd, fast)) {}
 
@@ -5761,7 +5765,7 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   // Add module to ORC JIT
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -5898,7 +5902,7 @@ IrToLlvmCompiler::CompileRangeFilter(unsigned chunk_col_idx, int32_t dtype,
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto err2 = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
@@ -6053,7 +6057,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     }
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -6147,7 +6151,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -6287,7 +6291,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -6386,7 +6390,7 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
     }
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
@@ -6525,7 +6529,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -6784,7 +6788,7 @@ void *IrToLlvmCompiler::CompileFilterAggFusion(
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
   if (auto e = impl_->jit->addIRModule(impl_->current_tracker, std::move(tsm))) {
@@ -7850,7 +7854,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -8811,7 +8815,7 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
     return nullptr;
   }
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   impl_->pending_cache_key = cache_key;
   auto tsm = ThreadSafeModule(std::move(mod), std::move(ctx));
@@ -10185,7 +10189,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 
   auto cg_t0 = std::chrono::steady_clock::now();
 
-  OptimiseModule(*mod, skip_opt_);
+  OptimiseModule(*mod, skip_opt_, fast_mode_);
 
   auto cg_t1 = std::chrono::steady_clock::now();
 
