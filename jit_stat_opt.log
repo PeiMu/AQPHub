@@ -1,0 +1,1027 @@
+OPT-1: Dense Array Joins — Performance Analysis
+=================================================
+Date: 2026-07-29
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec
+
+Summary: OPT-1 provides ZERO speedup and causes significant regression.
+Decision: DROP this optimization. Keep the --jit-runtime-stats infrastructure.
+
+1. Measured Results (node-based, 113 JOB queries)
+-------------------------------------------------
+  OPT-1 ON:   Compile=345ms  Execution=6415ms  Middleware=384ms  Total=7144ms
+  OPT-1 OFF:  Compile=348ms  Execution=4604ms  Middleware=390ms  Total=5343ms
+  Baseline:   Compile=349ms  Execution=4424ms  Middleware=390ms  Total=5286ms
+                                                                 ------
+  OPT-1 ON vs OFF:  +1811ms execution (+39%)
+  OPT-1 OFF vs baseline: +57ms (~1%, within noise — no regression from code changes)
+  Queries faster with OPT-1: 0 / 113
+  Queries slower with OPT-1: 22 / 113
+
+Topdown results show the same pattern:
+  OPT-1 ON:  6342ms total
+  OPT-1 OFF: 4957ms total  (+1385ms regression from dense probe)
+
+2. Root Cause: Cache-Hostile Dense Array
+----------------------------------------
+The dense array is indexed by PK value (0..max_pk), so its size is proportional
+to the TABLE's PK domain, not the number of filtered rows in the build-side HT.
+
+  Table              Rows     max_pk    Dense Array    HT (filtered)
+  ---------------------------------------------------------------
+  role_type            12         12         96B        ~300B
+  company_type          4          4         32B        ~100B
+  keyword         134,170    134,170       1.0MB       ~24B (1 row after filter)
+  title         2,528,312  2,528,312      19.3MB       ~36MB (1.5M rows)
+  name          4,167,491  4,167,491      31.8MB       ~varies
+  cast_info    36,244,344 36,244,344     276.5MB       ~never build side
+
+The hash probe's working set = filtered HT entries (often <1KB after predicates).
+The dense array's working set = full PK domain (up to 277MB).
+
+For a typical JOB join like keyword='character-name-in-title':
+  - HT has 1 entry after filtering → fits L1 cache → hash probe ≈ 2ns
+  - Dense array has 134K slots → 1MB → L3 resident → dense probe ≈ 40ns
+
+For title (production_year > 1990):
+  - HT has ~1.5M entries → dir ≈ 24MB → L3/memory
+  - Dense array has 2.5M slots → 19.3MB → L3/memory
+  - Both approaches are slow, but dense array also pays:
+    - memset(0, 19.3MB) ≈ 2ms per query
+    - BuildDenseArray walking all HT chains ≈ 5ms per query
+    - Random probe-side access into 19.3MB sparse array
+
+3. Why the 2-5x Speedup Estimate Was Wrong
+-------------------------------------------
+The original estimate compared instruction counts:
+  Hash probe:  Murmur hash (5 mul+xor) + dir load + bloom check + chain walk + key cmp
+  Dense probe: bounds check + single array dereference
+
+This analysis is correct for INSTRUCTION count but wrong for EXECUTION time.
+Modern CPUs are latency-bound on memory access, not instruction-bound.
+
+The hash probe on a small filtered HT (1-100 entries, <10KB):
+  - Dir + entry + row all fit in L1/L2
+  - Total latency: ~4ns (L1 hit) + 1ns (instructions) = 5ns per probe
+
+The dense probe on a 19MB sparse array:
+  - Random access into 19MB → L3 miss (~40ns) or DRAM miss (~100ns)
+  - Total latency: 40-100ns per probe
+
+Dense probe is 8-20x SLOWER than hash probe for typical JOB queries because
+the hash probe's working set is dominated by the FILTERED build size (tiny),
+while the dense array's working set is the FULL table PK domain (huge).
+
+4. Would a Size Threshold Help?
+--------------------------------
+Guarding dense probe to max_pk ≤ 1000 (tiny dimension tables):
+  Eligible: comp_cast_type(4), company_type(4), kind_type(7), role_type(12),
+            link_type(18), info_type(113)
+  Dense array size: < 1KB each
+  But: HT for these tables also has < 100 entries → probe is <0.01ms
+  Expected speedup: ~0ms total across all 113 queries
+
+Guarding to max_pk ≤ 250,000 (adds medium tables):
+  Adds: keyword(134K), complete_cast(135K), company_name(235K)
+  But: always filtered in JOB → HT has 1-100 entries → probe already trivial
+  Expected speedup: ~0ms
+
+No threshold provides meaningful speedup for JOB.
+
+5. Would Approach B (Direct FlatTable Access) Help?
+----------------------------------------------------
+Approach B: for UNFILTERED dense-PK builds, skip HT entirely and load payloads
+directly from FlatTable column arrays using row = key - 1.
+
+Problems:
+  a) Unfiltered build sides in JOB are large tables (char_name 3.1M, name 4.1M).
+     Random FK-value access into multi-MB FlatTable columns has the same cache
+     problem as the dense array.
+
+  b) FK columns have NO locality within PK-ordered blocks (verified by SQL):
+     movie_id in cast_info spans the full 2.5M domain within each 2048-row block.
+     So FlatTable column access by FK value is random, not sequential.
+
+  c) Implementation is complex: requires changing the payload access pattern
+     (per-column FlatTable loads instead of single HT row pointer).
+
+  d) Filtered builds (the common case) can't use Approach B.
+
+Conclusion: Approach B is also not viable for JOB.
+
+6. When WOULD Dense Array Joins Help?
+--------------------------------------
+Dense arrays beat hash probes when:
+  - The build side is SMALL (max_pk < L2 size / 8 ≈ 32K)
+  - The build side is NOT heavily filtered (so the HT is large relative to the array)
+  - The probe side is large (millions of rows)
+
+This pattern is rare in JOB where dimension tables are either:
+  - Very small (role_type 12 rows) → both approaches trivial
+  - Medium but filtered to 1-10 rows → HT is tiny, hash probe is trivial
+
+Dense arrays could help in workloads with medium unfiltered dimension tables
+(1K-30K rows) probed by large fact tables — but JOB doesn't have this pattern.
+
+7. Lessons Learned
+-------------------
+  - Always profile CACHE behavior, not just instruction count.
+  - For join optimizations, the working set of the BUILD side determines
+    probe performance. The HT only contains filtered rows; a direct-addressed
+    array spans the full PK domain.
+  - Small filtered builds (the common case in star-schema joins) already
+    have near-optimal hash probe performance. Optimizing the probe path
+    for these cases has negligible impact.
+  - The bottleneck in JOB's top queries is SCAN + FILTER on large fact tables
+    (cast_info 36M rows), not the join probe itself.
+
+8. Original Analysis from CLAUDE.md (Preserved for Reference)
+-------------------------------------------------------------
+
+### What runtime info was used
+
+The `FlatTable` for each base table carries `dense_pk` (bool) and `pk_to_row`
+(int->row mapping). These are computed at storage-plan load time
+(`storage_plan.cpp:365-399`). For node-based split, when a build-side table has a dense
+integer PK, the query-JIT can replace the chained hash table with a direct-addressed
+array: `row_ptr = array[fk_value]`.
+
+### Verified: 20 of 21 IMDB tables have dense PKs
+
+Confirmed by running SQL against `imdb.db`:
+
+  Table              Rows         PK Type
+  -------------------------------------------
+  cast_info          36,244,344   DENSE
+  movie_info         14,835,720   DENSE
+  movie_keyword       4,523,930   DENSE
+  name                4,167,491   DENSE
+  char_name           3,140,339   DENSE
+  person_info         2,963,664   DENSE
+  movie_companies     2,609,129   DENSE
+  title               2,528,312   DENSE
+  movie_info_idx      1,380,035   DENSE
+  aka_name              901,343   DENSE
+  aka_title             361,472   SPARSE (max_id=377,960 != row_count)
+  company_name          234,997   DENSE
+  complete_cast         135,086   DENSE
+  keyword               134,170   DENSE
+  movie_link             29,997   DENSE
+  info_type                 113   DENSE
+  link_type                  18   DENSE
+  role_type                  12   DENSE
+  kind_type                   7   DENSE
+  comp_cast_type              4   DENSE
+  company_type                4   DENSE
+
+`aka_title` uses `pk_to_row` fallback (sparse PK); all others use `row = key - 1`.
+
+### Original speedup estimate and why it was wrong
+
+The estimate claimed 2-5x on join-heavy queries (16b, 8c, 7c, 10c) by comparing
+instruction counts: hash probe requires Murmur hash (5 mul+xor), directory load,
+bloom-tag check, chain walk with pointer chasing, key comparison. Dense probe
+requires just bounds check + single array dereference.
+
+This analysis was correct for instruction count but wrong for execution time because
+modern CPUs are memory-latency-bound, not instruction-bound. See section 3 above.
+
+### Implementation approach (Approach A — dense array as HT replacement)
+
+Build step ran as-is, then `qjit_ht_build_dense()` populated
+`dense_array[pk_value] = row_ptr` from HT entries. Probe emitted a runtime branch:
+if `dense_arrays[ht_id] != null`, do direct array lookup; else fall through to
+chained HT probe. Same row layout, so all downstream payload access worked unchanged.
+Compatible with all cache modes.
+
+Both DuckDB and PostgreSQL adapters were updated.
+
+Files modified:
+  include/util/param_config.h — bool jit_runtime_stats = true
+  src/util/param_config.cpp — --jit-runtime-stats / --no-jit-runtime-stats
+  include/qjit/query_jit_abi.h — QjitUserData + qjit_ht_build_dense() ABI
+  include/qjit/query_jit_runtime.h — QjitHashTable::BuildDenseArray()
+  src/qjit/query_jit_runtime.cpp — BuildDenseArray + qjit_ht_build_dense impl
+  include/qjit/query_jit_executor.h — Run() signature with dense params
+  src/qjit/query_jit_executor.cpp — allocate dense arrays, pack into QjitUserData
+  include/adapters/duckdb_adapter.h — dense_flags/dense_max_pk in QjitCompiled
+  src/adapters/duckdb_adapter.cpp — detection, symbol registration, Run() calls
+  include/adapters/postgres_adapter.h — dense_flags/dense_max_pk in QjitCompiled
+  src/adapters/postgres_adapter.cpp — detection, symbol registration, Run() calls
+  src/split/ir_query_splitter.cpp — wire SetJitRuntimeStats for both adapters
+  src/jit/ir_to_llvm.cpp — QjitUserDataTy, ht_build_dense_fn call, dense probe codegen
+  measure/measure_breakdown_time_aqp.sh — 14th arg runtime_stats (on/off)
+
+### Kernel comparison
+
+The kernel uses `row = key - 1` (dense PK) to directly access FlatTable columns
+with NO intermediate array (`sub_query_plan.cpp:1555-1568`). This avoids the memset
+and BuildDenseArray costs, but still suffers from random access into multi-MB FlatTable
+column arrays when FK values have no locality. The kernel's approach works because it
+also uses CSR and inverted indexes to avoid scanning large tables entirely — the dense
+PK lookup is just one piece of its join strategy.
+
+### Verified assumptions (relevant to OPT-1)
+
+1. dense_pk condition: PKs must be exactly [1, row_count], checked at
+   storage_plan.cpp:376-389. Does NOT handle min_id != 1.
+2. pk_to_row is allocated for non-dense tables (storage_plan.cpp:391-398).
+3. Usage: only in KernelJoinStep::use_direct_pk (sub_query_plan.cpp:1555-1568).
+   Zero usage in src/qjit/ or src/jit/.
+4. Cache key does NOT include HT size or cardinality. Runtime-conditional code
+   (dense probe branch) works with all cache modes including jit-cache=full.
+
+=================================================================
+OPT-3: Probe-Side Prefetching — Performance Analysis
+=================================================================
+Date: 2026-07-31
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec
+
+Summary: OPT-3 is NET NEGATIVE across all 113 JOB queries. Helps only 16b
+(-11ms) and 8c (-10ms), hurts 50-58 queries (+353-380ms total). REVERTED.
+
+Full benchmark results (all 113 queries, TPDE, cache-tmpl):
+  Node-based PF OFF:  5275.8ms   Node-based PF ON (dist=24):  5673.4ms  (+7.5%)
+  Topdown PF OFF:     4919.1ms   Topdown PF ON (dist=24):     5279.9ms  (+7.3%)
+
+Root cause: the per-row conditional branch (pf_go = pf_in_bounds AND pf_any)
+adds ~2ns overhead per row in TPDE-compiled code. TPDE cannot hoist the
+loop-invariant pf_any check out of the row loop. With 36M rows / 12 workers,
+this is ~6ms per cast_info step. The overhead exceeds the prefetch benefit
+for all but 2 queries with 8M-slot HT directories (16b, 8c).
+
+Also tested with dist=12: 5809ms (still +6.9% regression vs OFF).
+Also tested with threshold=1M (1<<20): 5660ms (still +4.2% regression).
+The regression persists even with a high threshold because the pf_need
+prologue + pf_go branch are still emitted and executed per row.
+
+LLVM cache-full: prefetch is also net negative (+61ms), just less severe
+because LLVM O2 can partially hoist/simplify the branch.
+
+Code was reverted from src/jit/ir_to_llvm.cpp (CompileQuerySteps).
+
+Original single-query analysis (16b only) below — kept for reference:
+
+1. Measured Results (16b, 8 iterations, skip iter 0 warmup)
+-----------------------------------------------------------
+  WITH prefetch:    median total=210.4ms  bottleneck=195.0ms
+  WITHOUT prefetch: median total=221.7ms  bottleneck=206.8ms
+  Speedup: 5.7% on bottleneck, 5.1% total (11.3ms saved)
+
+2. Key Findings from Tracing
+-----------------------------
+  - 93% of 16b execution is ONE subquery: cast_info (36M rows) probing 5 HTs
+  - Guard pass rate: 97-100% (guard ranges span nearly full FK domain)
+    movie_id  guard [318, 2525771] vs domain [1, 2528312] = 99.9% pass
+    person_id guard [4, 4061913]   vs domain [1, 4167491] = 97.5% pass
+  - HT sizes: 42K, 68K, 2.8M, 3.7M, 3.7M entries
+  - HT dir sizes: 1MB, 2MB, 64MB, 64MB, 64MB
+  - Membership pre-probe: only fires for HTs <64K entries (1 of 5)
+  - perf stat: 0.62 IPC, 46.7% cache miss rate, 25% LLC miss rate
+
+3. Approach Selection
+---------------------
+  (a) Batch-probe phase: highest benefit, highest complexity. Rejected.
+  (b) Simple row-ahead prefetch: CHOSEN. At row i, prefetch
+      dir[hash(key[i+D]) & mask] for each probe HT with >32K entries.
+      NumEntries() check hoisted to prologue (loop-invariant).
+  (c) Prefetch during guard: only helps first probe. Rejected.
+
+  Option (b) chosen because 99%+ guard pass rate means <1% wasted prefetches,
+  and it covers all probes in multi-probe steps.
+
+4. Implementation Details
+-------------------------
+  - Prologue: compute pf_need[ht_id] = (NumEntries(ht) > 32K) once per step
+  - bb_body: if (pf_in_bounds && any_pf_need), unconditionally prefetch all
+    eligible HTs (no per-probe branch in hot loop)
+  - Prefetch locality: NTA (non-temporal, don't pollute higher cache)
+  - Distance: prefetch_entry_distance_ (default 24)
+  - File: src/jit/ir_to_llvm.cpp, CompileQuerySteps
+
+5. Why Speedup Is Modest (5% not 30%)
+--------------------------------------
+  - Multi-worker parallelism (6 workers on 12MB L3): the combined working set
+    of all workers exceeds L3 (6 × ~6MB per morsel for 5 HTs = 36MB > 12MB),
+    but within a single morsel the HW prefetcher partially helps sequential
+    column scans.
+  - Prefetch distance (24 rows × ~6ns hash = 144ns look-ahead) can hide L3
+    misses (~10ns) but not full DRAM misses (~80ns). The 3 DRAM-resident HTs
+    (64MB dir) benefit less from shallow prefetch.
+  - The guard/filter/probe pipeline has limited slack between prefetch issue
+    and probe consumption for back-to-back probes within the same row.
+
+=================================================================
+OPT-4: Multi-Key Block Skip — Analysis (DROPPED)
+=================================================================
+Date: 2026-07-31
+
+Summary: Block skip on FK columns provides ZERO benefit for JOB.
+Decision: DROP this optimization.
+
+1. FK Column Block-Level Locality (verified by SQL)
+---------------------------------------------------
+  Table: cast_info (36M rows, 17698 blocks of 2048, ordered by id)
+
+  Column        avg_span     domain       locality
+  movie_id      2,506,689    2,525,975    99.2% -> NO LOCALITY
+  person_id     1,127,639    4,061,926    27.8% -> MODERATE
+  role_id       0            11           0%    -> CONSTANT/BLOCK
+
+  Table: movie_companies (2.6M rows, 1274 blocks, ordered by id)
+
+  Column        avg_span     domain       locality
+  movie_id      85,728       2,525,745    3.4%  -> MODERATE
+  company_id    88,658       234,997      37.7% -> MODERATE
+
+2. Why Block Skip Provides Zero Benefit
+---------------------------------------
+  Block skip condition: skip block if block_max < guard_lo OR block_min > guard_hi.
+
+  For cast_info probing in 16b:
+  - movie_id: each block spans 99.2% of domain → always overlaps guard range
+  - person_id: moderate locality but guard range [4, 4061913] = 97.5% of domain
+    → block_min > 4061913 never happens for any block
+  - Guard ranges are wide because accumulated HTs contain millions of entries
+    spanning the full join key domain
+
+  For movie_companies probing:
+  - movie_id: moderate locality (3.4%) but guard range covers near-full domain
+  - company_id: moderate locality but guard range [1, 234997] = full domain
+
+  Extending from guards[0] to all guards adds more skip checks per block but
+  NONE of the additional guards' key columns have narrow-enough guard ranges
+  combined with sufficient block locality to skip any blocks.
+
+3. When Block Skip Would Help
+------------------------------
+  Block skip is effective when:
+  - The probe column IS the table's PK (perfect locality: block i = rows [2048i, 2048(i+1)))
+  - AND the guard range is narrow (<50% of domain)
+
+  Example: scanning title (2.5M rows) with a guard on title.id from an HT
+  with a narrow key range (e.g., title.id in [100000, 200000]). Then blocks
+  outside this range (>95% of blocks) would be skipped. But title steps are
+  not the bottleneck (~7ms vs 200ms for cast_info).
+
+=================================================================
+OPT-5: SIMD Vectorized Filter — Analysis (LOW PRIORITY FOR JOB)
+=================================================================
+Date: 2026-07-31
+
+Summary: SIMD filters provide negligible benefit for JOB's top queries.
+The bottleneck is probe directory loads, not filter evaluation.
+
+1. Filter Predicates in Top JOB Queries
+---------------------------------------
+  Query | Filter on cast_info (bottleneck)   | Other filters
+  16b   | NONE (joins only)                  | cn.country_code, k.keyword
+  8c    | NONE                               | cn.country_code, rt.role
+  10c   | ci.note LIKE '%(producer)%'        | t.production_year>1990
+  9d    | ci.note IN ('(voice)',...)          | cn.country_code, n.gender
+  7c    | NONE                               | an.name LIKE, n.name_pcode_cf
+  17f   | NONE                               | k.keyword, n.name LIKE
+  19d   | ci.note IN ('(voice)',...)          | t.production_year>2000
+
+  4 of 7 top queries: NO filter on cast_info → SIMD does nothing
+  3 of 7: VARCHAR LIKE/IN filters → SIMD can't vectorize (BuildFilterFunctionSIMD
+  returns nullptr for VARCHAR at ir_to_llvm.cpp:2995)
+
+2. Numeric Filters Are on Non-Bottleneck Tables
+-------------------------------------------------
+  t.production_year > 1990/2000: runs on title (2.5M rows), ~7ms
+  Even vectorizing this 8x (AVX2): saves ~6ms out of 7ms = ~1ms
+  Total impact: <0.5% of query wall time
+
+3. Guard Vectorization Potential
+---------------------------------
+  Guard range check per row: load key, 2 compares, AND, branch
+  36M rows × 5 guards = 180M checks
+  Estimated cost: ~53ms (1 cycle/guard at 3.4GHz)
+  After 6 workers: ~9ms
+  SIMD (8-wide): saves ~8ms → ~4% of 200ms total
+  BUT: requires ROF Phase 1 (disabled for TPDE) and rewriting it as vectorized
+
+4. Verified Claims
+-------------------
+  - CompileQuerySteps uses EmitShortCircuitFilter (scalar): CONFIRMED
+  - BuildFilterFunctionSIMD handles INT32/INT64/FLOAT/DOUBLE, rejects VARCHAR: CONFIRMED
+  - ROF Phase 1 is scalar (use_simd_ gates ROF enablement, not vectorization): CONFIRMED
+  - ROF disabled for TPDE (fast_mode_ != TPDE check at line 9290): CONFIRMED
+  - This machine has AVX2 (vec_width=8 for i32): CONFIRMED
+
+5. When SIMD Filters Would Help
+---------------------------------
+  - Different workload (TPCH/DSB) with numeric predicates on large fact tables
+  - Queries where numeric filters on large tables ARE the bottleneck
+  - If ROF Phase 1 were enabled for TPDE and vectorized
+
+=================================================================
+OPT-6: Inline String Comparison Functions — Analysis (DROPPED)
+=================================================================
+Date: 2026-07-31
+
+Summary: No measurable benefit for JOB. perf profiling confirms all target
+functions are at 0% in the profile. Specialized LIKE codegen already avoids
+calling aqp_like_match. Decision: DROP this optimization.
+
+1. LIKE Pattern Classification in Top JOB Queries
+--------------------------------------------------
+  Pattern                   Kind              Codegen
+  %(producer)% (10c)        LIKE_CONTAINS     inline memchr+memcmp loop
+  %a% (7c)                  LIKE_CONTAINS     inline memchr+memcmp loop
+  A% (7c)                   LIKE_PREFIX       inline length+memcmp
+  %B% (17f)                 LIKE_CONTAINS     inline memchr+memcmp loop
+
+  None of these call aqp_like_match, aqp_str_eq, or aqp_like_match_segments.
+
+2. IN-List Handling
+--------------------
+  ci.note IN ('(voice)',...) (9d, 19d) calls aqp_in_len_str externally.
+  The function uses a length-bucketed directory: most rows short-circuit
+  when slen doesn't match any IN-value length (dir[b] == dir[b+1]).
+
+  Inlining would let LLVM:
+  - Specialize for the known cap value
+  - Hoist dir[] loads out of the row loop (constant across all rows)
+  - Eliminate ~2-3ns call/return overhead per row
+
+  Estimated saving: 36M × 2ns / 6 workers = ~12ms out of ~103ms = ~12%
+  But only for 9d/19d (2 of top 7 queries).
+
+3. What the Description Got Wrong
+-----------------------------------
+  - "1.05-1.1x on LIKE-heavy queries (10c, 9d)": 10c uses LIKE_CONTAINS
+    which is already fully inlined. No aqp_ call to optimize.
+  - "aqp_like_match (lines 26-52)": never called in top queries (no
+    LIKE_COMPLEX patterns).
+  - "aqp_like_match_segments (lines 177-210)": never called in top queries
+    (no LIKE_MULTI_SEGMENT patterns).
+  - The real target should be aqp_in_len_str for IN-lists, not aqp_like_match.
+
+4. Timing Breakdown
+--------------------
+  9d: total=117ms, bottleneck subquery[13]=103ms (cast_info 36M scan)
+  10c: total=155ms, bottleneck subquery[13]=140ms (cast_info 36M scan)
+  In both cases the bottleneck is dominated by multi-probe directory loads,
+  not string function calls.
+
+5. perf Profiling (verified 2026-07-31)
+----------------------------------------
+  9d (ci.note IN (...)):
+    aqp_in_len_str: 0.00% — NOT VISIBLE in profile
+    Top symbols: HT Finalize (11.5%), JIT morsel code (2.6%, 2.1%, 1.8%,...),
+    memset (5.4%), memcmp (1.2%)
+
+  10c (ci.note LIKE '%(producer)%'):
+    aqp_like_match: 0.00% — NOT CALLED (LIKE_CONTAINS inline codegen used)
+    __memchr_avx2: 9.57% (inline LIKE_CONTAINS loop)
+    __memcmp_avx2: 3.81%
+    JIT morsel code: 14.0%, 8.4%, 3.0%,...
+
+6. TPDE vs LLVM Comparison (jit-cache=full, cached iterations)
+---------------------------------------------------------------
+  9d TPDE:  bottleneck=105.5ms  total=115.0ms
+  9d LLVM:  bottleneck= 82.0ms  total= 89.9ms
+  Gap: 22% — general LLVM O2 code quality, not string-specific.
+  Inlining aqp_in_len_str would NOT close this gap (0% in profile).
+
+7. Conclusion
+--------------
+  OPT-6 provides ZERO measurable benefit for JOB with query-JIT.
+  No config benefits (TPDE, LLVM, template-cache, full-cache).
+  The specialized LIKE codegen (ClassifyLikePatternEx) already avoids
+  calling the external aqp_ string functions for all patterns in JOB.
+
+OPT-8: SimplifyCFG Before TPDE — IMPLEMENTED
+=============================================
+Date: 2026-07-31
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec
+
+Summary: Running LLVM SimplifyCFG pass before TPDE backend gives -6.5% wall time
+(topdown) / -5.7% (node-based). This is the ONLY pass worth adding — all other
+LLVM O3 passes and combinations are net-negative on wall time. Spec-recompile
+with any pass configuration is also net-negative.
+Decision: IMPLEMENT SimplifyCFG-only for TPDE. No further passes viable.
+
+1. Backend Code Quality Comparison (cache-full, execution only)
+---------------------------------------------------------------
+  LLVM O2:  3675ms (baseline — 4 mid-end passes + SelectionDAG ISel)
+  TPDE:     4732ms (+29% — no mid-end passes, single-pass regalloc)
+  FastISel:  5034ms (+37% — no mid-end passes, LLVM fast ISel)
+
+  TPDE is 6.0% faster than FastISel. The 29% gap vs LLVM O2 comes
+  entirely from the 4 skipped mid-end passes.
+
+2. SimplifyCFG-only results (all 113 JOB queries, cache-tmpl, no-spec)
+----------------------------------------------------------------------
+  Config                        Topdown (ms)   vs baseline   Node-based (ms)   vs baseline
+  TPDE baseline (no passes)     5039           —             5469              —
+  TPDE + SimplifyCFG            4710           -6.5%         5156              -5.7%
+  TPDE + InstCombine+SimplifyCFG 5152          +2.2%         —                 —
+  TPDE + All 4 passes           5798           +15.1%        —                 —
+  LLVM O2 (all 4 + SelectionDAG) 10386         +106%         —                 —
+
+  Topdown: 80 improved, 16 worsened (max 3.4ms), 17 neutral.
+  Node-based: 75 improved, 14 worsened.
+  Stability: 3 runs gave 6.2%, 6.5%, 6.6% (mean 6.4% +/- 0.2%).
+  Correctness: 113/113 PASS on both Config A (node-based) and Config B (topdown).
+
+3. Per-pass analysis (16b topdown, result subquery, iter3)
+----------------------------------------------------------
+  Pass config              opt(ms)  step2(ms)  step3(ms)  exec(ms)  ROI
+  No passes                0        66.5       43.4       109.9     —
+  SimplifyCFG only         0.25     55.4       33.4       89.4      84x
+  InstCombine only         1.5      64.3       42.8       107.0     1.9x
+  GVN only                 1.4      68.2       42.1       110.2     negative
+  InstCombine+SimplifyCFG  1.7      53.5       33.0       86.5      14x
+  All 4 passes             3.1      53.3       33.4       86.7      7.5x
+
+  SimplifyCFG: cheapest pass (0.25ms), saves 21ms exec. Best ROI by far.
+  GVN alone: HURTS (step2 +1.7ms). Restructures IR without removing blocks.
+  InstCombine: 1.5ms cost for 2.8ms exec savings. Net marginal.
+
+4. Why SimplifyCFG alone is effective
+-------------------------------------
+  The query-JIT codegen (CompileQuerySteps) produces structurally eliminable
+  basic blocks from:
+  - Validity check diamonds for non-nullable columns (src_valid_i1, 9603-9618)
+  - Null check chains for block_stats/user_data pointers (9220-9260)
+  - Single-predecessor jump-through blocks from per-op codegen pattern
+
+  SimplifyCFG merges these blocks, reducing jumps and improving TPDE's
+  single-pass register allocator (fewer live ranges cross block boundaries).
+
+5. All LLVM O3 passes evaluated (9 passes, 13 combinations, LLVM 20)
+---------------------------------------------------------------------
+  Measured on all 113 JOB queries (topdown cache-tmpl):
+
+  Config                          Wall (ms)   vs SimplifyCFG
+  S (SimplifyCFG only)            4710        baseline
+  DS (ADCE+SimplifyCFG)           4824        +2.4%
+  PS (SCCP+SimplifyCFG)           4877        +3.5%
+  PDS (SCCP+ADCE+SimplifyCFG)    4926        +4.6%
+  IS (InstCombine+SimplifyCFG)    5152        +9.4%
+  IRGS (all 4 original)           5798        +23.1%
+
+  Per-pass deltas (16b, measured as delta vs SimplifyCFG alone):
+  Pass                  compile cost(ms)   exec savings(ms)   ROI
+  ADCE                  0.15               4.5                30x
+  SCCP                  0.07               3.0                43x
+  EarlyCSE              0.16               -1.1               negative
+  JumpThreading         0.10               0.4                4x
+  CorrelatedValueProp   0.31               1.4                4.5x
+  BDCE                  0.0                0.7                high
+  InstCombine           1.24               3.7                3x
+  GVN                   1.4                -1.7               negative
+
+  ADCE had best single-query ROI (30x on 16b) but on full benchmark was +2.4%
+  worse. Verified by weight-bucketed analysis: ADCE is worse even for queries
+  >100ms wall time (heavy: +0.8ms, light: +112.7ms).
+
+  Fundamental constraint: any pass costing >0.3ms/subquery x ~450 subqueries =
+  135ms overhead, while marginal exec savings beyond SimplifyCFG total <50ms
+  across all 113 queries (concentrated in ~15 heavy queries).
+
+6. Guard hash reuse (inlining guard hash into probe) — NOT VIABLE
+-----------------------------------------------------------------
+  Analytical trace of control flow:
+  Case A (small HT <=64K, membership=true): hash duplicated on <=NumEntries
+  rows. For HT3 in 16b (24K entries): 24K x ~2ns = 0.05ms. Negligible.
+  Case B (large HT >64K, membership=false): no guard hash computed. Zero dup.
+
+7. Runtime constants (Cosense-style) + SimplifyCFG — NOT VIABLE
+---------------------------------------------------------------
+  Reference: Cosense (CC'24, Mu et al.) substitutes sensor-range constants
+  into LLVM IR, resolves branches to true/false, lets SimplifyCFG clean up.
+  Achieves 1.18-1.70x speedup on sensor code.
+
+  Our case differs: the specializable branches (g_mem_ok, has_user, has_bstats)
+  are all loop-invariant (checked once per morsel, not per row). Branch
+  prediction already handles them at ~0 runtime cost. Benefit is purely
+  indirect (code size reduction -> better TPDE regalloc). Estimated <1%
+  additional improvement, not worth the plumbing complexity.
+
+  Runtime info available from split execution (HT NumEntries, Key0Min/Max,
+  temp cardinalities) are exact values from completed subqueries. But the
+  branches they control are loop-invariant, making constant substitution
+  a second-order optimization at best.
+
+8. Spec-recompile + LLVM passes — NOT VIABLE
+---------------------------------------------
+  Spec-recompile overlaps compilation with prior subquery execution on a
+  background thread (jit_compile_pool_, single worker).
+
+  Measured statistics (topdown, 113 queries, 1 iteration):
+  - Total speculations: 684 (102 queries)
+  - Hit rate: 100% (342 hits, 0 SQL misses, 0 cardinality misses)
+  - Not-ready rate: 50% (342 events — bg compile didn't finish in time)
+  - Total main-thread stall: 4,588ms (avg 13.4ms per not-ready event)
+
+  Root cause: bg thread runs DuckDB Parse+Plan+Optimize (~15-20ms/subquery)
+  before JIT compilation. Changing bg JIT backend (LLVM O2 vs TPDE+SimplifyCFG)
+  had zero effect on stall time (29ms both cases for 16b).
+
+  Results (topdown cache-tmpl, all 113 queries):
+  Config                              Wall (ms)  vs SCFG no-spec
+  TPDE+SimplifyCFG no-spec            4710       baseline
+  TPDE+SimplifyCFG spec-rec (TPDE bg) 9161       +94.5%
+  TPDE+SimplifyCFG spec-rec (LLVM bg) 9189       +95.1%
+
+  Spec-recompile fails because small subqueries (1-10ms exec) can't hide
+  the 20ms DuckDB Prepare cost.
+
+9. Code changes
+----------------
+  File: src/jit/ir_to_llvm.cpp
+  - OptimiseModule: added FastCompileBackend param. TPDE gets SimplifyCFG only,
+    OFF (LLVM) gets all 4 passes (unchanged), FastISel skips all (unchanged).
+  - Constructor: skip_opt_ = debug || fast == FASTISEL (was: fast != OFF).
+    TPDE now runs passes (skip_opt_=false).
+  - All 11 call sites: pass fast_mode_ through.
+  - Cache key: already encodes fast_mode_ (int) + skip_opt_ flag ("n"/"o"),
+    which uniquely identifies the pass configuration. No change needed.
+
+10. Conclusion
+--------------
+  SimplifyCFG is the ONLY pass that provides net wall-time improvement before
+  TPDE on the JOB benchmark. No other LLVM O3 pass, combination of passes,
+  runtime constant specialization, or spec-recompile configuration can beat
+  TPDE+SimplifyCFG on wall time. The fundamental constraint is that most JOB
+  queries are light (<20ms wall time), making any additional compile cost
+  beyond SimplifyCFG's 0.25ms/subquery net-negative.
+
+=================================================================
+OPT-2a: CSR-Driven Scan Inversion — IMPLEMENTED AND DROPPED
+=================================================================
+Date: 2026-07-31 to 2026-08-01
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec
+
+Summary: CSR morsel provides 15-29% per-step improvement on eligible steps,
+but 500MB CSR index memory pressure causes 5-6s regression across all 113
+queries. NET NEGATIVE. Code reverted.
+
+1. Concept
+----------
+Instead of scanning a large FK table (cast_info, 36M rows) and probing a
+small HT (68K entries), iterate the HT entries and use a pre-built CSR index
+to look up only the matching FK rows. For 16b step 2: 36M → ~1.5M rows
+(~24x reduction).
+
+CSR indexes map PK value → FK row index ranges:
+  CSR("cast_info","movie_id").Lookup(title_id) → [begin, end) in col_idx
+  col_idx[i] = cast_info row index where movie_id == title_id
+
+2. Implementation
+-----------------
+Dual-morsel approach: compile both normal and CSR morsel per eligible step.
+Runtime gate in entry function: qjit_ht_entries(driving_ht) * 100 < src_nrows.
+If gate passes, call qjit_csr_build_keys (extracts key0 + row pointers from
+driving HT) then dispatch CSR morsel; else dispatch normal morsel.
+
+CSR morsel structure: outer loop over HT entries [begin, end), inner loop
+over CSR-retrieved source rows. Driving probe skipped (live_row set directly
+from HT entry). Filters and secondary probes execute normally.
+
+Files modified: 15 files (~1100 lines added). Both DuckDB and PG adapters.
+Correctness: 113/113 PASS on Config A and Config B.
+
+3. Measured Results
+-------------------
+  Per-step (16b step 2, cast_info scan, result subquery):
+    Normal morsel:  pfor = 41ms
+    CSR morsel:     pfor = 29-35ms (15-29% improvement)
+    CSR rows processed: ~1.5M (from 68K HT entries via CSR lookup)
+
+  Whole benchmark (113 queries, node-based TPDE cache-tmpl):
+    Baseline (no CSR):        exe=4.37s  total=5.18s
+    CSR + lazy loading:       exe=9.99s  total=10.82s  (+109% regression)
+    CSR + pre-loaded cache:   exe=10.17s total=11.02s  (+113% regression)
+    CSR disabled (100M gate): exe=4.47s  total=5.29s   (baseline restored)
+
+4. Root Cause of Regression
+----------------------------
+Loading all 19 CSR indexes (~500MB for IMDB) into DRAM — whether eagerly
+at startup or lazily on first use — evicts FlatTable column data (~3.7GB)
+from the OS page cache. Confirmed by:
+  a) CSR enabled but annotation disabled (no morsel gen, no build_keys):
+     exe=6.25s (+43%) — regression from CSR data in memory alone
+  b) CSR loading disabled entirely: exe=4.47s — baseline restored
+  c) The regression persists even when CSR morsel never executes (100x gate
+     rejects all steps), confirming the cost is memory pressure not execution
+
+5. First Attempt Failure (Instrumentation Bug)
+----------------------------------------------
+First implementation appeared to show "zero speedup" (CSR morsel = normal
+morsel = 41ms). This was wrong — the CSR morsel was never executing.
+
+Root cause: fprintf traces added to ir_to_llvm.cpp (compiled into static
+library libaqp_jit_lib.a) were silently stripped by the clang-20 -O3
+optimizer + ccache, even with CCACHE_DISABLE=1. Format strings were absent
+from the object file despite confirmed compilation.
+
+Fixed in re-implementation by using runtime row counters in QjitCSRDesc
+(incremented by CSR morsel, checked in executor after fn returns) and
+placing all traces in query_jit_runtime.cpp (separate translation unit,
+not in the static library).
+
+6. CSR Index Memory Usage (19 FK relationships from fkeys.sql)
+--------------------------------------------------------------
+  FK Column                    row_ptr (MB)  col_idx (MB)
+  cast_info.movie_id           19            138
+  cast_info.person_id          31            138
+  cast_info.person_role_id     23             67
+  cast_info.role_id             0            138
+  movie_info.movie_id          19             56
+  movie_keyword.movie_id       19             17
+  movie_companies.movie_id     19              9
+  movie_companies.company_id    1              9
+  aka_name.person_id           31              3
+  ...others (small)             ~5            ~15
+  Total:                       ~170           ~590  = ~760 MB
+
+7. Why Per-Query CSR Building Would Help
+-----------------------------------------
+16b only needs CSR("cast_info","movie_id"): row_ptr=19MB + col_idx=138MB = 157MB.
+This is 5x less than loading all 19 indexes (760MB). The memory pressure
+regression should scale linearly with CSR size.
+
+8. Potential on Other Benchmarks
+---------------------------------
+JOB is uniquely memory-bound: 0/113 queries have SUM/AVG/arithmetic, only MIN
+aggregates. Per-row compute is ~2ns (hash + compare), per-row memory is ~20-40ns.
+CSR row reduction saves mostly memory work, which is offset by random access cost.
+
+TPC-H: 97% queries have SUM/AVG + arithmetic (price * (1-discount) * (1+tax)).
+Per-row compute is ~15-50ns. CSR row reduction would save 10x × 30ns = 300ns/row
+of compute, far exceeding the ~40ns random access penalty.
+
+DSB/TPC-DS: complex WHERE clauses, BETWEEN ranges, OR groups. Per-row compute
+is ~10-30ns. CSR reduction would also be net positive.
+
+9. Verified Assumptions
+------------------------
+- HT key0 = raw FK/PK int32 value (sign-extended i64). Confirmed at
+  ir_to_llvm.cpp:9669 (LoadI32 + SExt), query_jit_runtime.cpp:208 (memcpy).
+- CSRIndex::Lookup(int32_t pk_val) matches HT key0 after truncation.
+- CSR API: public members row_ptr/col_idx, Lookup() method. No Offsets()/
+  ColIdx()/MaxPK() methods (CLAUDE.md had wrong API reference).
+- BuildExecutionSteps has NO access to StoragePlan — detection must happen
+  in ResolveQjitSources or adapter AnnotateCSRSteps.
+- Step-timing finalize has off-by-one (scheduler.cpp:128-130).
+
+OPT-2b: HT Finalize Optimization — DROPPED
+=================================================================
+Date: 2026-08-01
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec, node-based
+
+Summary: All proposed finalize optimizations are net-negative or no-op.
+calloc (the most promising) increases finalize by +20% (+121ms) because
+explicit memset serves as TLB warmup for the prefetch ring buffer.
+
+1. Baseline Measurement
+-----------------------
+  Total wall time: 5147ms (avg iter 6-15, 113 queries)
+  Total HT finalize: 611ms (11.9% of wall time)
+  864 HTs total, 110 large (>100K entries) = 541ms (88% of finalize)
+  Actual load factor (n/dir_size): 0.25-0.50 (avg 0.36)
+
+  Cost breakdown for n=3.7M, dir=8M (64MB):
+    Parallel memset (12 workers): <0.5ms
+    Entry linking (CAS + prefetch ring): ~17-20ms
+    Memset is <5% of finalize cost; linking dominates.
+
+2. calloc Instead of new+memset — IMPLEMENTED AND REVERTED
+-----------------------------------------------------------
+  Change: Replace `new atomic<uintptr_t>[dir_size]` + explicit memset with
+  `calloc(dir_size, sizeof(atomic<uintptr_t>))` + FreeDeleter on unique_ptr.
+  Removes both parallel and serial memset code paths.
+
+  Microbenchmark (synthetic, 64MB dir, 3.7M entries, 12 threads):
+    new+parallel_memset+parallel_link: 48.9ms
+    calloc+parallel_link: 33.7ms (31% faster)
+
+  Real benchmark (113 JOB queries, node-based TPDE cache-tmpl):
+    Finalize: 611ms → 732ms (+121ms, +20%)
+    Wall time: 5147ms → 5159ms (+12ms, +0.2%)
+
+  Root cause of regression: The Finalize-internal prefetch ring buffer
+  (query_jit_runtime.cpp:185-221, kPFDist=16) requires mapped pages to work.
+  x86 spec: __builtin_prefetch is silently dropped for unmapped pages.
+
+  With new+memset (baseline):
+  (a) memset touches every page → pages mapped, in TLB
+  (b) Prefetch 16 entries ahead → succeeds → brings cache line from DRAM to L1
+  (c) CAS hits warm cache line → ~5-10ns per operation
+
+  With calloc:
+  (a) calloc returns zero-mapped pages via kernel's shared zero page (COW)
+  (b) Prefetch 16 entries ahead → SILENTLY DROPPED (page not yet faulted)
+  (c) CAS load → minor page fault (~1μs), CAS store → COW fault (~1μs)
+  (d) No latency hiding for first access to each of 16K pages (64MB / 4KB)
+
+  The synthetic microbenchmark missed this because it used simple stores
+  WITHOUT a prefetch ring buffer. Without prefetch, there's no latency
+  hiding to lose, so calloc genuinely saved one memory pass. But in the
+  real code, killing prefetch effectiveness costs far more than the <0.5ms
+  parallel memset it replaces.
+
+  Correctness: 113/113 PASS on Config A and Config B (before revert).
+
+3. Other Techniques — NOT TESTED (Analysis Only)
+-------------------------------------------------
+  Reduce overallocation (2x → 1.5x):
+    Parallel memset savings: <1ms total across 113 queries.
+    Probe-side cost: higher load (avg 0.55 vs 0.36) → ~15% longer chains
+    → LLC-miss regression on ~200M probe rows >> 1ms memset savings.
+    Verdict: NET NEGATIVE without testing.
+
+  madvise(MADV_HUGEPAGE):
+    THP already `[always]` on this system. No-op.
+
+  Pre-size from prior-subquery cardinality:
+    Current overallocation (2-4x) already bounded. Prior cardinality is
+    only an upper bound (not tight). No benefit.
+
+4. Conclusion
+--------------
+  HT Finalize (611ms, 11.9% of wall time) cannot be cheaply optimized.
+  The prefetch ring buffer already hides DRAM latency for directory access.
+  The explicit memset phase doubles as TLB warmup. The remaining cost is
+  inherent: 3.7M CAS operations with random directory access patterns.
+
+=================================================================
+OPT-3: Probe-Side Prefetching — Re-evaluation (2026-08-01)
+=================================================================
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec
+
+Summary: Row-ahead prefetch CONFIRMED NOT VIABLE. Batch prefetch viable
+in microbenchmark (7%) but requires ROF (which is also dead). DROPPED.
+
+1. Re-analysis: Why Row-Ahead Prefetch Truly Fails
+---------------------------------------------------
+  The original log blamed per-row branch overhead in TPDE code. Re-analysis
+  with microbenchmarks shows the real reason is deeper:
+
+  a) Row-ahead prefetch (split loop, zero branches, precomputed hashes) is
+     STILL neutral-to-negative even on a single 64MB HT with random keys.
+     The CPU's out-of-order window (168 insns on Coffee Lake, ~42ns at 4 IPC)
+     already overlaps chain-walk computation with the next dir load.
+
+  b) Unconditional prefetch on small HTs (L1-resident, <2MB dir) adds +46%
+     overhead from wasted hash computation + prefetch port contention.
+
+  c) Multi-HT realistic scenario (3 HTs: 85K + 772K + 3.7M entries):
+     No prefetch:          215.4 ms (71.8 ns/row)
+     Prefetch large only:  227.8 ms (75.9 ns/row) — WORSE
+     Prefetch all:         231.0 ms (77.0 ns/row) — WORSE
+
+2. Batch Prefetch (Phase 1/Phase 2) — Viable in Microbenchmark
+--------------------------------------------------------------
+  Phase 1: hash + prefetch for B rows. Phase 2: probe those B rows.
+  Single 64MB HT:  no_pf=109.3ms  batch_B=64=87.6ms (20% faster)
+  3-HT scenario:   no_pf=215.4ms  batch_B=32=200.1ms (7.1% faster)
+
+  But batch prefetch requires ROF-style two-phase structure in query-JIT.
+  ROF was tested and is dead (see OPT-5 below). So batch prefetch is
+  not implementable without ROF.
+
+3. HT Sizes for Top Queries (topdown, verified 2026-08-01)
+----------------------------------------------------------
+  16b: 85K(2MB) + 1(tiny) + 42K(1MB) + 68K(2MB) + 773K(16MB) + 68K(2MB) + 3.7M(64MB)
+  8c:  85K(2MB) + 773K(16MB) + 1(tiny) + 2.3M(64MB) + 2.5M(64MB) + 2.5M(64MB)
+
+=================================================================
+OPT-5: ROF (Reorder-Filter) for TPDE — Re-evaluation (2026-08-01)
+=================================================================
+Config: DuckDB, JOB, query-jit, TPDE, single-run-template, no-spec
+
+Summary: Unguarded ROF +13.4% regression. Guarded ROF within noise
+(-0.21%). DROPPED.
+
+1. Unguarded ROF (all steps)
+----------------------------
+  Removed TPDE + SIMD gates from ROF decision (ir_to_llvm.cpp:9274).
+  Correctness: 113/113 PASS on topdown and node-based.
+  Performance: +13.4% total regression (4726ms → 5357ms topdown).
+  90 queries worse, 15 better, 8 neutral.
+
+  Worst regressions: small queries (3a: +118%, 15a: +109%, 5c: +92%).
+  Phase 1 writes (row_idx, hash) to stack buffers for nearly every row
+  (guard pass rate 97-100%), then Phase 2 reads them back.
+
+  Best improvements: 10c (-13.6%), 18c (-11.7%), 10b (-21%) — queries
+  where Phase 1 LIKE/IN filters on cast_info reject rows before probing.
+
+2. Guarded ROF (pre-probe Filter + >=2 post-filter Probes)
+----------------------------------------------------------
+  Enable ROF only for steps with a pre-probe Filter AND >=2 probes.
+  Single run:    -0.8% topdown, -1.1% node-based
+  3-run average: -0.21% topdown (4732ms → 4722ms, stdev 28ms)
+  Verdict: within noise.
+
+3. Hash Reuse Detail
+---------------------
+  ROF saves 1 Murmur hash per qualifying row (for rof_first_probe only;
+  other probes recompute). But adds 2 buffer stores + 2 buffer loads
+  (~5ns), roughly canceling the ~5ns Murmur savings. Non-membership
+  guards (large HTs >64K) do NOT compute hash — only range check.
+  The real benefit is purely from filtering rows before probing.
+
+4. OPT-3 + OPT-5 Combined
+---------------------------
+  Batch prefetch (7% microbenchmark) requires restructuring ROF into
+  batched processing (Phase 1 for B rows → Phase 2 for B rows).
+  Complex code change for ~5-10ms additional gain on top of marginal
+  guarded ROF. Not viable.
+
+=================================================================
+Exhaustive Review of Runtime-Guided Optimizations (2026-08-01)
+=================================================================
+
+All OPTs re-analyzed. Three additional SOTA techniques investigated.
+
+| OPT   | Technique                  | Verdict | Why                                         |
+|-------|----------------------------|---------|---------------------------------------------|
+| 1     | Dense array joins          | DEAD    | Memory-bound; array spans full PK domain    |
+| 2a    | CSR scan inversion         | DEAD    | 500MB CSR evicts page cache                 |
+| 2b    | HT finalize (calloc)       | DEAD    | Kills prefetch ring TLB warmup              |
+| 3     | Row-ahead prefetch         | DEAD    | CPU OoO already hides DRAM latency          |
+| 4     | Block skip on FK           | DEAD    | No block locality + wide guard ranges       |
+| 5     | ROF for TPDE               | DEAD    | 97% guard pass → buffer overhead wasted     |
+| 5g    | Guarded ROF                | NOISE   | -0.21% (±0.6%), within stdev                |
+| 6     | Inline string cmp          | DEAD    | Target functions never called in JOB        |
+| 8     | SimplifyCFG                | DONE    | -6.5% topdown, implemented (commit 164ecac) |
+| NEW-A | Hash dedup across probes   | DEAD    | CPU pipelines ALU behind mem latency        |
+| NEW-B | Probe reorder by select.   | DEAD    | <1% JOB/DSB; TPDE regresses 17b/17c        |
+| NEW-C | Batch prefetch (AMAC)      | DEAD    | Only works with ROF (which is dead)          |
+
+NEW-A: Hash Deduplication Across Probes
+----------------------------------------
+  Multiple probes sharing the same join key (e.g., 3 probes on ci.movie_id
+  in 16b) each recompute Murmur hash independently. TPDE cannot CSE them.
+  Microbenchmark with noinline Murmur: 7.186ms (5 calls) vs 6.814ms (2
+  calls) = 5.2% ALU savings. But with inline Murmur at -O1 (simulating
+  TPDE): 5.207ms vs 5.225ms = 0% savings. The redundant hash ALU fills
+  pipeline bubbles while waiting for memory (same root cause as OPT-3).
+
+NEW-B: Probe Reordering by Selectivity
+----------------------------------------
+  Sort probes by ascending min(build_table_cardinalities). Most selective
+  probe first eliminates rows via inner-join before expensive large-HT
+  probes. Implemented, tested extensively across multiple configurations:
+
+  Implementation: estimated_entries on QjitHtDesc, PlanJoinFilterPushdown
+  sorts independent probes (all_src keys), block_skip_guard preserves
+  original blockskip column. BuildExecutionSteps accepts table_card map.
+
+  Best result (A/B, topdown TPDE cache-tmpl):
+    JOB:    -0.59% (4746→4718ms). 42 better, 17 worse.
+    DSB-10: variable ±0.82% across runs (noise, 22 queries).
+    17b/17c: +14-17ms regression (TPDE CFG sensitivity).
+
+  Regression root cause: TPDE sensitivity to CFG topology. Swapping 2
+  probes changes basic block connections → TPDE's single-pass register
+  allocator produces different spill/reload patterns → ~15ms slower
+  machine code for 17b/17c specifically.
+
+  Mitigation attempts (all failed):
+  - >=3 probes guard: protects 17b/17c but kills benefit (most JOB
+    steps have only 2 probes)
+  - source_table cardinality instead of min_card: overestimates base
+    tables (unfiltered row_count)
+  - Splitter filtered cardinalities (name-based lookup): table index
+    mismatch across subqueries (DuckDB re-binds with new indices)
+  - 8x cardinality ratio guard: doesn't protect 17c (splitter gives
+    28x ratio for HTs that actually have similar real entries)
+  - blockskip_col preservation (block_skip_guard field): regression
+    persists (+15ms) — issue is CFG topology, not block stats column
+  - RPO block canonicalization (LLVM ReversePostOrderTraversal):
+    regression persists (+15ms) — issue is CFG edges, not block order
+
+  Why dropped: <1% net improvement on JOB and DSB-10, within noise.
+  DSB-100 same templates as DSB-10 (same probe structure, same %).
+  TPC-H not applicable (query-JIT lacks arithmetic expression support).
+  TPDE fix requires weeks-months (16K+ lines core, register allocator).
+
+  Code fully reverted — no probe reordering in codebase.
+
+NEW-C: AMAC / Group Prefetch
+-----------------------------
+  Interleave dir loads across probes for the same row (issue all prefetches
+  at once, then do all chain walks). Requires ROF-style batching to
+  accumulate multiple rows' hashes before probing. Dead because ROF is dead.
+
+Why JOB is Resistant to Runtime-Guided Optimization
+----------------------------------------------------
+  The bottleneck (36M-row cast_info scan with 3-5 random HT probes into
+  16-64MB directories) is dominated by DRAM latency (~80ns per probe).
+  The CPU's out-of-order window (168 insns, ~42ns at 4 IPC) already
+  overlaps ALU work (hash, guards, filters) with memory accesses.
+  Software techniques to hide latency (prefetch, batching, hash dedup)
+  are redundant because the hardware is already doing it.
+
+  The only way to reduce wall time is to reduce the NUMBER of rows or
+  probes, not their per-row cost. This points to:
+  - Better split strategies (smaller subqueries)
+  - Fundamentally different execution models (vectorized, partitioned)
+  - Hardware with larger L3 cache (more HT directories fit in cache)
