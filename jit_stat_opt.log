@@ -1025,3 +1025,74 @@ Why JOB is Resistant to Runtime-Guided Optimization
   - Better split strategies (smaller subqueries)
   - Fundamentally different execution models (vectorized, partitioned)
   - Hardware with larger L3 cache (more HT directories fit in cache)
+
+
+OPT-7: Bloom Filter Block-Skip for Query-JIT — INVESTIGATED AND DROPPED
+=========================================================================
+Date: 2026-08-05
+Config: DuckDB, Topdown, Query-JIT, TPDE, Cache-Tmpl, No-Spec, JOB 113 queries
+
+Goal: Use runtime BF statistics from temp tables to skip 2048-row blocks
+during query-jit compiled scans. Two approaches tested.
+
+V1: Zero-Codegen Cross-Sub-Plan BF Sorted Keys
+-----------------------------------------------
+Approach: Extract sorted distinct INT32 keys from temp-table BFs during
+BuildBloomFilterFromQjitTable. For each step scanning a base table, match
+BFs by table name, compute per-block {min,max} for the BF target column
+via GetBlockStats, mark blocks with no matching key as {INT32_MAX, INT32_MIN}
+in a copy of the guard's block_stats. Zero ir_to_llvm.cpp changes.
+
+Result: -35ms (-0.8%) — within noise.
+
+Root cause of limited benefit:
+  - cast_info (36M rows, the bottleneck table) is NEVER a BF target in
+    topdown split. It is scanned in early sub-queries and becomes a temp
+    table. BFs are built from temp tables and target base tables in LATER
+    sub-queries (title, char_name, etc.).
+  - Tables that DO get BF block-skip (title 2.5M, char_name 3.1M, name
+    4.2M) are small — skipping 90%+ of their blocks saves only a few ms.
+  - 125 BF-SKIP events across 113 queries, 40.8% blocks skipped overall,
+    but concentrated on small tables.
+
+V2: Sorted cast_info + Multi-Guard Block Skip (Codegen)
+-------------------------------------------------------
+Approach: Sort cast_info by movie_id (ORDER BY movie_id, id in storage
+loading) so movie_id per-block ranges become narrow (~143 span vs 2.5M
+unsorted). Add bf_block_stats as independent second block-skip channel in
+QjitUserData (field 3). In codegen, for steps with bf_guard_idx >= 0,
+load bf_block_stats and check block range against the matching guard's
+HT key0 range. Skip block if EITHER guard says skip.
+
+This revives OPT-4 (Multi-Key Block Skip, dropped because unsorted columns
+have 99% block span). After sorting, movie_id block spans become ~143.
+
+Result: +16ms (+0.3%) — slight regression, no improvement.
+
+Root cause:
+  - 57 cast_info steps across JOB have guards. block_skip_col (guards[0]
+    key-0) is movie_id in SOME queries but person_id or id in MOST.
+  - Sorting by movie_id DESTROYS id and person_id block locality:
+      id:        dense_pk (perfect) → random (~99% span)
+      person_id: 27.8% span → ~99% span
+    This makes the EXISTING guard-based block-skip worse for non-movie_id
+    guard steps.
+  - bf_block_skip_col only helps the 12/57 two-guard steps where guard[1]
+    is on movie_id. For the 45 single-guard steps where the guard is NOT
+    movie_id, no benefit.
+  - Net: sorting hurts more steps than bf_block_skip helps.
+  - Also: codegen branches for bf_stats null-check add per-block overhead
+    even when bf_block_stats is null (most steps).
+
+Decision: DROPPED. Both approaches provide negligible or negative benefit.
+The fundamental constraint is that topdown split processes cast_info early,
+so neither cross-sub-plan BFs nor within-sub-query HT keys can effectively
+filter cast_info block scans.
+
+Previously reverted commit f008485 ("implement block-level skip for temp
+table probe") was also investigated and dropped — it had a stale cache bug
+(block_stats_ keyed by freed heap address) causing non-deterministic
+correctness failures, and the "speedup" it showed was entirely from
+incorrect block-skipping (fewer rows = faster but wrong results). With
+correct stats, temp-table block-skip provides 0% benefit (same root cause
+as OPT-4: unsorted columns have wide block ranges).
