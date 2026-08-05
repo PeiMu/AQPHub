@@ -2188,9 +2188,10 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
 
   // Use the next sub-query's tune config for the spec compiler so the
   // bg-compiled code matches the flags ApplyTuneOverride will set inline.
-  // Bg spec compile always uses FULL quality (LLVM O2) — compile time is
-  // free (overlaps execute(i)); miss recompile uses TPDE via the adapter.
-  int spec_backend = 0;
+  // Use the same compile backend as the inline path — when compile-mode=tpde
+  // a heavyweight LLVM O2 bg compile would steal a core for longer than the
+  // inline TPDE compile it's trying to hide.
+  int spec_backend = spec_compile_mode;
 
   auto &compiler_slot = spec_compilers_[spec_compiler_idx_];
   spec_compiler_idx_ ^= 1;
@@ -2312,6 +2313,7 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
 
   int next_tune_key = iteration_count_;
   uint32_t spec_jit_flags = config_.jit_flags;
+  int spec_compile_mode = config_.compile_mode;
   auto tune_it = tune_entries_.find(next_tune_key);
   if (tune_it != tune_entries_.end()) {
     const auto &te = tune_it->second;
@@ -2319,6 +2321,7 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
     spec_jit_flags = te.jit_flags | simd_bits;
     if (te.query_jit)
       spec_jit_flags |= AQP_JIT_QUERY_JIT;
+    spec_compile_mode = te.compile_mode;
   }
   if (!(spec_jit_flags & AQP_JIT_QUERY_JIT))
     return;
@@ -2374,7 +2377,7 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
   std::string label = "spec-iter" + std::to_string(iteration_count_ + 1);
   auto tc_snap = adapter_->GetTempTableCardSnapshot();
 
-  int spec_backend = 0;
+  int spec_backend = spec_compile_mode;
 
   auto &compiler_slot = spec_compilers_[spec_compiler_idx_];
   spec_compiler_idx_ ^= 1;
@@ -2555,7 +2558,7 @@ void IRQuerySplitter::PrecomputeNextExtraction(
     if (spec_jit_flags & AQP_JIT_QUERY_JIT) {
       RetirePendingSpec();
       unsigned int spec_sub_plan_id = adapter_->subquery_index;
-      int spec_backend = 0;
+      int spec_backend = config_.compile_mode;
       if (tune_it != tune_entries_.end())
         spec_backend = tune_it->second.compile_mode;
 

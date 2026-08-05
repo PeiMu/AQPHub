@@ -19,6 +19,7 @@ spec_jit=${11:-off}       # off | recompile | interpret
 compile_mode=${12:-llvm}   # llvm | fastisel | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
+disable_compile_opts=${15:-}  # comma-separated: cross-query-prep
 
 ########################################
 # Parse dsb_<SF> bench argument
@@ -126,6 +127,16 @@ if [[ -n "$disable_runtime_opts" ]]; then
     done
 fi
 
+if [[ -n "$disable_compile_opts" ]]; then
+    IFS=',' read -ra _dco <<< "$disable_compile_opts"
+    for _opt in "${_dco[@]}"; do
+        case "$_opt" in
+            cross-query-prep) jit_extra_flags+=" --no-cross-query-prep" ;;
+            *) echo "Unknown compile opt: $_opt"; exit 1 ;;
+        esac
+    done
+fi
+
 if [[ "$jit_level" == "query" ]]; then
     if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
         jit_extra_flags+=" --storage-plan --storage-cache=${storage_cache_pg}"
@@ -157,6 +168,7 @@ fi
 [[ "$disable_runtime_opts" == *"block-skip"* ]]    && flag_suffix+="_noblockskip"
 [[ "$disable_runtime_opts" == *"membership"* ]]    && flag_suffix+="_nomembership"
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
+[[ "$disable_compile_opts" == *"cross-query-prep"* ]] && flag_suffix+="_nocrossqprep"
 
 log_name=time_log.csv
 container_name="umbra_benchmark"

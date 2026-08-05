@@ -526,7 +526,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     std::future<std::unique_ptr<CrossQueryPrepResult>> pending_cross_prep;
 #ifdef HAVE_DUCKDB
     DuckDBAdapter *duck_for_cross =
-        config.jit_cache >= 1 &&
+        !config.no_cross_query_prep &&
+                config.jit_cache >= 1 &&
                 (config.strategy == SplitStrategy::NODE_BASED ||
                  config.strategy == SplitStrategy::TOP_DOWN) &&
                 config.engine == BackendEngine::DUCKDB &&
@@ -544,6 +545,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 #endif
 #ifdef HAVE_POSTGRES
     bool pg_for_cross =
+        !config.no_cross_query_prep &&
         !cross_query_pool &&
         config.jit_cache >= 1 &&
         config.strategy == SplitStrategy::TOP_DOWN &&
