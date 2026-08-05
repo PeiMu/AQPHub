@@ -18,6 +18,7 @@ jit_cache=${10:-off}
 spec_jit=${11:-off}       # off | recompile | interpret
 compile_mode=${12:-llvm}   # llvm | fastisel | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON
+disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
 
 if [[ -z "$bench" || -z "$engine" || -z "$split" ]]; then
     echo "Usage: $0 <job|dsb_10|dsb_100> <engine> <split> <jit_level> <jit_simd> [flags...]"
@@ -190,4 +191,5 @@ echo "ANALYZE done"
 cd "${SCRIPT_DIR}" && bash ./hyperfine_aqp.sh "${bench}" "${engine}" "${split}" \
     "${jit_level}" "${jit_simd}" \
     "${payload_prune}" "${prefetch}" "${batch_probe}" "${skip_hash_cmp}" \
-    "${jit_cache}" "${spec_jit}" "${compile_mode}" "${tune_config}"
+    "${jit_cache}" "${spec_jit}" "${compile_mode}" "${tune_config}" \
+    "${disable_runtime_opts}"

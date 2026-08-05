@@ -18,6 +18,7 @@ jit_cache=${10:-off}       # off | single-run-strict | single-run-template | ful
 spec_jit=${11:-off}       # off | recompile | interpret
 compile_mode=${12:-llvm}   # llvm | fastisel | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
+disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
 
 ########################################
 # Parse dsb_<SF> bench argument
@@ -110,6 +111,20 @@ fi
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
+if [[ -n "$disable_runtime_opts" ]]; then
+    IFS=',' read -ra _dro <<< "$disable_runtime_opts"
+    for _opt in "${_dro[@]}"; do
+        case "$_opt" in
+            range-pred)    jit_extra_flags+=" --no-range-predicate-injection" ;;
+            bloom-filter)  jit_extra_flags+=" --no-bloom-filter-injection" ;;
+            range-guard)   jit_extra_flags+=" --no-range-guard" ;;
+            block-skip)    jit_extra_flags+=" --no-block-skip" ;;
+            membership)    jit_extra_flags+=" --no-membership-preprobe" ;;
+            early-term)    jit_extra_flags+=" --no-early-termination" ;;
+            *) echo "Unknown runtime opt: $_opt"; exit 1 ;;
+        esac
+    done
+fi
 
 if [[ "$jit_level" == "query" ]]; then
     if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
@@ -136,6 +151,12 @@ fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 [[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
+[[ "$disable_runtime_opts" == *"range-pred"* ]]   && flag_suffix+="_norangepred"
+[[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && flag_suffix+="_nobloomfilt"
+[[ "$disable_runtime_opts" == *"range-guard"* ]]   && flag_suffix+="_norangeguard"
+[[ "$disable_runtime_opts" == *"block-skip"* ]]    && flag_suffix+="_noblockskip"
+[[ "$disable_runtime_opts" == *"membership"* ]]    && flag_suffix+="_nomembership"
+[[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 
 log_name=time_log.csv
 container_name="umbra_benchmark"

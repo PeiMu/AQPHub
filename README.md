@@ -265,6 +265,50 @@ These flags control individual pipeline/query-level optimizations.
 | `--jit-skip-hash-cmp=off\|all` | Skip stored-hash/salt comparison for integer keys (bare flag = all). |
 | `--jit-cache` / `--no-jit-cache` | In-memory compiled-object cache (debug flag, default **off**). |
 
+#### Runtime-Statistics-Guided Optimization Breakdown
+
+These flags control optimizations that use runtime statistics from previously-executed
+sub-plans (temp tables) to optimize subsequent sub-plans in node-based/topdown splits.
+All default **on**.
+
+| Flag | Paper Name | What it controls |
+|------|------------|------------------|
+| `--no-range-predicate-injection` | Runtime Range Predicate Injection | Injects `WHERE key BETWEEN min AND max` into sub-plan SQL using materialized temp table statistics |
+| `--no-early-termination` | Empty-Intermediate Pruning | Short-circuits the split loop when a materialized intermediate returns zero rows (all-inner-join guarantee) |
+| `--no-range-guard` | Per-Row Build-Key Range Guard | Codegen: skips hash probe when probe key falls outside build-side `[min, max]` |
+| `--no-block-skip` | Min/Max Block Skipping | Codegen: skips entire 2048-row blocks when block-level `[min, max]` doesn't overlap build-key range |
+| `--no-membership-preprobe` | Existence Pre-Check | Codegen: walks hash chain to verify key existence before evaluating expensive filter predicates (gated to small builds ≤64K entries) |
+| `--no-bloom-filter-injection` | Cross-Plan Bloom Filter Injection | Builds bloom filters from materialized intermediates and pushes them into base-table scan operators |
+
+For a per-optimization waterfall measurement, disable all six as baseline,
+then enable one at a time cumulatively:
+
+```bash
+# Baseline: all 6 runtime opts disabled
+bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none \
+    on on on all single-run-template off tpde "" \
+    "range-pred,early-term,range-guard,block-skip,membership,bloom-filter"
+
+# +Per-Row Build-Key Range Guard (disable remaining 3)
+bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none \
+    on on on all single-run-template off tpde "" \
+    "block-skip,membership,bloom-filter"
+
+# All enabled (default, no 14th arg needed)
+bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none \
+    on on on all single-run-template off tpde
+```
+
+A convenience script runs the full 7-step waterfall:
+
+```bash
+cd measure && bash breakdown_runtime_guided_opt.sh
+```
+
+The 14th positional argument to measurement scripts is `disable_runtime_opts`:
+a comma-separated list of optimizations to disable (`range-pred`, `bloom-filter`,
+`range-guard`, `block-skip`, `membership`, `early-term`). Empty or omitted = all enabled.
+
 #### Example
 
 ```bash
@@ -425,9 +469,11 @@ $9   jit_cache       off / on                                   (default: off)
 $10  spec_jit        off / recompile / interpret                (default: off)
 $11  compile_mode    off / fastisel / tpde                       (default: off = llvm)
 $12  tune_config     <path to JSON>                             (default: none)
+$13  disable_runtime_opts  comma-separated list                  (default: empty = all on)
+                           range-pred,early-term,range-guard,block-skip,membership,bloom-filter
 ```
 
-Arguments 5-12 are optional.
+Arguments 5-13 are optional.
 
 ### Run a single benchmark pass
 

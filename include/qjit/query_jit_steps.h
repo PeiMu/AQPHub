@@ -195,6 +195,9 @@ struct QjitQueryPlan {
 // fallback trace token. Requires AnnotateBuildSides to have run (rejects
 // "join:build-side-unannotated" otherwise).
 bool BuildExecutionSteps(const ir_sql_converter::AQPStmt &root,
-                         QjitQueryPlan &out, std::string &reason);
+                         QjitQueryPlan &out, std::string &reason,
+                         bool enable_range_guard = true,
+                         bool enable_block_skip = true,
+                         bool enable_membership = true);
 
 } // namespace qjit

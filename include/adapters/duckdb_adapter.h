@@ -336,6 +336,10 @@ public:
     jit_single_col_int_join_ = single_col_int_join;
   }
 
+  void SetRangeGuard(bool v) { range_guard_ = v; }
+  void SetBlockSkip(bool v) { block_skip_ = v; }
+  void SetMembershipPreprobe(bool v) { membership_preprobe_ = v; }
+
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
   // JIT object cache mode (--jit-cache=..., default 0=off).
@@ -688,6 +692,9 @@ private:
   bool jit_batch_probe_ = true;
   int  jit_skip_hash_cmp_ = 2; // 0=off, 2=all
   bool jit_single_col_int_join_ = true;
+  bool range_guard_ = true;
+  bool block_skip_ = true;
+  bool membership_preprobe_ = true;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
   int jit_cache_ = 0;

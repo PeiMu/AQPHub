@@ -274,6 +274,18 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.csv_dir = arg.substr(10);
     } else if (arg == "--explain") {
       config.enable_explain = true;
+    } else if (arg == "--no-range-predicate-injection") {
+      config.range_predicate_injection = false;
+    } else if (arg == "--no-bloom-filter-injection") {
+      config.bloom_filter_injection = false;
+    } else if (arg == "--no-range-guard") {
+      config.range_guard = false;
+    } else if (arg == "--no-block-skip") {
+      config.block_skip = false;
+    } else if (arg == "--no-membership-preprobe") {
+      config.membership_preprobe = false;
+    } else if (arg == "--no-early-termination") {
+      config.early_termination = false;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);

@@ -3977,7 +3977,8 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
 
   qjit::QjitQueryPlan plan;
   std::string reason;
-  if (!qjit::BuildExecutionSteps(ir, plan, reason))
+  if (!qjit::BuildExecutionSteps(ir, plan, reason, range_guard_,
+                                   block_skip_, membership_preprobe_))
     return fallback(reason);
 
   auto compiled = std::make_unique<QjitCompiled>();
@@ -4150,7 +4151,9 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
 
     auto payload = std::make_unique<QjitSpecCompiled>();
     std::string reason;
-    if (!qjit::BuildExecutionSteps(*ir, payload->plan, reason))
+    if (!qjit::BuildExecutionSteps(*ir, payload->plan, reason,
+                                   range_guard_, block_skip_,
+                                   membership_preprobe_))
       return reject(reason);
     payload->compiled = std::make_unique<QjitCompiled>();
     if (!BuildQjitOutputDescs(payload->plan, *prepared, *payload->compiled,

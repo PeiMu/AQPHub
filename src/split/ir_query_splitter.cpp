@@ -352,6 +352,9 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
           config_.jit_payload_prune, config_.jit_prefetch,
           config_.jit_prefetch_distance, config_.jit_batch_probe,
           config_.jit_skip_hash_cmp, config_.single_col_int_join_mode);
+      duck->SetRangeGuard(config_.range_guard);
+      duck->SetBlockSkip(config_.block_skip);
+      duck->SetMembershipPreprobe(config_.membership_preprobe);
 #endif
     }
   }
@@ -987,6 +990,9 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duck->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
                         config_.query_jit_threads, config_.query_jit_morsel);
       duck->SetQueryJitStoragePlan(storage_plan_);
+      duck->SetRangeGuard(config_.range_guard);
+      duck->SetBlockSkip(config_.block_skip);
+      duck->SetMembershipPreprobe(config_.membership_preprobe);
 #endif
     }
   }
@@ -1279,7 +1285,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       original_output_col_count_ = nb->GetOriginalOutputColumnCount();
   }
 
-  all_inner_joins_ =
+  all_inner_joins_ = config_.early_termination &&
       remaining_ir != nullptr && AllJoinsPropagatEmpty(remaining_ir.get());
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
@@ -3299,7 +3305,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
     } else
 #endif
     {
-      ApplyCrossSubPlanOptimizations(sub_sql);
+      const bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+      ApplyCrossSubPlanOptimizations(
+          sub_sql, /*inject_range_preds=*/true,
+          /*build_bloom_filters=*/!query_jit);
 #if (defined(HAVE_DUCKDB) || defined(HAVE_POSTGRES)) && defined(HAVE_LLVM)
       compensate_miss =
           learned_missed_iter && (config_.engine == BackendEngine::DUCKDB ||
@@ -3433,7 +3442,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
       }
 #endif
 
-      if (SubPlanReferencesEmptyTemp(sub_sql)) {
+      if (config_.early_termination && SubPlanReferencesEmptyTemp(sub_sql)) {
         std::string short_sql = sub_sql;
         size_t semi = short_sql.rfind(';');
         if (semi != std::string::npos)
@@ -3727,6 +3736,8 @@ bool IRQuerySplitter::AllJoinsPropagatEmpty(
 __attribute__((noinline))
 void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
     std::string &sub_sql, bool inject_range_preds, bool build_bloom_filters) {
+  if (!config_.range_predicate_injection) inject_range_preds = false;
+  if (!config_.bloom_filter_injection) build_bloom_filters = false;
 #ifdef HAVE_DUCKDB
   if (config_.engine != BackendEngine::DUCKDB) return;
 

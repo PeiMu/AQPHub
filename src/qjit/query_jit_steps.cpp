@@ -1206,7 +1206,10 @@ struct PlanBuilder {
 } // namespace
 
 bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
-                         std::string &reason) {
+                         std::string &reason,
+                         bool enable_range_guard,
+                         bool enable_block_skip,
+                         bool enable_membership) {
   out = QjitQueryPlan();
   reason.clear();
 
@@ -1347,7 +1350,15 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
       return false;
 
   pb.AssignOffsets();
-  PlanJoinFilterPushdown(out);
+  if (enable_range_guard)
+    PlanJoinFilterPushdown(out);
+  if (!enable_block_skip)
+    for (auto &step : out.steps)
+      step.block_skip_col = -1;
+  if (!enable_membership)
+    for (auto &step : out.steps)
+      for (auto &g : step.guards)
+        g.membership = false;
 
   // Record peeled ORDER BY / LIMIT for post-QJIT sorting.
   if (peeled_limit && peeled_limit->limit_val.type ==

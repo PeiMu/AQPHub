@@ -277,6 +277,9 @@ void ExecuteSingleQuery(
                                 config.query_jit_threads,
                                 config.query_jit_morsel);
         duckdb_adp->SetQueryJitStoragePlan(storage_plan);
+        duckdb_adp->SetRangeGuard(config.range_guard);
+        duckdb_adp->SetBlockSkip(config.block_skip);
+        duckdb_adp->SetMembershipPreprobe(config.membership_preprobe);
       }
 #endif
 #ifdef HAVE_POSTGRES

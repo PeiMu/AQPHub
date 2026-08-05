@@ -8,8 +8,10 @@
 # Cache tiers grouped after base configs.
 #
 # Config format:
-#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode[|skip_hash_cmp]]]]
+#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode[|skip_hash_cmp[|disable_runtime_opts]]]]]
 #   compile_mode defaults to llvm, skip_hash_cmp defaults to on(=all) when omitted.
+#   disable_runtime_opts: comma-separated list of runtime opts to disable
+#   (range-pred,bloom-filter,range-guard,block-skip,membership,early-term). Empty = all enabled.
 #
 set -uo pipefail
 
@@ -366,6 +368,25 @@ JIT_CONFIGS=(
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|full|tpde"
 
   # ============================================================
+  # Runtime-statistics-guided optimization flags (topdown, query-jit, tpde)
+  # 7-step waterfall: enable one opt at a time in order
+  # ============================================================
+  # baseline: all 6 disabled
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde||range-pred,early-term,range-guard,block-skip,membership,bloom-filter"
+  # +range-pred
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde||early-term,range-guard,block-skip,membership,bloom-filter"
+  # +range-pred,early-term
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde||range-guard,block-skip,membership,bloom-filter"
+  # +range-pred,early-term,range-guard
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde||block-skip,membership,bloom-filter"
+  # +range-pred,early-term,range-guard,block-skip
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde||membership,bloom-filter"
+  # +range-pred,early-term,range-guard,block-skip,membership
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde||bloom-filter"
+  # node-based: baseline (all 6 disabled)
+  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||tpde||range-pred,early-term,range-guard,block-skip,membership,bloom-filter"
+
+  # ============================================================
   # lingodb / lingo-db-runtime
   # ============================================================
   "lingodb|none|llvm|none|lingodb_job_no-split_golden.txt"
@@ -431,15 +452,17 @@ FAIL_LOG="job_result/correctness_failures.log"
 
 # --- Run JIT-level configs via run_aqp.sh job ---
 for entry in "${JIT_CONFIGS[@]}"; do
-  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp <<< "$entry"
+  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp disable_runtime_opts <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
   jit_cache_mode=${jit_cache_mode:-off}
   compile_mode=${compile_mode:-llvm}
   skip_hash_cmp=${skip_hash_cmp:-on}
-  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} ==="
+  disable_runtime_opts=${disable_runtime_opts:-}
+  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} disable_rt=${disable_runtime_opts:-all_on} ==="
 
   bash run_aqp.sh job "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
-       on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}"
+       on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}" \
+       "" "${disable_runtime_opts}"
 
   shc_suffix=""
   [[ "$skip_hash_cmp" == "off" ]] && shc_suffix="_noskiphashcmp"
@@ -453,13 +476,20 @@ for entry in "${JIT_CONFIGS[@]}"; do
   fi
   fc_suffix=""
   [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
+  rt_suffix=""
+  [[ "$disable_runtime_opts" == *"range-pred"* ]]   && rt_suffix+="_norangepred"
+  [[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && rt_suffix+="_nobloomfilt"
+  [[ "$disable_runtime_opts" == *"range-guard"* ]]   && rt_suffix+="_norangeguard"
+  [[ "$disable_runtime_opts" == *"block-skip"* ]]    && rt_suffix+="_noblockskip"
+  [[ "$disable_runtime_opts" == *"membership"* ]]    && rt_suffix+="_nomembership"
+  [[ "$disable_runtime_opts" == *"early-term"* ]]    && rt_suffix+="_noearlyterm"
   if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
-    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}_job.txt"
+    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}${rt_suffix}_job.txt"
   fi
 
-  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp}"
+  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} disable_rt=${disable_runtime_opts:-all_on}"
 
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
