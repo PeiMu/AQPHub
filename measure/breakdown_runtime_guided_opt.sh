@@ -60,13 +60,13 @@ D="duckdb_topdown_query_none_jitcache_single_run_template_tpde"
 # Step 1: Baseline — all runtime opts disabled
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \
     "range-pred,early-term,range-guard,block-skip,membership,bloom-filter" && \
-cp "${DEST_DIR}/${D}_norangepred_nobloomfilt_norangeguard_noblockskip_nomembership_noearlyterm_breakdown_time_log.csv" \
+mv "${DEST_DIR}/${D}_norangepred_nobloomfilt_norangeguard_noblockskip_nomembership_noearlyterm_breakdown_time_log.csv" \
    "${DEST_DIR}/step1_baseline.csv" && \
 
 # Step 2: +Runtime Range Predicate Injection
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \
     "early-term,range-guard,block-skip,membership,bloom-filter" && \
-cp "${DEST_DIR}/${D}_nobloomfilt_norangeguard_noblockskip_nomembership_noearlyterm_breakdown_time_log.csv" \
+mv "${DEST_DIR}/${D}_nobloomfilt_norangeguard_noblockskip_nomembership_noearlyterm_breakdown_time_log.csv" \
    "${DEST_DIR}/step2_range_pred.csv" && \
 
 # (commented out) +Empty-Intermediate Pruning — ~10ms on JOB, absorbed into All Enabled
@@ -76,19 +76,21 @@ cp "${DEST_DIR}/${D}_nobloomfilt_norangeguard_noblockskip_nomembership_noearlyte
 # Step 3: +Per-Row Build-Key Range Guard
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \
     "early-term,block-skip,membership,bloom-filter" && \
-cp "${DEST_DIR}/${D}_nobloomfilt_noblockskip_nomembership_noearlyterm_breakdown_time_log.csv" \
+mv "${DEST_DIR}/${D}_nobloomfilt_noblockskip_nomembership_noearlyterm_breakdown_time_log.csv" \
    "${DEST_DIR}/step3_range_guard.csv" && \
 
 # Step 4: +Min/Max Block Skipping
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \
     "early-term,membership,bloom-filter" && \
-cp "${DEST_DIR}/${D}_nobloomfilt_nomembership_noearlyterm_breakdown_time_log.csv" \
+mv "${DEST_DIR}/${D}_nobloomfilt_nomembership_noearlyterm_breakdown_time_log.csv" \
    "${DEST_DIR}/step4_block_skip.csv" && \
 
 # Step 5: All Enabled — manually copy and rename as step5_all_enabled.csv
 echo "Step 5: manually copy the all-enabled CSV:"
 echo "  cp ${DEST_DIR}/${D}_breakdown_time_log.csv ${DEST_DIR}/step5_all_enabled.csv"
+cp "${DEST_DIR}/${D}_breakdown_time_log.csv" \
+   "${DEST_DIR}/step5_all_enabled.csv" && \
 
 echo ""
 echo "=== Runtime-guided optimization breakdown complete ==="
-echo "Output: ${DEST_DIR}/step[1-4]_*.csv (step5 needs manual copy)"
+echo "Output: ${DEST_DIR}/step[1-5]_*.csv"

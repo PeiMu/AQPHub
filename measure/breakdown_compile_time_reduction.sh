@@ -18,17 +18,21 @@
 # B1: off (no caching) — same CSV as A3
 # B2: single-run-strict (exact plan match)
 # B3: single-run-template (parameterized: constants from params array)
+# B4: full
 #
 # ============================================================
 # Figure C: Latency hiding (compile-mode=tpde, cache=template)
 # ============================================================
 #
-# C1: baseline (spec=off, cross=off)
-# C2: +spec-jit (spec=recompile, cross=off)
-# C3: +spec-jit +cross-query-prep (spec=recompile, cross=on)
+# C1: baseline (spec=off, cross=off) tpde
+# C2: +spec-jit (spec=recompile, cross=off) tpde
+# C3: +spec-jit +cross-query-prep (spec=recompile, cross=on) tpde
+# C4: baseline (spec=off, cross=off) llvm
+# C5: +spec-jit (spec=recompile, cross=off) llvm
+# C6: +spec-jit +cross-query-prep (spec=recompile, cross=on) llvm
 #
 # ============================================================
-# Total configs to measure: 7 (A3=B1 shared)
+# Total configs to measure: 11 (A3=B1 shared)
 # ============================================================
 #
 # Run from measure/ directory.
@@ -80,7 +84,7 @@ cp "$A3" "${DEST_DIR}/figB1_cache_off.csv"
 echo "--- B2: cache=strict ---"
 bash ./measure_breakdown_time_aqp.sh $BASE single-run-strict off tpde "" "" "cross-query-prep"
 B2="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_strict_tpde_nocrossqprep_breakdown_time_log.csv"
-cp "$B2" "${DEST_DIR}/figB2_cache_strict.csv"
+mv "$B2" "${DEST_DIR}/figB2_cache_strict.csv"
 
 # B3: single-run-template (no cross-query-prep)
 echo "--- B3: cache=template ---"
@@ -88,30 +92,55 @@ bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off tpde "" "" "c
 B3="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_tpde_nocrossqprep_breakdown_time_log.csv"
 cp "$B3" "${DEST_DIR}/figB3_cache_template.csv"
 
+# B4: full
+echo "--- B4: cache=full ---"
+bash ./measure_breakdown_time_aqp.sh $BASE full off tpde "" "" "cross-query-prep"
+B4="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_tpde_nocrossqprep_breakdown_time_log.csv"
+mv "$B4" "${DEST_DIR}/figB4_cache_full.csv"
+
 echo ""
 echo "============================================"
 echo "Figure C: Latency hiding (TPDE, cache=template)"
 echo "============================================"
 
 # C1: baseline (spec=off, cross=off)
-echo "--- C1: no latency hiding ---"
-cp "$B3" "${DEST_DIR}/figC1_no_hiding.csv"
+echo "--- C1: no latency hiding tpde ---"
+mv "$B3" "${DEST_DIR}/figC1_no_hiding_tpde.csv"
 
 # C2: +spec-jit (cross=off)
-echo "--- C2: +spec-jit ---"
+echo "--- C2: +spec-jit tpde ---"
 bash ./measure_breakdown_time_aqp.sh $BASE single-run-template recompile tpde "" "" "cross-query-prep"
 C2="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_tpde_nocrossqprep_breakdown_time_log.csv"
-cp "$C2" "${DEST_DIR}/figC2_spec_only.csv"
+mv "$C2" "${DEST_DIR}/figC2_spec_only_tpde.csv"
 
 # C3: +spec-jit +cross-query-prep (both on)
-echo "--- C3: +spec-jit +cross-query-prep ---"
+echo "--- C3: +spec-jit +cross-query-prep tpde ---"
 bash ./measure_breakdown_time_aqp.sh $BASE single-run-template recompile tpde "" "" ""
 C3="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv"
-cp "$C3" "${DEST_DIR}/figC3_spec_and_cross.csv"
+cp "$C3" "${DEST_DIR}/figC3_spec_and_cross_tpde.csv"
+
+### LLVM
+# C4: baseline (spec=off, cross=off)
+echo "--- C4: no latency hiding llvm ---"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off llvm "" "" "cross-query-prep"
+C4="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_llvm_nocrossqprep_breakdown_time_log.csv"
+mv "$C4" "${DEST_DIR}/figC4_no_hiding_llvm.csv"
+
+# C5: +spec-jit (cross=off)
+echo "--- C5: +spec-jit llvm ---"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-template recompile llvm "" "" "cross-query-prep"
+C5="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_llvm_nocrossqprep_breakdown_time_log.csv"
+mv "$C5" "${DEST_DIR}/figC5_spec_only_llvm.csv"
+
+# C6: +spec-jit +cross-query-prep (both on)
+echo "--- C6: +spec-jit +cross-query-prep llvm ---"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-template recompile llvm "" "" ""
+C6="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv"
+cp "$C6" "${DEST_DIR}/figC6_spec_and_cross_llvm.csv"
 
 echo ""
 echo "=== Compilation-time reduction breakdown complete ==="
 echo "Output files:"
 echo "  Figure A: ${DEST_DIR}/figA[1-3]_*.csv"
-echo "  Figure B: ${DEST_DIR}/figB[1-3]_*.csv"
-echo "  Figure C: ${DEST_DIR}/figC[1-3]_*.csv"
+echo "  Figure B: ${DEST_DIR}/figB[1-4]_*.csv"
+echo "  Figure C: ${DEST_DIR}/figC[1-6]_*.csv"
