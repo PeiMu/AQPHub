@@ -30,11 +30,14 @@ When discussion, think in Prof. Thomas Neumann or Matthias Jasny way.
 
 ## Repositories
 
-- **AQPHub**: `/home/pei/Project/AQPHub` (branch: `topdown_fix`)
+- **AQPHub**: `/home/pei/Project/AQP_middleware`
 - **DuckDB (patched)**: `/home/pei/Project/duckdb`
 - **JOB queries**: `/home/pei/Project/benchmarks/imdb_job-postgres/queries/`
+- **DSB queries**: `/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/`
 - **JOB schema**: `/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql`
-- **DuckDB database**: `/home/pei/Project/duckdb/measure/imdb.db`
+- **DSB schema**: `/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql`
+- **DuckDB JOB database**: `/home/pei/Project/duckdb/measure/imdb.db`
+- **DuckDB DSB database**: `/home/pei/Project/duckdb/measure/dsb_100.db`
 
 Build commands:
 ```bash
@@ -58,19 +61,12 @@ Build hazards:
 Take a simple JOB query that related to our changes (e.g., 1a — single join), run with
 `./build_release/aqp_middleware ...` (check reference in measure/run_aqp.sh job). Compare result to DuckDB golden output.
 
-### Step 4: Full JOB correctness
+### Step 4: Full JOB and DSB correctness
 
-Run all 113 JOB queries with the correct flags, compare against golden files:
-- `measure/duckdb_job_no-split_golden.txt`
-- `measure/duckdb_job_node-based_golden.txt`
-
-For more flags, check measure/correctness_test.sh.
+check measure/correctness_test_job_duckdb.sh and measure/correctness_test_dsb_duckdb.sh.
 
 ### Analysis scripts (measure/*.py)
-- `tune_per_subquery.py [split]` — pick best config per (query, sub-query)
-- `show_all_configs.py [split]` — summary table across all configs
-- `find_top_queries.py [path] [--top=N]` — rank queries by slowest median
-
+CSV parser is: /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
 ---
 
 ## Implementation Status: 

@@ -609,7 +609,7 @@ UNION ALL SELECT 'comp_cast_type', COUNT(*), MIN(id), MAX(id),
 
 - **AQP Middleware**: `/home/pei/Project/AQP_middleware` (this repo)
 - **DuckDB (patched)**: `/home/pei/Project/duckdb`
-- **JOB queries**: `/home/pei/Project/benchmarks/JOB4AQP/` and `/home/pei/Project/duckdb/benchmark/imdb_plan_cost/queries/`
+- **JOB queries**: `/home/pei/Project/benchmarks/imdb_job-postgres/queries`
 - **JOB schema**: `/home/pei/Project/benchmarks/JOB4AQP/schema.sql`
 - **DuckDB database**: `/home/pei/Project/duckdb/measure/imdb.db`
 

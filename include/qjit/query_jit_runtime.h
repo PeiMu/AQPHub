@@ -374,6 +374,7 @@ public:
   const uint64_t *Validity(size_t col) const {
     return flat_[col].validity.data();
   }
+  bool HasNulls(size_t col) const { return flat_[col].has_nulls; }
   bool ValueValid(size_t col, uint64_t row) const {
     return RowValid(flat_[col].validity.data(), row);
   }
@@ -407,6 +408,7 @@ private:
   struct FlatCol {
     std::vector<uint8_t> data;
     std::vector<uint64_t> validity;
+    bool has_nulls = false;
   };
 
   void AppendBytes(uint32_t worker, size_t col, const void *src);

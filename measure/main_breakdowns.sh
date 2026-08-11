@@ -43,4 +43,18 @@ bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on 
 #bash ./measure_breakdown_time_aqp.sh dsb postgresql none none &&\
 #bash ./measure_breakdown_time_aqp.sh dsb postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh dsb postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh dsb postgresql node-based query none on on on all single-run-template recompile tpde
+bash ./measure_breakdown_time_aqp.sh dsb postgresql node-based query none on on on all single-run-template recompile tpde &&\
+
+
+# DSB 100
+# DuckDB DSB
+bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none none &&\
+bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none query none on on on all off off tpde &&\
+bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb node-based none &&\
+bash measure_breakdown_time_aqp.sh dsb_100 duckdb node-based query none on on on all single-run-template off tpde &&\
+
+# PostgreSQL DSB
+#bash ./measure_breakdown_time_aqp.sh dsb postgresql none none &&\
+#bash ./measure_breakdown_time_aqp.sh dsb postgresql none query none on on on all off off tpde &&\
+bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based none &&\
+bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based query none on on on all single-run-template recompile tpde

@@ -588,8 +588,8 @@ void DuckDBAdapter::QjitTempScanFunc(duckdb::ClientContext &context,
       throw duckdb::InternalException("scan_qjit_temp: unsupported dtype");
     }
 
-    const uint64_t *vmask = t->Validity(col_idx);
-    if (vmask) {
+    if (t->HasNulls(col_idx)) {
+      const uint64_t *vmask = t->Validity(col_idx);
       auto &validity = duckdb::FlatVector::Validity(vec);
       for (uint64_t r = 0; r < count; r++) {
         if (!qjit::RowValid(vmask, state.current_row + r))

@@ -483,6 +483,7 @@ void QjitTable::Finalize() {
     uint32_t sz = ElemSize(c);
     fc.data.resize(nrows_ * sz);
     fc.validity.assign((nrows_ + 63) / 64, ~uint64_t(0));
+    fc.has_nulls = false;
     uint64_t row = 0;
     for (const auto &p : partitions_) {
       const PartCol &pc = p.cols[c];
@@ -496,8 +497,10 @@ void QjitTable::Finalize() {
       uint64_t nr = 0;
       for (const auto &nchunk : pc.nulls.Chunks()) {
         for (uint64_t b = 0; b < nchunk.used; b++) {
-          if (nchunk.data[b])
+          if (nchunk.data[b]) {
             SetRowInvalid(fc.validity.data(), row + nr);
+            fc.has_nulls = true;
+          }
           nr++;
         }
       }
