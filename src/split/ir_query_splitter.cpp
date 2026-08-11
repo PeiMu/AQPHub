@@ -1604,8 +1604,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       // overshoots the key by 1 and the final query keeps stale flags.
       if (!tune_entries_.empty())
         ApplyTuneOverride(static_cast<int>(temp_tables_.size()));
-      if (config_.engine == BackendEngine::DUCKDB && trivial_temp.empty())
-        ApplyCrossSubPlanOptimizations(final_sql);
+      if (trivial_temp.empty()) {
+        const bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+        const bool interp_stats = !query_jit && config_.interpreter_collect_stats;
+        ApplyCrossSubPlanOptimizations(
+            final_sql, /*inject_range_preds=*/query_jit || interp_stats,
+            /*build_bloom_filters=*/interp_stats);
+      }
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
                   << config_.jit_flags << std::dec << " (";
@@ -3309,9 +3314,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
     {
       const bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
+      const bool interp_stats = !query_jit && config_.interpreter_collect_stats;
       ApplyCrossSubPlanOptimizations(
-          sub_sql, /*inject_range_preds=*/true,
-          /*build_bloom_filters=*/!query_jit);
+          sub_sql, /*inject_range_preds=*/query_jit || interp_stats,
+          /*build_bloom_filters=*/interp_stats);
 #if (defined(HAVE_DUCKDB) || defined(HAVE_POSTGRES)) && defined(HAVE_LLVM)
       compensate_miss =
           learned_missed_iter && (config_.engine == BackendEngine::DUCKDB ||
@@ -3548,6 +3554,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     std::string col_alias =
         ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName());
     temp_table.column_names.push_back(col_alias);
+    temp_table.column_types.push_back(attr->GetType());
     temp_table.column_mappings.emplace_back(attr->GetTableIndex(),
                                             attr->GetColumnIndex(), col_alias);
     col_mappings.emplace_back(attr->GetTableIndex(), attr->GetColumnIndex());
@@ -3741,11 +3748,6 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
     std::string &sub_sql, bool inject_range_preds, bool build_bloom_filters) {
   if (!config_.range_predicate_injection) inject_range_preds = false;
   if (!config_.bloom_filter_injection) build_bloom_filters = false;
-#ifdef HAVE_DUCKDB
-  if (config_.engine != BackendEngine::DUCKDB) return;
-
-  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-  if (!duck) return;
 
   std::string extra_where;
 
@@ -3833,13 +3835,13 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
     }
     if (join_matches.empty()) continue;
 
-    // Temps are immutable once stored; cache the (full-scan) min/max so
-    // repeated calls — inline per iteration plus the speculative launch —
-    // never re-scan the same collection.
     auto mit = temp_min_max_cache_.find(tt.table_name);
     if (mit == temp_min_max_cache_.end())
       mit = temp_min_max_cache_
-                .emplace(tt.table_name, duck->GetTempTableMinMax(tt.table_name))
+                .emplace(tt.table_name,
+                         adapter_->GetTempTableMinMax(tt.table_name,
+                                                     tt.column_names,
+                                                     tt.column_types))
                 .first;
     const auto &col_min_max = mit->second;
 
@@ -3855,7 +3857,7 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
       if (is_medium) {
         if (selectivity >= 0.25) continue;
         std::string base_table = extract_base_table(base_col);
-        uint64_t base_card = duck->GetBaseTableCardinality(base_table);
+        uint64_t base_card = adapter_->GetBaseTableCardinality(base_table);
         double match_rate = (base_card > 0)
             ? static_cast<double>(temp_card) / base_card : 1.0;
         if (match_rate >= 0.25) continue;
@@ -3899,6 +3901,12 @@ void IRQuerySplitter::ApplyCrossSubPlanOptimizations(
   }
 
   if (!build_bloom_filters) return;
+
+#ifdef HAVE_DUCKDB
+  if (config_.engine != BackendEngine::DUCKDB) return;
+
+  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
+  if (!duck) return;
 
   constexpr uint64_t kBFMaxTempCard = 2000000;
 

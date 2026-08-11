@@ -109,6 +109,7 @@ struct TempTableInfo {
   unsigned int table_index;
   uint64_t cardinality;
   std::vector<std::string> column_names;
+  std::vector<ir_sql_converter::SimplestVarType> column_types;
 
   // Mapping from old (table_idx, col_idx) to position in this temp table
   // column_mappings[i] contains the original (table_idx, col_idx) for column i

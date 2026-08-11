@@ -217,12 +217,16 @@ public:
                                uint64_t cardinality) override;
 
   // Compute min/max for integer columns of a temp table from in-memory data.
-  // Returns map: column_index -> (min_value, max_value) for INT32/INT64 cols.
+  // Overrides base class SQL-based default with direct ColumnDataCollection scan.
   std::unordered_map<size_t, std::pair<int64_t, int64_t>>
-  GetTempTableMinMax(const std::string &temp_table_name);
+  GetTempTableMinMax(
+      const std::string &temp_table_name,
+      const std::vector<std::string> &column_names,
+      const std::vector<ir_sql_converter::SimplestVarType> &column_types)
+      override;
 
   // Get row count of a base (non-temp) table from the main catalog.
-  uint64_t GetBaseTableCardinality(const std::string &table_name);
+  uint64_t GetBaseTableCardinality(const std::string &table_name) override;
 
   // Collect distinct integer values from a temp table column.
   // Returns empty vector if column is not INT32/INT64, table not found,

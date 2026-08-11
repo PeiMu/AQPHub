@@ -20,6 +20,7 @@ compile_mode=${12:-llvm}   # llvm | fastisel | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
 disable_compile_opts=${15:-}  # comma-separated: cross-query-prep
+interp_collect_stats=${16:-off}  # on | off — enable stats collection for interpreter path
 
 ########################################
 # Parse dsb_<SF> bench argument
@@ -112,6 +113,7 @@ fi
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
+[[ "$interp_collect_stats" == "on" ]] && jit_extra_flags+=" --interpreter-collect-stats"
 if [[ -n "$disable_runtime_opts" ]]; then
     IFS=',' read -ra _dro <<< "$disable_runtime_opts"
     for _opt in "${_dro[@]}"; do
@@ -169,6 +171,7 @@ fi
 [[ "$disable_runtime_opts" == *"membership"* ]]    && flag_suffix+="_nomembership"
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 [[ "$disable_compile_opts" == *"cross-query-prep"* ]] && flag_suffix+="_nocrossqprep"
+[[ "$interp_collect_stats" == "on" ]]              && flag_suffix+="_interpcollect"
 
 log_name=time_log.csv
 container_name="umbra_benchmark"

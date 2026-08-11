@@ -108,15 +108,48 @@ bool QjitExecutor::ResolveSource(const FlatTable &flat,
   return true;
 }
 
+const int32_t *QjitExecutor::GetBlockStatsForTemp(const QjitTable &table,
+                                                  int col_idx) {
+  const auto &cd = table.Col(col_idx);
+  if (cd.dtype != AQP_DTYPE_INT32 && cd.dtype != AQP_DTYPE_DATE)
+    return nullptr;
+  const uint64_t n = table.NumRows();
+  if (n == 0)
+    return nullptr;
+  const uint64_t nblocks = (n + QJIT_BLOCK_ROWS - 1) / QJIT_BLOCK_ROWS;
+  auto stats = std::make_unique<std::vector<int32_t>>(nblocks * 2);
+  const int32_t *data = reinterpret_cast<const int32_t *>(table.Data(col_idx));
+  const uint64_t *validity = table.Validity(col_idx);
+  for (uint64_t b = 0; b < nblocks; ++b) {
+    const uint64_t lo = b * QJIT_BLOCK_ROWS;
+    const uint64_t hi = std::min<uint64_t>(lo + QJIT_BLOCK_ROWS, n);
+    int32_t bmin = INT32_MAX, bmax = INT32_MIN;
+    for (uint64_t row = lo; row < hi; ++row) {
+      if (!RowValid(validity, row))
+        continue;
+      const int32_t v = data[row];
+      bmin = std::min(bmin, v);
+      bmax = std::max(bmax, v);
+    }
+    (*stats)[2 * b] = bmin;
+    (*stats)[2 * b + 1] = bmax;
+  }
+  temp_block_stats_.push_back(std::move(stats));
+  return temp_block_stats_.back()->data();
+}
+
 bool QjitExecutor::ResolveTempSource(const QjitTable &table,
                                      const std::vector<QjitColumnRef> &cols,
                                      QjitResolvedSource &out,
-                                     std::string &reason) {
+                                     std::string &reason,
+                                     int stats_col) {
   out.cols.clear();
   out.nrows = table.NumRows();
+  out.block_stats = nullptr;
   out.cols.reserve(cols.size());
 
-  for (const QjitColumnRef &ref : cols) {
+  for (size_t ci = 0; ci < cols.size(); ++ci) {
+    const QjitColumnRef &ref = cols[ci];
     if (ref.column_index >= table.NumCols()) {
       reason = "source:tmp-col-range:" + ref.column_name;
       return false;
@@ -129,9 +162,8 @@ bool QjitExecutor::ResolveTempSource(const QjitTable &table,
       reason = "source:tmp-dtype:" + ref.column_name;
       return false;
     }
-    // Same layout the compiled code expects: INT32 flat array or
-    // QjitString[16B] array + 1-bit validity (nullptr = all valid) — the
-    // per-column equivalent of QjitTable::FillView.
+    if ((int)ci == stats_col)
+      out.block_stats = GetBlockStatsForTemp(table, ref.column_index);
     QjitColView view{};
     view.data = const_cast<void *>(table.Data(ref.column_index));
     view.validity = const_cast<uint64_t *>(table.Validity(ref.column_index));

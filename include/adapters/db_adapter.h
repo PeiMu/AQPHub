@@ -193,6 +193,62 @@ public:
   // engines that don't implement plan display; overridden per adapter.
   virtual std::string ExplainAnalyze(const std::string &sql) { return ""; }
 
+  // Per-integer-column min/max of a temp table (for range predicate injection).
+  // Default: single SQL query via ExecuteSQL. DuckDB overrides with in-memory scan.
+  virtual std::unordered_map<size_t, std::pair<int64_t, int64_t>>
+  GetTempTableMinMax(
+      const std::string &temp_table_name,
+      const std::vector<std::string> &column_names,
+      const std::vector<ir_sql_converter::SimplestVarType> &column_types) {
+    std::unordered_map<size_t, std::pair<int64_t, int64_t>> result;
+    std::vector<size_t> int_cols;
+    for (size_t i = 0; i < column_types.size() && i < column_names.size(); i++)
+      if (column_types[i] == ir_sql_converter::IntVar)
+        int_cols.push_back(i);
+    if (int_cols.empty())
+      return result;
+    std::string sql = "SELECT ";
+    for (size_t k = 0; k < int_cols.size(); k++) {
+      if (k > 0) sql += ", ";
+      sql += "MIN(\"" + column_names[int_cols[k]] + "\"), MAX(\"" +
+             column_names[int_cols[k]] + "\")";
+    }
+    sql += " FROM " + temp_table_name;
+    try {
+      auto qr = ExecuteSQL(sql);
+      if (qr.num_rows > 0 &&
+          qr.rows[0].size() >= int_cols.size() * 2) {
+        for (size_t k = 0; k < int_cols.size(); k++) {
+          const auto &mn = qr.rows[0][k * 2];
+          const auto &mx = qr.rows[0][k * 2 + 1];
+          if (!mn.empty() && mn != "NULL" && !mx.empty() && mx != "NULL")
+            result[int_cols[k]] = {std::stoll(mn), std::stoll(mx)};
+        }
+      }
+    } catch (...) {}
+    return result;
+  }
+
+  // Row count of a base (non-temp) table.
+  // Default: SELECT COUNT(*) via ExecuteSQL, cached per process.
+  virtual uint64_t GetBaseTableCardinality(const std::string &table_name) {
+    static std::unordered_map<std::string, uint64_t> cache;
+    auto it = cache.find(table_name);
+    if (it != cache.end())
+      return it->second;
+    try {
+      auto qr = ExecuteSQL("SELECT COUNT(*) FROM \"" + table_name + "\"");
+      if (qr.num_rows > 0 && !qr.rows[0].empty() &&
+          qr.rows[0][0] != "NULL") {
+        uint64_t rows = std::stoull(qr.rows[0][0]);
+        cache[table_name] = rows;
+        return rows;
+      }
+    } catch (...) {}
+    cache[table_name] = 0;
+    return 0;
+  }
+
   // Batch version: evaluate multiple EXPLAIN queries in one round-trip
   // Default implementation calls GetEstimatedCost sequentially (fine for
   // in-process engines like DuckDB; overridden for network-based engines)

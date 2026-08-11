@@ -66,10 +66,12 @@ public:
   /* Resolve step columns against a finalized temp QjitTable. POSITIONAL:
    * ref.column_index indexes the temp schema (chunk attr names may be
    * "colN" placeholders, so names are not authoritative for temps). Views
-   * point into `table` — it must outlive the Run (qjit_temps_ lifetime). */
+   * point into `table` — it must outlive the Run (qjit_temps_ lifetime).
+   * stats_col >= 0 requests block min/max stats (same as ResolveSource). */
   bool ResolveTempSource(const QjitTable &table,
                          const std::vector<QjitColumnRef> &cols,
-                         QjitResolvedSource &out, std::string &reason);
+                         QjitResolvedSource &out, std::string &reason,
+                         int stats_col = -1);
 
   /* Invoke the compiled entry:
    *   ctx->sources[k]      = srcs[k]            (one per step)
@@ -100,6 +102,8 @@ private:
       block_stats_;
   const int32_t *GetBlockStats(const middleware::storage::FlatTable &flat,
                                int flat_col_idx);
+  const int32_t *GetBlockStatsForTemp(const QjitTable &table, int col_idx);
+  std::vector<std::unique_ptr<std::vector<int32_t>>> temp_block_stats_;
 };
 
 } // namespace qjit

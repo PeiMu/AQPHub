@@ -2377,7 +2377,10 @@ std::string DuckDBAdapter::GetColumnName(const std::string &table_name,
 }
 
 std::unordered_map<size_t, std::pair<int64_t, int64_t>>
-DuckDBAdapter::GetTempTableMinMax(const std::string &temp_table_name) {
+DuckDBAdapter::GetTempTableMinMax(
+    const std::string &temp_table_name,
+    const std::vector<std::string> & /*column_names*/,
+    const std::vector<ir_sql_converter::SimplestVarType> & /*column_types*/) {
   std::unordered_map<size_t, std::pair<int64_t, int64_t>> result;
 #if IN_MEM_TMP_TABLE
 #ifdef HAVE_LLVM
@@ -3895,7 +3898,7 @@ bool DuckDBAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
       if (!tmp)
         return false;
       if (!qjit_executor_->ResolveTempSource(*tmp, st.cols, compiled.srcs[k],
-                                             reason))
+                                             reason, st.block_skip_col))
         return false;
       continue;
     }
@@ -6699,7 +6702,7 @@ void DuckDBAdapter::InjectTempTableJoinStats(duckdb::PhysicalOperator &op) {
       if (tt_card > static_cast<uint64_t>(MAX_BUILD_SIZE))
         goto recurse;
 
-      auto min_max = GetTempTableMinMax(tt_name);
+      auto min_max = GetTempTableMinMax(tt_name, {}, {});
       // Find which column in the build scan corresponds to the join key.
       // Use the right-side condition expression to find the column index.
       // For simplicity, try all integer columns and check if any has a

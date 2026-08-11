@@ -274,6 +274,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.csv_dir = arg.substr(10);
     } else if (arg == "--explain") {
       config.enable_explain = true;
+    } else if (arg == "--interpreter-collect-stats") {
+      config.interpreter_collect_stats = true;
     } else if (arg == "--no-range-predicate-injection") {
       config.range_predicate_injection = false;
     } else if (arg == "--no-bloom-filter-injection") {
