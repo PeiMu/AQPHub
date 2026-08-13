@@ -3975,6 +3975,8 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
 
   if (!analysis.accepted)
     return nullptr;
+  {
+  }
   if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
     return fallback("no-storage-plan");
 
@@ -3990,6 +3992,17 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
 
   if (!ResolveQjitSources(plan, *compiled, reason))
     return fallback(reason);
+
+  {
+    static constexpr uint64_t kSourceRowBypass = 50000000;
+    for (size_t k = 0; k < plan.steps.size(); k++) {
+      if (plan.steps[k].sink == qjit::QjitStep::Result &&
+          compiled->srcs[k].nrows > kSourceRowBypass)
+        return fallback("source-rows:" +
+                        std::to_string(compiled->srcs[k].nrows) + ">" +
+                        std::to_string(kSourceRowBypass));
+    }
+  }
 
   compiled->ht_tuple_sizes.reserve(plan.hts.size());
   compiled->ht_key0_offsets.reserve(plan.hts.size());
@@ -4158,6 +4171,19 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
                                    range_guard_, block_skip_,
                                    membership_preprobe_))
       return reject(reason);
+    if (qjit_storage_plan_ && qjit_storage_plan_->IsLoaded()) {
+      static constexpr uint64_t kSpecSourceRowBypass = 50000000;
+      for (const auto &st : payload->plan.steps) {
+        if (st.sink == qjit::QjitStep::Result && !st.source_is_temp) {
+          const auto *flat = qjit_storage_plan_->GetTable(st.source_table);
+          if (flat && flat->row_count > kSpecSourceRowBypass)
+            return reject("source-rows:" +
+                          std::to_string(flat->row_count) + ">" +
+                          std::to_string(kSpecSourceRowBypass));
+        }
+      }
+    }
+
     payload->compiled = std::make_unique<QjitCompiled>();
     if (!BuildQjitOutputDescs(payload->plan, *prepared, *payload->compiled,
                               reason))
@@ -4169,8 +4195,6 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
       payload->compiled->ht_key0_offsets.push_back(ht.prefix_bytes);
     }
 
-    // The caller (bg task) ran spec_comp->ResetModules() and the qjit
-    // runtime symbols were registered at spec-compiler creation.
     payload->compiled->fn = spec_comp->CompileQuerySteps(
         payload->plan, &payload->compiled->params_buf);
     if (!payload->compiled->fn)

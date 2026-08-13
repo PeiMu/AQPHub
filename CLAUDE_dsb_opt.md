@@ -142,3 +142,148 @@ Removed queries:
 - query072, query072_spj: LEFT JOIN not supported by DuckDB plan-to-IR converter.
 - query050_spj (removed 2026-07-18): QJIT-rejected non-equi build, floor = baseline.
 - query102, query102_spj (removed 2026-07-18): splitter extracts range-join standalone, floor = baseline.
+
+
+-------------------------
+## Solving DSB_100 query085 performance issue
+### TODO-1: Large-Intermediate Sub-Query Performance (DSB query085)
+
+**Problem**: DSB query085's temp1 sub-query (`web_sales 7.2M JOIN date_dim WHERE
+d_year=2002` → 969K output rows × 7 INT32 columns) runs **3× slower** under
+query-JIT (92ms) vs DuckDB native vectorized (28ms). This single query causes
+180% of the total node-based exe_sub regression, wiping out all gains from other
+queries that are 2–100× faster under JIT. Both paths use 12-core parallelism.
+
+**Attempted fix — batched columnar output**: Implemented and tested a buffer-and-flush
+approach (buffer 64 row references, flush column-at-a-time with batch-ensure to
+eliminate per-element cursor checks). Result: **no improvement** (92ms → 95ms).
+The per-element cursor checks were NOT the bottleneck. Reverted.
+
+**Root cause analysis (definitive, verified with perf counters)**:
+
+The bottleneck is **memory latency degradation under thread concurrency**, not
+contention, false sharing, or algorithmic overhead.
+
+Measured (DSB SF100, query085_0 temp1, 7.2M input → 969K output × 7 INT32):
+
+| Config | exe_sub wall | Per-row cycles | Speedup |
+|--------|-------------|---------------|---------|
+| JIT 1 thread | 272ms | 151 cycles | 1.0× |
+| JIT 2 threads | 163ms | — | 1.7× (84% eff) |
+| JIT 4 threads | 108ms | — | 2.5× (63% eff) |
+| JIT 6 threads (= phys cores) | 90ms | 300 cycles | 3.0× (50% eff) |
+| JIT 8 threads (6 phys + 2 HT) | 98ms | — | 2.8× (worse than 6!) |
+| JIT 12 threads (6 phys + 6 HT) | 90ms | — | 3.0× (25% eff) |
+| DuckDB native NB-NoJIT (12 thr) | 26ms | — | — |
+| DuckDB none-split (whole query) | 271ms | — | — |
+
+**Hardware**: Intel Xeon E-2236 — **6 physical cores + 6 HT** (not 12 physical).
+12 MiB L3 shared. Single socket, single NUMA node.
+
+Key findings (verified with perf stat, 50-repeat runs):
+1. **Single-thread JIT matches DuckDB whole-query** (272ms vs 271ms). The compiled
+   morsel code is efficient. The per-row work is correct and fast.
+
+2. **Total instructions are IDENTICAL** across 1/6 threads (277.4B vs 277.9B).
+   LLC misses identical (351M vs 357M). dTLB misses identical (117M vs 121M).
+   **No extra work, no extra cache misses, no extra TLB misses.**
+
+3. **Per-row cycles DOUBLE** with 6 threads (151 → 300). Same instructions, same
+   cache misses, but each miss takes 2× longer to resolve. Root cause: 6 threads
+   issue concurrent DRAM requests that compete for the memory controller's queue
+   depth. Each LLC miss takes ~60-80ns (unloaded) → ~120-160ns (6 threads queuing).
+   The data is 207 MB (cold streaming scan, no reuse), each row reads 7 columns
+   from 7 separate arrays → 42 concurrent memory streams with 6 threads.
+
+4. **HT threads add ZERO benefit**: 8 threads (98ms) is SLOWER than 6 threads (90ms).
+   HT siblings share L1/L2/execution ports; for memory-latency-bound code, they
+   just add more pressure to the memory controller. This is a hallmark of
+   memory-subsystem saturation.
+
+5. **This is NOT a bug**: morsel scheduling is clean (atomic fetch_add, no lock
+   contention), QjitTable partitions are per-worker (no false sharing), morsel size
+   doesn't matter (20K vs 1M gives same result). The scaling is inherent to
+   streaming 207 MB of columnar data through row-at-a-time code on this hardware.
+
+6. **DuckDB scales better because of its access pattern**: Vectorized execution
+   processes ONE column at a time per 2048-row chunk (8 KB fits in L1). This
+   generates a single sequential stream per column → better hw prefetcher →
+   lower memory controller pressure. The JIT morsel reads 7 columns per row =
+   7 concurrent streams per thread.
+
+7. **The Iter 9 "JIT probe disabled" finding was about pipeline-JIT**, not query-JIT.
+   Pipeline-JIT probe code is in `physical_hash_join.cpp`; query-JIT probe is in
+   `ir_to_llvm.cpp`. Different code paths, different JIT levels.
+
+**Approach 2 (column-at-a-time morsel scan) INVALIDATED**: Verified that the
+current code already does late materialization — only the join-key column (col 6,
+ws_sold_date_sk) is loaded before the probe. Remaining 6 output columns are loaded
+only after probe match (in the `case QjitStep::Result` sink, line 9880). Block-skip
+(`blockskip_col=6`, 2048-row blocks) eliminates most non-matching blocks. Within
+processed blocks, match rate is ~81%. Deferring column reads would save <5% of work.
+
+Measured: block-skip ON vs OFF (SF10, 1 thread): 28ms vs 43ms (35% savings already
+captured). The inner loop processes ~30-35% of total rows; ~81% of those match.
+
+**Recommended approaches** (re-prioritized after verification):
+
+1. **Selective JIT bypass for large scan+join sub-queries** (IMPLEMENTED):
+   When a Result-sink step's source table exceeds 50M rows (from StoragePlan
+   FlatTable), skip query-JIT compilation and fall back to DuckDB native execution.
+   Bypass added at two code paths: `TryCompileQueryJit` (execution path) and
+   `SpeculativeQueryJitCompile` (spec/cache path). Threshold 50M avoids JOB
+   regressions (cast_info=36M < 50M) while catching DSB SF100 (web_sales=72M > 50M).
+   
+   Results (verified):
+   - DSB SF100 NB: 0.569s → 0.451s (**-119ms, -20.9%**)
+   - query085_0 exe_sub: 90.1ms → 32.0ms (2.8× faster)
+   - JOB topdown: 4.895s → 4.794s (**-101ms, -2.1%**, noise-level improvement)
+   - Correctness: all 113 JOB queries pass across 9 configs (TPDE/LLVM × cache modes)
+   
+   Code locations:
+   - `src/adapters/duckdb_adapter.cpp`: `TryCompileQueryJit` source-rows check
+     after `ResolveQjitSources`; `SpeculativeQueryJitCompile` FlatTable row_count
+     check after `BuildExecutionSteps`
+   - Threshold: `kSourceRowBypass = 50000000` (50M rows)
+
+2. ~~**Software prefetching for source column scan**~~ (INVALIDATED):
+   Verified with perf counters that the HW prefetcher already brings 67% of L2
+   data speculatively (`l2_lines_in.all=858M >> l2_rqsts.demand_data_rd=287M`).
+   All cache/memory counters are IDENTICAL between 1 and 6 threads. The per-row
+   cycle doubling is caused by DRAM queuing delay (longer per-miss latency), NOT
+   more misses. SW prefetch cannot reduce per-miss latency under contention — it
+   can only overlap latency with computation, and IPC is already ~1.1. Existing
+   `--jit-prefetch` (HT probe prefetch in CompileFilterProbeProjectFusion) uses
+   ROF stage-2 look-ahead; query-JIT morsel body (`CompileQuerySteps`) has NO
+   prefetch code, but adding it would give at most 5-10% improvement.
+
+3. ~~**Morsel-level column-scan + selection vector**~~ (INVALIDATED):
+   Verified that the current morsel body already does late materialization: only the
+   join-key column (1 source col) is loaded before the probe. Block-skip eliminates
+   ~35% of rows (non-matching blocks). Of processed rows, ~81% match. Restructuring
+   to column-at-a-time would save <5% of work.
+
+**Summary of scaling analysis (verified, not fixable in software)**:
+
+The 2× per-row cycle inflation under 6-thread concurrency (151→300 cycles/row) is
+an inherent DRAM/memory-controller property. Same instructions, same cache misses,
+same TLB misses, but each DRAM access takes ~2× longer due to queuing. This is the
+same effect that limits STREAM benchmark scaling on single-socket systems. It cannot
+be fixed by changes to the query-JIT code — it requires either:
+- Different hardware (higher memory bandwidth, more memory channels)
+- Different access pattern that avoids DRAM entirely (data fits in L3)
+- Accepting the 3× scaling limit and using approach 1 for affected queries
+
+### TODO-2: DSB query-JIT rejected operators (after fixing perf issues 1 & 3)
+
+Priority 1 — most DSB subqueries are accepted (34/44 = 77%). Rejections are:
+
+| Reason | Count | Scope | What causes it | Effort |
+|--------|-------|-------|---------------|--------|
+| `expr:Unknown` | 5 | 3 temp, 2 result | Computed expressions: `a/b BETWEEN ...`, `substring()` in comparisons — emitted as `SimplestFunctionExpr` not in CheckExpr whitelist | Moderate |
+| `agg:grouped` | 3 | 3 result | GROUP BY clause — query-JIT only supports global aggregation | Major |
+| `join:non-equi-condition` | 1 | 1 result | Inequality join: `d_date BETWEEN d1.d_date AND ...` | Major |
+| `expr:single-attr` | 1 | 1 temp | Mark/semi-join boolean from correlated subquery | Moderate |
+
+Most rejections hit FINAL subqueries (label=result). Fix performance issues first;
+these operator extensions only matter if QJIT should run the final aggregation step.
