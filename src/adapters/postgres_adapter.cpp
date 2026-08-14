@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <ctime>
+#include <limits>
 
 #ifdef HAVE_LLVM
 
@@ -864,6 +865,90 @@ void PostgreSQLAdapter::CheckConnection() {
   if (!conn || CONNECTION_OK != PQstatus(conn)) {
     throw std::runtime_error("PostgreSQL connection is not valid");
   }
+}
+
+std::unordered_map<size_t, std::pair<int64_t, int64_t>>
+PostgreSQLAdapter::GetTempTableMinMax(
+    const std::string &temp_table_name,
+    const std::vector<std::string> &column_names,
+    const std::vector<ir_sql_converter::SimplestVarType> &column_types) {
+  std::unordered_map<size_t, std::pair<int64_t, int64_t>> result;
+#ifdef HAVE_LLVM
+  auto qit = qjit_temps_.find(temp_table_name);
+  if (qit != qjit_temps_.end() && qit->second) {
+    const qjit::QjitTable &t = *qit->second;
+    for (size_t col_idx = 0; col_idx < t.NumCols(); col_idx++) {
+      const int32_t dt = t.Col(col_idx).dtype;
+      if (dt != AQP_DTYPE_INT32 && dt != AQP_DTYPE_INT64)
+        continue;
+      int64_t min_val = std::numeric_limits<int64_t>::max();
+      int64_t max_val = std::numeric_limits<int64_t>::min();
+      bool found = false;
+      for (uint64_t r = 0; r < t.NumRows(); r++) {
+        if (!t.ValueValid(col_idx, r))
+          continue;
+        int64_t v = dt == AQP_DTYPE_INT32 ? t.GetI32(col_idx, r)
+                                          : t.GetI64(col_idx, r);
+        if (v < min_val) min_val = v;
+        if (v > max_val) max_val = v;
+        found = true;
+      }
+      if (found)
+        result[col_idx] = {min_val, max_val};
+    }
+    return result;
+  }
+#endif
+  // Interpreter-fallback path: temp exists only in PostgreSQL.
+  // Use PQexec directly to avoid polluting plan_recording_.
+  std::vector<size_t> int_cols;
+  for (size_t i = 0; i < column_types.size() && i < column_names.size(); i++)
+    if (column_types[i] == ir_sql_converter::IntVar)
+      int_cols.push_back(i);
+  if (int_cols.empty())
+    return result;
+  std::string sql = "SELECT ";
+  for (size_t k = 0; k < int_cols.size(); k++) {
+    if (k > 0) sql += ", ";
+    sql += "MIN(\"" + column_names[int_cols[k]] + "\"), MAX(\"" +
+           column_names[int_cols[k]] + "\")";
+  }
+  sql += " FROM " + temp_table_name;
+  PGresult *pg_result = PQexec(conn, sql.c_str());
+  if (pg_result && PQresultStatus(pg_result) == PGRES_TUPLES_OK &&
+      PQntuples(pg_result) > 0) {
+    for (size_t k = 0; k < int_cols.size(); k++) {
+      if (PQgetisnull(pg_result, 0, k * 2) ||
+          PQgetisnull(pg_result, 0, k * 2 + 1))
+        continue;
+      const char *mn = PQgetvalue(pg_result, 0, k * 2);
+      const char *mx = PQgetvalue(pg_result, 0, k * 2 + 1);
+      if (mn[0] != '\0' && mx[0] != '\0')
+        result[int_cols[k]] = {std::stoll(mn), std::stoll(mx)};
+    }
+  }
+  if (pg_result) PQclear(pg_result);
+  return result;
+}
+
+uint64_t
+PostgreSQLAdapter::GetBaseTableCardinality(const std::string &table_name) {
+  static std::unordered_map<std::string, uint64_t> cache;
+  auto it = cache.find(table_name);
+  if (it != cache.end())
+    return it->second;
+  std::string sql = "SELECT COUNT(*) FROM \"" + table_name + "\"";
+  PGresult *pg_result = PQexec(conn, sql.c_str());
+  if (pg_result && PQresultStatus(pg_result) == PGRES_TUPLES_OK &&
+      PQntuples(pg_result) > 0 && !PQgetisnull(pg_result, 0, 0)) {
+    uint64_t rows = std::stoull(PQgetvalue(pg_result, 0, 0));
+    cache[table_name] = rows;
+    PQclear(pg_result);
+    return rows;
+  }
+  if (pg_result) PQclear(pg_result);
+  cache[table_name] = 0;
+  return 0;
 }
 
 // ---------------------------------------------------------------------------

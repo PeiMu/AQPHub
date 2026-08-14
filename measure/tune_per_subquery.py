@@ -19,12 +19,29 @@ Each candidate config is defined by:
     skip_hash_cmp) — future sweeps; currently all use global defaults.
 
 Usage:
-  python3 tune_per_subquery.py [split] [--engine=ENGINE] [--bench=BENCH]
+  python3 tune_per_subquery.py [--engine=ENGINE] [--bench=BENCH]
                                [--result-dir=DIR]
+  python3 tune_per_subquery.py --cross-split=node-based,topdown,none
+  python3 tune_per_subquery.py <split> [--no-cross-split]
 
-  split:   node-based (default) | none | topdown | relationship-center
+  split:   node-based | none | topdown | relationship-center
   engine:  duckdb (default) | postgresql
   bench:   job (default) | dsb
+
+Default mode is cross-split (when no positional split argument given).
+Pass a positional split name to run single-split tuning instead.
+Use --cross-split with a positional split to force cross-split mode.
+
+Cross-split mode (default):
+  Compares across split strategies AND compiler backends to pick the
+  best (split, backend) pair per query.  Within each query, all
+  subqueries are constrained to the same compiler backend to avoid
+  backend-switching overhead.  Optionally restrict which splits to
+  compare via --cross-split=split1,split2,...
+
+  Output JSON: tuned_cross_split_<engine>.json — same per-subquery structure
+  as tuned_per_subquery_*.json but with an extra "split" field per
+  query entry.
 
 Candidate configs are defined in CONFIGS below.  Each entry specifies
 the CSV filename, whether it has a jit_compile column, and the flag
@@ -35,7 +52,7 @@ auto-skips missing files.
 Output:
   1. Per-subquery winner table (stdout)
   2. JSON file with per-subquery optimal config:
-     job_result/tuned_per_subquery_<split>.json
+     job_result/tuned_per_subquery_<split>_<engine>.json
 
 The JSON has structure:
   { "query": { "sub_idx": { "config": "...", "total_ms": ...,
@@ -281,11 +298,244 @@ def make_configs(split, engine="duckdb"):
     ]
 
 
+BACKEND_NAMES = {0: "llvm", 1: "fastisel", 2: "tpde"}
+
+ALL_SPLITS = ["node-based", "topdown", "none"]
+
+
+def _backend_of(flags):
+    """Extract compile_mode from a config's flags dict."""
+    return flags.get("compile_mode", 0)
+
+
+def load_split_data(split, engine, base):
+    """Load all config CSVs for one split strategy. Returns data dict."""
+    head = 5 if split in ("relationship-center", "topdown") else 4
+    CONFIGS = make_configs(split, engine)
+    data = {}
+    for cfg in CONFIGS:
+        label = cfg["label"]
+        p = os.path.join(base, cfg["filename"])
+        if os.path.exists(p):
+            parsed = parse_csv(p, hasjit=cfg["hasjit"], head=head)
+            key = cfg["filename"]
+            data[key] = dict(parsed=parsed, label=label, flags=cfg["flags"])
+    return data
+
+
+def tune_single_split(data, split):
+    """Run per-subquery tuning for one split.  Returns (result, total, keys, qs)."""
+    if not data:
+        return {}, 0.0, [], []
+
+    keys = list(data.keys())
+    qs = sorted(set.intersection(*(set(data[k]["parsed"]) for k in keys)))
+
+    result = {}
+    total_tuned = 0.0
+    total_per_config = {k: 0.0 for k in keys}
+    winner_count = {}
+
+    for q in qs:
+        nsubs = min(len(data[k]["parsed"][q]["subs"]) for k in keys)
+        q_result = {}
+        q_tuned_total = 0.0
+
+        for si in range(nsubs):
+            best_key = None
+            best_t = float("inf")
+            for k in keys:
+                subs = data[k]["parsed"][q]["subs"]
+                if si < len(subs):
+                    t = subs[si]["total"]
+                    if t < best_t:
+                        best_t = t
+                        best_key = k
+
+            best_label = data[best_key]["label"]
+            best_flags = data[best_key]["flags"]
+
+            entry = dict(config=best_label, total_ms=round(best_t, 3))
+            for flag_name, default_val in DEFAULTS.items():
+                val = best_flags.get(flag_name, default_val)
+                if val != default_val:
+                    entry[flag_name] = val
+            for opt_flag in ("payload_prune", "prefetch", "batch_probe",
+                             "skip_hash_cmp"):
+                if opt_flag in best_flags:
+                    entry[opt_flag] = best_flags[opt_flag]
+
+            q_result[str(si)] = entry
+            q_tuned_total += best_t
+            winner_count[best_label] = winner_count.get(best_label, 0) + 1
+
+        result[q] = q_result
+        total_tuned += q_tuned_total
+        for k in keys:
+            total_per_config[k] += sum(
+                s["total"] for s in data[k]["parsed"][q]["subs"][:nsubs])
+
+    return result, total_tuned, total_per_config, keys, qs, winner_count
+
+
+def tune_single_split_constrained(data, backend):
+    """Per-subquery tuning constrained to a single compile backend.
+
+    Only configs whose compile_mode matches *backend* participate.
+    Returns (result_dict, query_totals_dict) where query_totals_dict
+    maps query name -> total_ms for that query.
+    """
+    if not data:
+        return {}, {}
+
+    filtered = {k: v for k, v in data.items()
+                if _backend_of(v["flags"]) == backend}
+    if not filtered:
+        return {}, {}
+
+    keys = list(filtered.keys())
+    all_query_sets = [set(filtered[k]["parsed"]) for k in keys]
+    qs = sorted(set.intersection(*all_query_sets)) if all_query_sets else []
+
+    result = {}
+    query_totals = {}
+
+    for q in qs:
+        nsubs = min(len(filtered[k]["parsed"][q]["subs"]) for k in keys)
+        q_result = {}
+        q_total = 0.0
+
+        for si in range(nsubs):
+            best_key = None
+            best_t = float("inf")
+            for k in keys:
+                subs = filtered[k]["parsed"][q]["subs"]
+                if si < len(subs):
+                    t = subs[si]["total"]
+                    if t < best_t:
+                        best_t = t
+                        best_key = k
+
+            best_label = filtered[best_key]["label"]
+            best_flags = filtered[best_key]["flags"]
+            entry = dict(config=best_label, total_ms=round(best_t, 3))
+            for flag_name, default_val in DEFAULTS.items():
+                val = best_flags.get(flag_name, default_val)
+                if val != default_val:
+                    entry[flag_name] = val
+            for opt_flag in ("payload_prune", "prefetch", "batch_probe",
+                             "skip_hash_cmp"):
+                if opt_flag in best_flags:
+                    entry[opt_flag] = best_flags[opt_flag]
+            q_result[str(si)] = entry
+            q_total += best_t
+
+        result[q] = q_result
+        query_totals[q] = q_total
+
+    return result, query_totals
+
+
+def run_cross_split(engine, base, splits=None):
+    """Compare across split strategies, pick best (split, backend) per query."""
+    if splits is None:
+        splits = ALL_SPLITS
+
+    backends = sorted(BACKEND_NAMES.keys())
+
+    # Load data for all splits
+    all_data = {}
+    for sp in splits:
+        d = load_split_data(sp, engine, base)
+        if d:
+            all_data[sp] = d
+            loaded_labels = [v["label"] for v in d.values()]
+            print(f"[cross-split] {sp}: {len(d)} configs loaded "
+                  f"({len(set(loaded_labels))} distinct labels)")
+        else:
+            print(f"[cross-split] {sp}: no CSVs found (skipped)")
+
+    if not all_data:
+        print("no data found for any split strategy")
+        sys.exit(1)
+
+    # For each (split, backend), run constrained tuning
+    candidates = {}  # (split, backend) -> (result, query_totals)
+    for sp, data in all_data.items():
+        for be in backends:
+            res, qtots = tune_single_split_constrained(data, be)
+            if qtots:
+                candidates[(sp, be)] = (res, qtots)
+                total = sum(qtots.values())
+                print(f"  {sp:16} {BACKEND_NAMES[be]:10} "
+                      f"{len(qtots):>3} queries  {total/1000:8.2f}s")
+
+    # Find all queries present in at least one candidate
+    all_qs = sorted(set().union(*(qtots.keys()
+                                  for _, (_, qtots) in candidates.items())))
+
+    # Per-query: pick the (split, backend) with lowest total
+    cross_result = {}
+    cross_total = 0.0
+    split_winner_count = {}
+    backend_winner_count = {}
+
+    for q in all_qs:
+        best_key = None
+        best_t = float("inf")
+        for key, (res, qtots) in candidates.items():
+            if q in qtots and qtots[q] < best_t:
+                best_t = qtots[q]
+                best_key = key
+
+        if best_key is None:
+            continue
+
+        sp, be = best_key
+        q_entry = dict(candidates[best_key][0][q])
+        q_entry_with_split = {"split": sp}
+        q_entry_with_split.update(q_entry)
+        cross_result[q] = q_entry_with_split
+        cross_total += best_t
+        split_winner_count[sp] = split_winner_count.get(sp, 0) + 1
+        backend_winner_count[BACKEND_NAMES[be]] = \
+            backend_winner_count.get(BACKEND_NAMES[be], 0) + 1
+
+    # Print per-split single-backend totals for comparison
+    print(f"\n{'(split, backend)':28} {'suite_total_s':>14}")
+    for (sp, be), (_, qtots) in sorted(candidates.items()):
+        common_qs = set(qtots.keys()) & set(all_qs)
+        total = sum(qtots[q] for q in common_qs)
+        print(f"  {sp + ' / ' + BACKEND_NAMES[be]:26} {total/1000:14.2f}")
+    print(f"  {'CROSS-SPLIT TUNED':26} {cross_total/1000:14.2f}")
+
+    print(f"\nper-query split winner counts:")
+    for k in sorted(split_winner_count, key=split_winner_count.get,
+                    reverse=True):
+        print(f"  {k:18} {split_winner_count[k]}")
+
+    print(f"\nper-query backend winner counts:")
+    for k in sorted(backend_winner_count, key=backend_winner_count.get,
+                    reverse=True):
+        print(f"  {k:18} {backend_winner_count[k]}")
+
+    print(f"  total queries: {len(cross_result)}")
+
+    # Save JSON
+    out_path = os.path.join(base, f"tuned_cross_split_{engine}.json")
+    with open(out_path, "w") as f:
+        json.dump(cross_result, f, indent=2, sort_keys=True)
+    print(f"\nsaved: {out_path}")
+    return cross_result
+
+
 def main():
     bench = "job"
     result_dir_override = None
-    split = "node-based"
+    split = None
     engine = "duckdb"
+    cross_split = None  # None = auto (default), True = forced, False = --no-cross-split
+    cross_splits = None
     positional = []
     for a in sys.argv[1:]:
         if a.startswith("--bench="):
@@ -294,11 +544,24 @@ def main():
             result_dir_override = a.split("=", 1)[1]
         elif a.startswith("--engine="):
             engine = a.split("=", 1)[1]
+        elif a == "--cross-split":
+            cross_split = True
+        elif a.startswith("--cross-split="):
+            cross_split = True
+            cross_splits = a.split("=", 1)[1].split(",")
+        elif a == "--no-cross-split":
+            cross_split = False
         elif not a.startswith("-"):
             positional.append(a)
 
     if positional:
         split = positional[0]
+
+    # Default: cross-split when no positional split argument given
+    if cross_split is None:
+        cross_split = split is None
+    if split is None:
+        split = "node-based"
 
     # Determine the result directory
     if result_dir_override:
@@ -311,6 +574,11 @@ def main():
         result_dir = "job_result"
 
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
+
+    if cross_split:
+        run_cross_split(engine, base, splits=cross_splits)
+        return
+
     head = 5 if split in ("relationship-center", "topdown") else 4
 
     CONFIGS = make_configs(split, engine)
@@ -399,7 +667,7 @@ def main():
     print(f"  total sub-queries: {total_subs}")
 
     # ---- Save JSON ----
-    out_path = os.path.join(base, f"tuned_per_subquery_{split}.json")
+    out_path = os.path.join(base, f"tuned_per_subquery_{split}_{engine}.json")
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2, sort_keys=True)
     print(f"\nsaved: {out_path}")

@@ -19,7 +19,8 @@ enum class SplitStrategy {
   MIN_SUBQUERY,        // FK-based: minimize subquery size
   RELATIONSHIP_CENTER, // FK-based: relationship-centric
   ENTITY_CENTER,       // FK-based: entity-centric
-  NODE_BASED // DuckDB MiddleOptimize-driven, works with any execution adapter
+  NODE_BASED, // DuckDB MiddleOptimize-driven, works with any execution adapter
+  AUTO        // Per-query dispatch: read "split" from tune JSON
 };
 
 enum class KernelPath {
@@ -192,6 +193,8 @@ struct ParamConfig {
       return "EntityCenter";
     case SplitStrategy::NODE_BASED:
       return "NodeBased";
+    case SplitStrategy::AUTO:
+      return "Auto";
     default:
       return "Unknown";
     }

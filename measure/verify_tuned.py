@@ -2,9 +2,9 @@
 """Verify tuned CSV performance against tune_per_subquery.py predictions.
 
 Compares per-query (jit_compile + execute) totals from the measured tuned CSV
-against the predicted totals in tuned_per_subquery_<split>.json.
+against the predicted totals in tuned_per_subquery_<split>_<engine>.json.
 
-Usage: python3 verify_tuned.py [--bench=dsb] [split]
+Usage: python3 verify_tuned.py [--bench=dsb] [--engine=duckdb] [split]
 """
 import csv, json, os, re, sys
 
@@ -71,24 +71,40 @@ def parse_per_query_totals(csv_file, has_jit, is_node_based):
 
 def main():
     bench = "job"
+    engine = "duckdb"
     positional = []
     result_dir_override = None
     for a in sys.argv[1:]:
         if a.startswith("--bench="):
             bench = a.split("=", 1)[1]
+        elif a.startswith("--engine="):
+            engine = a.split("=", 1)[1]
         elif a.startswith("--result-dir="):
             result_dir_override = a.split("=", 1)[1]
         else:
             positional.append(a)
     split = positional[0] if positional else "node-based"
-    result_dir = result_dir_override or ("dsb_result" if bench is not None and bench.startswith("dsb") else "job_result")
+    if result_dir_override:
+        result_dir = result_dir_override
+    elif engine == "postgresql":
+        result_dir = "pg_result"
+    elif bench is not None and bench.startswith("dsb"):
+        result_dir = "dsb_result"
+    else:
+        result_dir = "job_result"
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     is_nb = split == "node-based"
 
-    tuned_csv = os.path.join(base,
-        f"duckdb_{split}_query_none_tuned_breakdown_time_log.csv")
-    tune_json_path = os.path.join(base,
-        f"tuned_per_subquery_{split}.json")
+    e = engine
+    if split == "auto":
+        tuned_csv = os.path.join(base,
+            f"{e}_auto_query_none_tuned_breakdown_time_log.csv")
+        tune_json_path = os.path.join(base, f"tuned_cross_split_{engine}.json")
+    else:
+        tuned_csv = os.path.join(base,
+            f"{e}_{split}_query_none_tuned_breakdown_time_log.csv")
+        tune_json_path = os.path.join(base,
+            f"tuned_per_subquery_{split}_{engine}.json")
 
     if not os.path.exists(tuned_csv):
         print(f"Missing: {tuned_csv}")
@@ -103,7 +119,8 @@ def main():
     # Predicted total = sum of per-subquery total_ms from JSON
     predicted = {}
     for q, subs in tune_json.items():
-        predicted[q] = sum(s["total_ms"] for s in subs.values())
+        predicted[q] = sum(s["total_ms"] for k, s in subs.items()
+                           if k != "split" and isinstance(s, dict))
 
     common = sorted(set(measured) & set(predicted))
     print(f"split: {split}  queries: {len(common)}\n")

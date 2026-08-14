@@ -278,17 +278,17 @@ for entry in "${JIT_CONFIGS[@]}"; do
 done
 
 # --- Per-subquery tune-config correctness for node-based (if JSON exists) ---
-TUNE_JSON="${RESULT_DIR}/tuned_per_subquery_node-based.json"
+TUNE_JSON="${RESULT_DIR}/tuned_cross_split_postgresql.json"
 if [[ -f "$TUNE_JSON" ]]; then
   golden="${GOLDEN_NB}"
 
   # Tune + spec=off, cache=off
-  echo "=== Testing: per-subquery tune-config (node-based, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on off off llvm "$TUNE_JSON"
-  config_label="tune-config node-based spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_tuned_dsb.txt"
+  config_label="tune-config auto spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -321,12 +321,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=single-run-strict, spec=off
-  echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=strict, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-strict off llvm "$TUNE_JSON"
-  config_label="tune-config node-based cache=strict spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_strict_tuned_dsb.txt"
+  config_label="tune-config auto cache=strict spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_strict_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -359,12 +359,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=single-run-template, spec=off
-  echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON"
-  config_label="tune-config node-based cache=template spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_template_tuned_dsb.txt"
+  config_label="tune-config auto cache=template spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -397,12 +397,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=full, spec=off
-  echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on full off llvm "$TUNE_JSON"
-  config_label="tune-config node-based cache=full spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_full_tuned_dsb.txt"
+  config_label="tune-config auto cache=full spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_full_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -438,12 +438,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + spec-jit=recompile, cache=off
-  echo "=== Testing: per-subquery tune-config (node-based, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on off recompile llvm "$TUNE_JSON"
-  config_label="tune-config node-based spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -476,12 +476,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=single-run-strict, spec=recompile
-  echo "=== Testing: per-subquery tune-config (node-based, cache=strict, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-strict recompile llvm "$TUNE_JSON"
-  config_label="tune-config node-based cache=strict spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_strict_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto cache=strict spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_strict_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -514,12 +514,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=single-run-template, spec=recompile
-  echo "=== Testing: per-subquery tune-config (node-based, cache=template, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON"
-  config_label="tune-config node-based cache=template spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto cache=template spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -552,12 +552,12 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=full, spec=recompile
-  echo "=== Testing: per-subquery tune-config (node-based, cache=full, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql node-based query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on full recompile llvm "$TUNE_JSON"
-  config_label="tune-config node-based cache=full spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_node-based_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto cache=full spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -596,17 +596,17 @@ else
 fi
 
 # --- Per-subquery tune-config correctness for topdown (if JSON exists) ---
-TUNE_JSON_TD="${RESULT_DIR}/tuned_per_subquery_topdown.json"
+TUNE_JSON_TD="${RESULT_DIR}/tuned_cross_split_postgresql.json"
 if [[ -f "$TUNE_JSON_TD" ]]; then
   golden="${GOLDEN_NOSPLIT}"
 
   # Tune + spec=off, cache=off
-  echo "=== Testing: per-subquery tune-config (topdown, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on off off llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_tuned_dsb.txt"
+  config_label="tune-config auto spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -639,12 +639,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=single-run-strict, spec=off
-  echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=strict, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-strict off llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown cache=strict spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_strict_tuned_dsb.txt"
+  config_label="tune-config auto cache=strict spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_strict_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -677,12 +677,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=single-run-template, spec=off
-  echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown cache=template spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_template_tuned_dsb.txt"
+  config_label="tune-config auto cache=template spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -715,12 +715,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=full, spec=off
-  echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit off) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit off) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on full off llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown cache=full spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_full_tuned_dsb.txt"
+  config_label="tune-config auto cache=full spec=off"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_full_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -756,12 +756,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + spec-jit=recompile, cache=off
-  echo "=== Testing: per-subquery tune-config (topdown, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on off recompile llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -794,12 +794,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=single-run-strict, spec=recompile
-  echo "=== Testing: per-subquery tune-config (topdown, cache=strict, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=strict, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-strict recompile llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown cache=strict spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_strict_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto cache=strict spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_strict_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -832,12 +832,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=single-run-template, spec=recompile
-  echo "=== Testing: per-subquery tune-config (topdown, cache=template, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown cache=template spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto cache=template spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -870,12 +870,12 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=full, spec=recompile
-  echo "=== Testing: per-subquery tune-config (topdown, cache=full, spec-jit=recompile) ==="
+  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit=recompile) ==="
   ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" postgresql topdown query none \
+  bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on full recompile llvm "$TUNE_JSON_TD"
-  config_label="tune-config topdown cache=full spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_topdown_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
+  config_label="tune-config auto cache=full spec=recompile"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")

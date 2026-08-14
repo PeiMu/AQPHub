@@ -101,11 +101,13 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       } else if (strategy_str == "nodebased" || strategy_str == "node_based" ||
                  strategy_str == "node-based") {
         config.strategy = SplitStrategy::NODE_BASED;
+      } else if (strategy_str == "auto") {
+        config.strategy = SplitStrategy::AUTO;
       } else {
         throw std::runtime_error(
             "Unknown split strategy: " + arg.substr(8) +
             " (valid: none, topdown, minsubquery, "
-            "relationship-center, entity-center, node-based)");
+            "relationship-center, entity-center, node-based, auto)");
       }
     }
     // Parse boolean flags
@@ -346,6 +348,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
 
   if (config.jit_cache >= 3 && config.jit_cache_dir.empty())
     config.jit_cache_dir = "/dev/shm/aqp_jit_cache/v1";
+
+  if (config.strategy == SplitStrategy::AUTO && config.tune_config_path.empty())
+    throw std::runtime_error(
+        "--split=auto requires --tune-config=<path>");
 
   return config;
 }

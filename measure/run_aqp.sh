@@ -215,7 +215,7 @@ fi
 helper_db_arg=""
 if [[ "$engine" == "lingo-db-runtime" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
-elif [[ ("$split" == "node-based" || "$split" == "topdown") && "$engine" != "duckdb" ]]; then
+elif [[ ("$split" == "node-based" || "$split" == "topdown" || "$split" == "auto") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
 elif [[ "$engine" == "mariadb" ]]; then
     if [[ "$bench" == "job" ]]; then

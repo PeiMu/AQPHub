@@ -226,21 +226,32 @@ void ExecuteSingleQuery(
 
     QueryResult query_result;
 
-    if (config.NeedsSplit()) {
+    // Extract query name (used by both split and AUTO dispatch)
+    std::string qname = get_filename(sql_file_path);
+    {
+      auto dot = qname.rfind('.');
+      if (dot != std::string::npos)
+        qname = qname.substr(0, dot);
+    }
+
+    // Per-query split strategy resolution (AUTO mode)
+    ParamConfig local_config = config;
+    if (config.strategy == SplitStrategy::AUTO) {
+      local_config.strategy = IRQuerySplitter::ResolveTuneSplit(
+          config.tune_config_path, qname, SplitStrategy::NODE_BASED);
+      if (config.enable_debug_print)
+        std::cerr << "[AUTO] " << qname << ": split="
+                  << local_config.GetStrategyName() << "\n";
+    }
+
+    if (local_config.NeedsSplit()) {
       if (config.enable_debug_print) {
         std::cout << "\n=== Execution with Split Strategy: "
-                  << config.GetStrategyName() << " ===" << std::endl;
+                  << local_config.GetStrategyName() << " ===" << std::endl;
       }
 
-      IRQuerySplitter splitter(adapter, config, storage_plan);
-
-      {
-        std::string qname = get_filename(sql_file_path);
-        auto dot = qname.rfind('.');
-        if (dot != std::string::npos)
-          qname = qname.substr(0, dot);
-        splitter.SetQueryName(qname);
-      }
+      IRQuerySplitter splitter(adapter, local_config, storage_plan);
+      splitter.SetQueryName(qname);
 
       if (cross_prep)
         splitter.SetCrossQueryPrep(std::move(cross_prep));
@@ -529,7 +540,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         !config.no_cross_query_prep &&
                 config.jit_cache >= 1 &&
                 (config.strategy == SplitStrategy::NODE_BASED ||
-                 config.strategy == SplitStrategy::TOP_DOWN) &&
+                 config.strategy == SplitStrategy::TOP_DOWN ||
+                 config.strategy == SplitStrategy::AUTO) &&
                 config.engine == BackendEngine::DUCKDB &&
                 !(config.jit_cache >= 3 && iter > 0)
             ? dynamic_cast<DuckDBAdapter *>(adapter)
@@ -548,7 +560,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         !config.no_cross_query_prep &&
         !cross_query_pool &&
         config.jit_cache >= 1 &&
-        config.strategy == SplitStrategy::TOP_DOWN &&
+        (config.strategy == SplitStrategy::TOP_DOWN ||
+         config.strategy == SplitStrategy::AUTO) &&
         config.engine == BackendEngine::POSTGRESQL &&
         !(config.jit_cache >= 3 && iter > 0);
     if (pg_for_cross)
@@ -609,9 +622,6 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         auto &db_ref = duck_for_cross->GetDB();
         const std::string &next_file = sql_files[qi + 1];
         bool debug = config.enable_debug_print;
-#if defined(HAVE_LLVM)
-        auto &bg_comp_slot = cross_compilers[cross_compiler_idx];
-        cross_compiler_idx ^= 1;
         std::string next_qname;
         {
           auto sl = next_file.rfind('/');
@@ -620,9 +630,18 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
           auto dt = next_qname.rfind('.');
           if (dt != std::string::npos) next_qname = next_qname.substr(0, dt);
         }
+#if defined(HAVE_LLVM)
+        auto &bg_comp_slot = cross_compilers[cross_compiler_idx];
+        cross_compiler_idx ^= 1;
         auto [eff_flags, eff_cm] =
             IRQuerySplitter::ResolveTuneFlags(config, next_qname, 0);
-        if (config.strategy == SplitStrategy::TOP_DOWN) {
+        SplitStrategy next_strategy = config.strategy;
+        if (config.strategy == SplitStrategy::AUTO)
+          next_strategy = IRQuerySplitter::ResolveTuneSplit(
+              config.tune_config_path, next_qname, SplitStrategy::NODE_BASED);
+        if (next_strategy == SplitStrategy::NONE) {
+          // Next query uses direct execution; no cross-query prep needed.
+        } else if (next_strategy == SplitStrategy::TOP_DOWN) {
           pending_cross_prep = cross_query_pool->Submit(
               [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
                eff_flags, eff_cm]() {
@@ -640,7 +659,13 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
               });
         }
 #else
-        if (config.strategy == SplitStrategy::TOP_DOWN) {
+        SplitStrategy next_strategy = config.strategy;
+        if (config.strategy == SplitStrategy::AUTO)
+          next_strategy = IRQuerySplitter::ResolveTuneSplit(
+              config.tune_config_path, next_qname, SplitStrategy::NODE_BASED);
+        if (next_strategy == SplitStrategy::NONE) {
+          // Next query uses direct execution; no cross-query prep needed.
+        } else if (next_strategy == SplitStrategy::TOP_DOWN) {
           pending_cross_prep = cross_query_pool->Submit(
               [&next_file, &db_ref, duck_for_cross, &config]() {
                 return IRQuerySplitter::PrepareNextQueryTopDown(
@@ -659,11 +684,27 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 #ifdef HAVE_POSTGRES
       if (pg_for_cross && qi + 1 < sql_files.size()) {
         const std::string &next_file = sql_files[qi + 1];
-        pending_cross_prep = cross_query_pool->Submit(
-            [&next_file, adapter, &config]() {
-              return IRQuerySplitter::PrepareNextQueryTopDownPG(
-                  next_file, adapter, config);
-            });
+        bool skip_pg_prep = false;
+        if (config.strategy == SplitStrategy::AUTO) {
+          std::string nq;
+          {
+            auto sl = next_file.rfind('/');
+            nq = (sl != std::string::npos) ? next_file.substr(sl + 1)
+                                           : next_file;
+            auto dt = nq.rfind('.');
+            if (dt != std::string::npos) nq = nq.substr(0, dt);
+          }
+          auto ns = IRQuerySplitter::ResolveTuneSplit(
+              config.tune_config_path, nq, SplitStrategy::TOP_DOWN);
+          skip_pg_prep = (ns == SplitStrategy::NONE);
+        }
+        if (!skip_pg_prep) {
+          pending_cross_prep = cross_query_pool->Submit(
+              [&next_file, adapter, &config]() {
+                return IRQuerySplitter::PrepareNextQueryTopDownPG(
+                    next_file, adapter, config);
+              });
+        }
       }
 #endif
 

@@ -278,6 +278,35 @@ std::pair<uint32_t, int> IRQuerySplitter::ResolveTuneFlags(
     flags |= AQP_JIT_QUERY_JIT;
   return {flags, te.compile_mode};
 }
+
+SplitStrategy IRQuerySplitter::ResolveTuneSplit(
+    const std::string &tune_config_path, const std::string &query_name,
+    SplitStrategy fallback) {
+  if (tune_config_path.empty())
+    return fallback;
+  if (!EnsureTuneJsonLoaded(tune_config_path))
+    return fallback;
+  auto it = s_tune_json.find(query_name);
+  if (it == s_tune_json.end())
+    return fallback;
+  auto split_it = it->find("split");
+  if (split_it == it->end())
+    return fallback;
+  std::string s = split_it->get<std::string>();
+  if (s == "none")
+    return SplitStrategy::NONE;
+  if (s == "topdown" || s == "top-down" || s == "top_down")
+    return SplitStrategy::TOP_DOWN;
+  if (s == "node-based" || s == "nodebased" || s == "node_based")
+    return SplitStrategy::NODE_BASED;
+  if (s == "minsubquery" || s == "min-subquery")
+    return SplitStrategy::MIN_SUBQUERY;
+  if (s == "relationship-center" || s == "relationshipcenter")
+    return SplitStrategy::RELATIONSHIP_CENTER;
+  if (s == "entity-center" || s == "entitycenter")
+    return SplitStrategy::ENTITY_CENTER;
+  return fallback;
+}
 #endif
 
 void IRQuerySplitter::SetQueryName(const std::string &name) {
@@ -293,6 +322,9 @@ void IRQuerySplitter::SetQueryName(const std::string &name) {
   if (it == s_tune_json.end())
     return;
   for (auto &[idx_str, val] : it->items()) {
+    if (idx_str.empty() ||
+        !std::isdigit(static_cast<unsigned char>(idx_str[0])))
+      continue;
     int idx = std::stoi(idx_str);
     LoadTuneEntry(idx, val);
   }

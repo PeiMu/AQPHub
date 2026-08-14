@@ -103,6 +103,15 @@ public:
 
   std::string GetEngineName() const override { return "PostgreSQL"; }
 
+  std::unordered_map<size_t, std::pair<int64_t, int64_t>>
+  GetTempTableMinMax(
+      const std::string &temp_table_name,
+      const std::vector<std::string> &column_names,
+      const std::vector<ir_sql_converter::SimplestVarType> &column_types)
+      override;
+
+  uint64_t GetBaseTableCardinality(const std::string &table_name) override;
+
   void CleanUp() override;
 
   void ResetQueryState() override;

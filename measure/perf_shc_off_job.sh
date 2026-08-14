@@ -37,7 +37,7 @@ bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on o
 # candidates (flags: skip_hash_cmp="off"), so the JSON can pick
 # skip_hash_cmp=off per subquery.
 # ============================================================
-python3 tune_per_subquery.py node-based && \
+python3 tune_per_subquery.py && \
 
 # ============================================================
 # Step 3: rerun all 8 tuned configs with the new JSON
@@ -45,15 +45,15 @@ python3 tune_per_subquery.py node-based && \
 # 8th arg stays "all" — the JSON overrides it per subquery).
 # ============================================================
 # spec=off
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all off off llvm job_result/tuned_per_subquery_node-based.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all single-run-strict off llvm job_result/tuned_per_subquery_node-based.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all single-run-template off llvm job_result/tuned_per_subquery_node-based.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all full off llvm job_result/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all off off llvm job_result/tuned_cross_split_duckdb.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-strict off llvm job_result/tuned_cross_split_duckdb.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-template off llvm job_result/tuned_cross_split_duckdb.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all full off llvm job_result/tuned_cross_split_duckdb.json && \
 # spec=recompile
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all off recompile llvm job_result/tuned_per_subquery_node-based.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all single-run-strict recompile llvm job_result/tuned_per_subquery_node-based.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all single-run-template recompile llvm job_result/tuned_per_subquery_node-based.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on all full recompile llvm job_result/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all off recompile llvm job_result/tuned_cross_split_duckdb.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-strict recompile llvm job_result/tuned_cross_split_duckdb.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-template recompile llvm job_result/tuned_cross_split_duckdb.json && \
+bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all full recompile llvm job_result/tuned_cross_split_duckdb.json && \
 
 # ============================================================
 # Step 4: skip_hash_cmp=off variants for the remaining tiers

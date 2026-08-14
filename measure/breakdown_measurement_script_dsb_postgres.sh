@@ -60,27 +60,27 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query n
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all off off tpde && \
 
 # Generate tune JSON from cache=off CSVs produced above
-python3 tune_per_subquery.py --bench=dsb_${DSB_SF} --result-dir=${RESULT_DIR} node-based --engine=postgresql && \
+python3 tune_per_subquery.py --bench=dsb_${DSB_SF} --result-dir=${RESULT_DIR} --engine=postgresql && \
 
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all off off llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all off off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-strict, spec=off: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict off llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict off fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict off llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-strict off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-template, spec=off: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template off llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template off fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template off llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-template off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=full, spec=off: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full off llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full off fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full off llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all full off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ------------------------------------------------------------
 # spec-jit=recompile
@@ -90,25 +90,25 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query n
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all off recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all off recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all off recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all off recompile llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all off recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-strict, spec=recompile: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-strict recompile llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-strict recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-template, spec=recompile: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all single-run-template recompile llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-template recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=full, spec=recompile: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql node-based query none on on on all full recompile llvm ${RESULT_DIR}/tuned_per_subquery_node-based.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all full recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ============================================================
 # topdown: mirrors node-based configs (query-jit only)
@@ -128,27 +128,27 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all off off tpde && \
 
 # Generate tune JSON from cache=off CSVs produced above
-python3 tune_per_subquery.py --bench=dsb_${DSB_SF} --result-dir=${RESULT_DIR} topdown --engine=postgresql && \
+python3 tune_per_subquery.py --bench=dsb_${DSB_SF} --result-dir=${RESULT_DIR} --engine=postgresql && \
 
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all off off llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all off off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-strict, spec=off: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict off llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict off fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict off llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-strict off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-template, spec=off: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template off llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template off fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template off llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-template off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=full, spec=off: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full off llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full off fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full off llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all full off llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ------------------------------------------------------------
 # spec-jit=recompile
@@ -158,24 +158,24 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all off recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all off recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all off recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all off recompile llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all off recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-strict, spec=recompile: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-strict recompile llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-strict recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=single-run-template, spec=recompile: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all single-run-template recompile llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all single-run-template recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 # ---- cache=full, spec=recompile: 4 ----
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full recompile llvm && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql topdown query none on on on all full recompile llvm ${RESULT_DIR}/tuned_per_subquery_topdown.json && \
+bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} postgresql auto query none on on on all full recompile llvm ${RESULT_DIR}/tuned_cross_split_postgresql.json && \
 
 echo "=== All PostgreSQL DSB breakdown measurements complete ==="

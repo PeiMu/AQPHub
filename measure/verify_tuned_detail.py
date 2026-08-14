@@ -84,24 +84,40 @@ def parse_per_subquery(path, hasjit=True, head=4):
 
 def main():
     bench = "job"
+    engine = "duckdb"
     positional = []
     result_dir_override = None
     for a in sys.argv[1:]:
         if a.startswith("--bench="):
             bench = a.split("=", 1)[1]
+        elif a.startswith("--engine="):
+            engine = a.split("=", 1)[1]
         elif a.startswith("--result-dir="):
             result_dir_override = a.split("=", 1)[1]
         else:
             positional.append(a)
     query = positional[0] if len(positional) > 0 else "10a"
     split = positional[1] if len(positional) > 1 else "node-based"
-    result_dir = result_dir_override or ("dsb_result" if bench is not None and bench.startswith("dsb") else "job_result")
+    if result_dir_override:
+        result_dir = result_dir_override
+    elif engine == "postgresql":
+        result_dir = "pg_result"
+    elif bench is not None and bench.startswith("dsb"):
+        result_dir = "dsb_result"
+    else:
+        result_dir = "job_result"
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), result_dir)
     head = 4
 
-    tune_json = json.load(open(os.path.join(base, f"tuned_per_subquery_{split}.json")))
-    tuned_csv = os.path.join(base,
-        f"duckdb_{split}_query_none_tuned_breakdown_time_log.csv")
+    e = engine
+    if split == "auto":
+        tune_json = json.load(open(os.path.join(base, f"tuned_cross_split_{engine}.json")))
+        tuned_csv = os.path.join(base,
+            f"{e}_auto_query_none_tuned_breakdown_time_log.csv")
+    else:
+        tune_json = json.load(open(os.path.join(base, f"tuned_per_subquery_{split}_{engine}.json")))
+        tuned_csv = os.path.join(base,
+            f"{e}_{split}_query_none_tuned_breakdown_time_log.csv")
     tuned_data = parse_per_subquery(tuned_csv, hasjit=True, head=head)
 
     if query not in tune_json:
@@ -111,37 +127,41 @@ def main():
     subs_json = tune_json[query]
     subs_meas = tuned_data.get(query, [])
 
+    # For cross-split JSON, resolve the per-query split for source CSV lookup
+    src_split = subs_json.get("split", split) if split == "auto" else split
+
     # Also load the source config CSVs for this query's configs
     source_configs = {}
     CONFIG_FILES = {
-        "interp":        (f"duckdb_{split}_none_off_breakdown_time_log.csv", False),
-        "expr":          (f"duckdb_{split}_expr_none_llvm_breakdown_time_log.csv", True),
-        # "expr_simd":     (f"duckdb_{split}_expr_auto_breakdown_time_log.csv", True),
-        "expr_fastisel": (f"duckdb_{split}_expr_none_fastisel_breakdown_time_log.csv", True),
-        # "expr_fastisel_simd": (f"duckdb_{split}_expr_auto_fcfastisel_breakdown_time_log.csv", True),
-        "expr_tpde":     (f"duckdb_{split}_expr_none_tpde_breakdown_time_log.csv", True),
-        "operator":      (f"duckdb_{split}_operator_none_llvm_breakdown_time_log.csv", True),
-        # "operator_simd": (f"duckdb_{split}_operator_auto_breakdown_time_log.csv", True),
-        "operator_fastisel": (f"duckdb_{split}_operator_none_fastisel_breakdown_time_log.csv", True),
-        # "operator_fastisel_simd": (f"duckdb_{split}_operator_auto_fcfastisel_breakdown_time_log.csv", True),
-        "operator_tpde": (f"duckdb_{split}_operator_none_tpde_breakdown_time_log.csv", True),
-        "pipeline":      (f"duckdb_{split}_pipeline_none_llvm_breakdown_time_log.csv", True),
-        # "pipeline_simd": (f"duckdb_{split}_pipeline_auto_breakdown_time_log.csv", True),
-        "pipeline_fastisel": (f"duckdb_{split}_pipeline_none_fastisel_breakdown_time_log.csv", True),
-        # "pipeline_fastisel_simd": (f"duckdb_{split}_pipeline_auto_fcfastisel_breakdown_time_log.csv", True),
-        "pipeline_tpde": (f"duckdb_{split}_pipeline_none_tpde_breakdown_time_log.csv", True),
-        "query_full":    (f"duckdb_{split}_query_none_llvm_breakdown_time_log.csv", True),
-        "query_fastisel":(f"duckdb_{split}_query_none_fastisel_breakdown_time_log.csv", True),
-        "query_tpde":    (f"duckdb_{split}_query_none_tpde_breakdown_time_log.csv", True),
-        # "query_full_simd":    (f"duckdb_{split}_query_auto_breakdown_time_log.csv", True),
-        # "query_fastisel_simd":(f"duckdb_{split}_query_auto_fcfastisel_breakdown_time_log.csv", True),
+        "interp":        (f"duckdb_{src_split}_none_off_breakdown_time_log.csv", False),
+        "expr":          (f"duckdb_{src_split}_expr_none_llvm_breakdown_time_log.csv", True),
+        # "expr_simd":     (f"duckdb_{src_split}_expr_auto_breakdown_time_log.csv", True),
+        "expr_fastisel": (f"duckdb_{src_split}_expr_none_fastisel_breakdown_time_log.csv", True),
+        # "expr_fastisel_simd": (f"duckdb_{src_split}_expr_auto_fcfastisel_breakdown_time_log.csv", True),
+        "expr_tpde":     (f"duckdb_{src_split}_expr_none_tpde_breakdown_time_log.csv", True),
+        "operator":      (f"duckdb_{src_split}_operator_none_llvm_breakdown_time_log.csv", True),
+        # "operator_simd": (f"duckdb_{src_split}_operator_auto_breakdown_time_log.csv", True),
+        "operator_fastisel": (f"duckdb_{src_split}_operator_none_fastisel_breakdown_time_log.csv", True),
+        # "operator_fastisel_simd": (f"duckdb_{src_split}_operator_auto_fcfastisel_breakdown_time_log.csv", True),
+        "operator_tpde": (f"duckdb_{src_split}_operator_none_tpde_breakdown_time_log.csv", True),
+        "pipeline":      (f"duckdb_{src_split}_pipeline_none_llvm_breakdown_time_log.csv", True),
+        # "pipeline_simd": (f"duckdb_{src_split}_pipeline_auto_breakdown_time_log.csv", True),
+        "pipeline_fastisel": (f"duckdb_{src_split}_pipeline_none_fastisel_breakdown_time_log.csv", True),
+        # "pipeline_fastisel_simd": (f"duckdb_{src_split}_pipeline_auto_fcfastisel_breakdown_time_log.csv", True),
+        "pipeline_tpde": (f"duckdb_{src_split}_pipeline_none_tpde_breakdown_time_log.csv", True),
+        "query_full":    (f"duckdb_{src_split}_query_none_llvm_breakdown_time_log.csv", True),
+        "query_fastisel":(f"duckdb_{src_split}_query_none_fastisel_breakdown_time_log.csv", True),
+        "query_tpde":    (f"duckdb_{src_split}_query_none_tpde_breakdown_time_log.csv", True),
+        # "query_full_simd":    (f"duckdb_{src_split}_query_auto_breakdown_time_log.csv", True),
+        # "query_fastisel_simd":(f"duckdb_{src_split}_query_auto_fcfastisel_breakdown_time_log.csv", True),
     }
     for label, (fname, hasjit) in CONFIG_FILES.items():
         p = os.path.join(base, fname)
         if os.path.exists(p):
             source_configs[label] = parse_per_subquery(p, hasjit=hasjit, head=head)
 
-    nsubs = len(subs_json)
+    sub_keys = [k for k in subs_json.keys() if k.isdigit()]
+    nsubs = len(sub_keys)
     print(f"query: {query}  sub-queries: {nsubs}\n")
     print(f"{'idx':>4} {'config':18} {'json_ms':>9} {'source_ms':>10} {'tuned_ms':>10} {'diff':>8}")
     print("-" * 63)
@@ -149,7 +169,7 @@ def main():
     total_json = 0
     total_source = 0
     total_tuned = 0
-    for idx_str in sorted(subs_json.keys(), key=int):
+    for idx_str in sorted(sub_keys, key=int):
         idx = int(idx_str)
         s = subs_json[idx_str]
         label = s["config"]

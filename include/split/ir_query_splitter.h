@@ -162,6 +162,11 @@ public:
   // applying tune override if configured. Main thread only.
   static std::pair<uint32_t, int> ResolveTuneFlags(
       const ParamConfig &config, const std::string &query_name, int sub_idx);
+  // Resolve per-query split strategy from tune JSON ("split" field).
+  // Returns fallback if the JSON has no "split" field for this query.
+  static SplitStrategy ResolveTuneSplit(const std::string &tune_config_path,
+                                        const std::string &query_name,
+                                        SplitStrategy fallback);
 #else
   static std::unique_ptr<CrossQueryPrepResult>
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
