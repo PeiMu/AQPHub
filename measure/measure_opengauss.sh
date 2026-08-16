@@ -9,9 +9,6 @@
 # Usage: measure_opengauss.sh <job|dsb_10|dsb_100>
 #
 
-# Drop OS page cache for reproducible cold-start measurement
-sync; sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
-
 # Disable pager so client output doesn't block the script
 export PAGER=cat
 

@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 
 # DSB scale factor: pass as first argument (default 10).
-# NOTE: golden files were generated at SF=10; for other
-# scale factors regenerate goldens first, otherwise every diff will fail.
 DSB_SF="${1:-10}"
 if [[ "$DSB_SF" == "10" ]]; then
     result_dir="dsb_result"
 else
     result_dir="dsb_result_sf${DSB_SF}"
+fi
+
+# Per-SF golden file: regenerate automatically if missing.
+if [[ "$DSB_SF" == "10" ]]; then
+    GOLDEN_FILE="duckdb_dsb_no-split_golden.txt"
+else
+    GOLDEN_FILE="duckdb_dsb_no-split_golden_sf${DSB_SF}.txt"
 fi
 #
 # Correctness check for DSB benchmark: run configs across splits, JIT levels,
@@ -32,174 +37,174 @@ JIT_CONFIGS=(
   # ============================================================
   # Interpreter baseline (no JIT)
   # ============================================================
-  "duckdb|none|none|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|node-based|none|none|duckdb_dsb_no-split_golden.txt"
+  "duckdb|none|none|none|${GOLDEN_FILE}"
+  "duckdb|node-based|none|none|${GOLDEN_FILE}"
 
   # ============================================================
   # expr-jit, compile_mode=llvm (default)
   # ============================================================
-  "duckdb|none|expr|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt"
+  "duckdb|none|expr|none|${GOLDEN_FILE}"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}"
 
   # expr-jit, compile_mode=fastisel
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|||fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|||fastisel"
 
   # expr-jit, compile_mode=tpde
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|||tpde"
   # expr-jit, none-split, fastisel/tpde
-  "duckdb|none|expr|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  "duckdb|none|expr|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|none|expr|none|${GOLDEN_FILE}|||fastisel"
+  "duckdb|none|expr|none|${GOLDEN_FILE}|||tpde"
 
   # expr-jit spec-jit (node-based, llvm)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile"
   # expr-jit spec-jit, fastisel/tpde
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile||fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile||tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile||fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile||tpde"
 
   # ============================================================
   # operator-jit, compile_mode=llvm
   # ============================================================
-  "duckdb|none|operator|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt"
+  "duckdb|none|operator|none|${GOLDEN_FILE}"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}"
 
   # operator-jit, compile_mode=fastisel
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|||fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|||fastisel"
 
   # operator-jit, compile_mode=tpde
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|||tpde"
   # operator-jit, none-split, fastisel/tpde
-  "duckdb|none|operator|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  "duckdb|none|operator|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|none|operator|none|${GOLDEN_FILE}|||fastisel"
+  "duckdb|none|operator|none|${GOLDEN_FILE}|||tpde"
 
   # operator-jit spec-jit (node-based, llvm)
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile"
   # operator-jit spec-jit, fastisel/tpde
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile||fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile||tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile||fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile||tpde"
 
   # ============================================================
   # pipeline-jit (deprioritized — commented out)
   # ============================================================
-  #"duckdb|none|pipeline|none|duckdb_dsb_no-split_golden.txt"
-  #"duckdb|node-based|pipeline|none|duckdb_dsb_no-split_golden.txt"
-  #"duckdb|node-based|pipeline|none|duckdb_dsb_no-split_golden.txt|recompile"
-  #"duckdb|node-based|pipeline|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  #"duckdb|node-based|pipeline|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  #"duckdb|none|pipeline|none|${GOLDEN_FILE}"
+  #"duckdb|node-based|pipeline|none|${GOLDEN_FILE}"
+  #"duckdb|node-based|pipeline|none|${GOLDEN_FILE}|recompile"
+  #"duckdb|node-based|pipeline|none|${GOLDEN_FILE}|||fastisel"
+  #"duckdb|node-based|pipeline|none|${GOLDEN_FILE}|||tpde"
 
   # ============================================================
   # query-jit, compile_mode=llvm
   # ============================================================
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt"
+  "duckdb|none|query|none|${GOLDEN_FILE}"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}"
 
   # spec-jit (query, llvm)
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile"
 
   # query-jit, compile_mode=fastisel
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|||fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|||fastisel"
 
   # query-jit, compile_mode=tpde
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|||tpde"
   # query-jit, none-split, fastisel/tpde
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|none|query|none|${GOLDEN_FILE}|||fastisel"
+  "duckdb|none|query|none|${GOLDEN_FILE}|||tpde"
   # query-jit spec-jit, fastisel/tpde
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile||fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile||tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile||fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile||tpde"
 
   # ============================================================
   # query-jit, skip_hash_cmp=off
   # ============================================================
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt||||off"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|||fastisel|off"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|||tpde|off"
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt||||off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}||||off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|||fastisel|off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|||tpde|off"
+  "duckdb|none|query|none|${GOLDEN_FILE}||||off"
   # skip_hash_cmp=off + spec-jit / cache tiers
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|||off"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict||off"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template||off"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|full||off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|||off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-strict||off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-template||off"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|full||off"
 
   # ============================================================
   # jit-cache=single-run-strict
   # ============================================================
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|tpde"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|tpde"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|single-run-strict"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|single-run-strict|fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|single-run-strict|tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|single-run-strict"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|single-run-strict|fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|single-run-strict|tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-strict"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-strict|fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-strict|tpde"
   # strict + spec-jit=recompile (llvm)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|single-run-strict"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|single-run-strict"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|single-run-strict"
   # strict + spec-jit=recompile (fastisel/tpde)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|tpde"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|tpde"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|single-run-strict|fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|single-run-strict|tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|single-run-strict|fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|single-run-strict|tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|single-run-strict|fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|single-run-strict|tpde"
 
   # ============================================================
   # jit-cache=single-run-template
   # ============================================================
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-template"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-template"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|single-run-template"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|single-run-template|fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|single-run-template|tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|single-run-template"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|single-run-template|fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|single-run-template|tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-template"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-template|fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|single-run-template|tpde"
   # template + spec-jit=recompile (llvm)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|single-run-template"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|single-run-template"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|single-run-template"
   # template + spec-jit=recompile (fastisel/tpde)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|single-run-template|fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|single-run-template|fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|single-run-template|fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
 
   # ============================================================
   # jit-cache=full
   # ============================================================
-  "duckdb|none|expr|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|none|expr|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|none|expr|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|none|operator|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|none|operator|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|none|operator|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|none|query|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
+  "duckdb|none|expr|none|${GOLDEN_FILE}|off|full"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|full"
+  "duckdb|none|expr|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|none|expr|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|none|operator|none|${GOLDEN_FILE}|off|full"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|full"
+  "duckdb|none|operator|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|none|operator|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|none|query|none|${GOLDEN_FILE}|off|full"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|full"
+  "duckdb|none|query|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|none|query|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|full|tpde"
   # full + spec-jit=recompile (llvm)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|full"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|full"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|full"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|full"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|full"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|full"
   # full + spec-jit=recompile (fastisel/tpde)
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|full|fastisel"
-  "duckdb|node-based|expr|none|duckdb_dsb_no-split_golden.txt|recompile|full|tpde"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|full|fastisel"
-  "duckdb|node-based|operator|none|duckdb_dsb_no-split_golden.txt|recompile|full|tpde"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|full|fastisel"
-  "duckdb|node-based|query|none|duckdb_dsb_no-split_golden.txt|recompile|full|tpde"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|full|fastisel"
+  "duckdb|node-based|expr|none|${GOLDEN_FILE}|recompile|full|tpde"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|full|fastisel"
+  "duckdb|node-based|operator|none|${GOLDEN_FILE}|recompile|full|tpde"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|full|fastisel"
+  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|full|tpde"
 
   # ============================================================
   # lingodb / lingo-db-runtime
@@ -218,101 +223,101 @@ JIT_CONFIGS=(
   # topdown (SDS) — uses the same no-split golden (ground truth)
   # ============================================================
   # no-jit
-  "duckdb|topdown|none|none|duckdb_dsb_no-split_golden.txt"
+  "duckdb|topdown|none|none|${GOLDEN_FILE}"
   # expr-jit (llvm / fastisel / tpde)
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|||fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|||tpde"
   # operator-jit (llvm / fastisel / tpde)
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|||fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|||tpde"
   # query-jit (llvm / fastisel / tpde)
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|||fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|||tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|||fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|||tpde"
   # query-jit, skip_hash_cmp=off
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt||||off"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|||fastisel|off"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|||tpde|off"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}||||off"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|||fastisel|off"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|||tpde|off"
   # jit-cache=single-run-strict (expr / operator / query x llvm / fastisel / tpde)
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict|tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|single-run-strict"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|single-run-strict|fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|single-run-strict|tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|single-run-strict"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|single-run-strict|fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|single-run-strict|tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-strict"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-strict|fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-strict|tpde"
   # skip_hash_cmp=off + cache tiers
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-strict||off"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template||off"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|full||off"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-strict||off"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-template||off"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full||off"
   # jit-cache=single-run-template (expr / operator / query x llvm / fastisel / tpde)
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-template"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-template"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|single-run-template|tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|single-run-template"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|single-run-template|fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|single-run-template|tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|single-run-template"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|single-run-template|fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|single-run-template|tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-template"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-template|fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-template|tpde"
   # jit-cache=full (expr / operator / query x llvm / fastisel / tpde)
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|full"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|full|fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|off|full|tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full|tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full|fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full|tpde"
 
   # ============================================================
   # topdown + spec-jit=recompile
   # ============================================================
   # cache=off
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile||fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile||tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile||fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile||tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile||fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile||tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile||fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile||tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile||fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile||tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile||fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile||tpde"
   # cache=single-run-strict + spec=recompile
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-strict|tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|single-run-strict"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|single-run-strict|fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|single-run-strict|tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|single-run-strict"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|single-run-strict|fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|single-run-strict|tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-strict"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-strict|fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-strict|tpde"
   # cache=single-run-template + spec=recompile
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|single-run-template"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|single-run-template|fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|single-run-template"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|single-run-template|fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-template"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-template|fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
   # cache=full + spec=recompile
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|full"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|full|fastisel"
-  "duckdb|topdown|expr|none|duckdb_dsb_no-split_golden.txt|recompile|full|tpde"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|full"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|full|fastisel"
-  "duckdb|topdown|operator|none|duckdb_dsb_no-split_golden.txt|recompile|full|tpde"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|full"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|full|fastisel"
-  "duckdb|topdown|query|none|duckdb_dsb_no-split_golden.txt|recompile|full|tpde"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full|fastisel"
+  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full|tpde"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full|fastisel"
+  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full|tpde"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full|fastisel"
+  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full|tpde"
 )
 
 passed=0
@@ -348,6 +353,20 @@ filter_known_diffs() {
     }
   '
 }
+
+# Generate golden file for this SF if it doesn't exist yet (vanilla: no-split + no-jit).
+if [[ ! -f "$GOLDEN_FILE" ]]; then
+    echo "=== Generating golden file for SF=${DSB_SF}: ${GOLDEN_FILE} ==="
+    mkdir -p "${result_dir}"
+    bash run_aqp.sh "dsb_${DSB_SF}" duckdb none none none on on on on off off llvm
+    vanilla_output="${result_dir}/aqp_middleware_duckdb_none_none_none_dsb.txt"
+    if [[ ! -f "$vanilla_output" ]]; then
+        echo "FATAL: vanilla run produced no output at ${vanilla_output}"
+        exit 1
+    fi
+    eval $FILTER "$vanilla_output" > "$GOLDEN_FILE"
+    echo "  Golden file created: ${GOLDEN_FILE} ($(wc -l < "$GOLDEN_FILE") lines)"
+fi
 
 # Clear disk JIT cache to ensure clean slate
 rm -rf /dev/shm/aqp_jit_cache/
@@ -451,7 +470,7 @@ TUNE_JSON="${result_dir}/tuned_cross_split_duckdb.json"
 if [[ -f "$TUNE_JSON" ]]; then
   echo "=== Testing: per-subquery tune-config (auto, spec-jit off) ==="
   ((total++))
-  golden="duckdb_dsb_no-split_golden.txt"
+  golden="${GOLDEN_FILE}"
 
   bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
        on on on on off off llvm "$TUNE_JSON"
@@ -715,7 +734,7 @@ fi
 # --- Per-subquery tune-config correctness for topdown (if JSON exists) ---
 TUNE_JSON_TD="${result_dir}/tuned_cross_split_duckdb.json"
 if [[ -f "$TUNE_JSON_TD" ]]; then
-  golden="duckdb_dsb_no-split_golden.txt"
+  golden="${GOLDEN_FILE}"
 
   # Tune + spec=off, cache=off
   echo "=== Testing: per-subquery tune-config (auto, spec-jit off) ==="
