@@ -1,0 +1,340 @@
+{
+  "query013_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 6.456
+    },
+    "split": "topdown"
+  },
+  "query013_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 6.273
+    },
+    "split": "topdown"
+  },
+  "query018_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 9.53
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.498
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.227
+    },
+    "split": "node-based"
+  },
+  "query018_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 10.994
+    },
+    "split": "none"
+  },
+  "query019_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.33
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 9.859
+    },
+    "split": "topdown"
+  },
+  "query019_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 4.13
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 8.694
+    },
+    "split": "topdown"
+  },
+  "query025_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 71.333
+    },
+    "split": "none"
+  },
+  "query025_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 44.549
+    },
+    "split": "none"
+  },
+  "query027_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 10.273
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 1.71
+    },
+    "split": "node-based"
+  },
+  "query032_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 26.095
+    },
+    "split": "node-based"
+  },
+  "query038_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 122.945
+    },
+    "split": "none"
+  },
+  "query040_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 5.028
+    },
+    "split": "topdown"
+  },
+  "query040_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 4.665
+    },
+    "split": "topdown"
+  },
+  "query050_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 96.582
+    },
+    "split": "topdown"
+  },
+  "query050_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 699.021
+    },
+    "split": "none"
+  },
+  "query072_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 100.568
+    },
+    "split": "none"
+  },
+  "query072_spj_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 101.963
+    },
+    "split": "none"
+  },
+  "query084_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.097
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.746
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.368
+    },
+    "3": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.807
+    },
+    "4": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 32.301
+    },
+    "split": "node-based"
+  },
+  "query084_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 7.967
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.818
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 2.699
+    },
+    "3": {
+      "config": "interp",
+      "total_ms": 0.643
+    },
+    "4": {
+      "config": "query_full",
+      "total_ms": 26.02
+    },
+    "split": "node-based"
+  },
+  "query085_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 56.74
+    },
+    "split": "topdown"
+  },
+  "query085_spj_0": {
+    "0": {
+      "compile_mode": 1,
+      "config": "query_fastisel",
+      "total_ms": 55.876
+    },
+    "split": "topdown"
+  },
+  "query087_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 72.263
+    },
+    "split": "node-based"
+  },
+  "query091_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 3.411
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 5.362
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 0.976
+    },
+    "split": "topdown"
+  },
+  "query091_spj_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 7.063
+    },
+    "split": "none"
+  },
+  "query099_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 3.556
+    },
+    "split": "none"
+  },
+  "query099_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 2.51
+    },
+    "split": "none"
+  },
+  "query100_0": {
+    "0": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.311
+    },
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.4
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 4.222
+    },
+    "split": "node-based"
+  },
+  "query100_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 2.654
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.299
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 3.832
+    },
+    "split": "node-based"
+  },
+  "query101_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 3.413
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.358
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 3.164
+    },
+    "split": "node-based"
+  },
+  "query101_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 3.325
+    },
+    "1": {
+      "config": "interp",
+      "total_ms": 0.367
+    },
+    "2": {
+      "config": "interp",
+      "total_ms": 2.904
+    },
+    "split": "node-based"
+  },
+  "query102_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 40.543
+    },
+    "split": "none"
+  },
+  "query102_spj_0": {
+    "0": {
+      "config": "interp",
+      "total_ms": 30.029
+    },
+    "split": "none"
+  }
+}
