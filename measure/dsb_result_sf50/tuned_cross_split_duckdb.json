@@ -1,17 +1,15 @@
 {
   "query013_0": {
     "0": {
-      "compile_mode": 2,
-      "config": "query_tpde",
-      "total_ms": 6.456
+      "config": "interp",
+      "total_ms": 6.433
     },
     "split": "topdown"
   },
   "query013_spj_0": {
     "0": {
-      "compile_mode": 2,
-      "config": "query_tpde",
-      "total_ms": 6.273
+      "config": "interp",
+      "total_ms": 6.211
     },
     "split": "topdown"
   },
@@ -19,17 +17,17 @@
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 9.53
+      "total_ms": 8.019
     },
     "1": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 0.498
+      "total_ms": 0.463
     },
     "2": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 2.227
+      "total_ms": 2.118
     },
     "split": "node-based"
   },
@@ -37,38 +35,48 @@
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 10.994
+      "total_ms": 7.849
     },
-    "split": "none"
+    "1": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.488
+    },
+    "2": {
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 1.692
+    },
+    "split": "node-based"
   },
   "query019_0": {
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 2.33
+      "total_ms": 2.63
     },
     "1": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 9.859
+      "total_ms": 10.115
     },
     "split": "topdown"
   },
   "query019_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 4.13
+      "total_ms": 4.596
     },
     "1": {
       "config": "interp",
-      "total_ms": 8.694
+      "total_ms": 8.807
     },
     "split": "topdown"
   },
   "query025_0": {
     "0": {
       "config": "interp",
-      "total_ms": 71.333
+      "total_ms": 70.992
     },
     "split": "none"
   },
@@ -76,7 +84,7 @@
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 44.549
+      "total_ms": 45.381
     },
     "split": "none"
   },
@@ -84,69 +92,61 @@
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 10.273
+      "total_ms": 10.934
     },
     "1": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 1.71
-    },
-    "split": "node-based"
-  },
-  "query032_0": {
-    "0": {
-      "config": "interp",
-      "total_ms": 26.095
+      "total_ms": 1.713
     },
     "split": "node-based"
   },
   "query038_0": {
     "0": {
       "config": "interp",
-      "total_ms": 122.945
+      "total_ms": 120.264
     },
     "split": "none"
   },
   "query040_0": {
     "0": {
       "config": "interp",
-      "total_ms": 5.028
+      "total_ms": 4.926
     },
-    "split": "topdown"
+    "split": "node-based"
   },
   "query040_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 4.665
+      "total_ms": 4.772
     },
-    "split": "topdown"
+    "split": "node-based"
   },
   "query050_0": {
     "0": {
       "config": "interp",
-      "total_ms": 96.582
+      "total_ms": 98.4
     },
-    "split": "topdown"
+    "split": "none"
   },
   "query050_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 699.021
+      "total_ms": 691.297
     },
     "split": "none"
   },
   "query072_0": {
     "0": {
       "config": "interp",
-      "total_ms": 100.568
+      "total_ms": 99.412
     },
     "split": "none"
   },
   "query072_spj_0": {
     "0": {
-      "compile_mode": 1,
-      "config": "query_fastisel",
-      "total_ms": 101.963
+      "config": "interp",
+      "total_ms": 98.962
     },
     "split": "none"
   },
@@ -154,87 +154,86 @@
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 2.097
+      "total_ms": 2.233
     },
     "1": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 0.746
+      "total_ms": 1.02
     },
     "2": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 2.368
+      "total_ms": 0.928
     },
     "3": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 0.807
+      "total_ms": 2.351
     },
     "4": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 32.301
+      "total_ms": 30.618
     },
-    "split": "node-based"
+    "split": "topdown"
   },
   "query084_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 7.967
+      "total_ms": 7.757
     },
     "1": {
       "config": "interp",
-      "total_ms": 0.818
+      "total_ms": 0.747
     },
     "2": {
       "config": "interp",
-      "total_ms": 2.699
+      "total_ms": 2.631
     },
     "3": {
       "config": "interp",
-      "total_ms": 0.643
+      "total_ms": 0.632
     },
     "4": {
       "config": "query_full",
-      "total_ms": 26.02
+      "total_ms": 25.89
     },
     "split": "node-based"
   },
   "query085_0": {
     "0": {
       "config": "interp",
-      "total_ms": 56.74
+      "total_ms": 56.84
     },
     "split": "topdown"
   },
   "query085_spj_0": {
     "0": {
-      "compile_mode": 1,
-      "config": "query_fastisel",
-      "total_ms": 55.876
+      "config": "query_full",
+      "total_ms": 56.234
     },
     "split": "topdown"
   },
   "query087_0": {
     "0": {
       "config": "interp",
-      "total_ms": 72.263
+      "total_ms": 73.094
     },
-    "split": "node-based"
+    "split": "none"
   },
   "query091_0": {
     "0": {
       "config": "interp",
-      "total_ms": 3.411
+      "total_ms": 3.273
     },
     "1": {
       "config": "interp",
-      "total_ms": 5.362
+      "total_ms": 5.286
     },
     "2": {
       "config": "interp",
-      "total_ms": 0.976
+      "total_ms": 1.022
     },
     "split": "topdown"
   },
@@ -242,98 +241,98 @@
     "0": {
       "compile_mode": 2,
       "config": "query_tpde",
-      "total_ms": 7.063
+      "total_ms": 6.637
     },
     "split": "none"
   },
   "query099_0": {
     "0": {
       "config": "interp",
-      "total_ms": 3.556
+      "total_ms": 3.756
     },
     "split": "none"
   },
   "query099_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 2.51
+      "total_ms": 2.647
     },
     "split": "none"
   },
   "query100_0": {
     "0": {
-      "compile_mode": 2,
-      "config": "query_tpde",
-      "total_ms": 2.311
+      "config": "interp",
+      "total_ms": 2.718
     },
     "1": {
-      "compile_mode": 2,
-      "config": "query_tpde",
-      "total_ms": 0.4
+      "config": "interp",
+      "total_ms": 0.311
     },
     "2": {
-      "compile_mode": 2,
-      "config": "query_tpde",
-      "total_ms": 4.222
+      "config": "interp",
+      "total_ms": 3.834
     },
     "split": "node-based"
   },
   "query100_spj_0": {
     "0": {
-      "config": "interp",
-      "total_ms": 2.654
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 2.152
     },
     "1": {
-      "config": "interp",
-      "total_ms": 0.299
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 0.378
     },
     "2": {
-      "config": "interp",
-      "total_ms": 3.832
+      "compile_mode": 2,
+      "config": "query_tpde",
+      "total_ms": 4.031
     },
     "split": "node-based"
   },
   "query101_0": {
     "0": {
       "config": "interp",
-      "total_ms": 3.413
+      "total_ms": 3.303
     },
     "1": {
       "config": "interp",
-      "total_ms": 0.358
+      "total_ms": 0.359
     },
     "2": {
       "config": "interp",
-      "total_ms": 3.164
+      "total_ms": 3.247
     },
     "split": "node-based"
   },
   "query101_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 3.325
+      "total_ms": 3.234
     },
     "1": {
       "config": "interp",
-      "total_ms": 0.367
+      "total_ms": 0.36
     },
     "2": {
       "config": "interp",
-      "total_ms": 2.904
+      "total_ms": 2.881
     },
     "split": "node-based"
   },
   "query102_0": {
     "0": {
       "config": "interp",
-      "total_ms": 40.543
+      "total_ms": 38.661
     },
     "split": "none"
   },
   "query102_spj_0": {
     "0": {
       "config": "interp",
-      "total_ms": 30.029
+      "total_ms": 29.301
     },
     "split": "none"
   }

@@ -481,6 +481,18 @@ public:
                              duckdb::Connection &spec_conn,
                              aqp_jit::IrToLlvmCompiler *spec_comp);
 
+  // Like SpeculativeQueryJitCompile but uses a pre-built logical plan and the
+  // caller's IR directly, avoiding SQL re-parse. This preserves the original
+  // join nesting so PlanJoinFilterPushdown produces correct guards.
+  std::unique_ptr<QjitSpecCompiled>
+  SpeculativeQueryJitCompileFromPlan(
+      ir_sql_converter::AQPStmt &ir,
+      duckdb::unique_ptr<duckdb::LogicalOperator> sub_plan,
+      const duckdb::vector<duckdb::LogicalType> &plan_types,
+      const std::string &label,
+      duckdb::Connection &spec_conn,
+      aqp_jit::IrToLlvmCompiler *spec_comp);
+
   // Hand a bg-compiled payload to the next ExecuteSQLandCreateTempTable call
   // (main thread, HIT only).
   void SetQjitSpecHit(std::unique_ptr<QjitSpecCompiled> hit) {

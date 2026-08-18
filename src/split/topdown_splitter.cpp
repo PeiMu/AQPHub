@@ -62,6 +62,29 @@ unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
     }
     break;
   }
+  case ir_sql_converter::SimplestNodeType::ProjectionNode: {
+    auto *p = dynamic_cast<const ir_sql_converter::SimplestProjection *>(node);
+    if (p)
+      mx = std::max(mx, p->GetIndex());
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::AggregateNode: {
+    auto *a = dynamic_cast<const ir_sql_converter::SimplestAggregate *>(node);
+    if (a) {
+      mx = std::max(mx, a->GetAggIndex());
+      mx = std::max(mx, a->GetGroupIndex());
+    }
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::OrderNode: {
+    auto *o = dynamic_cast<const ir_sql_converter::SimplestOrderBy *>(node);
+    if (o) {
+      for (const auto &ord : o->orders)
+        if (ord.attr)
+          mx = std::max(mx, ord.attr->GetTableIndex());
+    }
+    break;
+  }
   default:
     break;
   }
@@ -332,6 +355,8 @@ void TopDownSplitter::CaptureLeafCardinalities(
     std::set<unsigned int> tables;
     if (!n)
       return tables;
+    if (n->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
+      return tables;
     if (n->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
       auto *scan = dynamic_cast<const ir_sql_converter::SimplestScan *>(n);
       if (scan)
@@ -477,6 +502,8 @@ void TopDownSplitter::CollectRelations(
     const ir_sql_converter::AQPStmt *node, std::vector<JoinRel> &rels,
     std::vector<unsigned int> &rel_tables) const {
   if (!node)
+    return;
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
     return;
   if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
     auto *scan = dynamic_cast<const ir_sql_converter::SimplestScan *>(node);
@@ -630,6 +657,8 @@ static void CollectMustColocateSets(
     std::vector<std::set<unsigned int>> &groups) {
   if (!node)
     return;
+  if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
+    return;
 #ifndef NDEBUG
   std::cout << "[SDS] CollectMustColocateSets: node type="
             << (int)node->GetNodeType() << " qual_vec.size="
@@ -722,8 +751,10 @@ void TopDownSplitter::CollectEdges(
     ForEachConjunct(qual.get(), add_general_edges);
   }
 
-  for (const auto &child : node->children)
-    CollectEdges(child.get(), table_to_pos, edges);
+  for (const auto &child : node->children) {
+    if (child && child->GetNodeType() != ir_sql_converter::SimplestNodeType::SetOpNode)
+      CollectEdges(child.get(), table_to_pos, edges);
+  }
 }
 
 bool TopDownSplitter::PlanNext(

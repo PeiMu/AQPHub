@@ -174,7 +174,7 @@ log_name=time_log.csv
 container_name="umbra_benchmark"
 
 if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
-    iteration=8  # 3 warm up, 5 runs
+    iteration=5  # 2 warm up, 3 runs
 else
     iteration=15 # 5 warm up, 10 runs
 fi

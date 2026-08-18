@@ -752,6 +752,8 @@ FKBasedSplitter::CollectScansForTables(ir_sql_converter::AQPStmt *ir,
 
   if (!ir)
     return scans;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
+    return scans;
 
   if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::ScanNode) {
     auto *scan = dynamic_cast<ir_sql_converter::SimplestScan *>(ir);
@@ -824,8 +826,10 @@ FKBasedSplitter::CollectExternalJoinAttrs(
     }
   }
 
-  // Recurse into children
+  // Recurse into children (stop at SetOp boundaries)
   for (auto &child : ir->children) {
+    if (child && child->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
+      continue;
     auto child_attrs = CollectExternalJoinAttrs(child.get(), cluster_tables);
     for (auto &attr : child_attrs) {
       auto key = std::make_pair(attr->GetTableIndex(), attr->GetColumnIndex());
@@ -1066,84 +1070,93 @@ FKBasedSplitter::BuildSubIRForCluster(
     AddIfClusterAttr(attr.get());
   }
 
-  // 4a2: From Aggregate/OrderBy nodes — these reference original table
-  // columns (e.g. MIN(aka_title.title)) that are not in the top-level
-  // target_list when DuckDB's plan separates aggregation into its own node
+  // 4a2: From Projection/Aggregate/OrderBy nodes — these reference original
+  // table columns that are not in the top-level target_list when DuckDB's plan
+  // separates aggregation/projection into separate nodes
+  std::function<void(const ir_sql_converter::AQPExpr *)> CollectExprAttrs;
+  CollectExprAttrs = [&](const ir_sql_converter::AQPExpr *e) {
+    if (!e)
+      return;
+    switch (e->GetNodeType()) {
+    case ir_sql_converter::SingleAttrExprNode: {
+      auto *s = dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(e);
+      if (s) AddIfClusterAttr(s->attr.get());
+      break;
+    }
+    case ir_sql_converter::VarConstComparisonNode: {
+      auto *v = dynamic_cast<const ir_sql_converter::SimplestVarConstComparison *>(e);
+      if (v) AddIfClusterAttr(v->attr.get());
+      break;
+    }
+    case ir_sql_converter::IsNullExprNode: {
+      auto *n = dynamic_cast<const ir_sql_converter::SimplestIsNullExpr *>(e);
+      if (n) AddIfClusterAttr(n->attr.get());
+      break;
+    }
+    case ir_sql_converter::LogicalExprNode: {
+      auto *l = dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(e);
+      if (l) { CollectExprAttrs(l->left_expr.get()); CollectExprAttrs(l->right_expr.get()); }
+      break;
+    }
+    case ir_sql_converter::ArithExprNode: {
+      auto *a = dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(e);
+      if (a) { CollectExprAttrs(a->left.get()); CollectExprAttrs(a->right.get()); }
+      break;
+    }
+    case ir_sql_converter::CastExprNode: {
+      auto *c = dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(e);
+      if (c) CollectExprAttrs(c->child.get());
+      break;
+    }
+    case ir_sql_converter::FunctionExprNodeType: {
+      auto *f = dynamic_cast<const ir_sql_converter::SimplestFunctionExpr *>(e);
+      if (f) for (const auto &arg : f->args) CollectExprAttrs(arg.get());
+      break;
+    }
+    case ir_sql_converter::CaseExprNodeType: {
+      auto *c = dynamic_cast<const ir_sql_converter::SimplestCaseExpr *>(e);
+      if (c) {
+        for (const auto &wc : c->case_checks) {
+          CollectExprAttrs(wc.when_expr.get());
+          CollectExprAttrs(wc.then_expr.get());
+        }
+        CollectExprAttrs(c->else_expr.get());
+      }
+      break;
+    }
+    case ir_sql_converter::ExprNode: {
+      auto *g = dynamic_cast<const ir_sql_converter::SimplestGeneralComparison *>(e);
+      if (g) { CollectExprAttrs(g->left_expr.get()); CollectExprAttrs(g->right_expr.get()); }
+      break;
+    }
+    default:
+      break;
+    }
+  };
   std::function<void(const ir_sql_converter::AQPStmt *)> CollectPlanAttrs;
   CollectPlanAttrs = [&](const ir_sql_converter::AQPStmt *node) {
     if (!node)
       return;
     if (node->GetNodeType() ==
+        ir_sql_converter::SimplestNodeType::ProjectionNode) {
+      for (size_t i = 0; i < node->target_list.size(); i++) {
+        bool has_expr = i < node->expr_target_list.size() &&
+                        node->expr_target_list[i];
+        if (!has_expr)
+          AddIfClusterAttr(node->target_list[i].get());
+      }
+      for (const auto &expr : node->expr_target_list)
+        CollectExprAttrs(expr.get());
+    }
+    if (node->GetNodeType() ==
         ir_sql_converter::SimplestNodeType::AggregateNode) {
       auto *agg =
           dynamic_cast<const ir_sql_converter::SimplestAggregate *>(node);
       if (agg) {
-        for (const auto &fn_pair : agg->agg_fns) {
+        for (const auto &fn_pair : agg->agg_fns)
           AddIfClusterAttr(fn_pair.first.get());
-        }
-        for (const auto &grp : agg->groups) {
+        for (const auto &grp : agg->groups)
           AddIfClusterAttr(grp.get());
-        }
-        std::function<void(const ir_sql_converter::AQPExpr *)> CollectExprAttrs;
-        CollectExprAttrs = [&](const ir_sql_converter::AQPExpr *e) {
-          if (!e)
-            return;
-          switch (e->GetNodeType()) {
-          case ir_sql_converter::SingleAttrExprNode: {
-            auto *s = dynamic_cast<const ir_sql_converter::SimplestSingleAttrExpr *>(e);
-            if (s) AddIfClusterAttr(s->attr.get());
-            break;
-          }
-          case ir_sql_converter::VarConstComparisonNode: {
-            auto *v = dynamic_cast<const ir_sql_converter::SimplestVarConstComparison *>(e);
-            if (v) AddIfClusterAttr(v->attr.get());
-            break;
-          }
-          case ir_sql_converter::IsNullExprNode: {
-            auto *n = dynamic_cast<const ir_sql_converter::SimplestIsNullExpr *>(e);
-            if (n) AddIfClusterAttr(n->attr.get());
-            break;
-          }
-          case ir_sql_converter::LogicalExprNode: {
-            auto *l = dynamic_cast<const ir_sql_converter::SimplestLogicalExpr *>(e);
-            if (l) { CollectExprAttrs(l->left_expr.get()); CollectExprAttrs(l->right_expr.get()); }
-            break;
-          }
-          case ir_sql_converter::ArithExprNode: {
-            auto *a = dynamic_cast<const ir_sql_converter::SimplestArithExpr *>(e);
-            if (a) { CollectExprAttrs(a->left.get()); CollectExprAttrs(a->right.get()); }
-            break;
-          }
-          case ir_sql_converter::CastExprNode: {
-            auto *c = dynamic_cast<const ir_sql_converter::SimplestCastExpr *>(e);
-            if (c) CollectExprAttrs(c->child.get());
-            break;
-          }
-          case ir_sql_converter::FunctionExprNodeType: {
-            auto *f = dynamic_cast<const ir_sql_converter::SimplestFunctionExpr *>(e);
-            if (f) for (const auto &arg : f->args) CollectExprAttrs(arg.get());
-            break;
-          }
-          case ir_sql_converter::CaseExprNodeType: {
-            auto *c = dynamic_cast<const ir_sql_converter::SimplestCaseExpr *>(e);
-            if (c) {
-              for (const auto &wc : c->case_checks) {
-                CollectExprAttrs(wc.when_expr.get());
-                CollectExprAttrs(wc.then_expr.get());
-              }
-              CollectExprAttrs(c->else_expr.get());
-            }
-            break;
-          }
-          case ir_sql_converter::ExprNode: {
-            auto *g = dynamic_cast<const ir_sql_converter::SimplestGeneralComparison *>(e);
-            if (g) { CollectExprAttrs(g->left_expr.get()); CollectExprAttrs(g->right_expr.get()); }
-            break;
-          }
-          default:
-            break;
-          }
-        };
         for (const auto &fn_expr : agg->agg_fn_exprs)
           CollectExprAttrs(fn_expr.get());
         for (const auto &grp_expr : agg->group_exprs)
@@ -1154,14 +1167,12 @@ FKBasedSplitter::BuildSubIRForCluster(
       auto *order =
           dynamic_cast<const ir_sql_converter::SimplestOrderBy *>(node);
       if (order) {
-        for (const auto &ord : order->orders) {
+        for (const auto &ord : order->orders)
           AddIfClusterAttr(ord.attr.get());
-        }
       }
     }
-    for (const auto &child : node->children) {
+    for (const auto &child : node->children)
       CollectPlanAttrs(child.get());
-    }
   };
   CollectPlanAttrs(ir);
 

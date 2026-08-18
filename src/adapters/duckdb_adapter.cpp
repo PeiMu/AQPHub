@@ -3994,9 +3994,10 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
     return fallback(reason);
 
   {
-    static constexpr uint64_t kSourceRowBypass = 50000000;
+    static constexpr uint64_t kSourceRowBypass = 100000000;
     for (size_t k = 0; k < plan.steps.size(); k++) {
-      if (plan.steps[k].sink == qjit::QjitStep::Result &&
+      if ((plan.steps[k].sink == qjit::QjitStep::Result ||
+           plan.steps[k].sink == qjit::QjitStep::Agg) &&
           compiled->srcs[k].nrows > kSourceRowBypass)
         return fallback("source-rows:" +
                         std::to_string(compiled->srcs[k].nrows) + ">" +
@@ -4172,9 +4173,10 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
                                    membership_preprobe_))
       return reject(reason);
     if (qjit_storage_plan_ && qjit_storage_plan_->IsLoaded()) {
-      static constexpr uint64_t kSpecSourceRowBypass = 50000000;
+      static constexpr uint64_t kSpecSourceRowBypass = 100000000;
       for (const auto &st : payload->plan.steps) {
-        if (st.sink == qjit::QjitStep::Result && !st.source_is_temp) {
+        if ((st.sink == qjit::QjitStep::Result ||
+             st.sink == qjit::QjitStep::Agg) && !st.source_is_temp) {
           const auto *flat = qjit_storage_plan_->GetTable(st.source_table);
           if (flat && flat->row_count > kSpecSourceRowBypass)
             return reject("source-rows:" +
@@ -4214,6 +4216,109 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
     }
 
     payload->ir = std::move(ir);
+    payload->out_types = prepared->GetTypes();
+    payload->out_names = prepared->GetNames();
+    payload->est_card =
+        prepared->data->physical_plan->Root().estimated_cardinality;
+    return payload;
+  } catch (std::exception &e) {
+    return reject(std::string("exception:") + e.what());
+  }
+}
+
+std::unique_ptr<DuckDBAdapter::QjitSpecCompiled>
+DuckDBAdapter::SpeculativeQueryJitCompileFromPlan(
+    ir_sql_converter::AQPStmt &ir,
+    duckdb::unique_ptr<duckdb::LogicalOperator> sub_plan,
+    const duckdb::vector<duckdb::LogicalType> &plan_types,
+    const std::string &label,
+    duckdb::Connection &spec_conn,
+    aqp_jit::IrToLlvmCompiler *spec_comp) {
+  auto reject = [&](const std::string &reason)
+      -> std::unique_ptr<QjitSpecCompiled> {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-QJIT] spec-reject-from-plan:%s label=%s\n",
+            reason.c_str(), label.c_str());
+#else
+    (void)reason;
+#endif
+    return nullptr;
+  };
+  if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
+    return reject("no-storage-plan");
+
+  try {
+    if (PlanContainsOpType(*sub_plan,
+                           duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT))
+      return reject("plan-empty-result");
+
+    duckdb::vector<duckdb::string> names;
+    names.reserve(plan_types.size());
+    for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
+      names.push_back("c" + std::to_string(i));
+
+    auto prepared = spec_conn.PrepareFromPlan(
+        std::move(sub_plan), std::move(names), plan_types);
+    if (!prepared || prepared->HasError() || !prepared->data ||
+        !prepared->data->physical_plan)
+      return reject("prepare-failed");
+
+    AnnotateBuildSides(prepared->data->physical_plan->Root(), ir);
+    auto analysis = qjit::AnalyzeQueryJit(ir, label);
+    if (!analysis.accepted)
+      return nullptr;
+
+    auto payload = std::make_unique<QjitSpecCompiled>();
+    std::string reason;
+    if (!qjit::BuildExecutionSteps(ir, payload->plan, reason,
+                                   range_guard_, block_skip_,
+                                   membership_preprobe_))
+      return reject(reason);
+
+    if (qjit_storage_plan_ && qjit_storage_plan_->IsLoaded()) {
+      static constexpr uint64_t kSpecSourceRowBypass = 100000000;
+      for (const auto &st : payload->plan.steps) {
+        if ((st.sink == qjit::QjitStep::Result ||
+             st.sink == qjit::QjitStep::Agg) && !st.source_is_temp) {
+          const auto *flat = qjit_storage_plan_->GetTable(st.source_table);
+          if (flat && flat->row_count > kSpecSourceRowBypass)
+            return reject("source-rows:" +
+                          std::to_string(flat->row_count) + ">" +
+                          std::to_string(kSpecSourceRowBypass));
+        }
+      }
+    }
+
+    payload->compiled = std::make_unique<QjitCompiled>();
+    if (!BuildQjitOutputDescs(payload->plan, *prepared, *payload->compiled,
+                              reason))
+      return reject(reason);
+    payload->compiled->ht_tuple_sizes.reserve(payload->plan.hts.size());
+    payload->compiled->ht_key0_offsets.reserve(payload->plan.hts.size());
+    for (const auto &ht : payload->plan.hts) {
+      payload->compiled->ht_tuple_sizes.push_back(ht.tuple_size);
+      payload->compiled->ht_key0_offsets.push_back(ht.prefix_bytes);
+    }
+
+    payload->compiled->fn = spec_comp->CompileQuerySteps(
+        payload->plan, &payload->compiled->params_buf);
+    if (!payload->compiled->fn)
+      return reject("compile-failed");
+
+    payload->compiled->replay_cache_key = spec_comp->LastCacheKey();
+    payload->compiled->replay_fn_name = spec_comp->LastEntryName();
+    for (const auto &st : payload->plan.steps) {
+      payload->compiled->replay_source_tables.push_back(st.source_table);
+      payload->compiled->replay_source_is_temp.push_back(st.source_is_temp);
+      payload->compiled->replay_source_block_skip_cols.push_back(
+          st.block_skip_col);
+      payload->compiled->replay_step_col_counts.push_back(st.cols.size());
+      payload->compiled->replay_source_cols.insert(
+          payload->compiled->replay_source_cols.end(),
+          st.cols.begin(), st.cols.end());
+    }
+
+    payload->ir = nullptr;
     payload->out_types = prepared->GetTypes();
     payload->out_names = prepared->GetNames();
     payload->est_card =

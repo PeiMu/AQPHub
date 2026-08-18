@@ -433,6 +433,8 @@ CollectFilterConditions(ir_sql_converter::AQPStmt *ir,
 
   if (!ir)
     return filters;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
+    return filters;
 
   // Check qual_vec for filter conditions in this node
   for (const auto &qual : ir->qual_vec) {
@@ -461,6 +463,8 @@ CollectJoinConditions(ir_sql_converter::AQPStmt *ir,
       conditions;
 
   if (!ir)
+    return conditions;
+  if (ir->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
     return conditions;
 
   // If this is a Join node, check its join conditions

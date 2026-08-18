@@ -454,9 +454,11 @@ static void EnsureCrossCompiler(
 // levels Prepare + RegisterJITImpl; Path C: interpreter plain Prepare.
 static void BgCompileFirstSubquery(
     CrossQueryPrepResult &result, DuckDBAdapter *duck,
-    const ir_sql_converter::AQPStmt &sub_ir,
+    ir_sql_converter::AQPStmt &sub_ir,
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
-    uint32_t effective_jit_flags, int effective_compile_mode, bool debug) {
+    uint32_t effective_jit_flags, int effective_compile_mode, bool debug,
+    duckdb::unique_ptr<duckdb::LogicalOperator> sub_plan = nullptr,
+    const duckdb::vector<duckdb::LogicalType> *plan_types = nullptr) {
   if (result.first_sub_sql.empty())
     return;
   try {
@@ -467,8 +469,14 @@ static void BgCompileFirstSubquery(
                           effective_compile_mode, /*need_qjit=*/true);
       bg_compiler->ResetModules();
       std::string label = "cross-" + result.query_name + "-sq0";
-      result.qjit_spec = duck->SpeculativeQueryJitCompile(
-          result.first_sub_sql, label, *result.bg_conn, bg_compiler.get());
+      if (sub_plan && plan_types) {
+        result.qjit_spec = duck->SpeculativeQueryJitCompileFromPlan(
+            sub_ir, std::move(sub_plan), *plan_types, label,
+            *result.bg_conn, bg_compiler.get());
+      } else {
+        result.qjit_spec = duck->SpeculativeQueryJitCompile(
+            result.first_sub_sql, label, *result.bg_conn, bg_compiler.get());
+      }
       result.has_qjit = (result.qjit_spec != nullptr);
       if (debug && result.has_qjit)
         std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
@@ -687,7 +695,8 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
     // Phase 2: bg compile first sub-query
     BgCompileFirstSubquery(*result, duck, *sub_ir, bg_compiler,
                            effective_jit_flags, effective_compile_mode,
-                           debug);
+                           debug, std::move(sub_plan),
+                           &result->sub_plan_types);
 #endif
 
     auto extraction =
@@ -4143,6 +4152,27 @@ void IRQuerySplitter::UpdateExprIndices(
     return;
   }
 
+  if (node_type == ir_sql_converter::SimplestNodeType::FunctionExprNodeType) {
+    auto *fn = dynamic_cast<ir_sql_converter::SimplestFunctionExpr *>(expr);
+    if (fn) {
+      for (auto &arg : fn->args)
+        UpdateExprIndices(arg.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
+  if (node_type == ir_sql_converter::SimplestNodeType::CaseExprNodeType) {
+    auto *ce = dynamic_cast<ir_sql_converter::SimplestCaseExpr *>(expr);
+    if (ce) {
+      for (auto &wc : ce->case_checks) {
+        UpdateExprIndices(wc.when_expr.get(), temp_table, old_table_indices);
+        UpdateExprIndices(wc.then_expr.get(), temp_table, old_table_indices);
+      }
+      UpdateExprIndices(ce->else_expr.get(), temp_table, old_table_indices);
+    }
+    return;
+  }
+
   throw std::runtime_error(
       "IRQuerySplitter unsupported: expression node type " +
       std::to_string(static_cast<int>(node_type)) +
@@ -4202,13 +4232,24 @@ void IRQuerySplitter::UpdateNodeIndices(
     return;
   }
 
-  // Update target_list
+  // Update target_list (skip expression placeholders in Projections —
+  // their embedded column refs are updated via expr_target_list below)
   for (size_t i = 0; i < node->target_list.size(); i++) {
+    if (node->GetNodeType() ==
+            ir_sql_converter::SimplestNodeType::ProjectionNode &&
+        i < node->expr_target_list.size() && node->expr_target_list[i])
+      continue;
     auto updated = UpdateAttrIndices(node->target_list[i].get(), temp_table,
                                      old_table_indices);
     if (updated) {
       node->target_list[i] = std::move(updated);
     }
+  }
+
+  // Update expr_target_list (expression column refs in Projections)
+  for (auto &expr : node->expr_target_list) {
+    if (expr)
+      UpdateExprIndices(expr.get(), temp_table, old_table_indices);
   }
 
   // Update qual_vec
