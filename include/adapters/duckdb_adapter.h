@@ -38,6 +38,7 @@
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -343,6 +344,7 @@ public:
   void SetRangeGuard(bool v) { range_guard_ = v; }
   void SetBlockSkip(bool v) { block_skip_ = v; }
   void SetMembershipPreprobe(bool v) { membership_preprobe_ = v; }
+  void SetDisableBidirectionalStorage(bool v) { disable_bidirectional_storage_ = v; }
 
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
@@ -711,6 +713,8 @@ private:
   bool range_guard_ = true;
   bool block_skip_ = true;
   bool membership_preprobe_ = true;
+  bool disable_bidirectional_storage_ = false;
+  std::unique_ptr<duckdb::Connection> bidir_conn_;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;
   int jit_cache_ = 0;
@@ -990,6 +994,19 @@ private:
   QjitTempCardinality(duckdb::ClientContext &context,
                       const duckdb::FunctionData *bind_data);
 #endif
+#endif
+  // Create a DuckDB catalog temp table from a ColumnDataCollection (used when
+  // disable_bidirectional_storage_ is set to measure round-trip overhead).
+  void MaterializeCatalogTempTable(const std::string &temp_table_name,
+                                   const duckdb::vector<duckdb::LogicalType> &types,
+                                   const std::vector<std::string> &col_names,
+                                   duckdb::ColumnDataCollection &collection);
+
+#ifdef HAVE_LLVM
+  void MaterializeCatalogTempFromQjit(const std::string &temp_table_name,
+                                      const qjit::QjitTable &qtable,
+                                      const duckdb::vector<duckdb::LogicalType> &types,
+                                      const std::vector<std::string> &col_names);
 #endif
 };
 } // namespace middleware

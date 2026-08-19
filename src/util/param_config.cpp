@@ -292,6 +292,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.early_termination = false;
     } else if (arg == "--no-cross-query-prep") {
       config.no_cross_query_prep = true;
+    } else if (arg == "--disable-bidirectional-storage") {
+      config.disable_bidirectional_storage = true;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);

@@ -34,10 +34,13 @@ When discussion, think in Prof. Thomas Neumann or Matthias Jasny way.
 - **DuckDB (patched)**: `/home/pei/Project/duckdb`
 - **JOB queries**: `/home/pei/Project/benchmarks/imdb_job-postgres/queries/`
 - **DSB queries**: `/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/`
+- **TPC-H queries**: `/home/pei/Project/benchmarks/tpch-postgres/dbgen/out_50/queries/`
 - **JOB schema**: `/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql`
 - **DSB schema**: `/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql`
+- **TPC-H schema**: `/home/pei/Project/benchmarks/tpch-postgres/dbgen/dss.ddl`
 - **DuckDB JOB database**: `/home/pei/Project/duckdb/measure/imdb.db`
-- **DuckDB DSB database**: `/home/pei/Project/duckdb/measure/dsb_100.db`
+- **DuckDB DSB database**: `/home/pei/Project/duckdb/measure/dsb_50.db`
+- **DuckDB TPC-H database**: `/home/pei/Project/duckdb/measure/tpch_50.db`
 
 Build commands:
 ```bash
@@ -56,12 +59,12 @@ Build hazards:
 
 ## Verification Workflow
 
-### Step 2: Single query end-to-end
+### Step 1: Single query end-to-end
 
 Take a simple JOB query that related to our changes (e.g., 1a — single join), run with
 `./build_release/aqp_middleware ...` (check reference in measure/run_aqp.sh job). Compare result to DuckDB golden output.
 
-### Step 4: Full JOB and DSB correctness
+### Step 2: Full JOB and DSB correctness
 
 check measure/correctness_test_job_duckdb.sh and measure/correctness_test_dsb_duckdb.sh.
 

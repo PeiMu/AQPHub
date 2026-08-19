@@ -727,6 +727,100 @@ void DuckDBAdapter::RegisterTempMetadata(
                            static_cast<int64_t>(flat.row_count));
 }
 
+void DuckDBAdapter::MaterializeCatalogTempTable(
+    const std::string &temp_table_name,
+    const duckdb::vector<duckdb::LogicalType> &types,
+    const std::vector<std::string> &col_names,
+    duckdb::ColumnDataCollection &collection) {
+  // Use a separate connection to avoid disturbing the main connection's
+  // transaction/planner state. This connection's catalog changes are
+  // visible to the main connection within the same DuckDB instance.
+  if (!bidir_conn_)
+    bidir_conn_ = std::make_unique<duckdb::Connection>(*db);
+
+  auto ctx2 = bidir_conn_->context.get();
+  ctx2->transaction.BeginTransaction();
+
+  auto &catalog = duckdb::Catalog::GetCatalog(*ctx2, TEMP_CATALOG);
+
+  auto info = duckdb::make_uniq<duckdb::CreateTableInfo>(
+      TEMP_CATALOG, DEFAULT_SCHEMA, temp_table_name);
+  info->temporary = true;
+  info->on_conflict = duckdb::OnCreateConflict::REPLACE_ON_CONFLICT;
+  for (duckdb::idx_t i = 0; i < types.size(); i++) {
+    std::string name = i < col_names.size() ? col_names[i]
+                                            : "col_" + std::to_string(i);
+    info->columns.AddColumn(duckdb::ColumnDefinition(name, types[i]));
+  }
+  auto created_table = catalog.CreateTable(*ctx2, std::move(info));
+  auto &entry = created_table->Cast<duckdb::TableCatalogEntry>();
+  auto temp_binder = duckdb::Binder::CreateBinder(*ctx2);
+  const duckdb::vector<duckdb::unique_ptr<duckdb::BoundConstraint>>
+      bound_constraints = temp_binder->BindConstraints(entry);
+  auto &storage = entry.GetStorage();
+  storage.LocalAppend(entry, *ctx2, collection, bound_constraints, nullptr);
+
+  ctx2->transaction.Commit();
+}
+
+#ifdef HAVE_LLVM
+void DuckDBAdapter::MaterializeCatalogTempFromQjit(
+    const std::string &temp_table_name,
+    const qjit::QjitTable &qtable,
+    const duckdb::vector<duckdb::LogicalType> &types,
+    const std::vector<std::string> &col_names) {
+  auto *ctx = GetClientContext();
+
+  auto cdc = duckdb::make_uniq<duckdb::ColumnDataCollection>(*ctx, types);
+  duckdb::DataChunk chunk;
+  chunk.Initialize(*ctx, types);
+
+  uint64_t offset = 0;
+  while (offset < qtable.NumRows()) {
+    uint64_t count = std::min(qtable.NumRows() - offset,
+                              (uint64_t)STANDARD_VECTOR_SIZE);
+    chunk.Reset();
+    chunk.SetCardinality(count);
+    for (duckdb::idx_t c = 0; c < types.size(); c++) {
+      auto &vec = chunk.data[c];
+      int32_t dt = qtable.Col(c).dtype;
+      if (dt == AQP_DTYPE_INT32) {
+        auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
+        for (uint64_t r = 0; r < count; r++) {
+          if (qtable.ValueValid(c, offset + r))
+            dst[r] = qtable.GetI32(c, offset + r);
+          else
+            duckdb::FlatVector::SetNull(vec, r, true);
+        }
+      } else if (dt == AQP_DTYPE_INT64) {
+        auto *dst = duckdb::FlatVector::GetData<int64_t>(vec);
+        for (uint64_t r = 0; r < count; r++) {
+          if (qtable.ValueValid(c, offset + r))
+            dst[r] = qtable.GetI64(c, offset + r);
+          else
+            duckdb::FlatVector::SetNull(vec, r, true);
+        }
+      } else {
+        auto *dst = duckdb::FlatVector::GetData<duckdb::string_t>(vec);
+        for (uint64_t r = 0; r < count; r++) {
+          if (qtable.ValueValid(c, offset + r)) {
+            auto qs = qtable.GetStr(c, offset + r);
+            dst[r] = duckdb::StringVector::AddString(
+                vec, qjit::StringData(qs), qjit::StringLen(qs));
+          } else {
+            duckdb::FlatVector::SetNull(vec, r, true);
+          }
+        }
+      }
+    }
+    cdc->Append(chunk);
+    offset += count;
+  }
+
+  MaterializeCatalogTempTable(temp_table_name, types, col_names, *cdc);
+}
+#endif
+
 #endif
 
 void DuckDBAdapter::ParseSQL(const std::string &sql) {
@@ -900,6 +994,26 @@ static void RebuildTempTableIndices(
         chunk_col_names[get_op.table_index] = it->second.column_names;
       }
     }
+#ifdef HAVE_LLVM
+    else if (get_op.function.name == "seq_scan" && get_op.bind_data) {
+      auto *bd = dynamic_cast<duckdb::TableScanBindData *>(
+          get_op.bind_data.get());
+      if (bd && bd->table.name.find("temp") == 0) {
+        const auto &tname = bd->table.name;
+        auto it = temp_collections.find(tname);
+        if (it != temp_collections.end()) {
+          intermediate_table_map[get_op.table_index] = tname;
+          chunk_col_names[get_op.table_index] = it->second.column_names;
+        } else {
+          auto qit = qjit_temp_meta.find(tname);
+          if (qit != qjit_temp_meta.end()) {
+            intermediate_table_map[get_op.table_index] = tname;
+            chunk_col_names[get_op.table_index] = qit->second.column_names;
+          }
+        }
+      }
+    }
+#endif
   }
   for (auto &child : op->children)
     RebuildTempTableIndices(child.get(), intermediate_table_map,
@@ -1950,6 +2064,25 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   temp_table_card_.emplace(temp_table_name, chunk_size);
 
 #ifdef HAVE_LLVM
+  // Bi-directional storage disabled: also push result into a DuckDB catalog
+  // temp table so the next Prepare sees it via catalog lookup (measuring the
+  // round-trip overhead that the replacement-scan path avoids).
+  if (disable_bidirectional_storage_) {
+    const auto &mat_names =
+        qjit_stored ? qjit_temp_meta_[temp_table_name].column_names
+                    : temp_collections_[temp_table_name].column_names;
+    if (qjit_stored) {
+      auto qit = qjit_temps_.find(temp_table_name);
+      if (qit != qjit_temps_.end())
+        MaterializeCatalogTempFromQjit(temp_table_name, *qit->second,
+                                       temp_table_types, mat_names);
+    } else {
+      auto &coll = *temp_collections_[temp_table_name].collection;
+      MaterializeCatalogTempTable(temp_table_name, temp_table_types,
+                                  mat_names, coll);
+    }
+  }
+
   // Post-execute: the actual cardinality is known and the real temp data is
   // stored. Re-invoke the hook — this invocation launches the speculative
   // bg compile (the post-Prepare one above is trace-only).
@@ -2267,6 +2400,11 @@ void DuckDBAdapter::DropTempTable(const std::string &table_name) {
 #ifdef HAVE_LLVM
   qjit_temps_.erase(table_name);
 #endif
+  if (disable_bidirectional_storage_ && bidir_conn_) {
+    try {
+      bidir_conn_->Query("DROP TABLE IF EXISTS temp." + table_name);
+    } catch (...) {}
+  }
 }
 
 bool DuckDBAdapter::TempTableExists(const std::string &table_name) {

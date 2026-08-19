@@ -291,6 +291,7 @@ void ExecuteSingleQuery(
         duckdb_adp->SetRangeGuard(config.range_guard);
         duckdb_adp->SetBlockSkip(config.block_skip);
         duckdb_adp->SetMembershipPreprobe(config.membership_preprobe);
+        duckdb_adp->SetDisableBidirectionalStorage(config.disable_bidirectional_storage);
       }
 #endif
 #ifdef HAVE_POSTGRES
