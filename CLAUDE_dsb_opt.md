@@ -287,3 +287,84 @@ Priority 1 — most DSB subqueries are accepted (34/44 = 77%). Rejections are:
 
 Most rejections hit FINAL subqueries (label=result). Fix performance issues first;
 these operator extensions only matter if QJIT should run the final aggregation step.
+
+## Fix DSB performance issue
+### Root cause 1 (HIGH): kSourceRowBypass misses Agg-sink steps
+
+**File:** `src/adapters/duckdb_adapter.cpp`, lines 3997-4004 and 4175-4184
+
+The `kSourceRowBypass` guard (50M rows) only checks `sink == QjitStep::Result`.
+When a step has `sink == QjitStep::Agg` (aggregation like MIN/MAX/COUNT), the
+check is bypassed. This lets query050_spj's result step compile a JIT morsel
+body for store_sales (144M rows at SF50), producing code that runs **1.76x
+slower** than DuckDB's vectorized interpreter (1252ms JIT vs 802ms DuckDB).
+
+**Measured impact (query050_spj):**
+- NB+JIT (current):  1722ms total (1252ms final_exe + 342ms jit_compile + 108ms sub)
+- NB+noJIT:           911ms total (802ms final_exe + 108ms sub)
+- Baseline:           710ms total
+
+**Same bug exists in speculative path** at line 4177: also only checks `sink == Result`.
+
+### Root cause 2 (MEDIUM): Cross-query-prep guard loss
+
+**File:** `src/split/ir_query_splitter.cpp`, line 470-471
+
+Cross-query-prep bg-compiles the next query's first sub-query via
+`SpeculativeQueryJitCompile(result.first_sub_sql, ...)`. This re-parses the
+SQL, re-optimizes via DuckDB, and regenerates IR — the IR→SQL→IR round-trip
+can change join nesting, causing `PlanJoinFilterPushdown` to find fewer/zero
+guards. With `jit_cache>=1`, iteration 0 uses the guard-less bg kernel for sq0,
+and template cache replays the guard-less code for all measured iterations.
+
+**Measured impact (JOB, iteration 6 of 8-repeat run):**
+- 14 queries hurt: total +169ms (9d: +41ms, 10c: +35ms, 8d: +18ms, 19b: +12ms, ...)
+- 38 queries helped: total -409ms (latency hiding benefit preserved)
+- Net CQP benefit: -240ms (CQP helps overall, but guard loss wastes 169ms)
+
+**Fixing the guard loss** would restore 169ms on JOB while keeping the 409ms
+latency-hiding benefit. Expected net CQP benefit after fix: ~409ms.
+
+**DSB SF50 impact:** query025 is hurt by +81ms (CQP from query019_spj adds an
+extra sub-query with different plan). Fixing guard loss alone won't fix the
+extra-split issue, but it's a separate problem from the guard loss.
+
+### Fix
+
+#### Fix 1: Extend kSourceRowBypass to Agg sink (HIGH PRIORITY)
+
+Change the sink check from `sink == Result` to `sink == Result || sink == Agg`
+at both code paths.
+
+**Safety:** All JOB source tables are <50M (cast_info=36M is largest). No JOB
+query would be affected. DSB SF50 query025_spj has `sink=Agg` with
+catalog_sales (72M) as source — but JIT is **faster** for query025_spj (47ms
+JIT vs 70ms DuckDB), so we must NOT bypass it. Use threshold 100M (catches
+144M store_sales, skips 72M catalog_sales).
+
+**Two code locations:**
+1. `TryCompileQueryJit` at line 3999: change `sink == Result` →
+   `(sink == Result || sink == Agg)`  and threshold from 50M → 100M
+2. `SpeculativeQueryJitCompile` at line 4177: same change
+
+**Expected savings:** ~810ms on query050_spj (342ms compile + 450ms execution).
+
+#### Fix 2: Cross-query-prep guard fix (MEDIUM PRIORITY)
+
+**Approach:** When cross-query-prep bg-compiles sq0 via
+`SpeculativeQueryJitCompile`, pass the original splitter IR directly to
+`BuildExecutionSteps` instead of re-parsing the SQL. This preserves the
+original join structure that `PlanJoinFilterPushdown` needs for guard
+generation.
+
+**Variant A (recommended):** In `BgCompileFirstSubquery`
+(`ir_query_splitter.cpp:455`), instead of calling
+`SpeculativeQueryJitCompile(result.first_sub_sql, ...)` which re-parses SQL,
+pass the sub_ir directly to a new `TryCompileQueryJitFromIR()` function that
+skips SQL parsing and uses the splitter's IR. This requires adding a method to
+DuckDBAdapter that accepts IR instead of SQL.
+
+**Variant B (simpler):** Keep bg kernel only for iteration-0 latency hiding,
+record an inline-compiled kernel (with guards) for template replay.
+
+**Expected savings:** JOB +169ms improvement (guard restoration). DSB neutral.
