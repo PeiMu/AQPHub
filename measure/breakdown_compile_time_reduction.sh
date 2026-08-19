@@ -105,20 +105,20 @@ cp "$A3" "${DEST_DIR}/figB5_cache_off_llvm.csv"
 
 # B6: single-run-strict (no cross-query-prep)
 echo "--- B6: cache=strict llvm ---"
-bash ./measure_breakdown_time_aqp.sh $BASE single-run-strict off tpde "" "" "cross-query-prep"
-B6="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_strict_tpde_nocrossqprep_breakdown_time_log.csv"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-strict off llvm "" "" "cross-query-prep"
+B6="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_strict_llvm_nocrossqprep_breakdown_time_log.csv"
 mv "$B6" "${DEST_DIR}/figB6_cache_strict_llvm.csv"
 
 # B7: single-run-template (no cross-query-prep)
 echo "--- B7: cache=template llvm ---"
-bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off tpde "" "" "cross-query-prep"
-B7="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_tpde_nocrossqprep_breakdown_time_log.csv"
-cp "$B7" "${DEST_DIR}/figB7_cache_template_llvm.csv"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off llvm "" "" "cross-query-prep"
+B7="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_llvm_nocrossqprep_breakdown_time_log.csv"
+mv "$B7" "${DEST_DIR}/figB7_cache_template_llvm.csv"
 
 # B8: full
 echo "--- B8: cache=full ---"
-bash ./measure_breakdown_time_aqp.sh $BASE full off tpde "" "" "cross-query-prep"
-B8="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_tpde_nocrossqprep_breakdown_time_log.csv"
+bash ./measure_breakdown_time_aqp.sh $BASE full off llvm "" "" "cross-query-prep"
+B8="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_llvm_nocrossqprep_breakdown_time_log.csv"
 mv "$B8" "${DEST_DIR}/figB8_cache_full_llvm.csv"
 
 
