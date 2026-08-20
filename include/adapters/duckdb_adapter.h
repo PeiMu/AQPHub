@@ -198,6 +198,7 @@ public:
                                res->GetError());
   }
 
+
   // Execute SQL query
   QueryResult ExecuteSQL(const std::string &sql) override;
   void ExecuteSQLandCreateTempTable(const std::string &sql,

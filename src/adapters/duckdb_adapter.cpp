@@ -866,7 +866,9 @@ void DuckDBAdapter::Optimize() {
 
   // Check if optimization is enabled and required
   if (!plan->RequireOptimizer()) {
+#ifndef NDEBUG
     std::cout << "[DuckDB] Plan does not require optimization" << std::endl;
+#endif
     return;
   }
 
@@ -901,7 +903,9 @@ void DuckDBAdapter::FilterOptimize() {
 
   // Check if optimization is enabled and required
   if (!plan->RequireOptimizer()) {
+#ifndef NDEBUG
     std::cout << "[DuckDB] Plan does not require optimization" << std::endl;
+#endif
     return;
   }
 
@@ -936,7 +940,9 @@ void DuckDBAdapter::PostOptimizePlan() {
 
   // Check if optimization is enabled and required
   if (!plan->RequireOptimizer()) {
+#ifndef NDEBUG
     std::cout << "[DuckDB] Plan does not require optimization" << std::endl;
+#endif
     return;
   }
 
@@ -1044,7 +1050,10 @@ DuckDBAdapter::ReOptimizeIR(std::unique_ptr<ir_sql_converter::AQPStmt> ir) {
     auto &cfg = context->config;
     bool saved = cfg.enable_dbshaker_query_split;
     cfg.enable_dbshaker_query_split = false;
-    plan = optimizer.Optimize(std::move(plan));
+    if (disable_engine_optimizer_)
+      plan = optimizer.FilterOptimize(std::move(plan));
+    else
+      plan = optimizer.Optimize(std::move(plan));
     cfg.enable_dbshaker_query_split = saved;
   }
 
@@ -2294,6 +2303,7 @@ void DuckDBAdapter::RegisterPlaceholderTemp(
 void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     const std::string &sql, const std::string &temp_table_name,
     bool update_temp_card, bool enable_timing) {
+  auto og = MakeOptGuard();
   auto prepared = conn->Prepare(sql);
   if (prepared->HasError()) {
     throw std::runtime_error("[DuckDB] Prepare failed: " +
@@ -4265,7 +4275,10 @@ DuckDBAdapter::SpeculativeQueryJitCompile(const std::string &sql,
         throw std::runtime_error("failed to create logical plan");
       if (local_plan->RequireOptimizer()) {
         duckdb::Optimizer optimizer(*local_planner->binder, *spec_ctx);
-        local_plan = optimizer.Optimize(std::move(local_plan));
+        if (disable_engine_optimizer_)
+          local_plan = optimizer.FilterOptimize(std::move(local_plan));
+        else
+          local_plan = optimizer.Optimize(std::move(local_plan));
       }
     } catch (...) {
       if (auto_commit)

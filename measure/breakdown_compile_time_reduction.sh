@@ -67,7 +67,7 @@ cp "$A2" "${DEST_DIR}/figA2_fastisel.csv"
 
 # A3: TPDE
 echo "--- A3: TPDE ---"
-bash ./measure_breakdown_time_aqp.sh $BASE off off tpde "" "" ""
+#bash ./measure_breakdown_time_aqp.sh $BASE off off tpde "" "" ""
 A3="${DEST_DIR}/duckdb_topdown_query_none_tpde_breakdown_time_log.csv"
 cp "$A3" "${DEST_DIR}/figA3_tpde.csv"
 
@@ -101,7 +101,7 @@ mv "$B4" "${DEST_DIR}/figB4_cache_full_tpde.csv"
 
 # B5: off — reuse A3
 echo "--- B5: cache=off (reuse A3) llvm ---"
-cp "$A3" "${DEST_DIR}/figB5_cache_off_llvm.csv"
+cp "$A1" "${DEST_DIR}/figB5_cache_off_llvm.csv"
 
 # B6: single-run-strict (no cross-query-prep)
 echo "--- B6: cache=strict llvm ---"
@@ -143,7 +143,7 @@ mv "$C2" "${DEST_DIR}/figC2_spec_only_tpde.csv"
 
 # C3: +spec-jit +cross-query-prep (both on)
 echo "--- C3: +spec-jit +cross-query-prep tpde ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile tpde "" "" ""
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile tpde "" "" ""
 C3="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv"
 cp "$C3" "${DEST_DIR}/figC3_spec_and_cross_tpde.csv"
 
@@ -162,7 +162,7 @@ mv "$C5" "${DEST_DIR}/figC5_spec_only_llvm.csv"
 
 # C6: +spec-jit +cross-query-prep (both on)
 echo "--- C6: +spec-jit +cross-query-prep llvm ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" ""
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" ""
 C6="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv"
 cp "$C6" "${DEST_DIR}/figC6_spec_and_cross_llvm.csv"
 

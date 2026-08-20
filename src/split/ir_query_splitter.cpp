@@ -388,6 +388,7 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
       duck->SetBlockSkip(config_.block_skip);
       duck->SetMembershipPreprobe(config_.membership_preprobe);
       duck->SetDisableBidirectionalStorage(config_.disable_bidirectional_storage);
+      duck->SetDisableEngineOptimizer(config_.disable_engine_optimizer);
 #endif
     }
   }
@@ -1036,6 +1037,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duck->SetBlockSkip(config_.block_skip);
       duck->SetMembershipPreprobe(config_.membership_preprobe);
       duck->SetDisableBidirectionalStorage(config_.disable_bidirectional_storage);
+      duck->SetDisableEngineOptimizer(config_.disable_engine_optimizer);
 #endif
     }
   }
