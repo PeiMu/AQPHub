@@ -2,231 +2,445 @@
 ========================================
 Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/
 ========================================
-Found 22 SQL file(s)
+Found 31 SQL file(s)
 
 --- Iteration 0 ---
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013/query013_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+23.9943181818181818|2064.8895454545454545|1777.8782954545454545|312906.58|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013_spj/query013_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 4
+2|145.00|74.94|74.94|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018/query018_0.sql
 
 === Query Results ===
-Rows: 1, Columns: 10
-NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+Rows: 9, Columns: 10
+AAAAAAAAGPOFAAAA|United States|GA|Douglas County|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+AAAAAAAAGPOFAAAA|United States|GA|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+AAAAAAAAGEKFAAAA|United States|ME|Oxford County|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGEKFAAAA|United States|ME|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGEKFAAAA|United States|NULL|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGPOFAAAA|United States|NULL|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+AAAAAAAAGEKFAAAA|NULL|NULL|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGPOFAAAA|NULL|NULL|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+NULL|NULL|NULL|NULL|37.5000000000000000|164.0750000000000000|0.00000000000000000000|41.7800000000000000|-572.9900000000000000|1959.5000000000000000|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 11
-NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+AAAAAAAAGEKFAAAA|United States|GA|Douglas County|4|102.07|0.00|11.22|-853.42|1944|0|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
 
 === Query Results ===
-Rows: 5, Columns: 5
-9002010|importomaxi #10                                   |846|callyeseeing                                      |5146.44|
-9009012|maximaxi #12                                      |698|eingn stcally                                     |1477.80|
-9006002|corpmaxi #2                                       |277|ationationable                                    |1390.75|
-9002012|importomaxi #12                                   |190|barn stought                                      |657.90|
-9005004|scholarmaxi #4                                    |935|eingesepri                                        |585.20|
+Rows: 12, Columns: 5
+9016010|corpunivamalg #10                                 |236|prin steing                                       |14868.09|
+9005012|scholarmaxi #12                                   |161|oughtcallyought                                   |6402.51|
+9014012|edu packunivamalg #12                             |495|antin stese                                       |5136.82|
+9006008|corpmaxi #8                                       |615|antioughtcally                                    |3822.00|
+9008004|namelessmaxi #4                                   |118|prieing                                           |2493.65|
+9016010|corpunivamalg #10                                 |202|antiation                                         |2277.95|
+9002012|importomaxi #12                                   |129|anticallyable                                     |2129.80|
+9002002|importomaxi #2                                    |760|barcallyation                                     |1585.98|
+9008010|namelessmaxi #10                                  |739|antieseeing                                       |1206.66|
+9004002|edu packmaxi #2                                   |112|ableoughtought                                    |624.00|
+9009002|maximaxi #2                                       |419|n stoughtese                                      |435.60|
+9006008|corpmaxi #8                                       |186|callyeingought                                    |0.00|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
-9002010|190|225.63|
+9002002|112|0.00|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025/query025_0.sql
 
 === Query Results ===
-Rows: 0, Columns: 7
+Rows: 35, Columns: 7
+AAAAAAAAAEEOAAAA|Likely shareholders seem main officers. More western weeks shall live most|AAAAAAAADEAAAAAA|ation|NULL|NULL|NULL|
+AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAAHAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAMEAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAAAFAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAACGAAAAAA|eing|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAAGFAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAECIFAAAA|Coherent steps make back efforts. Originally com|AAAAAAAAEHAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAAEFGOAAAA|Now pleased fires may see still in a studies. Partially correct employees shall press other, holy drugs; please warm times consider italian farmers; international, modern acres give mu|AAAAAAAAOIAAAAAA|ese|0|0|3048.693713497635|
+AAAAAAAAFANKAAAA|More than vulnerable pounds enter financial, financial marks. Left methods own levels. At all main parents must not cover well supposed, small adults. Great, guilty users w|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAFDKNAAAA|Academic approaches find never very concerned messages. Ready, good employers would assess most special, quiet resources. Already violent place|AAAAAAAAHAAAAAAA|ation|NULL|NULL|NULL|
+AAAAAAAAGAGOAAAA|Always different pains must install so devices. In particular usual characteristics compete however. Procedures explain certain|AAAAAAAACDAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAACAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAKHAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAALCAAAAAA|pri|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAODAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAILADAAAA|Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAJEGDAAAA|Wages would not get national men. Full, disastrous rates would not think human strings. Associations ask very grateful, good faces; then future lawyers could not undertake|AAAAAAAAJEAAAAAA|pri|NULL|NULL|NULL|
+AAAAAAAAKAHFAAAA|Tight bonds seek compar|AAAAAAAANGAAAAAA|n st|NULL|NULL|NULL|
+AAAAAAAAKJMGAAAA|L|AAAAAAAAAFAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAAKNMDAAAA|Documents could realise commercial, am|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAALKGBAAAA|Financial, classical methods should use fully spec|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAALNNAAAAA|Typically colonial agreements break foreign, outer talks. All grim friends believe troops. Accounts join. Great, limited results exp|AAAAAAAAJEAAAAAA|pri|NULL|NULL|NULL|
+AAAAAAAAMBHFAAAA|Original, available users could get safer; bodies like so tragic waves. Huge job|AAAAAAAAJHAAAAAA|ought|NULL|NULL|NULL|
+AAAAAAAAMPAKAAAA|British managers will not go. Obvious approaches include home buildings. Together english shows boost however behind a objects; tables create otherwise boys. Then early times might|AAAAAAAACGAAAAAA|eing|NULL|NULL|NULL|
+AAAAAAAAMPAKAAAA|British managers will not go. Obvious approaches include home buildings. Together english shows boost however behind a objects; tables create otherwise boys. Then early times might|AAAAAAAAIAAAAAAA|eing|NULL|NULL|NULL|
+AAAAAAAANJGDAAAA|Theories ought to complain in order different generations. |AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAOJLBAAAA|Always european industries thank simply bare, new things. States may call nearly unions. Golden sites will lead often. Beautifu|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillors may join now hot cells. Around little businesses could show even local, pure results. Papers shall mind difficulties. Famous ways know |AAAAAAAAAFAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillors may join now hot cells. Around little businesses could show even local, pure results. Papers shall mind difficulties. Famous ways know |AAAAAAAAEHAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillors may join now hot cells. Around little businesses could show even local, pure results. Papers shall mind difficulties. Famous ways know |AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAPHBLAAAA|Services will hold old, fatal cost|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAPPGHAAAA|Possibly|AAAAAAAAACAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAPPGHAAAA|Possibly|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 10
-NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|NULL|
+AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAAIAAAAAA|able|-3877.59|18.20|-7616.99|5932|3685751|1878468|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 8
-AAAAAAAAAAIDAAAA|MI|3|1.00|0.00|0.00|67|1325690|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query032/query032_0.sql
+AAAAAAAAACGDAAAA|MI|1|1.42|0.00|0.00|511|6634126|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query038/query038_0.sql
 
-Test FAILED for query032_0.sql
-Error: Query execution failed: ERROR:  canceling statement due to statement timeout
-
+=== Query Results ===
+Rows: 1, Columns: 1
+79|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040/query040_0.sql
 
 === Query Results ===
-Rows: 13, Columns: 4
-MO|AAAAAAAABPPPAAAA|NULL|0|
-MO|AAAAAAAAECLAAAAA|0|15.78|
-MO|AAAAAAAAEGEIAAAA|-262.36|0|
-SC|AAAAAAAALMHEAAAA|0|-654.63|
-SC|AAAAAAAAONBGBAAA|-398.18|0|
-SD|AAAAAAAAAKOBAAAA|0|63.87|
-SD|AAAAAAAADFJBBAAA|0|-1308.47|
-SD|AAAAAAAAEFHGBAAA|-232.85|0|
-SD|AAAAAAAAGKOCAAAA|0|-809.27|
-SD|AAAAAAAAJBPAAAAA|0|-774.25|
-SD|AAAAAAAAKLFMAAAA|-961.99|0|
-TN|AAAAAAAACIPDBAAA|-2185.50|0|
-TN|AAAAAAAAGPNBAAAA|-877.36|0|
+Rows: 52, Columns: 4
+MO|AAAAAAAAAGGOAAAA|-272.68|0|
+MO|AAAAAAAAANCFAAAA|-678.36|0|
+MO|AAAAAAAACEBMAAAA|-2328.00|0|
+MO|AAAAAAAACIDGAAAA|69.16|0|
+MO|AAAAAAAACIMHAAAA|21.76|0|
+MO|AAAAAAAAGAHGAAAA|0|-375.68|
+MO|AAAAAAAAGFJAAAAA|0.00|0|
+MO|AAAAAAAAGJKEAAAA|0|-582.10|
+MO|AAAAAAAAGKHMAAAA|0|-273.06|
+MO|AAAAAAAAGKNMAAAA|-1435.78|0|
+MO|AAAAAAAAHBNHAAAA|-20.55|0|
+MO|AAAAAAAALMMIAAAA|-212.97|0|
+MO|AAAAAAAAMDHNAAAA|0|-108.62|
+MO|AAAAAAAAOBNAAAAA|-78.88|0|
+MO|AAAAAAAAOCKAAAAA|0|-339.40|
+MO|AAAAAAAAOFPKAAAA|-451.54|0|
+MO|AAAAAAAAOMGJAAAA|-8974.95|0|
+MO|AAAAAAAAPGDBAAAA|6.23|0|
+OH|AAAAAAAAENAMAAAA|-189.81|0|
+OH|AAAAAAAAFIIEAAAA|-473.78|0|
+OH|AAAAAAAAGMHGAAAA|0|95.29|
+OH|AAAAAAAAKOOMAAAA|-3593.88|0|
+OH|AAAAAAAALNEAAAAA|0|-2369.12|
+OH|AAAAAAAAMHFNAAAA|-92.09|0|
+SC|AAAAAAAACACDAAAA|204.03|0|
+SC|AAAAAAAACELOAAAA|-1300.14|0|
+SC|AAAAAAAACJDIAAAA|0|46.70|
+SC|AAAAAAAAECGEAAAA|-3024.10|0|
+SC|AAAAAAAAHGLBAAAA|-930.57|0|
+SC|AAAAAAAAHPELAAAA|-1122.16|0|
+SC|AAAAAAAAIFGDAAAA|-157.60|0|
+SC|AAAAAAAAMCCAAAAA|0|-2098.77|
+SC|AAAAAAAAMNBGAAAA|-16323.44|0|
+SC|AAAAAAAAOIDNAAAA|-25.68|0|
+SC|AAAAAAAAOJIMAAAA|-381.69|0|
+SD|AAAAAAAAAPDHAAAA|-2389.55|0|
+SD|AAAAAAAAENGMAAAA|0|-1826.91|
+SD|AAAAAAAAFMCDAAAA|-111.30|0|
+SD|AAAAAAAAGIDDAAAA|-406.08|0|
+SD|AAAAAAAAIPEKAAAA|46.24|0|
+SD|AAAAAAAAKGNIAAAA|-435.26|0|
+SD|AAAAAAAAKIJNAAAA|-19.45|0|
+SD|AAAAAAAAKLCOAAAA|-1417.21|0|
+SD|AAAAAAAAMNDMAAAA|-1003.95|0|
+SD|AAAAAAAAOIPNAAAA|-1106.01|0|
+SD|AAAAAAAAOOPAAAAA|0|-1144.23|
+TN|AAAAAAAADMLOAAAA|-779.24|0|
+TN|AAAAAAAAINMHAAAA|60.47|0|
+TN|AAAAAAAAMEDAAAAA|-469.60|0|
+TN|AAAAAAAAMPHDAAAA|-835.23|0|
+TN|AAAAAAAAMPKKAAAA|-321.77|0|
+TN|AAAAAAAAOBMLAAAA|0|-321.70|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
-MO|AAAAAAAAAKOBAAAA|2853|749270|2853|749270|
+MO|AAAAAAAAAGGOAAAA|557|3741300|557|3741300|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050/query050_0.sql
+
+Test FAILED for query050_0.sql
+Error: Query execution failed: ERROR:  could not read blocks 678873..678873 in file "base/252712440/252713227": Input/output error
+CONTEXT:  parallel worker
+
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050_spj/query050_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 12
+able|1|627|Main 7th|Suite 210 |Antioch|48877     |41197|2450819|2450854|10453|2450819|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072/query072_0.sql
+
+=== Query Results ===
+Rows: 100, Columns: 6
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5204|0|30|30|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5205|0|29|29|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5206|0|23|23|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5204|0|22|22|
+Military children should carry also deep round events. Communications explore content, i|NULL|5205|0|20|20|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Local, mass universi|5207|0|19|19|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|NULL|5206|0|19|19|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5182|0|18|18|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|NULL|5167|0|17|17|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5182|0|17|17|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5207|0|17|17|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5179|0|16|16|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5180|0|16|16|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Bad cards must make.|5202|0|15|15|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|NULL|5180|0|15|15|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5168|0|14|14|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5206|0|14|14|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Conventional childr|5207|0|14|14|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Local, mass universi|5203|0|13|13|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5181|0|13|13|
+Military children should carry also deep round events. Communications explore content, i|NULL|5167|0|13|13|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5178|0|13|13|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5216|0|12|12|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5199|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5179|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5181|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|NULL|5178|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|NULL|5198|0|12|12|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Conventional childr|5167|0|12|12|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Conventional childr|5202|1|11|12|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5167|0|12|12|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5168|0|12|12|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5200|0|11|11|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5200|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Conventional childr|5198|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5181|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5208|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5169|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Bad cards must make.|5200|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5177|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5170|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5215|0|11|11|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Bad cards must make.|5180|0|11|11|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5197|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5167|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5198|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5196|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|NULL|5182|0|10|10|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5167|0|10|10|
+Military children should carry also deep round events. Communications explore content, i|NULL|5180|0|10|10|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5166|0|10|10|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5178|0|10|10|
+Documents could realise commercial, am|Local, mass universi|5177|0|9|9|
+Documents could realise commercial, am|Local, mass universi|5207|0|9|9|
+Documents could realise commercial, am|Quite effectiv|5202|0|9|9|
+Documents could realise commercial, am|Quite effectiv|5203|0|9|9|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5196|0|9|9|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5196|0|9|9|
+Documents could realise commercial, am|Important issues liv|5168|0|8|8|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Local, mass universi|5179|0|8|8|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5184|0|8|8|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5182|0|8|8|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5213|0|7|7|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5201|0|7|7|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5168|0|7|7|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Local, mass universi|5178|0|7|7|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5172|0|7|7|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Local, mass universi|5206|0|7|7|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5213|0|6|6|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5196|0|6|6|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5217|0|6|6|
+Military children should carry also deep round events. Communications explore content, i|Bad cards must make.|5170|0|6|6|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5189|0|6|6|
+Military children should carry also deep round events. Communications explore content, i|NULL|5189|0|6|6|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5217|0|6|6|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Bad cards must make.|5173|0|6|6|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|NULL|5181|0|6|6|
+Documents could realise commercial, am|Local, mass universi|5206|0|5|5|
+Documents could realise commercial, am|NULL|5202|0|5|5|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5218|0|5|5|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Local, mass universi|5218|0|5|5|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5183|0|5|5|
+Military children should carry also deep round events. Communications explore content, i|Conventional childr|5175|0|5|5|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5190|0|5|5|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Bad cards must make.|5187|0|5|5|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5214|0|5|5|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5208|0|5|5|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Local, mass universi|5176|0|5|5|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|NULL|5176|0|5|5|
+Documents could realise commercial, am|Quite effectiv|5179|0|4|4|
+Documents could realise commercial, am|Quite effectiv|5181|0|4|4|
+Documents could realise commercial, am|NULL|5179|0|4|4|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5173|0|4|4|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5175|0|4|4|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5173|0|4|4|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5191|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Bad cards must make.|5209|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5173|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5192|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5211|0|4|4|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072_spj/query072_spj_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 6
+19|Bad cards must make.|5166|19|1077079|19|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084/query084_0.sql
 
 === Query Results ===
 Rows: 100, Columns: 2
-AAAAAAAAAMNGAAAA|Ha, Richard|
-AAAAAAAABIMBFAAA|Stack, Dinah|
-AAAAAAAABIMBFAAA|Stack, Dinah|
-AAAAAAAABIMBFAAA|Stack, Dinah|
-AAAAAAAABIMBFAAA|Stack, Dinah|
-AAAAAAAABIMIAAAA|Green, Kenneth|
-AAAAAAAABIMIAAAA|Green, Kenneth|
-AAAAAAAABIMIAAAA|Green, Kenneth|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACFLDFAAA|Yanez, Vera|
-AAAAAAAACOIKDAAA|Mills, Susan|
-AAAAAAAACOIKDAAA|Mills, Susan|
-AAAAAAAACOIKDAAA|Mills, Susan|
-AAAAAAAACOIKDAAA|Mills, Susan|
-AAAAAAAACOIKDAAA|Mills, Susan|
-AAAAAAAACOIKDAAA|Mills, Susan|
-AAAAAAAADKFOGAAA|Bates, Donald|
-AAAAAAAADKFOGAAA|Bates, Donald|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADNFDEAAA|Wise, Robert|
-AAAAAAAADPJAHAAA|Nelson, Andrew|
-AAAAAAAADPJAHAAA|Nelson, Andrew|
-AAAAAAAADPJAHAAA|Nelson, Andrew|
-AAAAAAAAEFIIFAAA|Pierson, Linda|
-AAAAAAAAEFIIFAAA|Pierson, Linda|
-AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
-AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
-AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
-AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
-AAAAAAAAEJOEHAAA|Ortiz, Rudolph|
-AAAAAAAAFEONCAAA|Bartlett, Neal|
-AAAAAAAAFEONCAAA|Bartlett, Neal|
-AAAAAAAAFEONCAAA|Bartlett, Neal|
-AAAAAAAAFEONCAAA|Bartlett, Neal|
-AAAAAAAAFEONCAAA|Bartlett, Neal|
-AAAAAAAAFEONCAAA|Bartlett, Neal|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFFCHAAAA|Hamilton, Margorie|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAFOJJHAAA|Dominquez, Don|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGDBJGAAA|Carey, Herman|
-AAAAAAAAGHLFFAAA|Rose, Alma|
-AAAAAAAAGIFIGAAA|Rich, Anne|
-AAAAAAAAGPDGHAAA|Ferguson, Virginia|
-AAAAAAAAHGIAHAAA|Cantwell, William|
-AAAAAAAAHJFFGAAA|Washington, William|
-AAAAAAAAHJFFGAAA|Washington, William|
-AAAAAAAAHJFFGAAA|Washington, William|
-AAAAAAAAHJFFGAAA|Washington, William|
-AAAAAAAAHJFFGAAA|Washington, William|
-AAAAAAAAHJFFGAAA|Washington, William|
-AAAAAAAAHJFFGAAA|Washington, William|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAACCCLAAA|Morales, Joseph|
+AAAAAAAAACCCLAAA|Morales, Joseph|
+AAAAAAAAACCCLAAA|Morales, Joseph|
+AAAAAAAAACNLHAAA|Pena, Wayne|
+AAAAAAAAACNLHAAA|Pena, Wayne|
+AAAAAAAAAEFELAAA|Lanham, Edward|
+AAAAAAAAAEFELAAA|Lanham, Edward|
+AAAAAAAAAEFELAAA|Lanham, Edward|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAOKFAAAA|Orourke, Edward|
+AAAAAAAABBHHIAAA|Witherspoon, Bart|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABJJNEAAA|Grimes, Jeffrey|
+AAAAAAAABJJNEAAA|Grimes, Jeffrey|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNJLIAAA|Brooks, Herman|
+AAAAAAAABOBGEAAA|Wiggins, David|
+AAAAAAAABOBGEAAA|Wiggins, David|
+AAAAAAAABOBGEAAA|Wiggins, David|
+AAAAAAAACBILIAAA|Wright, Eunice|
+AAAAAAAACBILIAAA|Wright, Eunice|
+AAAAAAAACBILIAAA|Wright, Eunice|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACNAALAAA|Beasley, Juan|
+AAAAAAAACNAALAAA|Beasley, Juan|
+AAAAAAAACNAALAAA|Beasley, Juan|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
-AAAAAAAAAEPDCAAA|12297|219|
+AAAAAAAAABNDHAAA|3317|7|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
 
-=== Query Results ===
-Rows: 11, Columns: 4
-Did not fit|3.0000000000000000|54.3600000000000000|37.6300000000000000|
-Did not like the mod|54.0000000000000000|814.9600000000000000|24.6000000000000000|
-Does not work with a|62.0000000000000000|1142.4100000000000000|29.4100000000000000|
-Found a better price|3.0000000000000000|49.5400000000000000|67.1200000000000000|
-Lost my job|65.0000000000000000|777.6200000000000000|50.1600000000000000|
-Not working any more|5.0000000000000000|409.9800000000000000|46.8400000000000000|
-reason 23|69.0000000000000000|229.8700000000000000|14.0700000000000000|
-reason 32|63.0000000000000000|2541.3000000000000000|50.7000000000000000|
-reason 36|44.0000000000000000|3643.4900000000000000|52.1900000000000000|
-reason 38|5.0000000000000000|64.3500000000000000|94.1700000000000000|
-unauthoized purchase|8.0000000000000000|729.1200000000000000|50.6200000000000000|
+Test FAILED for query085_0.sql
+Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 7
-3|49.54|14.07|11391|436887|309595|309595|
+2|0.00|2.65|888|2197394|92245|92245|
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query087/query087_0.sql
+
+=== Query Results ===
+Rows: 1, Columns: 1
+0|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
 
 === Query Results ===
-Rows: 6, Columns: 4
-AAAAAAAAIAAAAAAA|California|Wayne Ray|4978.13|
-AAAAAAAAHAAAAAAA|Pacific Northwest|Alden Snyder|3811.91|
-AAAAAAAAGBAAAAAA|Hawaii/Alaska_1|Travis Wilson|2369.90|
-AAAAAAAAEAAAAAAA|North Midwest|Larry Mccray|1640.11|
-AAAAAAAAOAAAAAAA|Mid Atlantic_1|Clyde Scott|388.06|
-AAAAAAAABAAAAAAA|NY Metro|Bob Belcher|100.47|
+Rows: 4, Columns: 4
+AAAAAAAAHAAAAAAA|Pacific Northwest|Alden Snyder|31254.30|
+AAAAAAAAIAAAAAAA|California|Wayne Ray|30803.13|
+AAAAAAAABAAAAAAA|NY Metro|Bob Belcher|22713.09|
+AAAAAAAACAAAAAAA|Mid Atlantic|Felipe Perkins|10520.04|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
-AAAAAAAABAAAAAAA|California|Alden Snyder|46.70|4970|328629|
+AAAAAAAABAAAAAAA|California|Alden Snyder|8.68|416|1606065|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099/query099_0.sql
 
 === Query Results ===
-Rows: 4, Columns: 8
-Bad cards must make.|LIBRARY                       |Hawaii/Alaska_1|0|2|0|0|0|
-Bad cards must make.|LIBRARY                       |NY Metro|20|21|17|0|0|
-Conventional childr|LIBRARY                       |Hawaii/Alaska_1|0|1|1|0|0|
-Conventional childr|LIBRARY                       |NY Metro|88|88|95|0|0|
+Rows: 6, Columns: 8
+Bad cards must make.|LIBRARY                       |Mid Atlantic|256|224|199|0|0|
+Bad cards must make.|LIBRARY                       |NY Metro|763|764|819|0|0|
+Local, mass universi|LIBRARY                       |Mid Atlantic|459|407|358|0|0|
+Local, mass universi|LIBRARY                       |NY Metro|1311|1269|1315|0|0|
+Quite effectiv|LIBRARY                       |Mid Atlantic|174|145|171|0|0|
+Quite effectiv|LIBRARY                       |NY Metro|512|500|547|0|0|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 5
-Bad cards must make.|LIBRARY                       |Hawaii/Alaska_1|410689|3271|
+Bad cards must make.|LIBRARY                       |Mid Atlantic|2034713|9|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
 
 === Query Results ===
@@ -238,20 +452,31 @@ Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
 
-=== Query Results ===
-Rows: 0, Columns: 4
+Test FAILED for query101_0.sql
+Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+
 Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
 
+Test FAILED for query101_spj_0.sql
+Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102/query102_0.sql
+
+Test FAILED for query102_0.sql
+Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+
+Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102_spj/query102_spj_0.sql
+
 === Query Results ===
-Rows: 1, Columns: 4
-NULL|NULL|NULL|NULL|
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
 
 ========================================
 Benchmark Summary
 ========================================
-Total queries: 22
-Passed: 21
-Failed: 1
+Total queries: 31
+Passed: 26
+Failed: 5
 ========================================
 
 ========================================

@@ -126,6 +126,7 @@ if [[ -n "$disable_runtime_opts" ]]; then
             membership)    jit_extra_flags+=" --no-membership-preprobe" ;;
             early-term)    jit_extra_flags+=" --no-early-termination" ;;
             disable-bi-directional-storage) jit_extra_flags+=" --disable-bidirectional-storage" ;;
+            disable-optimizer) jit_extra_flags+=" --disable-optimizer" ;;
             *) echo "Unknown runtime opt: $_opt"; exit 1 ;;
         esac
     done
@@ -155,6 +156,7 @@ fi
 [[ "$disable_runtime_opts" == *"membership"* ]]    && flag_suffix+="_nomembership"
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && flag_suffix+="_nobidirstorage"
+[[ "$disable_runtime_opts" == *"disable-optimizer"* ]] && flag_suffix+="_nooptimizer"
 [[ "$interp_collect_stats" == "on" ]]              && flag_suffix+="_interpcollect"
 
 ########################################

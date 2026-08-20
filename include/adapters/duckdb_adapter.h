@@ -345,6 +345,7 @@ public:
   void SetBlockSkip(bool v) { block_skip_ = v; }
   void SetMembershipPreprobe(bool v) { membership_preprobe_ = v; }
   void SetDisableBidirectionalStorage(bool v) { disable_bidirectional_storage_ = v; }
+  void SetDisableEngineOptimizer(bool v) { disable_engine_optimizer_ = v; }
 
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
@@ -714,6 +715,23 @@ private:
   bool block_skip_ = true;
   bool membership_preprobe_ = true;
   bool disable_bidirectional_storage_ = false;
+  bool disable_engine_optimizer_ = false;
+
+  // RAII guard: temporarily disables the DuckDB optimizer for conn->Prepare()
+  // calls (subquery execution), without affecting EXPLAIN calls elsewhere.
+  struct OptGuard {
+    duckdb::ClientContext *ctx;
+    bool saved;
+    OptGuard(duckdb::ClientContext *c, bool disable)
+        : ctx(c), saved(c->config.enable_optimizer) {
+      if (disable)
+        ctx->config.enable_optimizer = false;
+    }
+    ~OptGuard() { ctx->config.enable_optimizer = saved; }
+  };
+  OptGuard MakeOptGuard() {
+    return OptGuard(GetClientContext(), disable_engine_optimizer_);
+  }
   std::unique_ptr<duckdb::Connection> bidir_conn_;
   bool jit_debug_ = false;
   bool benchmark_mode_ = false;

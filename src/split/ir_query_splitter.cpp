@@ -1387,6 +1387,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 #endif
     return !splitter_->IsComplete(remaining_ir.get());
   };
+
   while (has_work()) {
     iteration_count_++;
 

@@ -879,12 +879,12 @@ void DuckDBAdapter::Optimize() {
     throw std::runtime_error("Binder not available. Call ParseSQL first.");
   }
 
-  // Create optimizer and run PreOptimize
   duckdb::Optimizer optimizer(*planner->binder, *context);
-  auto optimized_plan = optimizer.Optimize(std::move(plan));
-
-  // Store the optimized plan
-  plan = std::move(optimized_plan);
+  if (disable_engine_optimizer_) {
+    plan = optimizer.FilterOptimize(std::move(plan));
+  } else {
+    plan = optimizer.Optimize(std::move(plan));
+  }
 
   // Commit transaction if in auto-commit mode
   if (context->transaction.IsAutoCommit()) {
@@ -1410,6 +1410,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       prepared = conn->PrepareFromPlan(std::move(jit_pending_plan_),
                                        planner->names, planner->types);
     } else {
+      auto og = MakeOptGuard();
       prepared = conn->Prepare(sql);
     }
     if (!prepared->HasError() && prepared->data &&
@@ -1519,7 +1520,11 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
       WriteJitTimingColumn(0);
 #endif
     GetClientContext()->aqp_jit_context.reset();
-    auto prepared = conn->Prepare(sql);
+    std::unique_ptr<duckdb::PreparedStatement> prepared;
+    {
+      auto og = MakeOptGuard();
+      prepared = conn->Prepare(sql);
+    }
     if (prepared->HasError()) {
       throw std::runtime_error("Query failed: " + prepared->GetError());
     }
@@ -1778,6 +1783,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   } else
 #endif
   {
+    auto og = MakeOptGuard();
     prepared = conn->Prepare(sql);
   }
   // prepared is null only on a query-jit spec HIT (no main-connection
@@ -1999,6 +2005,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     // Spec-HIT run error: no prepared statement exists — create the
     // interpreter fallback now.
     if (!prepared) {
+      auto og = MakeOptGuard();
       prepared = conn->Prepare(sql);
       if (prepared->HasError())
         throw std::runtime_error("[DuckDB] Prepare failed: " +
@@ -3881,6 +3888,7 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
   chunk_col_names_ = std::move(saved_chunk_names);
 
   if (!fail_reason.empty() || !prepared || prepared->HasError()) {
+    auto og = MakeOptGuard();
     prepared = conn->Prepare(sql);
     prep.ir.reset();
     prep.analysis = qjit::QjitAnalysisResult{};

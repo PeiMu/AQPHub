@@ -294,6 +294,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.no_cross_query_prep = true;
     } else if (arg == "--disable-bidirectional-storage") {
       config.disable_bidirectional_storage = true;
+    } else if (arg == "--disable-optimizer") {
+      config.disable_engine_optimizer = true;
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage();
       exit(0);
@@ -489,6 +491,9 @@ void ParamConfig::PrintUsage() {
 	    << std::endl;
   std::cout << "  --explain                        Print EXPLAIN ANALYZE plan "
                "for each sub-SQL (default: disabled)"
+            << std::endl;
+  std::cout << "  --disable-optimizer              Disable engine optimizer for "
+               "subquery execution (init IR still uses FilterOptimize)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;
