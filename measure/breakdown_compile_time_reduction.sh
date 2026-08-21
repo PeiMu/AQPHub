@@ -127,44 +127,44 @@ echo "============================================"
 echo "Figure C: Latency hiding (TPDE, cache=template)"
 echo "============================================"
 
-node_based_BASE="job duckdb node-based query none on on on all"
-
-# C1: baseline (spec=off, cross=off)
-echo "--- C1: no latency hiding tpde ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off tpde "" "" "cross-query-prep"
-C1="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_tpde_nocrossqprep_breakdown_time_log.csv"
-mv "$C1" "${DEST_DIR}/figC1_no_hiding_tpde.csv"
-
-# C2: +spec-jit (cross=off)
-echo "--- C2: +spec-jit tpde ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile tpde "" "" "cross-query-prep"
-C2="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tpde_nocrossqprep_breakdown_time_log.csv"
-mv "$C2" "${DEST_DIR}/figC2_spec_only_tpde.csv"
-
-# C3: +spec-jit +cross-query-prep (both on)
-echo "--- C3: +spec-jit +cross-query-prep tpde ---"
-#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile tpde "" "" ""
-C3="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv"
-cp "$C3" "${DEST_DIR}/figC3_spec_and_cross_tpde.csv"
-
-### LLVM
-# C4: baseline (spec=off, cross=off)
-echo "--- C4: no latency hiding llvm ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" "cross-query-prep"
-C4="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_nocrossqprep_breakdown_time_log.csv"
-mv "$C4" "${DEST_DIR}/figC4_no_hiding_llvm.csv"
-
-# C5: +spec-jit (cross=off)
-echo "--- C5: +spec-jit llvm ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" "cross-query-prep"
-C5="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_nocrossqprep_breakdown_time_log.csv"
-mv "$C5" "${DEST_DIR}/figC5_spec_only_llvm.csv"
-
-# C6: +spec-jit +cross-query-prep (both on)
-echo "--- C6: +spec-jit +cross-query-prep llvm ---"
-#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" ""
-C6="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv"
-cp "$C6" "${DEST_DIR}/figC6_spec_and_cross_llvm.csv"
+#node_based_BASE="job duckdb node-based query none on on on all"
+#
+## C1: baseline (spec=off, cross=off)
+#echo "--- C1: no latency hiding tpde ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off tpde "" "" "cross-query-prep"
+#C1="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_tpde_nocrossqprep_breakdown_time_log.csv"
+#mv "$C1" "${DEST_DIR}/figC1_no_hiding_tpde.csv"
+#
+## C2: +spec-jit (cross=off)
+#echo "--- C2: +spec-jit tpde ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile tpde "" "" "cross-query-prep"
+#C2="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tpde_nocrossqprep_breakdown_time_log.csv"
+#mv "$C2" "${DEST_DIR}/figC2_spec_only_tpde.csv"
+#
+## C3: +spec-jit +cross-query-prep (both on)
+#echo "--- C3: +spec-jit +cross-query-prep tpde ---"
+##bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile tpde "" "" ""
+#C3="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv"
+#cp "$C3" "${DEST_DIR}/figC3_spec_and_cross_tpde.csv"
+#
+#### LLVM
+## C4: baseline (spec=off, cross=off)
+#echo "--- C4: no latency hiding llvm ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" "cross-query-prep"
+#C4="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_nocrossqprep_breakdown_time_log.csv"
+#mv "$C4" "${DEST_DIR}/figC4_no_hiding_llvm.csv"
+#
+## C5: +spec-jit (cross=off)
+#echo "--- C5: +spec-jit llvm ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" "cross-query-prep"
+#C5="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_nocrossqprep_breakdown_time_log.csv"
+#mv "$C5" "${DEST_DIR}/figC5_spec_only_llvm.csv"
+#
+## C6: +spec-jit +cross-query-prep (both on)
+#echo "--- C6: +spec-jit +cross-query-prep llvm ---"
+##bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" ""
+#C6="${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv"
+#cp "$C6" "${DEST_DIR}/figC6_spec_and_cross_llvm.csv"
 
 echo ""
 echo "=== Compilation-time reduction breakdown complete ==="

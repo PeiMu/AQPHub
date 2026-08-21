@@ -49,7 +49,6 @@ echo "=== DSB scale factor: ${DSB_SF} (results -> ${RESULT_DIR}/) ==="
 # Interpreter baseline (2 configs)
 # ============================================================
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb none none && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based none && \
 
 ## ============================================================
 ## split=none: 3 jit-level x 3 compile-mode x 2 cache(off/full) = 18
@@ -107,9 +106,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb none query none on on 
 ##bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based pipeline none on on on all off off llvm && \
 ##bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based pipeline none on on on all off off fastisel && \
 ##bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based pipeline none on on on all off off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off off llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off off llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off off fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off off tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off off tpde && \
 
 # Generate tune JSON from cache=off CSVs produced above
 python3 tune_per_subquery.py --bench=dsb_${DSB_SF} --result-dir=${RESULT_DIR} && \
@@ -124,9 +123,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on 
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-strict off llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-strict off fastisel && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-strict off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict off llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict off llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict off fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict off tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict off tpde && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on on all single-run-strict off llvm ${RESULT_DIR}/tuned_cross_split_duckdb.json && \
 
 ## ---- cache=single-run-template, spec=off (10) ----
@@ -136,9 +135,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on 
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-template off llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-template off fastisel && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-template off tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template off llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template off llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template off fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template off tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template off tpde && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on on all single-run-template off llvm ${RESULT_DIR}/tuned_cross_split_duckdb.json && \
 
 ## ---- cache=full, spec=off (10) ----
@@ -164,9 +163,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on 
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all off recompile llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all off recompile fastisel && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all off recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off recompile llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off recompile llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off recompile fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off recompile tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all off recompile tpde && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on on all off recompile llvm ${RESULT_DIR}/tuned_cross_split_duckdb.json && \
 
 ## ---- cache=single-run-strict, spec=recompile (10) ----
@@ -176,9 +175,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on 
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-strict recompile llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-strict recompile fastisel && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-strict recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict recompile llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict recompile llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict recompile fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict recompile tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-strict recompile tpde && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on on all single-run-strict recompile llvm ${RESULT_DIR}/tuned_cross_split_duckdb.json && \
 
 ## ---- cache=single-run-template, spec=recompile (10) ----
@@ -188,9 +187,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on 
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-template recompile llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-template recompile fastisel && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based operator none on on on all single-run-template recompile tpde && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template recompile llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template recompile llvm && \
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template recompile fastisel && \
-bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template recompile tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb node-based query none on on on all single-run-template recompile tpde && \
 bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} duckdb auto query none on on on all single-run-template recompile llvm ${RESULT_DIR}/tuned_cross_split_duckdb.json && \
 
 ## ---- cache=full, spec=recompile (10) ----

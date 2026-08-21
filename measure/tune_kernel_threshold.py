@@ -260,7 +260,7 @@ def main():
         print(f"Usage: {sys.argv[0]} [tuning_data_dir]")
         sys.exit(1)
 
-    strategies = ["node-based", "relationship-center"]
+    strategies = ["relationship-center"]  # "node-based" commented out
     all_pairs = []
 
     for strategy in strategies:

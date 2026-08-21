@@ -31,10 +31,10 @@ if [[ "$generate_golden" != "--test-only" ]]; then
   echo ""
 
   echo "========================================"
-  echo "Generating golden: node-based, none-jit"
+#  echo "Generating golden: node-based, none-jit"
   echo "========================================"
-  bash run_aqp.sh job postgresql node-based none none
-  cp job_result/aqp_middleware_postgresql_node-based_none_none_job.txt "${GOLDEN_NB}"
+#  bash run_aqp.sh job postgresql node-based none none
+#  cp job_result/aqp_middleware_postgresql_node-based_none_none_job.txt "${GOLDEN_NB}"
   echo ""
 fi
 
@@ -55,13 +55,13 @@ JIT_CONFIGS=(
   # Interpreter baseline (should match golden exactly)
   # ============================================================
   "postgresql|none|none|none|${GOLDEN_NOSPLIT}"
-  "postgresql|node-based|none|none|${GOLDEN_NB}"
+#  "postgresql|node-based|none|none|${GOLDEN_NB}"
 
   # ============================================================
   # Query-jit, compile_mode=llvm (default)
   # ============================================================
   "postgresql|none|query|none|${GOLDEN_NOSPLIT}"
-  "postgresql|node-based|query|none|${GOLDEN_NB}"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}"
 
   # ============================================================
   # Query-jit, compile_mode=fastisel
@@ -73,21 +73,21 @@ JIT_CONFIGS=(
   # Query-jit, compile_mode=tpde
   # ============================================================
   "postgresql|none|query|none|${GOLDEN_NOSPLIT}|||tpde"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|||tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|||tpde"
 
   # ============================================================
   # jit-cache=single-run-strict
   # ============================================================
-  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict|fastisel"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict|tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict|tpde"
 
   # ============================================================
   # jit-cache=single-run-template
   # ============================================================
-  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|fastisel"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|tpde"
 
   # ============================================================
   # jit-cache=full (with --repeat=2 for cold+warm)
@@ -95,35 +95,35 @@ JIT_CONFIGS=(
   "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full"
 #  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full|fastisel"
 #  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full|tpde"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full|fastisel"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full|tpde"
 
   # ============================================================
   # Speculative JIT, recompile
   # ============================================================
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile||fastisel"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile||tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile||tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=single-run-strict
   # ============================================================
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict|fastisel"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict|tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict|tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=single-run-template
   # ============================================================
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|fastisel"
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=full
   # ============================================================
-  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full|fastisel"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|full|tpde"
 

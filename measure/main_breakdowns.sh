@@ -36,7 +36,7 @@ bash measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all si
 # PostgreSQL JOB
 bash ./measure_breakdown_time_aqp.sh job postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql none query none on on on all off off tpde &&\
-bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
+#bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
 #bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-strict recompile fastisel &&\
 
 ## PostgreSQL DSB 10
@@ -47,9 +47,9 @@ bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
 
 # DuckDB DSB 50
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb none none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb none query none on on on all off off tpde &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based none &&\
-bash measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on on all single-run-template off tpde 
+bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb none query none on on on all off off tpde
+#bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based none &&\
+#bash measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on on all single-run-template off tpde
 
 ## DuckDB DSB 100
 #bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none none &&\

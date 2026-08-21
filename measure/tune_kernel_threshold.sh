@@ -26,7 +26,7 @@ mkdir -p "$OUT_DIR"
 
 HEADER="query,repeat,iteration,type,kernel_valid,kernel_used,scan_table,scan_rows,num_joins,num_filters,num_output_cols,exe_time_ms"
 
-STRATEGIES="node-based relationship-center"
+STRATEGIES="relationship-center"
 MODES="kernel no-kernel"
 
 for STRATEGY in $STRATEGIES; do
