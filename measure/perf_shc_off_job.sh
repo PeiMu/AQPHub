@@ -28,7 +28,7 @@ set -e
 # cache=off / spec=off runs, where exe time is self-contained).
 # ============================================================
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off off llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off off fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off off fastisel && \
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off off tpde && \
 
 # ============================================================
@@ -48,12 +48,12 @@ python3 tune_per_subquery.py && \
 bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all off off llvm job_result/tuned_cross_split_duckdb.json && \
 bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-strict off llvm job_result/tuned_cross_split_duckdb.json && \
 bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-template off llvm job_result/tuned_cross_split_duckdb.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all full off llvm job_result/tuned_cross_split_duckdb.json && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all full off llvm job_result/tuned_cross_split_duckdb.json && \
 # spec=recompile
 bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all off recompile llvm job_result/tuned_cross_split_duckdb.json && \
 bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-strict recompile llvm job_result/tuned_cross_split_duckdb.json && \
 bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all single-run-template recompile llvm job_result/tuned_cross_split_duckdb.json && \
-bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all full recompile llvm job_result/tuned_cross_split_duckdb.json && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all full recompile llvm job_result/tuned_cross_split_duckdb.json && \
 
 # ============================================================
 # Step 4: skip_hash_cmp=off variants for the remaining tiers
@@ -61,42 +61,42 @@ bash ./measure_breakdown_time_aqp.sh job duckdb auto query none on on on all ful
 # ============================================================
 # ---- cache=single-run-strict, spec=off (3) ----
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict off llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict off fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict off fastisel && \
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict off tpde && \
 
 # ---- cache=single-run-template, spec=off (3) ----
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template off llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template off fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template off fastisel && \
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template off tpde && \
 
 # ---- cache=full, spec=off (3) ----
 # (not in the original request list, but lines 151-153 of
 #  breakdown_measurement_script.sh measure this tier with =all;
 #  remove if not wanted)
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full off llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full off fastisel && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full off tpde && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full off llvm && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full off fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full off tpde && \
 
 # ---- cache=off, spec=recompile (3) ----
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off recompile llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off recompile fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off off recompile tpde && \
 
 # ---- cache=single-run-strict, spec=recompile (3) ----
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict recompile llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict recompile fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-strict recompile tpde && \
 
 # ---- cache=single-run-template, spec=recompile (3) ----
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template recompile llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template recompile fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template recompile fastisel && \
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off single-run-template recompile tpde && \
 
 # ---- cache=full, spec=recompile (3) ----
 # (not in the original request list, mirrors lines 215-217 of
 #  breakdown_measurement_script.sh; remove if not wanted)
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full recompile llvm && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full recompile fastisel && \
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full recompile tpde && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full recompile llvm && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full recompile fastisel && \
+#bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on off full recompile tpde && \
 
 echo "shc_off sweep done"

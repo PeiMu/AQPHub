@@ -61,9 +61,9 @@ cp "$A1" "${DEST_DIR}/figA1_llvm.csv"
 
 # A2: FastISel
 echo "--- A2: FastISel ---"
-bash ./measure_breakdown_time_aqp.sh $BASE off off fastisel "" "" ""
-A2="${DEST_DIR}/duckdb_topdown_query_none_fastisel_breakdown_time_log.csv"
-cp "$A2" "${DEST_DIR}/figA2_fastisel.csv"
+#bash ./measure_breakdown_time_aqp.sh $BASE off off fastisel "" "" ""
+#A2="${DEST_DIR}/duckdb_topdown_query_none_fastisel_breakdown_time_log.csv"
+#cp "$A2" "${DEST_DIR}/figA2_fastisel.csv"
 
 # A3: TPDE
 echo "--- A3: TPDE ---"
@@ -93,10 +93,10 @@ B3="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_tpde_nocr
 mv "$B3" "${DEST_DIR}/figB3_cache_template_tpde.csv"
 
 # B4: full
-echo "--- B4: cache=full tpde ---"
-bash ./measure_breakdown_time_aqp.sh $BASE full off tpde "" "" "cross-query-prep"
-B4="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_tpde_nocrossqprep_breakdown_time_log.csv"
-mv "$B4" "${DEST_DIR}/figB4_cache_full_tpde.csv"
+#echo "--- B4: cache=full tpde ---"
+#bash ./measure_breakdown_time_aqp.sh $BASE full off tpde "" "" "cross-query-prep"
+#B4="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_tpde_nocrossqprep_breakdown_time_log.csv"
+#mv "$B4" "${DEST_DIR}/figB4_cache_full_tpde.csv"
 
 
 # B5: off — reuse A3
@@ -116,10 +116,10 @@ B7="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_llvm_nocr
 mv "$B7" "${DEST_DIR}/figB7_cache_template_llvm.csv"
 
 # B8: full
-echo "--- B8: cache=full ---"
-bash ./measure_breakdown_time_aqp.sh $BASE full off llvm "" "" "cross-query-prep"
-B8="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_llvm_nocrossqprep_breakdown_time_log.csv"
-mv "$B8" "${DEST_DIR}/figB8_cache_full_llvm.csv"
+#echo "--- B8: cache=full ---"
+#bash ./measure_breakdown_time_aqp.sh $BASE full off llvm "" "" "cross-query-prep"
+#B8="${DEST_DIR}/duckdb_topdown_query_none_jitcache_full_llvm_nocrossqprep_breakdown_time_log.csv"
+#mv "$B8" "${DEST_DIR}/figB8_cache_full_llvm.csv"
 
 
 echo ""

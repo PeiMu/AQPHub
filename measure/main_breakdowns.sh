@@ -37,7 +37,7 @@ bash measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all si
 bash ./measure_breakdown_time_aqp.sh job postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-strict recompile fastisel &&\
+#bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-strict recompile fastisel &&\
 
 ## PostgreSQL DSB 10
 ##bash ./measure_breakdown_time_aqp.sh dsb postgresql none none &&\
