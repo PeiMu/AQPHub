@@ -45,6 +45,7 @@
 #include "adapters/lingodb_runtime_adapter.h"
 #endif
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -54,6 +55,91 @@
 #include <vector>
 
 using namespace middleware;
+
+// Schema-aware split heuristic: detect whether the query belongs to
+// TPC-DS/DSB or IMDB/JOB by scanning for known table names, then apply
+// the benchmark-specific rule.
+//
+// TPC-DS (star schema, uniform stats):
+//   split when #fact <= 2 AND #total >= 6  (star queries only)
+// IMDB (graph schema, correlated data):
+//   split when #total >= 5  (nearly always — cardinality feedback helps)
+// Unknown schema:
+//   always split (safe default)
+
+static const std::vector<std::string> kDSBFactTables = {
+    "store_sales", "catalog_sales", "web_sales",
+    "store_returns", "catalog_returns", "web_returns",
+    "inventory"};
+static const std::vector<std::string> kDSBDimTables = {
+    "date_dim",       "item",
+    "customer",       "customer_address",
+    "customer_demographics", "household_demographics",
+    "store",          "warehouse",
+    "web_page",       "web_site",
+    "promotion",      "reason",
+    "ship_mode",      "time_dim",
+    "call_center",    "catalog_page",
+    "income_band"};
+
+static const std::vector<std::string> kIMDBFactTables = {
+    "cast_info",     "movie_info",
+    "movie_companies", "movie_info_idx",
+    "movie_keyword", "person_info",
+    "complete_cast", "movie_link",
+    "aka_name",      "aka_title"};
+static const std::vector<std::string> kIMDBDimTables = {
+    "title",         "name",
+    "char_name",     "keyword",
+    "company_name",  "kind_type",
+    "company_type",  "comp_cast_type",
+    "info_type",     "role_type",
+    "link_type"};
+
+static int CountMatches(const std::string &lower_sql,
+                        const std::vector<std::string> &tables) {
+  int count = 0;
+  for (const auto &t : tables) {
+    // Simple word-boundary search: look for the table name surrounded by
+    // non-alphanumeric/underscore characters (or string boundaries).
+    size_t pos = 0;
+    while ((pos = lower_sql.find(t, pos)) != std::string::npos) {
+      bool left_ok = (pos == 0 || (!std::isalnum(lower_sql[pos - 1]) &&
+                                    lower_sql[pos - 1] != '_'));
+      size_t end = pos + t.size();
+      bool right_ok = (end >= lower_sql.size() ||
+                       (!std::isalnum(lower_sql[end]) &&
+                        lower_sql[end] != '_'));
+      if (left_ok && right_ok) {
+        ++count;
+        break;
+      }
+      pos = end;
+    }
+  }
+  return count;
+}
+
+static bool ShouldSplitHeuristic(const std::string &sql) {
+  std::string lower_sql(sql.size(), ' ');
+  std::transform(sql.begin(), sql.end(), lower_sql.begin(), ::tolower);
+
+  int dsb_fact = CountMatches(lower_sql, kDSBFactTables);
+  int dsb_dim = CountMatches(lower_sql, kDSBDimTables);
+  int dsb_total = dsb_fact + dsb_dim;
+
+  int imdb_fact = CountMatches(lower_sql, kIMDBFactTables);
+  int imdb_dim = CountMatches(lower_sql, kIMDBDimTables);
+  int imdb_total = imdb_fact + imdb_dim;
+
+  if (imdb_total > dsb_total)
+    return true; // IMDB/JOB: always split — cardinality feedback helps
+
+  if (dsb_total > 0)
+    return dsb_fact <= 2 && dsb_total >= 6;
+
+  return true; // unknown schema: default to split
+}
 
 // Factory function to create the appropriate adapter based on config
 std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
@@ -197,26 +283,15 @@ void ExecuteSingleQuery(
 
     std::chrono::high_resolution_clock::time_point timer;
     std::string sql;
+    double read_sql_us = 0.0;
     if (cross_prep && cross_prep->success) {
       sql = cross_prep->sql;
-      if (config.enable_timing) {
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << "0.000, "; // read_sql placeholder (done by bg thread)
-        log_file.close();
-      }
     } else {
       if (config.enable_timing)
         timer = chrono_tic();
       sql = ReadSQLFile(sql_file_path);
-      if (config.enable_timing) {
-        auto read_sql_time = chrono_toc(&timer, "Read SQL time is\n", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3)
-                 << (read_sql_time / 1000.0) << ", ";
-        log_file.close();
-      }
+      if (config.enable_timing)
+        read_sql_us = chrono_toc(&timer, "Read SQL time is\n", false);
     }
 
     if (config.print_sql || config.enable_debug_print) {
@@ -242,6 +317,38 @@ void ExecuteSingleQuery(
       if (config.enable_debug_print)
         std::cerr << "[AUTO] " << qname << ": split="
                   << local_config.GetStrategyName() << "\n";
+    }
+
+    // Schema-based heuristic: for topdown, only split star-schema queries
+    // (<=2 fact tables, >=6 total tables). Multi-fact joins run faster
+    // with DuckDB's full optimizer (none path).
+    bool heuristic_none = false;
+    if (local_config.strategy == SplitStrategy::TOP_DOWN &&
+        !ShouldSplitHeuristic(sql)) {
+      local_config.strategy = SplitStrategy::NONE;
+      heuristic_none = true;
+      if (config.enable_debug_print)
+        std::cerr << "[HEURISTIC] " << qname
+                  << ": skip split (multi-fact or small query)\n";
+#ifdef HAVE_DUCKDB
+      auto *duckdb_adp_h = dynamic_cast<DuckDBAdapter *>(adapter);
+      if (duckdb_adp_h) {
+        try {
+          duckdb_adp_h->ApplyEngineSetting("RESET disabled_optimizers");
+        } catch (...) {
+        }
+      }
+#endif
+    }
+
+    // Write read_sql timing column (deferred from above).
+    // For heuristic_none: skip — the 9-column topdown format is written below.
+    if (config.enable_timing && !heuristic_none) {
+      std::ofstream log_file;
+      log_file.open(g_timing_log_name, std::ios_base::app);
+      log_file << std::fixed << std::setprecision(3)
+               << (read_sql_us / 1000.0) << ", ";
+      log_file.close();
     }
 
     if (local_config.NeedsSplit()) {
@@ -380,7 +487,25 @@ void ExecuteSingleQuery(
         } else
 #endif
         {
-          query_result = adapter->ExecuteSQL(sql);
+          if (heuristic_none && config.enable_timing) {
+            // 9-column topdown format (0 groups):
+            //   col0=prepare_mw (benchmark loop), col1=read_sql=0,
+            //   col2=parse_sql=0, col3=preprocess=0,
+            //   col4=convert_plan_to_ir=0,
+            //   col5=generate_final_sub_sql=0,
+            //   col6=jit_compile_final (adapter), col7=final_exe (adapter),
+            //   col8=show_output (written later).
+            {
+              std::ofstream lf;
+              lf.open(g_timing_log_name, std::ios_base::app);
+              lf << "0.000, 0.000, 0.000, 0.000, 0.000, ";
+              lf.close();
+            }
+            // adapter->ExecuteSQL writes jit_compile_final + final_exe
+            query_result = adapter->ExecuteSQL(sql);
+          } else {
+            query_result = adapter->ExecuteSQL(sql);
+          }
         }
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
       }

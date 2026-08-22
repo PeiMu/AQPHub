@@ -262,9 +262,7 @@ TopDownSplitter::TopDownSplitter(EngineAdapter *adapter,
   // query — repeating it would add ~0.2 ms/query of untracked overhead.
   // Kill switch for A/B measurement: AQP_TD_NO_OPTSET disables the SET.
   if (apply_engine_settings && !std::getenv("AQP_TD_NO_OPTSET")) {
-    static bool applied = false;
-    if (!applied) {
-      applied = true;
+    {
       try {
         adapter->ApplyEngineSetting(
             "SET disabled_optimizers='filter_pullup,empty_result_pullup,"
@@ -604,6 +602,31 @@ static bool CollectExprTables(const ir_sql_converter::AQPExpr *e,
       return false;
     return CollectExprTables(c->left_expr.get(), tables) &&
            CollectExprTables(c->right_expr.get(), tables);
+  }
+  case SimplestNodeType::FunctionExprNodeType: {
+    auto *c = dynamic_cast<const SimplestFunctionExpr *>(e);
+    if (!c)
+      return false;
+    for (const auto &arg : c->args)
+      if (arg && !CollectExprTables(arg.get(), tables))
+        return false;
+    return true;
+  }
+  case SimplestNodeType::CaseExprNodeType: {
+    auto *c = dynamic_cast<const SimplestCaseExpr *>(e);
+    if (!c)
+      return false;
+    for (const auto &clause : c->case_checks) {
+      if (clause.when_expr &&
+          !CollectExprTables(clause.when_expr.get(), tables))
+        return false;
+      if (clause.then_expr &&
+          !CollectExprTables(clause.then_expr.get(), tables))
+        return false;
+    }
+    if (c->else_expr && !CollectExprTables(c->else_expr.get(), tables))
+      return false;
+    return true;
   }
   case SimplestNodeType::ConstVarNode:
     return true;
