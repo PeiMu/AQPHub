@@ -26,6 +26,7 @@ bash ./measure_breakdown_time_aqp.sh job duckdb none none &&\
 bash ./measure_breakdown_time_aqp.sh job duckdb none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh job duckdb topdown none &&\
 bash measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all single-run-template off tpde &&\
+bash measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all single-run-structural off tpde &&\
 
 ## DuckDB DSB 10
 #bash ./measure_breakdown_time_aqp.sh dsb duckdb none none &&\

@@ -155,8 +155,10 @@ JIT_CONFIGS=(
 
   # jit-cache=single-run-template (query x llvm / fastisel / tpde)
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-structural"
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|fastisel"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|tpde"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-structural|tpde"
 
   # jit-cache=full (query x llvm / fastisel / tpde)
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full"
@@ -175,8 +177,10 @@ JIT_CONFIGS=(
 
   # Speculative JIT, recompile + jit_cache=single-run-template
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-structural"
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|fastisel"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|tpde"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-structural|tpde"
 
   # Speculative JIT, recompile + jit_cache=full
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full"
@@ -363,6 +367,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON"
+       on on on on single-run-structural off llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=off"
   output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
@@ -518,6 +523,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON"
+       on on on on single-run-structural recompile llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=recompile"
   output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
@@ -681,6 +687,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
+       on on on on single-run-structural off llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=off"
   output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
@@ -836,6 +843,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
+       on on on on single-run-structural recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=recompile"
   output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then

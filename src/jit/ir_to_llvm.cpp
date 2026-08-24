@@ -435,6 +435,19 @@ struct IrToLlvmCompiler::Impl {
     return cache;
   }
 
+  // §8.1 structural-template: secondary index for two-tier lookup.
+  struct StructuralEntry {
+    std::string full_cache_key;
+    std::string filter_key;
+    std::string entry_name;
+    size_t params_layout_size;
+  };
+  static std::unordered_map<std::string, std::vector<StructuralEntry>> &
+  StructuralIndex() {
+    static std::unordered_map<std::string, std::vector<StructuralEntry>> idx;
+    return idx;
+  }
+
   static std::string ComputeCacheKey(const std::string &content) {
     uint64_t h = 14695981039346656037ULL;
     for (unsigned char c : content) {
@@ -715,6 +728,14 @@ struct ParamsBuilder {
     if (r) offset += alignment - r;
     buf.resize(offset);
     return offset;
+  }
+
+  uint32_t AllocI8(uint8_t v) {
+    uint32_t off = offset;
+    buf.resize(offset + 1);
+    buf[off] = v;
+    offset += 1;
+    return off;
   }
 
   uint32_t AllocI32(int32_t v) {
@@ -5306,6 +5327,7 @@ void IrToLlvmCompiler::SetDiskCacheDir(const std::string &dir) {
 void IrToLlvmCompiler::ClearObjCache() {
   std::lock_guard<std::mutex> lk(Impl::ObjCacheMu());
   Impl::ObjCache().clear();
+  Impl::StructuralIndex().clear();
 }
 
 void *IrToLlvmCompiler::LookupCachedFn(const std::string &cache_key,
@@ -5599,6 +5621,200 @@ static std::string SerializeQjitPlanTemplate(const qjit::QjitQueryPlan &plan) {
   for (int c : plan.agg_output_cells)
     s += "," + std::to_string(c);
   return s;
+}
+
+// §8.1 structural-template: resolve attr to positional schema index.
+static int FindColIdxInSchema(const std::vector<ColSchema> &schema,
+                              unsigned table_idx, unsigned col_idx) {
+  for (int i = 0; i < (int)schema.size(); i++)
+    if (schema[i].table_idx == table_idx && schema[i].col_idx == col_idx)
+      return i;
+  return -1;
+}
+
+// §8.1 structural-template expression serialization: same as
+// SerializeExprTemplate but replaces attr identity with positional index.
+static void SerializeExprStructural(std::string &s, const AQPExpr *expr,
+                                    const std::vector<ColSchema> &schema) {
+  if (!expr) return;
+  auto nt = expr->GetNodeType();
+  if (nt == VarConstComparisonNode) {
+    auto *cmp = static_cast<const SimplestVarConstComparison *>(expr);
+    int pos = FindColIdxInSchema(schema, cmp->attr->GetTableIndex(),
+                                 cmp->attr->GetColumnIndex());
+    s += "c" + std::to_string(pos);
+    s += ":" + std::to_string((int)cmp->GetSimplestExprType());
+    auto vt = cmp->const_var->GetType();
+    if (vt == SimplestVarType::IntVar)
+      s += "$I";
+    else if (vt == SimplestVarType::FloatVar)
+      s += "$F";
+    else if (vt == SimplestVarType::StringVar) {
+      auto op = cmp->GetSimplestExprType();
+      if (op == SimplestExprType::TextLike ||
+          op == SimplestExprType::Text_Not_Like) {
+        std::string literal;
+        LikeSegments seg_info;
+        LikePatternKind kind = ClassifyLikePatternEx(
+            cmp->const_var->GetStringValue(), literal, seg_info);
+        s += "$L" + std::to_string(kind);
+        if (kind == LIKE_MULTI_SEGMENT)
+          s += "x" + std::to_string(seg_info.segs.size());
+      } else {
+        s += "$S";
+      }
+    } else if (vt == SimplestVarType::Date)
+      s += "$D";
+    else
+      s += "$?";
+  } else if (nt == InExprNode) {
+    auto *in = static_cast<const SimplestInExpr *>(expr);
+    int pos = FindColIdxInSchema(schema, in->attr->GetTableIndex(),
+                                 in->attr->GetColumnIndex());
+    s += "c" + std::to_string(pos);
+    s += (in->negated ? ":NI" : ":IN");
+    int n = (int)in->values.size();
+    if (n <= 8) {
+      auto vt = in->values.empty() ? SimplestVarType::IntVar
+                                   : in->values[0]->GetType();
+      if (vt == SimplestVarType::IntVar)
+        s += "$I*" + std::to_string(n);
+      else if (vt == SimplestVarType::StringVar)
+        s += "$S*" + std::to_string(n);
+      else
+        s += "$?*" + std::to_string(n);
+    } else {
+      s += "$?*" + std::to_string(n);
+    }
+  } else if (nt == LogicalExprNode) {
+    auto *le = static_cast<const SimplestLogicalExpr *>(expr);
+    s += "(";
+    SerializeExprStructural(s, le->left_expr.get(), schema);
+    s += "L" + std::to_string((int)le->GetLogicalOp());
+    SerializeExprStructural(s, le->right_expr.get(), schema);
+    s += ")";
+  } else if (nt == IsNullExprNode) {
+    auto *isnull = static_cast<const SimplestIsNullExpr *>(expr);
+    int pos = FindColIdxInSchema(schema, isnull->attr->GetTableIndex(),
+                                 isnull->attr->GetColumnIndex());
+    s += "c" + std::to_string(pos) + ":null";
+  } else {
+    s += "?";
+  }
+}
+
+// §8.1 structural-template plan serialization: erases table/column identity,
+// keeps only dtype signature, operation sequence, HT layout, guards, sinks.
+static std::string SerializeQjitPlanStructural(
+    const qjit::QjitQueryPlan &plan,
+    const std::vector<std::vector<ColSchema>> &schemas) {
+  std::string s;
+  for (size_t k = 0; k < plan.steps.size(); k++) {
+    const auto &st = plan.steps[k];
+    s += "S{";
+    for (const auto &c : st.cols)
+      s += "|" + std::to_string(c.expected_dtype);
+    for (size_t oi = 0; oi < st.ops.size(); oi++) {
+      const auto &op = st.ops[oi];
+      if (op.kind == qjit::QjitStepOp::Filter) {
+        s += ";FT:";
+        SerializeExprStructural(s, op.filter, schemas[k]);
+      } else {
+        s += ";P:" + std::to_string(op.ht_id);
+        for (const auto &kv : op.keys)
+          AppendQjitLoc(s, kv);
+      }
+    }
+    s += ";g" + std::to_string(st.guard_pos);
+    for (const auto &g : st.guards)
+      s += "(" + std::to_string(g.op_index) + (g.membership ? "m" : "r") + ")";
+    s += ";b" + std::to_string(st.block_skip_col);
+    s += ";K" + std::to_string((int)st.sink) + ":" + std::to_string(st.sink_ht);
+    for (const auto &o : st.outputs)
+      AppendQjitLoc(s, o);
+    for (const auto &a : st.agg_cells) {
+      s += ";A" + std::to_string((int)a.fn) + (a.has_arg ? "v" : "x");
+      if (a.has_arg)
+        AppendQjitLoc(s, a.arg);
+    }
+    s += "}";
+  }
+  for (const auto &ht : plan.hts) {
+    s += "H{" + std::to_string(ht.num_keys) + "," +
+         std::to_string(ht.prefix_bytes) + "," + std::to_string(ht.tuple_size);
+    for (const auto &c : ht.cols)
+      s += "|" + std::to_string(c.dtype) + "@" + std::to_string(c.offset);
+    s += "}";
+  }
+  s += "G";
+  s += plan.has_agg ? "1" : "0";
+  for (int c : plan.agg_output_cells)
+    s += "," + std::to_string(c);
+  return s;
+}
+
+// §8.1 structural-template: shape key (no filter) and filter key (filter only).
+// shape_key_out = structural plan with filter ops replaced by type-only markers.
+// filter_key_out = "none" or filter template string with positional refs.
+static void ComputeStructuralKeys(
+    const qjit::QjitQueryPlan &plan,
+    const std::vector<std::vector<ColSchema>> &schemas,
+    std::string &shape_key_out, std::string &filter_key_out) {
+  // Shape key: same as structural but filter ops serialized as ";FT" only
+  // (presence marker, no structure). This allows shape matching across
+  // plans with different filter structures or no filter.
+  std::string shape;
+  std::string filt;
+  bool has_filter = false;
+  for (size_t k = 0; k < plan.steps.size(); k++) {
+    const auto &st = plan.steps[k];
+    shape += "S{";
+    for (const auto &c : st.cols)
+      shape += "|" + std::to_string(c.expected_dtype);
+    for (const auto &op : st.ops) {
+      if (op.kind == qjit::QjitStepOp::Filter) {
+        shape += ";FT";
+        filt += "F" + std::to_string(k) + ":";
+        SerializeExprStructural(filt, op.filter, schemas[k]);
+        filt += ";";
+        has_filter = true;
+      } else {
+        shape += ";P:" + std::to_string(op.ht_id);
+        for (const auto &kv : op.keys)
+          AppendQjitLoc(shape, kv);
+      }
+    }
+    shape += ";g" + std::to_string(st.guard_pos);
+    for (const auto &g : st.guards)
+      shape += "(" + std::to_string(g.op_index) + (g.membership ? "m" : "r") +
+               ")";
+    shape += ";b" + std::to_string(st.block_skip_col);
+    shape += ";K" + std::to_string((int)st.sink) + ":" +
+             std::to_string(st.sink_ht);
+    for (const auto &o : st.outputs)
+      AppendQjitLoc(shape, o);
+    for (const auto &a : st.agg_cells) {
+      shape += ";A" + std::to_string((int)a.fn) + (a.has_arg ? "v" : "x");
+      if (a.has_arg)
+        AppendQjitLoc(shape, a.arg);
+    }
+    shape += "}";
+  }
+  for (const auto &ht : plan.hts) {
+    shape += "H{" + std::to_string(ht.num_keys) + "," +
+             std::to_string(ht.prefix_bytes) + "," +
+             std::to_string(ht.tuple_size);
+    for (const auto &c : ht.cols)
+      shape += "|" + std::to_string(c.dtype) + "@" + std::to_string(c.offset);
+    shape += "}";
+  }
+  shape += "G";
+  shape += plan.has_agg ? "1" : "0";
+  for (int c : plan.agg_output_cells)
+    shape += "," + std::to_string(c);
+
+  shape_key_out = std::move(shape);
+  filter_key_out = has_filter ? std::move(filt) : "none";
 }
 
 static void BuildParamsFromExpr(ParamsBuilder &pb, const AQPExpr *expr) {
@@ -8884,57 +9100,148 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     return nullptr;
 
   const bool template_mode = cache_mode_ == 2;
+  const bool structural_mode = cache_mode_ == 3;
 
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string entry_name = "qjit_query_" + std::to_string(fn_id);
+
+  // §8.1 structural-template: pre-build schemas for structural key.
+  std::vector<std::vector<ColSchema>> struct_schemas;
+  std::string struct_shape_key, struct_filter_key;
+  if (structural_mode) {
+    struct_schemas.resize(plan.steps.size());
+    for (size_t k = 0; k < plan.steps.size(); k++)
+      for (const auto &c : plan.steps[k].cols)
+        struct_schemas[k].push_back(
+            {c.table_index, c.column_index, c.expected_dtype});
+    ComputeStructuralKeys(plan, struct_schemas, struct_shape_key,
+                          struct_filter_key);
+  }
 
   // §5.1 object cache: the module is row-count independent (nrows /
   // morsel_size are runtime loads from ctx), so a canonical plan
   // serialization + codegen flags fully determines the object code.
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
-    std::string serialized_plan = template_mode
-        ? SerializeQjitPlanTemplate(plan)
-        : SerializeQjitPlan(plan);
     std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
                           std::to_string((int)fast_mode_) +
                           (skip_opt_ ? "n" : "o") +
                           "H" + std::to_string(skip_hash_cmp_) +
                           (bloom_tag_ ? "B" : "_") +
                           "C" + std::to_string(cache_mode_);
-    cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
-                                      serialized_plan);
-    entry_name = "qjit_query_c" + cache_key.substr(0, 12);
-    impl_->last_cache_key = cache_key;
-    impl_->last_entry_name = entry_name;
-    void *cached = impl_->TryCacheLoad(cache_key, entry_name);
+
+    if (structural_mode) {
+      // §8.1 two-tier lookup: exact match on (shape + filter), then
+      // fallback to shape-only for no-filter plans.
+      std::string full_content = "qjit-struct:" + opt_tag + "||" +
+                                 struct_shape_key + "||" + struct_filter_key;
+      cache_key = Impl::ComputeCacheKey(full_content);
+      entry_name = "qjit_query_s" + cache_key.substr(0, 12);
+      impl_->last_cache_key = cache_key;
+      impl_->last_entry_name = entry_name;
+
+      void *cached = impl_->TryCacheLoad(cache_key, entry_name);
 
 #ifndef NDEBUG
-    // §7.3a: dump cache keys for near-miss clustering analysis.
-    {
-      const char *dp = std::getenv("AQP_DUMP_CACHE_KEYS");
-      if (dp && dp[0]) {
-        static std::mutex dmu;
-        static uint64_t dseq = 0;
-        std::lock_guard<std::mutex> lk(dmu);
-        std::string line = "SEQ=" + std::to_string(dseq++) +
-                           "\tHIT=" + std::to_string(cached ? 1 : 0) +
-                           "\tKEY=" + cache_key +
-                           "\tOPT=" + opt_tag +
-                           "\tPLAN=" + serialized_plan + "\n";
-        int fd = ::open(dp, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd >= 0) {
-          (void)::write(fd, line.data(), line.size());
-          ::close(fd);
+      {
+        const char *dp = std::getenv("AQP_DUMP_CACHE_KEYS");
+        if (dp && dp[0]) {
+          static std::mutex dmu;
+          static uint64_t dseq = 0;
+          std::lock_guard<std::mutex> lk(dmu);
+          std::string line = "SEQ=" + std::to_string(dseq++) +
+                             "\tHIT=" + std::to_string(cached ? 1 : 0) +
+                             "\tKEY=" + cache_key +
+                             "\tOPT=" + opt_tag +
+                             "\tSHAPE=" + struct_shape_key +
+                             "\tFILTER=" + struct_filter_key + "\n";
+          int fd = ::open(dp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+          if (fd >= 0) {
+            (void)::write(fd, line.data(), line.size());
+            ::close(fd);
+          }
         }
       }
-    }
 #endif
 
-    if (cached) {
-      if (template_mode && params_out)
-        *params_out = BuildParamsBuffer(plan);
-      return cached;
+      if (cached) {
+        if (params_out) {
+          // §8.1 structural: prepend filter_enabled flag at offset 0.
+          ParamsBuilder spb;
+          bool has_filt = false;
+          for (const auto &st2 : plan.steps)
+            for (const auto &op2 : st2.ops)
+              if (op2.kind == qjit::QjitStepOp::Filter)
+                has_filt = true;
+          spb.AllocI8(has_filt ? 1 : 0);
+          for (const auto &st2 : plan.steps)
+            for (const auto &op2 : st2.ops)
+              if (op2.kind == qjit::QjitStepOp::Filter)
+                BuildParamsFromExpr(spb, op2.filter);
+          spb.Finalize();
+          *params_out = std::move(spb.buf);
+        }
+        return cached;
+      }
+
+      // Tier 2: no-filter plan reuses a previously-compiled filtered variant.
+      if (struct_filter_key == "none") {
+        std::lock_guard<std::mutex> lk(Impl::ObjCacheMu());
+        auto &idx = Impl::StructuralIndex();
+        std::string shape_hash = Impl::ComputeCacheKey(
+            "qjit-struct-shape:" + opt_tag + "||" + struct_shape_key);
+        auto it = idx.find(shape_hash);
+        if (it != idx.end() && !it->second.empty()) {
+          const auto &ent = it->second[0];
+          void *fallback = impl_->TryCacheLoad(ent.full_cache_key,
+                                               ent.entry_name);
+          if (fallback) {
+            if (params_out) {
+              params_out->resize(ent.params_layout_size, 0);
+              if (!params_out->empty())
+                (*params_out)[0] = 0; // filter_enabled = false
+            }
+            return fallback;
+          }
+        }
+      }
+    } else {
+      std::string serialized_plan = template_mode
+          ? SerializeQjitPlanTemplate(plan)
+          : SerializeQjitPlan(plan);
+      cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
+                                        serialized_plan);
+      entry_name = "qjit_query_c" + cache_key.substr(0, 12);
+      impl_->last_cache_key = cache_key;
+      impl_->last_entry_name = entry_name;
+      void *cached = impl_->TryCacheLoad(cache_key, entry_name);
+
+#ifndef NDEBUG
+      {
+        const char *dp = std::getenv("AQP_DUMP_CACHE_KEYS");
+        if (dp && dp[0]) {
+          static std::mutex dmu;
+          static uint64_t dseq = 0;
+          std::lock_guard<std::mutex> lk(dmu);
+          std::string line = "SEQ=" + std::to_string(dseq++) +
+                             "\tHIT=" + std::to_string(cached ? 1 : 0) +
+                             "\tKEY=" + cache_key +
+                             "\tOPT=" + opt_tag +
+                             "\tPLAN=" + serialized_plan + "\n";
+          int fd = ::open(dp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+          if (fd >= 0) {
+            (void)::write(fd, line.data(), line.size());
+            ::close(fd);
+          }
+        }
+      }
+#endif
+
+      if (cached) {
+        if (template_mode && params_out)
+          *params_out = BuildParamsBuffer(plan);
+        return cached;
+      }
     }
   }
 
@@ -9083,15 +9390,29 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
   };
 
   // §7.3 template mode: build params layout in lock-step with codegen.
+  // §8.1 structural mode also uses the params builder (with filter_enabled
+  // flag at offset 0).
+  const bool use_params = template_mode || structural_mode;
   ParamsBuilder tmpl_params;
-  ParamsBuilder *tmpl_params_ptr = template_mode ? &tmpl_params : nullptr;
+  ParamsBuilder *tmpl_params_ptr = use_params ? &tmpl_params : nullptr;
+
+  // §8.1 structural: check if plan has any filter ops.
+  bool struct_has_filter = false;
+  if (structural_mode) {
+    for (const auto &st : plan.steps)
+      for (const auto &op : st.ops)
+        if (op.kind == qjit::QjitStepOp::Filter)
+          struct_has_filter = true;
+    // Reserve byte 0 for filter_enabled flag.
+    tmpl_params.AllocI8(struct_has_filter ? 1 : 0);
+  }
 
   // ---- one morsel body per step: void(ctx, begin, end, worker_id) ----
   for (size_t k = 0; k < plan.steps.size(); k++) {
     const qjit::QjitStep &st = plan.steps[k];
     CompileCtx cc(C, *mod, schemas[k], /*chunk=*/nullptr, /*sel=*/nullptr);
     cc.strict_null_guard = true;
-    cc.template_mode = template_mode;
+    cc.template_mode = use_params;
     cc.params_builder = tmpl_params_ptr;
 
     auto emitMurmur = [&](Value *x) -> Value * {
@@ -9138,12 +9459,21 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     }
 
     // §7.3 template mode: load params_base from QjitUserData once per morsel.
-    if (template_mode) {
+    // §8.1 structural mode also uses params for filter constants + filter_enabled.
+    Value *filter_enabled_val = nullptr;
+    if (use_params) {
       Value *user_raw = cc.b.CreateLoad(
           i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 9), "user_raw");
       Value *ud = cc.b.CreateBitCast(user_raw, udp);
       cc.params_base = cc.b.CreateLoad(
           i8p, cc.b.CreateStructGEP(QjitUserDataTy, ud, 1), "params_base");
+      // §8.1 structural: load filter_enabled flag from params[0].
+      if (structural_mode && struct_has_filter) {
+        Value *fe_ptr = cc.b.CreateGEP(i8, cc.params_base, cc.c64(0));
+        filter_enabled_val = cc.b.CreateICmpNE(
+            cc.b.CreateLoad(i8, fe_ptr, "fe_byte"),
+            ConstantInt::get(i8, 0), "filter_enabled");
+      }
     }
 
     std::vector<Value *> ht_ptr(plan.hts.size(), nullptr);
@@ -9342,6 +9672,11 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
           if (op.kind != qjit::QjitStepOp::Filter)
             continue;
           BasicBlock *bb_fp = BasicBlock::Create(C, "r1_fpass", fn);
+          if (filter_enabled_val) {
+            BasicBlock *bb_do = BasicBlock::Create(C, "r1_fdo", fn);
+            cc.b.CreateCondBr(filter_enabled_val, bb_do, bb_fp);
+            cc.b.SetInsertPoint(bb_do);
+          }
           std::vector<const ir_sql_converter::AQPExpr *> one{op.filter};
           EmitShortCircuitFilter(cc, fn, one, bb_fp, r1_fail);
           cc.b.SetInsertPoint(bb_fp);
@@ -9448,6 +9783,11 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
           if (op.kind != qjit::QjitStepOp::Filter)
             continue;
           BasicBlock *bb_fp = BasicBlock::Create(C, "r1_fpass", fn);
+          if (filter_enabled_val) {
+            BasicBlock *bb_do = BasicBlock::Create(C, "r1_fdo2", fn);
+            cc.b.CreateCondBr(filter_enabled_val, bb_do, bb_fp);
+            cc.b.SetInsertPoint(bb_do);
+          }
           std::vector<const ir_sql_converter::AQPExpr *> one{op.filter};
           EmitShortCircuitFilter(cc, fn, one, bb_fp, r1_next);
           cc.b.SetInsertPoint(bb_fp);
@@ -9790,6 +10130,12 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
       const qjit::QjitStepOp &op = st.ops[oi];
       if (op.kind == qjit::QjitStepOp::Filter) {
         BasicBlock *bb_pass = BasicBlock::Create(C, "f_pass", fn);
+        if (filter_enabled_val) {
+          // §8.1 structural: guard filter with runtime filter_enabled flag.
+          BasicBlock *bb_do_filter = BasicBlock::Create(C, "f_do", fn);
+          cc.b.CreateCondBr(filter_enabled_val, bb_do_filter, bb_pass);
+          cc.b.SetInsertPoint(bb_do_filter);
+        }
         std::vector<const ir_sql_converter::AQPExpr *> one{op.filter};
         EmitShortCircuitFilter(cc, fn, one, bb_pass, cont);
         cc.b.SetInsertPoint(bb_pass);
@@ -10216,9 +10562,25 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
   last_cg_timing_.add_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t2 - cg_t1).count();
   last_cg_timing_.lookup_us = std::chrono::duration_cast<std::chrono::microseconds>(cg_t3 - cg_t2).count();
 
-  if (template_mode && params_out) {
+  if (use_params) {
     tmpl_params.Finalize();
-    *params_out = std::move(tmpl_params.buf);
+    if (params_out)
+      *params_out = tmpl_params.buf;
+  }
+
+  // §8.1 structural: register in the secondary index for two-tier lookup.
+  if (structural_mode && !cache_key.empty()) {
+    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+                          std::to_string((int)fast_mode_) +
+                          (skip_opt_ ? "n" : "o") +
+                          "H" + std::to_string(skip_hash_cmp_) +
+                          (bloom_tag_ ? "B" : "_") +
+                          "C" + std::to_string(cache_mode_);
+    std::string shape_hash = Impl::ComputeCacheKey(
+        "qjit-struct-shape:" + opt_tag + "||" + struct_shape_key);
+    std::lock_guard<std::mutex> lk(Impl::ObjCacheMu());
+    Impl::StructuralIndex()[shape_hash].push_back(
+        {cache_key, struct_filter_key, entry_name, tmpl_params.buf.size()});
   }
 
   return AQP_JIT_GET_ADDR(sym);

@@ -136,7 +136,7 @@ public:
   void SetCompileMode(int mode) { compile_mode_ = mode; }
   void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
   void SetJitFlags(uint32_t flags) { jit_flags_ = flags; }
-  void SetJITCache(int mode) { jit_cache_ = mode; }
+  void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
   void SetJITPrefetch(bool enable, int distance) {

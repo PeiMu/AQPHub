@@ -351,7 +351,8 @@ public:
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
   // JIT object cache mode (--jit-cache=..., default 0=off).
-  void SetJITCache(int mode) { jit_cache_ = mode; }
+  // config.jit_cache=4 (structural) maps to compiler cache_mode_=3.
+  void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
 
   // Compile mode (--compile-mode): 0=llvm (full quality), 2=tpde.

@@ -441,7 +441,7 @@ private:
   bool batch_probe_ = false;
   int skip_hash_cmp_ = 2; // 0=off, 2=all-int-keys
   bool bloom_tag_ = true;
-  int cache_mode_ = 0;  // 0=off, 1=strict, 2=template
+  int cache_mode_ = 0;  // 0=off, 1=strict, 2=parameterize-template, 3=structural-template
   bool cache_enabled_ = false;
 
   CodegenTiming last_cg_timing_;

@@ -366,6 +366,13 @@ def main():
          f"duckdb_{split}_query_none_jitcache_single_run_template_tuned_breakdown_time_log.csv", True),
         ("tuned_tmpl_srec",
          f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_tuned_breakdown_time_log.csv", True),
+        # --- jit-cache=single-run-structural ---
+        ("struct_q_llvm",
+         f"duckdb_{split}_query_none_jitcache_single_run_structural_llvm_breakdown_time_log.csv", True),
+        ("struct_q_tpde",
+         f"duckdb_{split}_query_none_jitcache_single_run_structural_tpde_breakdown_time_log.csv", True),
+        ("struct_q_srec_tpde",
+         f"duckdb_{split}_query_none_jitcache_single_run_structural_specrecompile_tpde_breakdown_time_log.csv", True),
     ]
 
     data = {}

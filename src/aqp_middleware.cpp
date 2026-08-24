@@ -426,7 +426,7 @@ void ExecuteSingleQuery(
       bool was_recording = false;
       bool is_query_jit = duckdb_adp &&
                           (config.jit_flags & AQP_JIT_QUERY_JIT) != 0;
-      if (config.jit_cache >= 3 && is_query_jit &&
+      if (config.jit_cache == 3 && is_query_jit &&
           config.engine == BackendEngine::DUCKDB) {
         std::string qname = get_filename(sql_file_path);
         auto dot = qname.rfind('.');
@@ -655,7 +655,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-    if (iter > 0 && config.jit_cache && config.jit_cache < 3)
+    if (iter > 0 && config.jit_cache && config.jit_cache != 3)
       aqp_jit::IrToLlvmCompiler::ClearObjCache();
 #endif
 
@@ -670,7 +670,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
                  config.strategy == SplitStrategy::TOP_DOWN ||
                  config.strategy == SplitStrategy::AUTO) &&
                 config.engine == BackendEngine::DUCKDB &&
-                !(config.jit_cache >= 3 && iter > 0)
+                !(config.jit_cache == 3 && iter > 0)
             ? dynamic_cast<DuckDBAdapter *>(adapter)
             : nullptr;
     if (duck_for_cross)
@@ -690,7 +690,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         (config.strategy == SplitStrategy::TOP_DOWN ||
          config.strategy == SplitStrategy::AUTO) &&
         config.engine == BackendEngine::POSTGRESQL &&
-        !(config.jit_cache >= 3 && iter > 0);
+        !(config.jit_cache == 3 && iter > 0);
     if (pg_for_cross)
       cross_query_pool = std::make_unique<ThreadPool>(1);
 #endif
@@ -1008,7 +1008,7 @@ int main(int argc, char **argv) {
       for (int iter = 0; iter < config.repeat_count; iter++) {
         if (iter > 0) {
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-          if (config.jit_cache && config.jit_cache < 3)
+          if (config.jit_cache && config.jit_cache != 3)
             aqp_jit::IrToLlvmCompiler::ClearObjCache();
 #endif
           if (config.enable_timing)

@@ -301,17 +301,24 @@ JIT_CONFIGS=(
   # skip_hash_cmp=off + cache tiers
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-strict||off"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template||off"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-structural||off"
 #  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|full||off"
   # jit-cache=single-run-template (expr / operator / query x llvm / fastisel / tpde)
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-template"
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-structural"
 #  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-template|fastisel"
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-template|tpde"
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-structural|tpde"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-template"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-structural"
 #  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-template|fastisel"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-template|tpde"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-structural|tpde"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-structural"
 #  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template|fastisel"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template|tpde"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-structural|tpde"
   # jit-cache=full (expr / operator / query x llvm / fastisel / tpde)
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|full"
 #  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|full|fastisel"
@@ -348,14 +355,20 @@ JIT_CONFIGS=(
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-strict|tpde"
   # cache=single-run-template + spec=recompile
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-template"
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural"
 #  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|fastisel"
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural|tpde"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-template"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural"
 #  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|fastisel"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural|tpde"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-template"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural"
 #  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|fastisel"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|tpde"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural|tpde"
   # cache=full + spec=recompile
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|full"
 #  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|full|fastisel"
@@ -682,6 +695,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON"
+       on on on on single-run-structural off llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=off"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -839,6 +853,7 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON"
+       on on on on single-run-structural recompile llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=recompile"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -1002,6 +1017,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
+       on on on on single-run-structural off llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=off"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -1157,6 +1173,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
+       on on on on single-run-structural recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=recompile"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
