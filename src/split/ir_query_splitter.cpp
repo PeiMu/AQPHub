@@ -2545,15 +2545,10 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   int spec_idx = adapter_->subquery_index;
   std::string spec_sql = adapter_->GenerateSQL(*spec_executable_ir, spec_idx);
 
-  // Inject the same range predicates the inline path would inject, so the
-  // compiled plan is never inferior and the keep-on-match compare below is
-  // optimized-vs-optimized. Bloom filters do not change the SQL text, so
-  // defer building them until we know a relaunch actually happens (on the
-  // kept-peek and learned-skip paths they would only be built and dropped).
-  // temp_tables_ already contains the latest temp here (ExecuteSubIR pushed
-  // it before UpdateRemainingIR ran).
-  ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/true,
-                                 /*build_bloom_filters=*/false);
+  // Range-pred injection deferred to the bg thread: the cost of scanning temp
+  // tables for min/max dominates PrecomputeNextExtraction (see Opt-2 analysis).
+  // Store the raw SQL for match comparison; the bg thread will apply range
+  // preds before parsing.
 
   precomputed_extraction_ = std::move(extraction);
 
@@ -2593,7 +2588,15 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   // NODE_BASED uses Phase A (LaunchSpeculativeCompile) which already manages
   // the spec_compilers_ ping-pong; a second launch here would break the
   // alternation invariant and race with the zombie from Phase A.
+  //
+  // Opt-3: skip bg compile for cheap subqueries. The bg pipeline takes ~1.2ms
+  // (connection + parse + optimize + codegen). If the subquery's estimated
+  // output is small, inline TPDE (~0.7ms) finishes before the bg compile, so
+  // speculation is pure overhead (core contention + wasted work). Threshold
+  // tuned: est_rows < 1000 covers 41% of JOB subqueries that execute in <1ms.
+  static constexpr double kSpecMinEstRows = 1000.0;
   if (!pending_spec_ && precomputed_extraction_ &&
+      precomputed_extraction_->estimated_rows >= kSpecMinEstRows &&
       config_.strategy == SplitStrategy::TOP_DOWN &&
       (config_.jit_flags & AQP_JIT_QUERY_JIT) && config_.spec_jit != 0) {
     int next_tune_key = iteration_count_;
@@ -3348,11 +3351,14 @@ bool IRQuerySplitter::ExecuteOneIteration(
     if (pending_spec_ &&
         (config_.engine == BackendEngine::DUCKDB ||
          config_.engine == BackendEngine::POSTGRESQL)) {
-      ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
-                                     /*build_bloom_filters=*/false);
+      // Compare raw (pre-optimization) SQL: Phase B stores raw SQL in
+      // speculative_sql, so compare before applying range preds.
       spec_hit = CheckSpeculativeResult(sub_sql, temp_table_name);
-      if (!spec_hit) {
-        ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/false,
+      if (spec_hit) {
+        ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
+                                       /*build_bloom_filters=*/false);
+      } else {
+        ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
                                        /*build_bloom_filters=*/true);
         compensate_miss = true;
       }
