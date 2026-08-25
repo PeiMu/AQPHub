@@ -124,11 +124,14 @@ public:
 #ifdef HAVE_LLVM
   void SetQueryJit(bool enable, int threads, int morsel) {
     query_jit_ = enable;
-    if (enable)
+    if (enable) {
       session_query_jit_ = true;
+      use_pg_optimizer_ = true;
+    }
     query_jit_threads_ = threads;
     query_jit_morsel_ = morsel;
   }
+  void SetUsePgOptimizer(bool enable) { use_pg_optimizer_ = enable; }
   void SetQueryJitStoragePlan(
       const middleware::storage::StoragePlan *plan) {
     qjit_storage_plan_ = plan;
@@ -229,9 +232,14 @@ public:
   QueryResult ReplayQjitFinal(const PgCachedSubquery &sub);
 #endif
 
+  std::unique_ptr<ir_sql_converter::AQPStmt>
+  ConvertPlanToIRFromPgOptimizer(const std::string &sql);
+
 protected:
   PGconn *conn;
   json parse_tree;
+  std::string last_parsed_sql_;
+  std::string connection_string_;
 
 private:
 
@@ -257,6 +265,10 @@ private:
 
   bool query_jit_ = false;
   bool session_query_jit_ = false;
+  bool use_pg_optimizer_ = false;
+  std::unordered_map<unsigned int, std::string> pg_oid_to_name_;
+  bool pg_oid_map_loaded_ = false;
+  void EnsureOidMap();
   int query_jit_threads_ = 0;
   int query_jit_morsel_ = 20000;
   const middleware::storage::StoragePlan *qjit_storage_plan_ = nullptr;

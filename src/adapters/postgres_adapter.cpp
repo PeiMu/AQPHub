@@ -102,7 +102,7 @@ static void IrTargetListToDtypes(const ir_sql_converter::AQPStmt &ir,
 namespace middleware {
 
 PostgreSQLAdapter::PostgreSQLAdapter(const std::string &connection_string)
-    : conn(nullptr), parse_tree() {
+    : conn(nullptr), parse_tree(), connection_string_(connection_string) {
   // Connect to PostgreSQL
   conn = PQconnectdb(connection_string.c_str());
 
@@ -141,16 +141,78 @@ void PostgreSQLAdapter::ParseSQL(const std::string &sql) {
   // Parse JSON
   parse_tree = json::parse(result.parse_tree);
   pg_query_free_parse_result(result);
+  last_parsed_sql_ = sql;
+}
+
+void PostgreSQLAdapter::EnsureOidMap() {
+  if (pg_oid_map_loaded_)
+    return;
+  pg_oid_map_loaded_ = true;
+  PGresult *res = PQexec(conn,
+      "SELECT oid, relname FROM pg_class WHERE relkind IN ('r','p')");
+  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+    if (res) PQclear(res);
+    return;
+  }
+  int nrows = PQntuples(res);
+  for (int i = 0; i < nrows; i++) {
+    unsigned int oid = static_cast<unsigned int>(atol(PQgetvalue(res, i, 0)));
+    pg_oid_to_name_[oid] = PQgetvalue(res, i, 1);
+  }
+  PQclear(res);
+}
+
+std::unique_ptr<ir_sql_converter::AQPStmt>
+PostgreSQLAdapter::ConvertPlanToIRFromPgOptimizer(const std::string &sql) {
+  EnsureOidMap();
+
+  char *escaped = PQescapeLiteral(conn, sql.c_str(), sql.size());
+  if (!escaped)
+    return nullptr;
+  std::string query = "SELECT aqp_plan_nodestring(" + std::string(escaped) + ")";
+  PQfreemem(escaped);
+
+  PGresult *res = PQexec(conn, query.c_str());
+  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK || PQntuples(res) < 1) {
+#ifndef NDEBUG
+    std::cerr << "[PostgreSQL] aqp_plan_nodestring failed: "
+              << (res ? PQresultErrorMessage(res) : "null result") << "\n";
+#endif
+    if (res) PQclear(res);
+    return nullptr;
+  }
+
+  const char *nodestr = PQgetvalue(res, 0, 0);
+  if (!nodestr || nodestr[0] == '\0') {
+    PQclear(res);
+    return nullptr;
+  }
+
+  std::unique_ptr<ir_sql_converter::AQPStmt> ir;
+  try {
+    ir = ir_sql_converter::ConvertNodeStrToIR(std::string(nodestr),
+                                              subquery_index, pg_oid_to_name_);
+  } catch (const std::exception &e) {
+#ifndef NDEBUG
+    std::cerr << "[PG-OPT] ConvertNodeStrToIR failed: " << e.what() << "\n";
+#endif
+  }
+  PQclear(res);
+  return ir;
 }
 
 std::unique_ptr<ir_sql_converter::AQPStmt>
 PostgreSQLAdapter::ConvertPlanToIR() {
+  if (use_pg_optimizer_ && !last_parsed_sql_.empty()) {
+    auto ir = ConvertPlanToIRFromPgOptimizer(last_parsed_sql_);
+    if (ir)
+      return ir;
+  }
+
   if (parse_tree.empty()) {
     throw std::runtime_error("No parse tree available. Call ParseSQL first.");
   }
 
-  // Use schema-aware conversion if global schema parser is initialized,
-  // otherwise fall back to basic conversion (column indices will be 0)
   std::unique_ptr<ir_sql_converter::AQPStmt> stmt =
       ir_sql_converter::ConvertParseTreeToIRWithSchema(parse_tree,
                                                        subquery_index);
@@ -847,6 +909,7 @@ void PostgreSQLAdapter::ResetQueryState() {
   for (const auto &kv : temp_table_card_)
     DropTempTable(kv.first);
   parse_tree.clear();
+  last_parsed_sql_.clear();
   temp_table_card_.clear();
   subquery_index = 0;
 #ifdef HAVE_LLVM

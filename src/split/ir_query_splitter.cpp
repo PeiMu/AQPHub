@@ -1184,7 +1184,19 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     } else {
       if (config_.enable_timing)
         timer = chrono_tic();
+#ifdef HAVE_POSTGRES
+      if (config_.engine == BackendEngine::POSTGRESQL) {
+        auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+        if (pg) pg->SetUsePgOptimizer(false);
+      }
+#endif
       whole_ir = adapter_->ConvertPlanToIR();
+#ifdef HAVE_POSTGRES
+      if (config_.engine == BackendEngine::POSTGRESQL) {
+        auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+        if (pg) pg->SetUsePgOptimizer(true);
+      }
+#endif
       if (config_.enable_timing) {
         auto convert_plan_to_ir_time =
             chrono_toc(&timer, "Convert Plan to IR time is\n", false);

@@ -27,12 +27,21 @@ namespace {
 // those can exceed the scan indices (e.g. a Mark join's Chunk node); temp
 // indices must not collide, or index rewriting corrupts the preserved Mark
 // condition.
+static constexpr unsigned int kSentinelThreshold = UINT_MAX - 1000;
+
+static bool IsSentinelIndex(unsigned int idx) {
+  return idx >= kSentinelThreshold;
+}
+
 unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
   if (!node)
     return 0;
   unsigned int mx = 0;
-  for (const auto &attr : node->target_list)
-    mx = std::max(mx, attr->GetTableIndex());
+  for (const auto &attr : node->target_list) {
+    unsigned int idx = attr->GetTableIndex();
+    if (!IsSentinelIndex(idx))
+      mx = std::max(mx, idx);
+  }
   switch (node->GetNodeType()) {
   case ir_sql_converter::SimplestNodeType::ScanNode: {
     auto *s = dynamic_cast<const ir_sql_converter::SimplestScan *>(node);
@@ -49,30 +58,46 @@ unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
   case ir_sql_converter::SimplestNodeType::JoinNode: {
     auto *j = dynamic_cast<const ir_sql_converter::SimplestJoin *>(node);
     if (j) {
-      if (j->GetSimplestJoinType() == ir_sql_converter::SimplestJoinType::Mark)
-        mx = std::max(mx, j->GetMarkIndex());
+      if (j->GetSimplestJoinType() == ir_sql_converter::SimplestJoinType::Mark) {
+        unsigned int mi = j->GetMarkIndex();
+        if (!IsSentinelIndex(mi))
+          mx = std::max(mx, mi);
+      }
       for (const auto &cond : j->join_conditions) {
         if (!cond)
           continue;
-        if (cond->left_attr)
-          mx = std::max(mx, cond->left_attr->GetTableIndex());
-        if (cond->right_attr)
-          mx = std::max(mx, cond->right_attr->GetTableIndex());
+        if (cond->left_attr) {
+          unsigned int idx = cond->left_attr->GetTableIndex();
+          if (!IsSentinelIndex(idx))
+            mx = std::max(mx, idx);
+        }
+        if (cond->right_attr) {
+          unsigned int idx = cond->right_attr->GetTableIndex();
+          if (!IsSentinelIndex(idx))
+            mx = std::max(mx, idx);
+        }
       }
     }
     break;
   }
   case ir_sql_converter::SimplestNodeType::ProjectionNode: {
     auto *p = dynamic_cast<const ir_sql_converter::SimplestProjection *>(node);
-    if (p)
-      mx = std::max(mx, p->GetIndex());
+    if (p) {
+      unsigned int idx = p->GetIndex();
+      if (!IsSentinelIndex(idx))
+        mx = std::max(mx, idx);
+    }
     break;
   }
   case ir_sql_converter::SimplestNodeType::AggregateNode: {
     auto *a = dynamic_cast<const ir_sql_converter::SimplestAggregate *>(node);
     if (a) {
-      mx = std::max(mx, a->GetAggIndex());
-      mx = std::max(mx, a->GetGroupIndex());
+      unsigned int ai = a->GetAggIndex();
+      unsigned int gi = a->GetGroupIndex();
+      if (!IsSentinelIndex(ai))
+        mx = std::max(mx, ai);
+      if (!IsSentinelIndex(gi))
+        mx = std::max(mx, gi);
     }
     break;
   }
@@ -80,8 +105,11 @@ unsigned int FindMaxAttrIndex(const ir_sql_converter::AQPStmt *node) {
     auto *o = dynamic_cast<const ir_sql_converter::SimplestOrderBy *>(node);
     if (o) {
       for (const auto &ord : o->orders)
-        if (ord.attr)
-          mx = std::max(mx, ord.attr->GetTableIndex());
+        if (ord.attr) {
+          unsigned int idx = ord.attr->GetTableIndex();
+          if (!IsSentinelIndex(idx))
+            mx = std::max(mx, idx);
+        }
     }
     break;
   }
