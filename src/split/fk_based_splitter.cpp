@@ -134,6 +134,104 @@ CloneMarkUnit(const ir_sql_converter::AQPStmt *node) {
   return out;
 }
 
+constexpr unsigned int kSentinelThreshold = UINT_MAX - 1000;
+bool IsSentinelIndex(unsigned int idx) { return idx >= kSentinelThreshold; }
+
+unsigned int FindMaxBindingIndex(const ir_sql_converter::AQPStmt *node) {
+  if (!node)
+    return 0;
+  unsigned int mx = 0;
+  for (const auto &attr : node->target_list) {
+    unsigned int idx = attr->GetTableIndex();
+    if (!IsSentinelIndex(idx))
+      mx = std::max(mx, idx);
+  }
+  switch (node->GetNodeType()) {
+  case ir_sql_converter::SimplestNodeType::ScanNode: {
+    auto *s =
+        dynamic_cast<const ir_sql_converter::SimplestScan *>(node);
+    if (s)
+      mx = std::max(mx, s->GetTableIndex());
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::ChunkNode: {
+    auto *c =
+        dynamic_cast<const ir_sql_converter::SimplestChunk *>(node);
+    if (c)
+      mx = std::max(mx, c->GetTableIndex());
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::JoinNode: {
+    auto *j =
+        dynamic_cast<const ir_sql_converter::SimplestJoin *>(node);
+    if (j) {
+      if (j->GetSimplestJoinType() ==
+          ir_sql_converter::SimplestJoinType::Mark) {
+        unsigned int mi = j->GetMarkIndex();
+        if (!IsSentinelIndex(mi))
+          mx = std::max(mx, mi);
+      }
+      for (const auto &cond : j->join_conditions) {
+        if (!cond)
+          continue;
+        if (cond->left_attr) {
+          unsigned int idx = cond->left_attr->GetTableIndex();
+          if (!IsSentinelIndex(idx))
+            mx = std::max(mx, idx);
+        }
+        if (cond->right_attr) {
+          unsigned int idx = cond->right_attr->GetTableIndex();
+          if (!IsSentinelIndex(idx))
+            mx = std::max(mx, idx);
+        }
+      }
+    }
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::ProjectionNode: {
+    auto *p =
+        dynamic_cast<const ir_sql_converter::SimplestProjection *>(node);
+    if (p) {
+      unsigned int idx = p->GetIndex();
+      if (!IsSentinelIndex(idx))
+        mx = std::max(mx, idx);
+    }
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::AggregateNode: {
+    auto *a =
+        dynamic_cast<const ir_sql_converter::SimplestAggregate *>(node);
+    if (a) {
+      unsigned int ai = a->GetAggIndex();
+      unsigned int gi = a->GetGroupIndex();
+      if (!IsSentinelIndex(ai))
+        mx = std::max(mx, ai);
+      if (!IsSentinelIndex(gi))
+        mx = std::max(mx, gi);
+    }
+    break;
+  }
+  case ir_sql_converter::SimplestNodeType::OrderNode: {
+    auto *o =
+        dynamic_cast<const ir_sql_converter::SimplestOrderBy *>(node);
+    if (o) {
+      for (const auto &ord : o->orders)
+        if (ord.attr) {
+          unsigned int idx = ord.attr->GetTableIndex();
+          if (!IsSentinelIndex(idx))
+            mx = std::max(mx, idx);
+        }
+    }
+    break;
+  }
+  default:
+    break;
+  }
+  for (const auto &child : node->children)
+    mx = std::max(mx, FindMaxBindingIndex(child.get()));
+  return mx;
+}
+
 } // namespace
 
 // ===== FKBasedSplitter Base Class =====
@@ -154,12 +252,12 @@ void FKBasedSplitter::Preprocess(
             << table_index_to_name_.size() << " table(s)" << std::endl;
 #endif
 
-  // Build reverse mapping and track max table index
-  max_table_index_ = 0;
+  // Build reverse mapping and track max table index.
+  // Must account for ALL binding indices in the IR (Projection, Aggregate,
+  // Group) — not just scan tables — to avoid temp table index collisions
+  // that break column name resolution in later iterations.
+  max_table_index_ = FindMaxBindingIndex(ir.get());
   for (const auto &[idx, name] : table_index_to_name_) {
-    if (idx > max_table_index_) {
-      max_table_index_ = idx;
-    }
 #ifndef NDEBUG
     std::cout << "  Table " << idx << ": " << name << std::endl;
 #endif
