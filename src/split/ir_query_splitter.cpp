@@ -1243,7 +1243,8 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   } catch (const std::runtime_error &e) {
     std::string msg = e.what();
     if (msg.find("Prepare failed") != std::string::npos ||
-        msg.find("unsupported") != std::string::npos) {
+        msg.find("unsupported") != std::string::npos ||
+        msg.find("could not lock the schema") != std::string::npos) {
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-SPLIT] Split-loop failed: " << msg
                   << "\n  -> falling back to direct execution of original SQL\n";

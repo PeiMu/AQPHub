@@ -1,7 +1,9 @@
 #include "adapters/umbra_adapter.h"
+#include <chrono>
 #include <iostream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <thread>
 
 namespace middleware {
 
@@ -43,20 +45,29 @@ void UmbraAdapter::ExecuteSQLandCreateTempTable(
   std::cout << "[Umbra] Creating temp table: " << temp_table_name << std::endl;
 #endif
 
-  PGresult *pg_result = PQexec(GetConnection(), create_sql.c_str());
-
-  if (PQresultStatus(pg_result) != PGRES_COMMAND_OK) {
-    std::string error_msg = "Failed to create temp table: " +
-                            std::string(PQerrorMessage(GetConnection()));
+  // Umbra's background compaction on temp tables holds an exclusive schema
+  // lock.  Retry with backoff when the lock is transiently held.  Between
+  // retries, issue a lightweight DML (SELECT 1) to let Umbra's internal
+  // scheduler advance and release the lock — sleeping alone is not enough.
+  constexpr int kMaxRetries = 10;
+  constexpr int kBackoffMs = 10;
+  PGresult *pg_result = nullptr;
+  for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+    pg_result = PQexec(GetConnection(), create_sql.c_str());
+    if (PQresultStatus(pg_result) == PGRES_COMMAND_OK)
+      break;
+    std::string err = PQerrorMessage(GetConnection());
     PQclear(pg_result);
-    throw std::runtime_error(error_msg);
+    pg_result = nullptr;
+    if (err.find("could not lock the schema") == std::string::npos ||
+        attempt == kMaxRetries) {
+      throw std::runtime_error("Failed to create temp table: " + err);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs));
+    PGresult *noop = PQexec(GetConnection(), "SELECT 1");
+    if (noop) PQclear(noop);
   }
   PQclear(pg_result);
-
-  // Cardinality is looked up lazily in GetTempTableCardinality (via
-  // pg_class or COUNT(*)).  ResetQueryState uses reconnect to drop
-  // session temp tables, so temp_table_card_ doesn't need to be
-  // populated here.
 
 #ifndef NDEBUG
   std::cout << "[Umbra] Created temp table: " << temp_table_name << std::endl;
@@ -162,15 +173,28 @@ std::string UmbraAdapter::ExplainAnalyze(const std::string &sql) {
 void UmbraAdapter::DropTempTable(const std::string &table_name) {
   CheckConnection();
   std::string drop_sql = "DROP TABLE IF EXISTS " + table_name;
-  PGresult *pg_result = PQexec(GetConnection(), drop_sql.c_str());
-  if (PQresultStatus(pg_result) != PGRES_COMMAND_OK) {
+  constexpr int kMaxRetries = 10;
+  constexpr int kBackoffMs = 10;
+  for (int attempt = 0; attempt <= kMaxRetries; ++attempt) {
+    PGresult *pg_result = PQexec(GetConnection(), drop_sql.c_str());
+    if (PQresultStatus(pg_result) == PGRES_COMMAND_OK) {
+      PQclear(pg_result);
+      return;
+    }
+    std::string err = PQerrorMessage(GetConnection());
+    PQclear(pg_result);
+    if (err.find("could not lock the schema") == std::string::npos ||
+        attempt == kMaxRetries) {
 #ifndef NDEBUG
-    std::cerr << "[Umbra] Warning: DROP TABLE " << table_name
-              << " failed (non-fatal): " << PQerrorMessage(GetConnection())
-              << std::endl;
+      std::cerr << "[Umbra] Warning: DROP TABLE " << table_name
+                << " failed (non-fatal): " << err << std::endl;
 #endif
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs));
+    PGresult *noop = PQexec(GetConnection(), "SELECT 1");
+    if (noop) PQclear(noop);
   }
-  PQclear(pg_result);
 }
 
 void UmbraAdapter::ResetQueryState() {
