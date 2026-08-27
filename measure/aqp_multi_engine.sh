@@ -18,3 +18,9 @@ bash measure_umbra.sh job
 bash measure_breakdown_time_aqp.sh job umbra node-based none
 bash measure_breakdown_time_aqp.sh job umbra relationship-center none
 bash measure_breakdown_time_aqp.sh job umbra topdown none
+
+# OpenGauss: vanilla vs. node-based vs. relationship-center vs. topdown
+bash measure_breakdown_time_aqp.sh job opengauss none none
+bash measure_breakdown_time_aqp.sh job opengauss node-based none
+bash measure_breakdown_time_aqp.sh job opengauss relationship-center none
+bash measure_breakdown_time_aqp.sh job opengauss topdown none
