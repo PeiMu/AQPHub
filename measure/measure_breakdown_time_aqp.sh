@@ -52,7 +52,11 @@ if [[ "$bench" == "job" ]]; then
     opengauss_user="imdb"
     opengauss_pw="imdb_132"
 elif [[ "$bench" == "dsb" ]]; then
-    dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    if [[ "$engine" == "lingodb" ]]; then
+        dir="$DSB_PATH/code/tools/1_instance_out_lingo_db/1/"
+    else
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    fi
     schema="${DSB_PATH}/scripts/create_tables.sql"
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then
@@ -65,6 +69,9 @@ elif [[ "$bench" == "dsb" ]]; then
     storage_cache="${STORAGE_CACHE_DUCKDB_DSB}"
     storage_cache_pg="${STORAGE_CACHE_PG_DSB}"
     csv_dir="$DSB_PATH/code/tools/out_${DSB_SF}/lingo_db_csv"
+    if [[ ! -d "$csv_dir" ]]; then
+        csv_dir="$DSB_PATH/code/tools/out_${DSB_SF}/csv"
+    fi
     umbra_csv_mount="$DSB_PATH/code/tools/out_${DSB_SF}/csv"
     umbra_db_name="dsb_${DSB_SF}.db"
     umbra_schema="$DSB_SCHEMA"
@@ -83,10 +90,15 @@ fi
 # LingoDB mode override
 ########################################
 lingodb_mode="llvm"
-if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
-    lingodb_mode=${4:-llvm}
-    jit_level=none
-    jit_simd=off
+if [[ "$engine" == "lingodb" ]]; then
+    if [[ "$jit_level" == "query" || "$jit_level" == "expr" ]]; then
+        : # middleware JIT — keep jit_level as-is, lingodb_mode=llvm
+    else
+        # $4 is lingodb_mode (llvm/tpde), not jit_level
+        lingodb_mode=${4:-llvm}
+        jit_level=none
+        jit_simd=none
+    fi
 fi
 
 ########################################
@@ -208,7 +220,7 @@ elif [[ "$engine" == "opengauss" ]]; then
     else
         db_conn="${OPENGAUSS_CONN:-host=localhost port=7654 dbname=dsb_${DSB_SF} user=dsb_${DSB_SF} password=dsb_${DSB_SF}}"
     fi
-elif [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+elif [[ "$engine" == "lingodb" ]]; then
     db_conn=""
 else
     echo "Unknown engine: $engine"
@@ -219,9 +231,9 @@ fi
 # Helper DB for non-DuckDB backends
 ########################################
 helper_db_arg=""
-if [[ "$engine" == "lingo-db-runtime" ]]; then
+if [[ "$engine" == "lingodb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
-elif [[ ("$split" == "node-based" || "$split" == "topdown") && "$engine" != "duckdb" ]]; then
+elif [[ ("$split" == "node-based" || "$split" == "topdown" || "$split" == "auto") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
 elif [[ "$engine" == "mariadb" ]]; then
     if [[ "$bench" == "job" ]]; then
@@ -342,7 +354,7 @@ fi
 
 db_arg="--db=${db_conn}"
 lingodb_flags=""
-if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+if [[ "$engine" == "lingodb" ]]; then
     db_arg="--in-memory"
     lingodb_flags="--csv-dir=${csv_dir} --lingodb-mode=${lingodb_mode}"
 fi
@@ -367,7 +379,7 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
   --benchmark \
   "${dir}"
 
-if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+if [[ "$engine" == "lingodb" ]]; then
     mv "${log_name}" ${result_dir}/${engine}_${lingodb_mode}_${split}_breakdown_"${log_name}"
     mv lingodb_compile_time.csv ${result_dir}/${engine}_${lingodb_mode}_${split}_compile_time.csv 2>/dev/null || true
 else

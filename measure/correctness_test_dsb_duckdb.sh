@@ -206,18 +206,8 @@ JIT_CONFIGS=(
 #  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|full|fastisel"
 #  "duckdb|node-based|query|none|${GOLDEN_FILE}|recompile|full|tpde"
 
-  # ============================================================
-  # lingodb / lingo-db-runtime
-  # ============================================================
-  #"lingodb|none|llvm|none|lingodb_dsb_no-split_golden.txt"
-  #"lingodb|node-based|llvm|none|lingodb_dsb_no-split_golden.txt"
+  # lingodb configs moved to correctness_test_dsb_lingodb.sh
   #"lingodb|none|tpde|none|lingodb_dsb_no-split_golden.txt"
-  #"lingodb|node-based|tpde|none|lingodb_dsb_no-split_golden.txt"
-  # lingo-db-runtime disabled: pre-existing hangs/crashes on several DSB queries
-  #"lingo-db-runtime|node-based|llvm|none|lingodb_dsb_no-split_golden.txt"
-  #"lingo-db-runtime|node-based|tpde|none|lingodb_dsb_no-split_golden.txt"
-  #"lingo-db-runtime|none|llvm|none|lingodb_dsb_no-split_golden.txt"
-  #"lingo-db-runtime|none|tpde|none|lingodb_dsb_no-split_golden.txt"
 
   # ============================================================
   # topdown (SDS) — uses the same no-split golden (ground truth)
@@ -412,7 +402,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   fi
   fc_suffix=""
   [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
-  if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+  if [[ "$engine" == "lingodb" ]]; then
     output="${result_dir}/aqp_middleware_${engine}_${jit_level}_${split}_dsb.txt"
   else
     output="${result_dir}/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}_dsb.txt"
@@ -550,7 +540,6 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON"
-       on on on on single-run-structural off llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=off"
   output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
@@ -681,7 +670,6 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON"
-       on on on on single-run-structural recompile llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=recompile"
   output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
@@ -818,7 +806,6 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
-       on on on on single-run-structural off llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=off"
   output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
@@ -947,7 +934,6 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
-       on on on on single-run-structural recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=recompile"
   output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then

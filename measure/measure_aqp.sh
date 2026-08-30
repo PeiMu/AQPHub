@@ -19,7 +19,7 @@ disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-g
 
 if [[ -z "$bench" || -z "$engine" || -z "$split" ]]; then
     echo "Usage: $0 <job|dsb_10|dsb_100> <engine> <split> <jit_level> <jit_simd> [flags...]"
-    echo "  engine: duckdb | postgres | umbra | mariadb | opengauss | lingodb | lingo-db-runtime"
+    echo "  engine: duckdb | postgres | umbra | mariadb | opengauss | lingodb | lingodb"
     echo "  split:  none | node-based | topdown | relationship-center | entity-center | min-subquery"
     exit 1
 fi

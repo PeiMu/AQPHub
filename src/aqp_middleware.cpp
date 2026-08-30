@@ -42,7 +42,6 @@
 
 #ifdef HAVE_LINGODB
 #include "adapters/lingodb_adapter.h"
-#include "adapters/lingodb_runtime_adapter.h"
 #endif
 
 #include <algorithm>
@@ -217,19 +216,6 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
                 << db_path << std::endl;
     }
     auto adapter = std::make_unique<LingoDBAdapter>(db_path);
-    adapter->SetExecutionMode(config.lingodb_mode);
-    if (config.in_memory) {
-      adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
-    }
-    return adapter;
-  }
-  case BackendEngine::LINGODB_RUNTIME: {
-    std::string db_path = config.in_memory ? ":memory:" : config.db_path_or_connection;
-    if (config.enable_debug_print) {
-      std::cout << "[AQP Middleware] Creating LingoDB-Runtime adapter: "
-                << db_path << std::endl;
-    }
-    auto adapter = std::make_unique<LingoDBRuntimeAdapter>(db_path);
     adapter->SetExecutionMode(config.lingodb_mode);
     if (config.in_memory) {
       adapter->LoadTablesFromCSV(config.schema_path, config.csv_dir);
@@ -420,6 +406,26 @@ void ExecuteSingleQuery(
 #endif
       }
 #endif
+#if defined(HAVE_LINGODB) && defined(HAVE_LLVM)
+      if (config.engine == BackendEngine::LINGODB) {
+        adapter->ConfigureQueryJit(
+            (config.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+            config.query_jit_threads, config.query_jit_morsel);
+        adapter->ConfigureQueryJitStoragePlan(storage_plan);
+        adapter->ConfigureJitCompileMode(config.compile_mode);
+        adapter->ConfigureJitSkipHashCmp(config.jit_skip_hash_cmp);
+        adapter->ConfigureJitFlags(config.jit_flags);
+        adapter->ConfigureJitCache(config.jit_cache);
+        adapter->ConfigureJitCacheDir(config.jit_cache_dir);
+        adapter->ConfigureJitDebug(config.enable_debug_print);
+        adapter->ConfigureJitPrefetch(config.jit_prefetch,
+                                       config.jit_prefetch_distance);
+        adapter->ConfigureJitOptFlags(
+            config.jit_payload_prune, config.jit_prefetch,
+            config.jit_prefetch_distance, config.jit_batch_probe,
+            config.jit_skip_hash_cmp, config.single_col_int_join_mode);
+      }
+#endif
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
       bool replay_hit = false;
@@ -461,20 +467,16 @@ void ExecuteSingleQuery(
       if (!replay_hit) {
 #endif
 #if defined(HAVE_LINGODB) && defined(HAVE_DUCKDB)
-        if (config.engine == BackendEngine::LINGODB_RUNTIME) {
-          auto *rt_adapter =
-              dynamic_cast<LingoDBRuntimeAdapter *>(adapter);
-          if (!rt_adapter)
-            throw std::runtime_error(
-                "LINGODB_RUNTIME engine requires LingoDBRuntimeAdapter");
-
+        if (config.engine == BackendEngine::LINGODB &&
+            config.estimator_engine == BackendEngine::DUCKDB &&
+            !config.helper_db.empty()) {
           DuckDBAdapter helper(config.helper_db);
           helper.ParseSQL(sql);
           helper.FilterOptimize();
           auto ir = helper.ConvertPlanToIR();
           if (!ir)
             throw std::runtime_error(
-                "[lingo-db-runtime] Failed to convert DuckDB plan to IR");
+                "[lingodb] Failed to convert DuckDB plan to IR");
 
           if (config.enable_debug_print) {
             std::string ir_sql =
@@ -483,7 +485,7 @@ void ExecuteSingleQuery(
                       << ir_sql << std::endl;
           }
 
-          query_result = rt_adapter->ExecuteIRQuery(*ir);
+          query_result = adapter->ExecuteIRQuery(*ir);
         } else
 #endif
         {
@@ -636,8 +638,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
   std::vector<std::string> iter_log_files;
   std::vector<std::string> iter_ldb_files;
-  bool is_lingodb = (config.engine == BackendEngine::LINGODB ||
-                     config.engine == BackendEngine::LINGODB_RUNTIME);
+  bool is_lingodb = (config.engine == BackendEngine::LINGODB);
 
   for (int iter = 0; iter < config.repeat_count; iter++) {
     std::string iter_log = "time_log_iter" + std::to_string(iter) + ".csv";
@@ -692,6 +693,17 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         config.engine == BackendEngine::POSTGRESQL &&
         !(config.jit_cache == 3 && iter > 0);
     if (pg_for_cross)
+      cross_query_pool = std::make_unique<ThreadPool>(1);
+#endif
+#ifdef HAVE_LINGODB
+    bool ldb_for_cross =
+        !config.no_cross_query_prep &&
+        !cross_query_pool &&
+        config.jit_cache >= 1 &&
+        (config.strategy == SplitStrategy::TOP_DOWN ||
+         config.strategy == SplitStrategy::AUTO) &&
+        config.engine == BackendEngine::LINGODB;
+    if (ldb_for_cross)
       cross_query_pool = std::make_unique<ThreadPool>(1);
 #endif
 
@@ -834,6 +846,32 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         }
       }
 #endif
+#ifdef HAVE_LINGODB
+      if (ldb_for_cross && qi + 1 < sql_files.size()) {
+        const std::string &next_file = sql_files[qi + 1];
+        bool skip_ldb_prep = false;
+        if (config.strategy == SplitStrategy::AUTO) {
+          std::string nq;
+          {
+            auto sl = next_file.rfind('/');
+            nq = (sl != std::string::npos) ? next_file.substr(sl + 1)
+                                           : next_file;
+            auto dt = nq.rfind('.');
+            if (dt != std::string::npos) nq = nq.substr(0, dt);
+          }
+          auto ns = IRQuerySplitter::ResolveTuneSplit(
+              config.tune_config_path, nq, SplitStrategy::TOP_DOWN);
+          skip_ldb_prep = (ns == SplitStrategy::NONE);
+        }
+        if (!skip_ldb_prep) {
+          pending_cross_prep = cross_query_pool->Submit(
+              [&next_file, adapter, &config]() {
+                return IRQuerySplitter::PrepareNextQueryTopDownPG(
+                    next_file, adapter, config);
+              });
+        }
+      }
+#endif
 
       TestResult result;
       ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan,
@@ -910,7 +948,7 @@ int main(int argc, char **argv) {
          config.engine == BackendEngine::MARIADB ||
          config.engine == BackendEngine::OPENGAUSS ||
          config.engine == BackendEngine::LINGODB ||
-         config.engine == BackendEngine::LINGODB_RUNTIME) &&
+         false) &&
         !config.schema_path.empty()) {
       if (!ir_sql_converter::InitSchemaParser(config.schema_path)) {
         std::cerr << "Warning: Failed to load schema, column indices will be 0"
@@ -948,10 +986,25 @@ int main(int argc, char **argv) {
           storage_plan_ptr->LoadFromDuckDB(duck->GetConnection());
         } else
 #endif
+#ifdef HAVE_LINGODB
+        if ((config.engine == BackendEngine::LINGODB ||
+             false) &&
+            !config.helper_db.empty()) {
+#ifdef HAVE_DUCKDB
+          DuckDBAdapter helper(config.helper_db);
+          storage_plan_ptr->LoadFromDuckDB(helper.GetConnection());
+#else
+          throw std::runtime_error(
+              "--storage-plan with --engine=lingodb requires "
+              "--storage-cache=<path> or HAVE_DUCKDB for --helper-db-path");
+#endif
+        } else
+#endif
         {
           throw std::runtime_error(
               "--storage-plan without a pre-built cache requires "
-              "--engine=duckdb or --engine=postgresql. "
+              "--engine=duckdb, --engine=postgresql, or "
+              "--engine=lingodb with --helper-db-path. "
               "Build the cache first with: --storage-cache=<path>");
         }
         if (need_indexes) {

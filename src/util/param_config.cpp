@@ -38,8 +38,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.engine = BackendEngine::OPENGAUSS;
       } else if (engine_str == "lingodb" || engine_str == "lingo-db") {
         config.engine = BackendEngine::LINGODB;
-      } else if (engine_str == "lingo-db-runtime" || engine_str == "lingodb-runtime") {
-        config.engine = BackendEngine::LINGODB_RUNTIME;
       } else {
         throw std::runtime_error(
             "Unknown engine: " + arg.substr(9) +
@@ -58,9 +56,11 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     else if (arg.find("--fkeys=") == 0) {
       config.fkeys_path = arg.substr(8);
     }
-    // Parse --estimator=<engine> (which engine's optimizer to use for EXPLAIN)
-    else if (arg.find("--estimator=") == 0) {
-      std::string est_str = to_lower(arg.substr(12));
+    // Parse --plan-optimizer=<engine> or --estimator=<engine> (alias)
+    else if (arg.find("--plan-optimizer=") == 0 ||
+             arg.find("--estimator=") == 0) {
+      size_t eq = arg.find('=');
+      std::string est_str = to_lower(arg.substr(eq + 1));
       if (est_str == "duckdb") {
         config.estimator_engine = BackendEngine::DUCKDB;
       } else if (est_str == "postgres" || est_str == "postgresql") {
@@ -71,10 +71,12 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
         config.estimator_engine = BackendEngine::MARIADB;
       } else if (est_str == "opengauss") {
         config.estimator_engine = BackendEngine::OPENGAUSS;
+      } else if (est_str == "lingodb" || est_str == "lingo-db") {
+        config.estimator_engine = BackendEngine::LINGODB;
       } else {
         throw std::runtime_error(
-            "Unknown estimator engine: " + arg.substr(12) +
-            " (valid: duckdb, postgres, umbra, mariadb, opengauss)");
+            "Unknown plan optimizer: " + est_str +
+            " (valid: duckdb, postgres, umbra, mariadb, opengauss, lingodb)");
       }
     }
     // Parse --helper-db-path=<connection> (connection string for estimator
@@ -335,16 +337,9 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     config.enable_storage_plan = true;
   }
 
-  if (config.engine == BackendEngine::LINGODB_RUNTIME &&
-      config.helper_db.empty())
-    throw std::runtime_error(
-        "--engine=lingo-db-runtime requires --helper-db-path=<path> "
-        "(DuckDB database for query optimization)");
-
   if (config.in_memory) {
-    if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB &&
-        config.engine != BackendEngine::LINGODB_RUNTIME)
-      throw std::runtime_error("--in-memory is only supported with --engine=duckdb, --engine=lingodb, or --engine=lingo-db-runtime");
+    if (config.engine != BackendEngine::DUCKDB && config.engine != BackendEngine::LINGODB)
+      throw std::runtime_error("--in-memory is only supported with --engine=duckdb or --engine=lingodb");
     if (config.csv_dir.empty() && !config.schema_path.empty()) {
       auto pos = config.schema_path.find_last_of('/');
       config.csv_dir = (pos != std::string::npos ? config.schema_path.substr(0, pos) : ".") + "/csv";

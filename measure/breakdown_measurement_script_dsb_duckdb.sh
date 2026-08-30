@@ -38,12 +38,12 @@ echo "=== DSB scale factor: ${DSB_SF} (results -> ${RESULT_DIR}/) ==="
 #bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb node-based tpde && \
 #
 ## ============================================================
-## lingo-db-runtime (DuckDB optimizer + LingoDB JIT runtime)
+## lingodb (DuckDB optimizer + LingoDB JIT runtime)
 ## ============================================================
-#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingo-db-runtime node-based llvm && \
-#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingo-db-runtime node-based tpde && \
-#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingo-db-runtime none llvm && \
-#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingo-db-runtime none tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb node-based llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb node-based tpde && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb none llvm && \
+#bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb none tpde && \
 
 # ============================================================
 # Interpreter baseline (2 configs)

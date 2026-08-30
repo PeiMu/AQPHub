@@ -287,6 +287,25 @@ public:
 
   virtual void ResetQueryState() {}
 
+  // Query-JIT configuration (overridden by adapters with JIT support).
+  // Default: no-ops. Called by IRQuerySplitter to configure JIT before
+  // the split-execute loop. Avoids requiring adapter-specific includes
+  // (e.g., LinGo-DB's C++20 headers) in the splitter.
+  virtual void ConfigureQueryJit(bool /*enable*/, int /*threads*/,
+                                 uint64_t /*morsel*/) {}
+  virtual void ConfigureQueryJitStoragePlan(const void * /*plan*/) {}
+  virtual void ConfigureJitCompileMode(int /*mode*/) {}
+  virtual void ConfigureJitCache(int /*mode*/) {}
+  virtual void ConfigureJitCacheDir(const std::string &/*dir*/) {}
+  virtual void ConfigureJitFlags(uint32_t /*flags*/) {}
+  virtual void ConfigureJitDebug(bool /*debug*/) {}
+  virtual void ConfigureJitSkipHashCmp(int /*mode*/) {}
+  virtual void ConfigureJitPrefetch(bool /*enable*/, int /*distance*/) {}
+  virtual void ConfigureJitOptFlags(bool /*payload_prune*/, bool /*prefetch*/,
+                                    int /*prefetch_dist*/, bool /*batch_probe*/,
+                                    int /*skip_hash_cmp*/,
+                                    int /*single_col_mode*/) {}
+
   unsigned int subquery_index = 0;
 
   // std::string intermediate_table_name, int64_t created_table_size

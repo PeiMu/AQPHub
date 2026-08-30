@@ -177,8 +177,10 @@ public:
           StringRef(reinterpret_cast<const char *>(buf.data()), buf.size()),
           mod.getModuleIdentifier());
     }
+#ifndef NDEBUG
     fprintf(stderr, "[AQP-JIT] TPDE rejected module '%s' -> LLVM fallback\n",
             mod.getModuleIdentifier().c_str());
+#endif
     auto tm = jtmb_.createTargetMachine();
     if (!tm)
       return tm.takeError();

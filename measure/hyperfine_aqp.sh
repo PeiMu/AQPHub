@@ -45,7 +45,7 @@ if [[ "$bench" == "job" ]]; then
     storage_cache_pg="${STORAGE_CACHE_PG_JOB}"
     csv_dir="$JOB_PATH/lingo_db_csv"
 elif [[ "$bench" == "dsb" ]]; then
-    if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+    if [[ "$engine" == "lingodb" ]]; then
         dir="$DSB_PATH/code/tools/1_instance_out_lingo_db/1/"
     else
         dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
@@ -62,19 +62,26 @@ elif [[ "$bench" == "dsb" ]]; then
     storage_cache="${STORAGE_CACHE_DUCKDB_DSB}"
     storage_cache_pg="${STORAGE_CACHE_PG_DSB}"
     csv_dir="$DSB_PATH/code/tools/out_${DSB_SF}/lingo_db_csv"
+    if [[ ! -d "$csv_dir" ]]; then
+        csv_dir="$DSB_PATH/code/tools/out_${DSB_SF}/csv"
+    fi
 else
     echo "Usage: $0 <job|dsb_10|dsb_100> <engine> <split> <jit_level> <jit_simd> [flags...]"
     exit 1
 fi
 
 ########################################
-# LingoDB mode override
+# LingoDB mode / JIT level
 ########################################
 lingodb_mode="llvm"
-if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
-    lingodb_mode=${4:-llvm}
-    jit_level=none
-    jit_simd=none
+if [[ "$engine" == "lingodb" ]]; then
+    if [[ "$jit_level" == "query" || "$jit_level" == "expr" ]]; then
+        : # middleware JIT — keep jit_level as-is, lingodb_mode=llvm
+    else
+        lingodb_mode=${4:-llvm}
+        jit_level=none
+        jit_simd=none
+    fi
 fi
 
 ########################################
@@ -120,6 +127,8 @@ storage_flags=""
 if [[ "$jit_level" == "query" ]]; then
     if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
         storage_flags="--storage-plan --storage-cache=${storage_cache_pg}"
+    elif [[ "$engine" == "lingodb" ]]; then
+        storage_flags="--storage-plan --storage-cache=${storage_cache}"
     else
         storage_flags="--storage-plan --storage-cache=${storage_cache}"
     fi
@@ -152,8 +161,12 @@ fi
 ########################################
 # Log name
 ########################################
-if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
-    log_name=aqp_middleware_${engine}_${lingodb_mode}_${split}${log_suffix}.csv
+if [[ "$engine" == "lingodb" ]]; then
+    if [[ "$jit_level" == "none" ]]; then
+        log_name=aqp_middleware_${engine}_${lingodb_mode}_${split}${log_suffix}.csv
+    else
+        log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}${log_suffix}.csv
+    fi
 else
     log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}${log_suffix}.csv
 fi
@@ -183,7 +196,7 @@ elif [[ "$engine" == "opengauss" ]]; then
     else
         db_conn="${OPENGAUSS_CONN:-host=localhost port=7654 dbname=dsb_${DSB_SF} user=dsb_${DSB_SF} password=dsb_${DSB_SF}}"
     fi
-elif [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+elif [[ "$engine" == "lingodb" ]]; then
     db_conn=""
 else
     echo "Unknown engine: $engine"
@@ -194,9 +207,9 @@ fi
 # Helper DB for non-DuckDB backends
 ########################################
 helper_db_arg=""
-if [[ "$engine" == "lingo-db-runtime" ]]; then
+if [[ "$engine" == "lingodb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
-elif [[ ("$split" == "node-based" || "$split" == "topdown") && "$engine" != "duckdb" ]]; then
+elif [[ ("$split" == "node-based" || "$split" == "topdown" || "$split" == "auto") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
 elif [[ "$engine" == "mariadb" ]]; then
     if [[ "$bench" == "job" ]]; then
@@ -228,7 +241,7 @@ fi
 
 db_arg="--db=\"${db_conn}\""
 lingodb_flags=""
-if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+if [[ "$engine" == "lingodb" ]]; then
     db_arg="--in-memory"
     lingodb_flags="--csv-dir=${csv_dir} --lingodb-mode=${lingodb_mode}"
 fi

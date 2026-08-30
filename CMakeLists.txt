@@ -172,6 +172,7 @@ target_include_directories(util_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Query-JIT library (--jit-level=query): IR analysis, runtime, scheduler.
 # Pure C++ over the IR — no DuckDB/LLVM dependency.
 add_library(qjit_lib STATIC
+        src/qjit/qjit_annotate.cpp
         src/qjit/query_jit_steps.cpp
         src/qjit/query_jit_runtime.cpp
         src/qjit/query_jit_scheduler.cpp
@@ -183,7 +184,10 @@ target_include_directories(qjit_lib PUBLIC
 )
 # QjitWorkerPool bumps middleware::g_bg_active_threads (thread_pool.cpp,
 # owned by split_lib) so OpenMP paths throttle while qjit workers run.
+# qjit_annotate.cpp uses StoragePlan for cardinality estimation.
 target_link_libraries(qjit_lib PUBLIC split_lib)
+target_include_directories(qjit_lib PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/storage)
 
 # Storage plan library (flat column arrays, CSR indexes)
 # Built conditionally with DuckDB below.
@@ -457,8 +461,7 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
         get_property(MLIR_EXTENSION_LIBS GLOBAL PROPERTY MLIR_EXTENSION_LIBS)
 
         add_library(lingodb_adapter STATIC
-                src/adapters/lingodb_adapter.cpp
-                src/adapters/lingodb_runtime_adapter.cpp)
+                src/adapters/lingodb_adapter.cpp)
         target_include_directories(lingodb_adapter PUBLIC
                 ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${LINGODB_ROOT}/include
@@ -504,6 +507,12 @@ if (EXISTS ${LINGODB_ROOT} AND EXISTS ${LINGODB_BUILD})
                 util_lib
                 -lpthread -lrt -latomic -lcurl
         )
+        if (TARGET aqp_jit_lib)
+            target_link_libraries(lingodb_adapter PUBLIC qjit_lib aqp_jit_lib)
+            if (TARGET storage_lib)
+                target_link_libraries(lingodb_adapter PUBLIC storage_lib)
+            endif ()
+        endif ()
 
         message(STATUS "LingoDB adapter: ENABLED (LLVM ${LLVM_PACKAGE_VERSION})")
     else ()

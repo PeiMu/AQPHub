@@ -27,6 +27,12 @@ DUCKDB_DB_JOB="${DUCKDB_DB_JOB:-${PROJECT_ROOT}/duckdb/measure/imdb.db}"
 DUCKDB_DB_DSB="${DUCKDB_DB_DSB:-${PROJECT_ROOT}/duckdb/measure/dsb_${DSB_SF}.db}"
 
 ########################################
+# LinGo-DB on-disk databases (used when too large for in-memory)
+########################################
+LINGODB_DB_JOB="${LINGODB_DB_JOB:-/tmp/job_lingodb}"
+LINGODB_DB_DSB="${LINGODB_DB_DSB:-/tmp/dsb_lingodb}"
+
+########################################
 # Per-benchmark storage plan caches (DuckDB engine)
 ########################################
 STORAGE_CACHE_DUCKDB_JOB="${STORAGE_CACHE_DUCKDB_JOB:-/tmp/imdb_storage_plan.cache}"
@@ -46,5 +52,5 @@ PG_LOG="${PG_LOG:-${PG_HOME}/logfile}"
 export LD_LIBRARY_PATH=${PG_HOME}/lib:${LD_LIBRARY_PATH:-}
 
 UMBRA_CONN="${UMBRA_CONN:-host=localhost port=15432 user=postgres password=postgres}"
-MARIADB_CONN="${MARIADB_CONN:-}"
-OPENGAUSS_CONN="${OPENGAUSS_CONN:-}"
+MARIADB_CONN="${MARIADB_CONN:-host=localhost dbname=imdb user=imdb}"
+OPENGAUSS_CONN="${OPENGAUSS_CONN:-host=localhost port=7654 dbname=imdb user=imdb password=imdb_132}"

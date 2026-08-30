@@ -399,17 +399,7 @@ JIT_CONFIGS=(
   # node-based: baseline (all 6 disabled)
   #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||tpde||range-pred,early-term,range-guard,block-skip,membership,bloom-filter"
 
-  # ============================================================
-  # lingodb / lingo-db-runtime
-  # ============================================================
-  "lingodb|none|llvm|none|lingodb_job_no-split_golden.txt"
-  #  "lingodb|node-based|llvm|none|duckdb_job_node-based_golden.txt"
-  "lingodb|none|tpde|none|lingodb_job_no-split_golden.txt"
-  #  "lingodb|node-based|tpde|none|duckdb_job_node-based_golden.txt"
-  #  "lingo-db-runtime|node-based|llvm|none|duckdb_job_node-based_golden.txt"
-  #  "lingo-db-runtime|node-based|tpde|none|duckdb_job_node-based_golden.txt"
-  "lingo-db-runtime|none|llvm|none|duckdb_job_no-split_golden.txt"
-  "lingo-db-runtime|none|tpde|none|duckdb_job_no-split_golden.txt"
+  # lingodb configs moved to correctness_test_job_lingodb.sh
 )
 
 # --- Kernel-path configs: engine | split | kernel_path | jit_simd | golden_file ---
@@ -496,7 +486,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   [[ "$disable_runtime_opts" == *"block-skip"* ]]    && rt_suffix+="_noblockskip"
   [[ "$disable_runtime_opts" == *"membership"* ]]    && rt_suffix+="_nomembership"
   [[ "$disable_runtime_opts" == *"early-term"* ]]    && rt_suffix+="_noearlyterm"
-  if [[ "$engine" == "lingodb" || "$engine" == "lingo-db-runtime" ]]; then
+  if [[ "$engine" == "lingodb" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
     output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}${rt_suffix}_job.txt"
@@ -695,7 +685,6 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON"
-       on on on on single-run-structural off llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=off"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -853,7 +842,6 @@ if [[ -f "$TUNE_JSON" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON"
-       on on on on single-run-structural recompile llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=recompile"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -1017,7 +1005,6 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
-       on on on on single-run-structural off llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=off"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
@@ -1173,7 +1160,6 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
-       on on on on single-run-structural recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=recompile"
   output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then

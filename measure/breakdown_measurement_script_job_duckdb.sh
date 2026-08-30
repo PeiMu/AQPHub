@@ -32,12 +32,12 @@ source "${SCRIPT_DIR}/env.sh"
 #bash ./measure_breakdown_time_aqp.sh job lingodb node-based tpde && \
 #
 ## ============================================================
-## lingo-db-runtime (DuckDB optimizer + LingoDB JIT runtime)
+## lingodb (DuckDB optimizer + LingoDB JIT runtime)
 ## ============================================================
-#bash ./measure_breakdown_time_aqp.sh job lingo-db-runtime node-based llvm && \
-#bash ./measure_breakdown_time_aqp.sh job lingo-db-runtime node-based tpde && \
-#bash ./measure_breakdown_time_aqp.sh job lingo-db-runtime none llvm && \
-#bash ./measure_breakdown_time_aqp.sh job lingo-db-runtime none tpde && \
+#bash ./measure_breakdown_time_aqp.sh job lingodb node-based llvm && \
+#bash ./measure_breakdown_time_aqp.sh job lingodb node-based tpde && \
+#bash ./measure_breakdown_time_aqp.sh job lingodb none llvm && \
+#bash ./measure_breakdown_time_aqp.sh job lingodb none tpde && \
 
 # ============================================================
 # Interpreter baseline (2 configs)

@@ -11,7 +11,7 @@
 
 namespace middleware {
 
-enum class BackendEngine { DUCKDB, POSTGRESQL, UMBRA, MARIADB, OPENGAUSS, LINGODB, LINGODB_RUNTIME };
+enum class BackendEngine { DUCKDB, POSTGRESQL, UMBRA, MARIADB, OPENGAUSS, LINGODB };
 
 enum class SplitStrategy {
   NONE,                // No splitting - execute whole query directly
@@ -35,11 +35,12 @@ struct ParamConfig {
 
   std::string db_path_or_connection; // Database path or connection string
 
-  // Cost estimator (can differ from execution engine)
+  // Plan optimizer (can differ from execution engine).
   // Default: same as engine. MariaDB default: POSTGRESQL.
+  // CLI: --plan-optimizer=duckdb|postgresql|lingodb|umbra (alias: --estimator=)
   BackendEngine estimator_engine =
       BackendEngine::DUCKDB; // overridden in ParseFromArgs
-  std::string helper_db;     // Connection string for the estimator engine
+  std::string helper_db;     // Connection string for the plan optimizer
                              // (only needed when estimator_engine != engine)
 
   // Mode selection
@@ -182,8 +183,6 @@ struct ParamConfig {
       return "OpenGauss";
     case BackendEngine::LINGODB:
       return "LingoDB";
-    case BackendEngine::LINGODB_RUNTIME:
-      return "LingoDB-Runtime";
     default:
       return "Unknown";
     }
@@ -228,8 +227,6 @@ struct ParamConfig {
       return "OpenGauss";
     case BackendEngine::LINGODB:
       return "LingoDB";
-    case BackendEngine::LINGODB_RUNTIME:
-      return "LingoDB-Runtime";
     default:
       return "Unknown";
     }

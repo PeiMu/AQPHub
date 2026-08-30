@@ -1060,11 +1060,29 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #endif
     }
   }
+#if defined(HAVE_LINGODB) && defined(HAVE_LLVM)
+  if (config_.engine == BackendEngine::LINGODB) {
+    adapter_->ConfigureQueryJit(
+        (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
+        config_.query_jit_threads, config_.query_jit_morsel);
+    adapter_->ConfigureQueryJitStoragePlan(storage_plan_);
+    adapter_->ConfigureJitCompileMode(config_.compile_mode);
+    adapter_->ConfigureJitSkipHashCmp(config_.jit_skip_hash_cmp);
+    adapter_->ConfigureJitFlags(config_.jit_flags);
+    adapter_->ConfigureJitCache(config_.jit_cache);
+    adapter_->ConfigureJitCacheDir(config_.jit_cache_dir);
+    adapter_->ConfigureJitDebug(config_.enable_debug_print);
+    adapter_->ConfigureJitPrefetch(config_.jit_prefetch,
+                                   config_.jit_prefetch_distance);
+  }
+#endif
 #endif
 
   if (!config_.NeedsSplit() || !splitter_) {
-    std::cout << "[IRQuerySplitter] No splitting needed, executing directly"
+#ifndef NDEBUG
+    std::cerr << "[IRQuerySplitter] No splitting needed, executing directly"
               << std::endl;
+#endif
     return adapter_->ExecuteSQL(sql);
   }
 
@@ -1704,20 +1722,19 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
         }
       }
 #else
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT-TRACE] HAVE_LLVM NOT defined\n";
 #endif
+#endif
 #else
+#ifndef NDEBUG
       std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB NOT defined\n";
+#endif
 #endif
       std::chrono::high_resolution_clock::time_point duckdb_final_start;
       if (config_.enable_tuning)
         duckdb_final_start = std::chrono::high_resolution_clock::now();
-      if (config_.engine == BackendEngine::LINGODB_RUNTIME &&
-          remaining_ir && trivial_temp.empty()) {
-        query_result = adapter_->ExecuteIRQuery(*remaining_ir);
-      } else {
-        query_result = adapter_->ExecuteSQL(final_sql);
-      }
+      query_result = adapter_->ExecuteSQL(final_sql);
       if (config_.enable_tuning)
         log_final_exe_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
@@ -3246,8 +3263,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
 
   if (!kernel_executed &&
-      config_.engine == BackendEngine::LINGODB_RUNTIME) {
-    // Direct IR-to-MLIR execution path (no SQL generation)
+      config_.engine == BackendEngine::LINGODB &&
+      (config_.jit_flags & AQP_JIT_QUERY_JIT)) {
     temp_table_name = GenerateTempTableName();
     adapter_->subquery_index++;
 
@@ -3262,7 +3279,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     }
 
     if (config_.print_sql || config_.enable_debug_print) {
-      std::cout << "\n=== IR-to-MLIR Execution (no SQL) ===" << std::endl;
+      std::cout << "\n=== Query-JIT IR Execution ===" << std::endl;
       std::cout << "Temp table: " << temp_table_name << std::endl;
     }
 

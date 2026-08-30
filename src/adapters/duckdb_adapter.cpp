@@ -1637,8 +1637,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
                 temp_table_name.c_str());
 #endif
       } else {
+#ifndef NDEBUG
         fprintf(stderr, "[AQP-QJIT] spec-hit-resolve-failed:%s label=%s\n",
                 reason.c_str(), temp_table_name.c_str());
+#endif
         qjit_spec.reset();
       }
     }
@@ -3049,8 +3051,10 @@ void DuckDBAdapter::LoadTablesFromCSV(const std::string &schema_path,
     pos = end;
   }
 
-  std::cout << "[AQP] Loading " << table_names.size()
+#ifndef NDEBUG
+  std::cerr << "[AQP] Loading " << table_names.size()
             << " tables from CSV into memory..." << std::endl;
+#endif
   auto load_start = std::chrono::high_resolution_clock::now();
 
   // Create tables with proper schema (types, constraints)
@@ -3077,8 +3081,10 @@ void DuckDBAdapter::LoadTablesFromCSV(const std::string &schema_path,
   auto load_end = std::chrono::high_resolution_clock::now();
   auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                      load_end - load_start).count();
-  std::cout << "[AQP] CSV loading complete in " << load_ms << " ms"
+#ifndef NDEBUG
+  std::cerr << "[AQP] CSV loading complete in " << load_ms << " ms"
             << std::endl;
+#endif
 }
 
 duckdb::ClientContext *DuckDBAdapter::GetClientContext() {
