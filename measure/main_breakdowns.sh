@@ -53,10 +53,13 @@ bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on on all single-run-structural off tpde &&\
 
 # PostgreSQL DSB 50
+# Skip queries that timeout or have disk-corruption at SF50 on PostgreSQL.
+export AQP_SKIP_QUERIES="query050|query085|query101"
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-structural recompile tpde &&\
+unset AQP_SKIP_QUERIES
 
 ## DuckDB DSB 100
 #bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none none &&\

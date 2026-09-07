@@ -17,6 +17,7 @@ compile_mode=${12:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
 interp_collect_stats=${15:-off}  # on | off — enable stats collection for interpreter path
+skip_queries=${16:-${AQP_SKIP_QUERIES:-}}  # pipe-separated query names to skip, e.g. "query050|query085|query101"
 
 ########################################
 # Parse dsb_<SF> bench argument
@@ -378,6 +379,32 @@ if [[ "$engine" == "lingodb" ]]; then
     fi
 fi
 
+########################################
+# Skip queries: create filtered query dir if skip_queries is set
+########################################
+run_dir="${dir}"
+_skip_tmpdir=""
+if [[ -n "$skip_queries" ]]; then
+    _skip_tmpdir=$(mktemp -d)
+    for sub in "${dir}"/*/; do
+        bname=$(basename "$sub")
+        if echo "$bname" | grep -qE "^(${skip_queries})"; then
+            continue
+        fi
+        ln -s "$(realpath "$sub")" "${_skip_tmpdir}/${bname}"
+    done
+    # Also symlink any top-level .sql files
+    for f in "${dir}"/*.sql; do
+        [[ -e "$f" ]] || continue
+        bname=$(basename "$f")
+        if echo "$bname" | grep -qE "^(${skip_queries})"; then
+            continue
+        fi
+        ln -s "$(realpath "$f")" "${_skip_tmpdir}/${bname}"
+    done
+    run_dir="${_skip_tmpdir}"
+fi
+
 $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
     --engine="${engine}" \
     "${db_arg}" \
@@ -390,8 +417,10 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
     ${jit_extra_flags} \
     ${storage_flags} \
     --benchmark \
-    "${dir}" \
+    "${run_dir}" \
     2>&1 | tee -a "$log_name"
+
+[[ -n "$_skip_tmpdir" ]] && rm -rf "$_skip_tmpdir"
 end=$(date +%s%N)
 elapsed_ns=$((end - start))
 elapsed_ms=$((elapsed_ns / 1000000))

@@ -24,6 +24,11 @@ else
 fi
 echo "=== DSB scale factor: ${DSB_SF} (results -> ${RESULT_DIR}/) ==="
 
+# Skip queries that timeout or have disk-corruption at SF50 on PostgreSQL.
+if [[ "$DSB_SF" != "10" ]]; then
+    export AQP_SKIP_QUERIES="query050|query085|query101"
+fi
+
 # ============================================================
 # Interpreter baseline (2 configs)
 # ============================================================

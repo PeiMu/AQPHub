@@ -35,9 +35,16 @@ std::vector<std::string> get_sql_files(const std::string &directory) {
 
     if (ends_with_sql(filename)) {
       sql_files.push_back(full_path);
-    } else if (entry->d_type == DT_DIR) {
-      auto sub = get_sql_files(full_path);
-      sql_files.insert(sql_files.end(), sub.begin(), sub.end());
+    } else {
+      bool is_dir = (entry->d_type == DT_DIR);
+      if (!is_dir && (entry->d_type == DT_LNK || entry->d_type == DT_UNKNOWN)) {
+        struct stat st;
+        is_dir = (stat(full_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+      }
+      if (is_dir) {
+        auto sub = get_sql_files(full_path);
+        sql_files.insert(sql_files.end(), sub.begin(), sub.end());
+      }
     }
   }
 

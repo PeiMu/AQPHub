@@ -1,21 +1,21 @@
 
 ========================================
-Running Benchmark: /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/
+Running Benchmark: /tmp/tmp.CZDeUPksTd
 ========================================
-Found 31 SQL file(s)
+Found 25 SQL file(s)
 
 --- Iteration 0 ---
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013/query013_0.sql
+Run /tmp/tmp.CZDeUPksTd/query013/query013_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 4
 23.9943181818181818|2064.8895454545454545|1777.8782954545454545|312906.58|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query013_spj/query013_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query013_spj/query013_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 4
 2|145.00|74.94|74.94|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018/query018_0.sql
+Run /tmp/tmp.CZDeUPksTd/query018/query018_0.sql
 
 === Query Results ===
 Rows: 9, Columns: 10
@@ -28,12 +28,12 @@ AAAAAAAAGPOFAAAA|United States|NULL|NULL|4.0000000000000000|102.0700000000000000
 AAAAAAAAGEKFAAAA|NULL|NULL|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
 AAAAAAAAGPOFAAAA|NULL|NULL|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
 NULL|NULL|NULL|NULL|37.5000000000000000|164.0750000000000000|0.00000000000000000000|41.7800000000000000|-572.9900000000000000|1959.5000000000000000|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query018_spj/query018_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query018_spj/query018_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 11
 AAAAAAAAGEKFAAAA|United States|GA|Douglas County|4|102.07|0.00|11.22|-853.42|1944|0|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019/query019_0.sql
+Run /tmp/tmp.CZDeUPksTd/query019/query019_0.sql
 
 === Query Results ===
 Rows: 12, Columns: 5
@@ -49,12 +49,12 @@ Rows: 12, Columns: 5
 9004002|edu packmaxi #2                                   |112|ableoughtought                                    |624.00|
 9009002|maximaxi #2                                       |419|n stoughtese                                      |435.60|
 9006008|corpmaxi #8                                       |186|callyeingought                                    |0.00|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query019_spj/query019_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query019_spj/query019_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
 9002002|112|0.00|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025/query025_0.sql
+Run /tmp/tmp.CZDeUPksTd/query025/query025_0.sql
 
 === Query Results ===
 Rows: 35, Columns: 7
@@ -93,22 +93,22 @@ AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillor
 AAAAAAAAPHBLAAAA|Services will hold old, fatal cost|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
 AAAAAAAAPPGHAAAA|Possibly|AAAAAAAAACAAAAAA|able|NULL|NULL|NULL|
 AAAAAAAAPPGHAAAA|Possibly|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query025_spj/query025_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query025_spj/query025_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 10
 AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAAIAAAAAA|able|-3877.59|18.20|-7616.99|5932|3685751|1878468|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query027_spj/query027_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query027_spj/query027_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 8
 AAAAAAAAACGDAAAA|MI|1|1.42|0.00|0.00|511|6634126|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query038/query038_0.sql
+Run /tmp/tmp.CZDeUPksTd/query038/query038_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 1
 79|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040/query040_0.sql
+Run /tmp/tmp.CZDeUPksTd/query040/query040_0.sql
 
 === Query Results ===
 Rows: 52, Columns: 4
@@ -164,23 +164,12 @@ TN|AAAAAAAAMEDAAAAA|-469.60|0|
 TN|AAAAAAAAMPHDAAAA|-835.23|0|
 TN|AAAAAAAAMPKKAAAA|-321.77|0|
 TN|AAAAAAAAOBMLAAAA|0|-321.70|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query040_spj/query040_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query040_spj/query040_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
 MO|AAAAAAAAAGGOAAAA|557|3741300|557|3741300|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050/query050_0.sql
-
-Test FAILED for query050_0.sql
-Error: Query execution failed: ERROR:  could not read blocks 678873..678873 in file "base/252712440/252713227": Input/output error
-CONTEXT:  parallel worker
-
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query050_spj/query050_spj_0.sql
-
-=== Query Results ===
-Rows: 1, Columns: 12
-able|1|627|Main 7th|Suite 210 |Antioch|48877     |41197|2450819|2450854|10453|2450819|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072/query072_0.sql
+Run /tmp/tmp.CZDeUPksTd/query072/query072_0.sql
 
 === Query Results ===
 Rows: 100, Columns: 6
@@ -284,12 +273,12 @@ Original, available users could get safer; bodies like so tragic waves. Huge job
 Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5173|0|4|4|
 Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5192|0|4|4|
 Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5211|0|4|4|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query072_spj/query072_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query072_spj/query072_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
 19|Bad cards must make.|5166|19|1077079|19|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084/query084_0.sql
+Run /tmp/tmp.CZDeUPksTd/query084/query084_0.sql
 
 === Query Results ===
 Rows: 100, Columns: 2
@@ -393,53 +382,17 @@ AAAAAAAACKICDAAA|Palacios, Brenda|
 AAAAAAAACNAALAAA|Beasley, Juan|
 AAAAAAAACNAALAAA|Beasley, Juan|
 AAAAAAAACNAALAAA|Beasley, Juan|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query084_spj/query084_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query084_spj/query084_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 3
 AAAAAAAAABNDHAAA|3317|7|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085/query085_0.sql
-
-=== Query Results ===
-Rows: 27, Columns: 4
-Did not fit|7.0000000000000000|153.3300000000000000|47.4200000000000000|
-Did not get it on ti|21.0000000000000000|364.9266666666666667|65.8600000000000000|
-Did not like the col|18.0000000000000000|440.6400000000000000|27.8166666666666667|
-Did not like the mak|23.2500000000000000|551.0250000000000000|54.5375000000000000|
-Did not like the mod|11.8000000000000000|388.7780000000000000|31.9200000000000000|
-Did not like the war|10.0000000000000000|359.0900000000000000|54.8633333333333333|
-Does not work with a|4.0000000000000000|198.2850000000000000|62.3550000000000000|
-duplicate purchase|30.0000000000000000|595.6750000000000000|66.9000000000000000|
-Found a better exten|20.6666666666666667|432.8033333333333333|41.8066666666666667|
-Found a better price|55.5000000000000000|767.5700000000000000|24.5250000000000000|
-Gift exchange|10.0000000000000000|380.0425000000000000|50.9525000000000000|
-it is a girl|41.5000000000000000|619.9050000000000000|69.2000000000000000|
-its is a boy|28.0000000000000000|715.3000000000000000|53.1300000000000000|
-Not the product that|8.8000000000000000|502.5380000000000000|62.3220000000000000|
-Not working any more|14.0000000000000000|552.8350000000000000|28.2650000000000000|
-Package was damaged|20.5000000000000000|363.2150000000000000|43.8100000000000000|
-Parts missing|15.5000000000000000|442.7050000000000000|54.6950000000000000|
-reason 23|6.0000000000000000|455.2400000000000000|4.5900000000000000|
-reason 24|39.0000000000000000|776.0400000000000000|49.1900000000000000|
-reason 25|4.0000000000000000|215.6800000000000000|39.2000000000000000|
-reason 26|6.0000000000000000|20.0600000000000000|15.9300000000000000|
-reason 33|58.0000000000000000|0.00000000000000000000|11.0200000000000000|
-reason 37|45.0000000000000000|2143.5200000000000000|76.4900000000000000|
-reason 39|13.0000000000000000|206.9100000000000000|31.5300000000000000|
-Stopped working|23.6666666666666667|474.4900000000000000|42.9933333333333333|
-unauthoized purchase|13.5000000000000000|242.6300000000000000|21.5500000000000000|
-Wrong size|10.5000000000000000|314.1750000000000000|85.9100000000000000|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query085_spj/query085_spj_0.sql
-
-=== Query Results ===
-Rows: 1, Columns: 7
-2|0.00|2.65|888|2197394|92245|92245|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query087/query087_0.sql
+Run /tmp/tmp.CZDeUPksTd/query087/query087_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 1
 0|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091/query091_0.sql
+Run /tmp/tmp.CZDeUPksTd/query091/query091_0.sql
 
 === Query Results ===
 Rows: 4, Columns: 4
@@ -447,12 +400,12 @@ AAAAAAAAHAAAAAAA|Pacific Northwest|Alden Snyder|31254.30|
 AAAAAAAAIAAAAAAA|California|Wayne Ray|30803.13|
 AAAAAAAABAAAAAAA|NY Metro|Bob Belcher|22713.09|
 AAAAAAAACAAAAAAA|Mid Atlantic|Felipe Perkins|10520.04|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query091_spj/query091_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query091_spj/query091_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
 AAAAAAAABAAAAAAA|California|Alden Snyder|8.68|416|1606065|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099/query099_0.sql
+Run /tmp/tmp.CZDeUPksTd/query099/query099_0.sql
 
 === Query Results ===
 Rows: 6, Columns: 8
@@ -462,35 +415,26 @@ Local, mass universi|LIBRARY                       |Mid Atlantic|459|407|358|0|0
 Local, mass universi|LIBRARY                       |NY Metro|1311|1269|1315|0|0|
 Quite effectiv|LIBRARY                       |Mid Atlantic|174|145|171|0|0|
 Quite effectiv|LIBRARY                       |NY Metro|512|500|547|0|0|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query099_spj/query099_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query099_spj/query099_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 5
 Bad cards must make.|LIBRARY                       |Mid Atlantic|2034713|9|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100/query100_0.sql
+Run /tmp/tmp.CZDeUPksTd/query100/query100_0.sql
 
 === Query Results ===
 Rows: 0, Columns: 3
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query100_spj/query100_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query100_spj/query100_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 4
 NULL|NULL|NULL|NULL|
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101/query101_0.sql
+Run /tmp/tmp.CZDeUPksTd/query102/query102_0.sql
 
-Test FAILED for query101_0.sql
+Test FAILED for query102_0.sql
 Error: Query execution failed: ERROR:  canceling statement due to statement timeout
 
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query101_spj/query101_spj_0.sql
-
-Test FAILED for query101_spj_0.sql
-Error: Query execution failed: ERROR:  canceling statement due to statement timeout
-
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102/query102_0.sql
-
-=== Query Results ===
-Rows: 0, Columns: 5
-Run /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp/1/query102_spj/query102_spj_0.sql
+Run /tmp/tmp.CZDeUPksTd/query102_spj/query102_spj_0.sql
 
 === Query Results ===
 Rows: 1, Columns: 6
@@ -499,9 +443,9 @@ NULL|NULL|NULL|NULL|NULL|NULL|
 ========================================
 Benchmark Summary
 ========================================
-Total queries: 31
-Passed: 28
-Failed: 3
+Total queries: 25
+Passed: 24
+Failed: 1
 ========================================
 
 ========================================

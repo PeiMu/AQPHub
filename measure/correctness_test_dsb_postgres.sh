@@ -22,7 +22,39 @@ else
   RESULT_DIR="dsb_result_sf${DSB_SF}"
 fi
 
-FILTER='grep -v -E "^Running|^==|^Execution|^$|^waiting|^server|^ANALYZ|^NOTICE:|^\[AQP|^\[Storage|^\[CSR|^\[Dim|^\[RelationshipCenter|^\[IRQuerySplitter|^  [a-z_]*: [0-9]* rows$|^Found [0-9]|^Run |^Passed:|^Failed:|^Total |^Benchmark|^Average|^--- Iteration|^same engine|^embed data|no version information available"'
+FILTER='grep -v -E "^Running|^==|^Execution|^$|^waiting|^server|^ANALYZ|^NOTICE:|^\[AQP|^\[Storage|^\[CSR|^\[Dim|^\[RelationshipCenter|^\[IRQuerySplitter|^  [a-z_]*: [0-9]* rows$|^Found [0-9]|^Run |^Passed:|^Failed:|^Total |^Benchmark|^Average|^--- Iteration|^Test FAILED|^Error:|^warning:|^Warning:|^Do not support|Doesn.t support type|^CONTEXT:|^same engine|^embed data|no version information available|falling back to|could not read blocks"'
+
+# Queries to skip: timeout or disk-corruption at SF50 on PostgreSQL.
+# query050: I/O error (disk corruption), query085: timeout, query101{,_spj}: timeout
+PG_DSB_SKIP_QUERIES=""
+if [[ "$DSB_SF" != "10" ]]; then
+    PG_DSB_SKIP_QUERIES="query050|query085|query101"
+fi
+export AQP_SKIP_QUERIES="$PG_DSB_SKIP_QUERIES"
+
+# filter_output <file>: strip blocks for skipped queries, then apply FILTER.
+# A "block" runs from one "^Run ..." line to the next (or EOF).
+# Usage: filter_output file  OR  some_cmd | filter_output -
+filter_output() {
+  local input_flag=()
+  if [[ "${1:-}" == "-" ]]; then
+    input_flag=()  # read from stdin
+  else
+    input_flag=("$1")
+  fi
+  if [[ -z "$PG_DSB_SKIP_QUERIES" ]]; then
+    eval $FILTER "${input_flag[@]}"
+  else
+    awk -v skip="$PG_DSB_SKIP_QUERIES" '
+      BEGIN { printing = 1 }
+      /^Run / {
+        if (match($0, "(" skip ")")) { printing = 0 } else { printing = 1 }
+        next
+      }
+      printing { print }
+    ' "${input_flag[@]}" | eval $FILTER
+  fi
+}
 
 GOLDEN_NOSPLIT="pg_dsb_no-split_golden.txt"
 GOLDEN_NB="pg_dsb_node-based_golden.txt"
@@ -247,8 +279,8 @@ for entry in "${JIT_CONFIGS[@]}"; do
   fi
 
   if [[ "$jit_cache_mode" == "full" ]]; then
-    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
-    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
     if [[ -z "$d0" && -z "$d1" ]]; then
       echo "  PASS (iter0 + iter1)"
       ((passed++))
@@ -264,7 +296,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
       ((failed++))
     fi
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -308,7 +340,7 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -346,7 +378,7 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -385,7 +417,7 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -423,8 +455,8 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
-    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
     if [[ -z "$d0" && -z "$d1" ]]; then
       echo "  PASS (iter0 + iter1)"
       ((passed++))
@@ -464,7 +496,7 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -502,7 +534,7 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -541,7 +573,7 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -579,8 +611,8 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
-    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
     if [[ -z "$d0" && -z "$d1" ]]; then
       echo "  PASS (iter0 + iter1)"
       ((passed++))
@@ -628,7 +660,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -666,7 +698,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -705,7 +737,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -743,8 +775,8 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
-    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
     if [[ -z "$d0" && -z "$d1" ]]; then
       echo "  PASS (iter0 + iter1)"
       ((passed++))
@@ -784,7 +816,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -822,7 +854,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -861,7 +893,7 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+    d=$(diff <(filter_output "$output") <(filter_output "$golden") || true)
     if [[ -z "$d" ]]; then
       echo "  PASS"
       ((passed++))
@@ -899,8 +931,8 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
-    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
+    d0=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
+    d1=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | filter_output -) <(filter_output "$golden") || true)
     if [[ -z "$d0" && -z "$d1" ]]; then
       echo "  PASS (iter0 + iter1)"
       ((passed++))

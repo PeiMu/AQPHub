@@ -249,7 +249,12 @@ fi
 ########################################
 # Run benchmark per query
 ########################################
+_aqp_skip="${AQP_SKIP_QUERIES:-}"
 for sql in $(find "$dir" -type f -name "*.sql" | sort); do
+    if [[ -n "$_aqp_skip" ]] && echo "$sql" | grep -qE "(${_aqp_skip})"; then
+        echo "Skipping ${sql} (in AQP_SKIP_QUERIES)"
+        continue
+    fi
     echo "Running benchmark for ${sql}..."
 
     hyperfine --warmup ${warmup} --runs ${iteration} --export-csv temp.csv \

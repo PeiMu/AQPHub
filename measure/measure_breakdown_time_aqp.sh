@@ -363,6 +363,32 @@ if [[ "$jit_cache" == "full" ]]; then
     rm -rf /dev/shm/aqp_jit_cache/
 fi
 
+########################################
+# Skip queries: create filtered query dir if AQP_SKIP_QUERIES is set
+########################################
+run_dir="${dir}"
+_skip_tmpdir=""
+skip_queries="${AQP_SKIP_QUERIES:-}"
+if [[ -n "$skip_queries" ]]; then
+    _skip_tmpdir=$(mktemp -d)
+    for sub in "${dir}"/*/; do
+        bname=$(basename "$sub")
+        if echo "$bname" | grep -qE "^(${skip_queries})"; then
+            continue
+        fi
+        ln -s "$(realpath "$sub")" "${_skip_tmpdir}/${bname}"
+    done
+    for f in "${dir}"/*.sql; do
+        [[ -e "$f" ]] || continue
+        bname=$(basename "$f")
+        if echo "$bname" | grep -qE "^(${skip_queries})"; then
+            continue
+        fi
+        ln -s "$(realpath "$f")" "${_skip_tmpdir}/${bname}"
+    done
+    run_dir="${_skip_tmpdir}"
+fi
+
 $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
   --engine="${engine}" \
   "${db_arg}" \
@@ -377,7 +403,9 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
   --jit-level=${jit_level} --jit-simd=${jit_simd} \
   ${jit_extra_flags} \
   --benchmark \
-  "${dir}"
+  "${run_dir}"
+
+[[ -n "$_skip_tmpdir" ]] && rm -rf "$_skip_tmpdir"
 
 if [[ "$engine" == "lingodb" ]]; then
     mv "${log_name}" ${result_dir}/${engine}_${lingodb_mode}_${split}_breakdown_"${log_name}"
