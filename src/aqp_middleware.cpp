@@ -193,10 +193,9 @@ std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
     if (config.enable_debug_print) {
       std::cout << "[AQP Middleware] Creating MariaDB adapter: "
                 << config.db_path_or_connection << std::endl;
-      if (config.UseCustomEstimator()) {
-        std::cout << "[AQP Middleware] MariaDB estimator: "
-                  << config.GetEstimatorName() << " (" << config.helper_db
-                  << ")" << std::endl;
+      if (!config.helper_db.empty()) {
+        std::cout << "[AQP Middleware] MariaDB helper: "
+                  << config.helper_db << std::endl;
       }
     }
     if (config.strategy == SplitStrategy::NODE_BASED) {
@@ -468,7 +467,8 @@ void ExecuteSingleQuery(
 #endif
 #if defined(HAVE_LINGODB) && defined(HAVE_DUCKDB)
         if (config.engine == BackendEngine::LINGODB &&
-            config.estimator_engine == BackendEngine::DUCKDB &&
+            config.lingodb_plan_optimizer ==
+                ParamConfig::LingoDBPlanOptimizer::DUCKDB &&
             !config.helper_db.empty()) {
           DuckDBAdapter helper(config.helper_db);
           helper.ParseSQL(sql);
@@ -482,6 +482,29 @@ void ExecuteSingleQuery(
             std::string ir_sql =
                 ir_sql_converter::ConvertIRToSQL(*ir, 0);
             std::cout << "DuckDB-optimized IR SQL:\n"
+                      << ir_sql << std::endl;
+          }
+
+          query_result = adapter->ExecuteIRQuery(*ir);
+        } else
+#endif
+#if defined(HAVE_LINGODB) && defined(HAVE_POSTGRES)
+        if (config.engine == BackendEngine::LINGODB &&
+            config.lingodb_plan_optimizer ==
+                ParamConfig::LingoDBPlanOptimizer::POSTGRESQL &&
+            !config.helper_db.empty()) {
+          PostgreSQLAdapter pg_helper(config.helper_db);
+          pg_helper.SetUsePgOptimizer(true);
+          pg_helper.ParseSQL(sql);
+          auto ir = pg_helper.ConvertPlanToIR();
+          if (!ir)
+            throw std::runtime_error(
+                "[lingodb] Failed to convert PG optimizer plan to IR");
+
+          if (config.enable_debug_print) {
+            std::string ir_sql =
+                ir_sql_converter::ConvertIRToSQL(*ir, 0);
+            std::cout << "PG-optimized IR SQL:\n"
                       << ir_sql << std::endl;
           }
 

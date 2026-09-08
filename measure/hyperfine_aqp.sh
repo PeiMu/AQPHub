@@ -45,11 +45,7 @@ if [[ "$bench" == "job" ]]; then
     storage_cache_pg="${STORAGE_CACHE_PG_JOB}"
     csv_dir="$JOB_PATH/lingo_db_csv"
 elif [[ "$bench" == "dsb" ]]; then
-    if [[ "$engine" == "lingodb" ]]; then
-        dir="$DSB_PATH/code/tools/1_instance_out_lingo_db/1/"
-    else
-        dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
-    fi
+    dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
     schema="${DSB_PATH}/scripts/create_tables.sql"
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then
@@ -213,9 +209,9 @@ elif [[ ("$split" == "node-based" || "$split" == "topdown" || "$split" == "auto"
     helper_db_arg="--helper-db-path=${duckdb_db}"
 elif [[ "$engine" == "mariadb" ]]; then
     if [[ "$bench" == "job" ]]; then
-        helper_db_arg="--helper-db-path=${PG_CONN_JOB} --estimator=postgres"
+        helper_db_arg="--helper-db-path=${PG_CONN_JOB}"
     else
-        helper_db_arg="--helper-db-path=${PG_CONN_DSB} --estimator=postgres"
+        helper_db_arg="--helper-db-path=${PG_CONN_DSB}"
     fi
 fi
 

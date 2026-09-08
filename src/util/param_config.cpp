@@ -56,31 +56,27 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     else if (arg.find("--fkeys=") == 0) {
       config.fkeys_path = arg.substr(8);
     }
-    // Parse --plan-optimizer=<engine> or --estimator=<engine> (alias)
-    else if (arg.find("--plan-optimizer=") == 0 ||
-             arg.find("--estimator=") == 0) {
-      size_t eq = arg.find('=');
-      std::string est_str = to_lower(arg.substr(eq + 1));
-      if (est_str == "duckdb") {
-        config.estimator_engine = BackendEngine::DUCKDB;
-      } else if (est_str == "postgres" || est_str == "postgresql") {
-        config.estimator_engine = BackendEngine::POSTGRESQL;
-      } else if (est_str == "umbra") {
-        config.estimator_engine = BackendEngine::UMBRA;
-      } else if (est_str == "mariadb") {
-        config.estimator_engine = BackendEngine::MARIADB;
-      } else if (est_str == "opengauss") {
-        config.estimator_engine = BackendEngine::OPENGAUSS;
-      } else if (est_str == "lingodb" || est_str == "lingo-db") {
-        config.estimator_engine = BackendEngine::LINGODB;
+    // Parse --lingodb-plan-optimizer=<engine>
+    // Selects which engine's optimizer produces the query plan for lingo-db.
+    else if (arg.find("--lingodb-plan-optimizer=") == 0) {
+      std::string opt = to_lower(arg.substr(25));
+      if (opt == "duckdb") {
+        config.lingodb_plan_optimizer =
+            ParamConfig::LingoDBPlanOptimizer::DUCKDB;
+      } else if (opt == "postgres" || opt == "postgresql") {
+        config.lingodb_plan_optimizer =
+            ParamConfig::LingoDBPlanOptimizer::POSTGRESQL;
+      } else if (opt == "own" || opt == "lingodb" || opt == "lingo-db") {
+        config.lingodb_plan_optimizer =
+            ParamConfig::LingoDBPlanOptimizer::OWN;
       } else {
         throw std::runtime_error(
-            "Unknown plan optimizer: " + est_str +
-            " (valid: duckdb, postgres, umbra, mariadb, opengauss, lingodb)");
+            "Unknown --lingodb-plan-optimizer: " + opt +
+            " (valid: own, duckdb, postgres)");
       }
     }
-    // Parse --helper-db-path=<connection> (connection string for estimator
-    // engine, or duckdb database path when using node-based split)
+    // Parse --helper-db-path=<connection> (DuckDB database path for
+    // node-based split helper, or connection string for lingodb-plan-optimizer)
     else if (arg.find("--helper-db-path=") == 0) {
       config.helper_db = arg.substr(17);
     }
@@ -373,11 +369,11 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --fkeys=<path>                   FK constraints SQL file "
                "(for engines without information_schema)"
             << std::endl;
-  std::cout << "  --estimator=<engine>             Engine to use for cost "
-               "estimation (default: own engine)"
+  std::cout << "  --lingodb-plan-optimizer=<opt>    LinGo-DB plan optimizer: "
+               "own (default), duckdb, postgres"
             << std::endl;
-  std::cout << "  --helper-db-path=<conn>            Connection string for the "
-               "helper engine"
+  std::cout << "  --helper-db-path=<conn>            DuckDB path or PG "
+               "connection for plan optimizer / node-based split"
             << std::endl;
   std::cout << "    Strategies: none, topdown, minsubquery, "
                "relationship-center, entity-center"

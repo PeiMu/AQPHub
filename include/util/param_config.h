@@ -35,13 +35,13 @@ struct ParamConfig {
 
   std::string db_path_or_connection; // Database path or connection string
 
-  // Plan optimizer (can differ from execution engine).
-  // Default: same as engine. MariaDB default: POSTGRESQL.
-  // CLI: --plan-optimizer=duckdb|postgresql|lingodb|umbra (alias: --estimator=)
-  BackendEngine estimator_engine =
-      BackendEngine::DUCKDB; // overridden in ParseFromArgs
-  std::string helper_db;     // Connection string for the plan optimizer
-                             // (only needed when estimator_engine != engine)
+  // LinGo-DB plan optimizer: which engine's optimizer produces the query plan
+  // when executing on lingo-db. Only affects --engine=lingodb, split=none path.
+  // CLI: --lingodb-plan-optimizer=duckdb|postgres (default: own = lingo-db's MLIR optimizer)
+  enum class LingoDBPlanOptimizer { OWN, DUCKDB, POSTGRESQL };
+  LingoDBPlanOptimizer lingodb_plan_optimizer = LingoDBPlanOptimizer::OWN;
+  std::string helper_db;     // Connection string for the plan optimizer or
+                             // DuckDB database path for node-based split helper
 
   // Mode selection
   bool benchmark_mode = false; // false = single query, true = benchmark
@@ -209,26 +209,12 @@ struct ParamConfig {
     }
   }
 
-  bool UseCustomEstimator() const { return estimator_engine != engine; }
-
-  std::string GetEstimatorName() const {
-    if (!UseCustomEstimator())
-      return GetEngineName();
-    switch (estimator_engine) {
-    case BackendEngine::DUCKDB:
-      return "DuckDB";
-    case BackendEngine::POSTGRESQL:
-      return "PostgreSQL";
-    case BackendEngine::UMBRA:
-      return "Umbra";
-    case BackendEngine::MARIADB:
-      return "MariaDB";
-    case BackendEngine::OPENGAUSS:
-      return "OpenGauss";
-    case BackendEngine::LINGODB:
-      return "LingoDB";
-    default:
-      return "Unknown";
+  std::string GetLingoDBPlanOptimizerName() const {
+    switch (lingodb_plan_optimizer) {
+    case LingoDBPlanOptimizer::OWN: return "LingoDB (own)";
+    case LingoDBPlanOptimizer::DUCKDB: return "DuckDB";
+    case LingoDBPlanOptimizer::POSTGRESQL: return "PostgreSQL";
+    default: return "Unknown";
     }
   }
 
@@ -247,7 +233,8 @@ struct ParamConfig {
   void Print() const {
     std::cout << "=== Split Configuration ===" << std::endl;
     std::cout << "  Engine: " << GetEngineName() << std::endl;
-    std::cout << "  Estimator: " << GetEstimatorName() << std::endl;
+    if (engine == BackendEngine::LINGODB)
+      std::cout << "  Plan Optimizer: " << GetLingoDBPlanOptimizerName() << std::endl;
     std::cout << "  Strategy: " << GetStrategyName() << std::endl;
     std::cout << "  ReorderGet: "
               << (NeedsReorderGet() ? "enabled" : "disabled") << std::endl;

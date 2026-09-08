@@ -53,11 +53,7 @@ if [[ "$bench" == "job" ]]; then
     opengauss_user="imdb"
     opengauss_pw="imdb_132"
 elif [[ "$bench" == "dsb" ]]; then
-    if [[ "$engine" == "lingodb" ]]; then
-        dir="$DSB_PATH/code/tools/1_instance_out_lingo_db/1/"
-    else
-        dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
-    fi
+    dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
     schema="${DSB_PATH}/scripts/create_tables.sql"
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then
@@ -144,6 +140,11 @@ if [[ -n "$disable_runtime_opts" ]]; then
 fi
 
 ########################################
+# Plan optimizer override (env var: AQP_LINGODB_PLAN_OPTIMIZER)
+########################################
+lingodb_plan_opt="${AQP_LINGODB_PLAN_OPTIMIZER:-}"
+
+########################################
 # Build a short suffix for the log filename
 ########################################
 flag_suffix=""
@@ -169,6 +170,7 @@ fi
 [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && flag_suffix+="_nobidirstorage"
 [[ "$disable_runtime_opts" == *"disable-optimizer"* ]] && flag_suffix+="_nooptimizer"
 [[ "$interp_collect_stats" == "on" ]]              && flag_suffix+="_interpcollect"
+[[ -n "$lingodb_plan_opt" ]] && flag_suffix+="_planopt_${lingodb_plan_opt}"
 
 ########################################
 # Storage plan flags
@@ -232,15 +234,26 @@ fi
 # Helper DB for non-DuckDB backends
 ########################################
 helper_db_arg=""
+plan_opt_arg=""
 if [[ "$engine" == "lingodb" ]]; then
-    helper_db_arg="--helper-db-path=${duckdb_db}"
+    if [[ "$lingodb_plan_opt" == "postgres" || "$lingodb_plan_opt" == "postgresql" ]]; then
+        if [[ "$bench" == "job" ]]; then
+            helper_db_arg="--helper-db-path=${PG_CONN_JOB}"
+        else
+            helper_db_arg="--helper-db-path=${PG_CONN_DSB}"
+        fi
+        plan_opt_arg="--lingodb-plan-optimizer=postgres"
+    else
+        helper_db_arg="--helper-db-path=${duckdb_db}"
+        [[ -n "$lingodb_plan_opt" ]] && plan_opt_arg="--lingodb-plan-optimizer=${lingodb_plan_opt}"
+    fi
 elif [[ ("$split" == "node-based" || "$split" == "topdown" || "$split" == "auto") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
 elif [[ "$engine" == "mariadb" ]]; then
     if [[ "$bench" == "job" ]]; then
-        helper_db_arg="--helper-db-path=${PG_CONN_JOB} --estimator=postgres"
+        helper_db_arg="--helper-db-path=${PG_CONN_JOB}"
     else
-        helper_db_arg="--helper-db-path=${PG_CONN_DSB} --estimator=postgres"
+        helper_db_arg="--helper-db-path=${PG_CONN_DSB}"
     fi
 fi
 
@@ -409,6 +422,7 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
     --engine="${engine}" \
     "${db_arg}" \
     "${helper_db_arg}" \
+    ${plan_opt_arg} \
     --schema="${schema}" \
     --fkeys="${fkeys}" \
     --split="${split}" \
@@ -418,7 +432,7 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
     ${storage_flags} \
     --benchmark \
     "${run_dir}" \
-    2>&1 | tee -a "$log_name"
+    2>&1 | stdbuf -oL tee -a "$log_name"
 
 [[ -n "$_skip_tmpdir" ]] && rm -rf "$_skip_tmpdir"
 end=$(date +%s%N)

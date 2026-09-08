@@ -78,7 +78,7 @@ helper_db_arg=""
 if [[ "$split" == "node-based" && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${DUCKDB_DB_JOB}"
 elif [[ "$engine" == "mariadb" ]]; then
-    helper_db_arg="--helper-db-path=${PG_CONN_JOB} --estimator=postgres"
+    helper_db_arg="--helper-db-path=${PG_CONN_JOB}"
 fi
 
 ########################################
