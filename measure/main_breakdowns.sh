@@ -40,6 +40,9 @@ bash ./measure_breakdown_time_aqp.sh job postgresql none query none on on on all
 bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-structural recompile fastisel &&\
 
+# Umbra JOB
+bash ./measure_umbra.sh job
+
 ## PostgreSQL DSB 10
 ##bash ./measure_breakdown_time_aqp.sh dsb postgresql none none &&\
 ##bash ./measure_breakdown_time_aqp.sh dsb postgresql none query none on on on all off off tpde &&\
@@ -60,6 +63,9 @@ bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on 
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-structural recompile tpde &&\
 unset AQP_SKIP_QUERIES
+
+# Umbra DSB 50
+bash ./measure_umbra.sh dsb_50
 
 ## DuckDB DSB 100
 #bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none none &&\

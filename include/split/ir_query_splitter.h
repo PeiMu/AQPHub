@@ -258,6 +258,17 @@ private:
                                       bool inject_range_preds = true,
                                       bool build_bloom_filters = true);
 
+  // Route a sub-SQL through the configured external optimizer, returning IR.
+  // Returns nullptr if the optimizer cannot handle this sub-SQL (e.g., PG
+  // optimizer with temp table references), in which case the caller should
+  // fall back to adapter_->ExecuteSQLandCreateTempTable().
+  std::unique_ptr<ir_sql_converter::AQPStmt>
+  OptimizeSubSQL(const std::string &sub_sql);
+
+  // Register a completed temp table with the optimizer helper so subsequent
+  // sub-SQLs referencing it can be optimized.
+  void RegisterTempTableWithOptimizerHelper(const TempTableInfo &temp_info);
+
   EngineAdapter *adapter_;
   storage::StoragePlan *storage_plan_ = nullptr;
 #ifdef HAVE_DUCKDB
@@ -268,6 +279,15 @@ private:
   // Non-owning pointer to the DuckDB adapter used for planning.
   // Valid whenever strategy == NODE_BASED.
   DuckDBAdapter *duckdb_adapter_ = nullptr;
+
+  // DuckDB helper for the --lingodb-plan-optimizer=duckdb path in split mode.
+  // Created lazily on first use. Separate from owned_duckdb_adapter_ (which is
+  // the node-based split planner using config_.helper_db).
+  std::unique_ptr<DuckDBAdapter> plan_optimizer_duckdb_;
+#endif
+#ifdef HAVE_POSTGRES
+  // PostgreSQL helper for the --lingodb-plan-optimizer=postgres path in split mode.
+  std::unique_ptr<PostgreSQLAdapter> plan_optimizer_pg_;
 #endif
   ParamConfig config_;
   std::unique_ptr<AQPSplitter> splitter_;

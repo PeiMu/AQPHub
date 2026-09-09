@@ -44,6 +44,7 @@ if [[ "$bench" == "job" ]]; then
     storage_cache="${STORAGE_CACHE_DUCKDB_JOB}"
     storage_cache_pg="${STORAGE_CACHE_PG_JOB}"
     csv_dir="$JOB_PATH/lingo_db_csv"
+    lingodb_db="${LINGODB_DB_JOB}"
 elif [[ "$bench" == "dsb" ]]; then
     dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
     schema="${DSB_PATH}/scripts/create_tables.sql"
@@ -61,6 +62,7 @@ elif [[ "$bench" == "dsb" ]]; then
     if [[ ! -d "$csv_dir" ]]; then
         csv_dir="$DSB_PATH/code/tools/out_${DSB_SF}/csv"
     fi
+    lingodb_db="${LINGODB_DB_DSB}"
 else
     echo "Usage: $0 <job|dsb_10|dsb_100> <engine> <split> <jit_level> <jit_simd> [flags...]"
     exit 1
@@ -238,8 +240,13 @@ fi
 db_arg="--db=\"${db_conn}\""
 lingodb_flags=""
 if [[ "$engine" == "lingodb" ]]; then
-    db_arg="--in-memory"
-    lingodb_flags="--csv-dir=${csv_dir} --lingodb-mode=${lingodb_mode}"
+    if [[ -n "${lingodb_db:-}" && -d "${lingodb_db}" ]]; then
+        db_arg="--db=${lingodb_db}"
+        lingodb_flags="--lingodb-mode=${lingodb_mode}"
+    else
+        db_arg="--in-memory"
+        lingodb_flags="--csv-dir=${csv_dir} --lingodb-mode=${lingodb_mode}"
+    fi
 fi
 
 ########################################

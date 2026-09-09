@@ -142,6 +142,150 @@ IRQuerySplitter::~IRQuerySplitter() {
   bg_pool_.reset();
 }
 
+// ---------------------------------------------------------------------------
+// Plan optimizer for split sub-queries
+// ---------------------------------------------------------------------------
+static bool ReferencesTemp(const std::string &sql) {
+  return sql.find("temp") != std::string::npos;
+}
+
+std::unique_ptr<ir_sql_converter::AQPStmt>
+IRQuerySplitter::OptimizeSubSQL(const std::string &sub_sql) {
+#ifdef HAVE_LINGODB
+  if (config_.engine != BackendEngine::LINGODB ||
+      config_.lingodb_plan_optimizer == ParamConfig::LingoDBPlanOptimizer::OWN)
+    return nullptr;
+  // TODO: External-optimizer IR causes hangs in lingo-db's IRFrontend for
+  // split sub-queries. The DuckDB/PG optimizer maps tables to its own catalog
+  // indices, which don't match lingo-db's internal catalog. The no-split path
+  // works because IRFrontend resolves tables by name from a standalone query,
+  // but split sub-queries (especially those referencing temp tables) fail.
+  // This requires an IR-to-IR table-index remapping layer to fix.
+  // For now, return nullptr to always fall back to lingo-db's own optimizer.
+  (void)sub_sql;
+  return nullptr;
+#if 0 // Disabled until IR table-index remapping is implemented
+  if (ReferencesTemp(sub_sql))
+    return nullptr;
+#ifdef HAVE_DUCKDB
+  if (config_.lingodb_plan_optimizer ==
+      ParamConfig::LingoDBPlanOptimizer::DUCKDB) {
+    if (!plan_optimizer_duckdb_) {
+      plan_optimizer_duckdb_ =
+          std::make_unique<DuckDBAdapter>(config_.lingodb_plan_optimizer_db);
+    }
+    try {
+      plan_optimizer_duckdb_->ParseSQL(sub_sql);
+      plan_optimizer_duckdb_->FilterOptimize();
+      return plan_optimizer_duckdb_->ConvertPlanToIR();
+    } catch (const std::exception &e) {
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-OPT] DuckDB optimizer failed for sub-SQL, "
+                     "falling back to own: "
+                  << e.what() << "\n";
+      return nullptr;
+    }
+  }
+#endif
+#ifdef HAVE_POSTGRES
+  if (config_.lingodb_plan_optimizer ==
+      ParamConfig::LingoDBPlanOptimizer::POSTGRESQL) {
+    if (!plan_optimizer_pg_) {
+      plan_optimizer_pg_ =
+          std::make_unique<PostgreSQLAdapter>(config_.lingodb_plan_optimizer_db);
+      plan_optimizer_pg_->SetUsePgOptimizer(true);
+    }
+    try {
+      plan_optimizer_pg_->ParseSQL(sub_sql);
+      return plan_optimizer_pg_->ConvertPlanToIR();
+    } catch (const std::exception &e) {
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-OPT] PG optimizer failed for sub-SQL, "
+                     "falling back to own: "
+                  << e.what() << "\n";
+      return nullptr;
+    }
+  }
+#endif
+#endif // HAVE_LINGODB
+  return nullptr;
+#endif // disabled
+}
+
+#ifdef HAVE_DUCKDB
+static duckdb::LogicalType
+SimplestVarTypeToDuckDB(ir_sql_converter::SimplestVarType type) {
+  using namespace ir_sql_converter;
+  switch (type) {
+  case BoolVar:      return duckdb::LogicalType(duckdb::LogicalTypeId::BOOLEAN);
+  case IntVar:       return duckdb::LogicalType(duckdb::LogicalTypeId::INTEGER);
+  case FloatVar:     return duckdb::LogicalType(duckdb::LogicalTypeId::FLOAT);
+  case StringVar:    return duckdb::LogicalType(duckdb::LogicalTypeId::VARCHAR);
+  case Date:         return duckdb::LogicalType(duckdb::LogicalTypeId::DATE);
+  case TimestampVar: return duckdb::LogicalType(duckdb::LogicalTypeId::TIMESTAMP);
+  case IntervalVar:  return duckdb::LogicalType(duckdb::LogicalTypeId::INTERVAL);
+  default:           return duckdb::LogicalType(duckdb::LogicalTypeId::VARCHAR);
+  }
+}
+#endif
+
+void IRQuerySplitter::RegisterTempTableWithOptimizerHelper(
+    const TempTableInfo &temp_info) {
+#ifdef HAVE_DUCKDB
+  if (plan_optimizer_duckdb_) {
+    std::string ddl = "CREATE OR REPLACE TABLE " + temp_info.table_name + " (";
+    for (size_t i = 0; i < temp_info.column_names.size(); i++) {
+      if (i > 0) ddl += ", ";
+      ddl += "\"" + temp_info.column_names[i] + "\" ";
+      switch (temp_info.column_types[i]) {
+      case ir_sql_converter::BoolVar:      ddl += "BOOLEAN"; break;
+      case ir_sql_converter::IntVar:       ddl += "INTEGER"; break;
+      case ir_sql_converter::FloatVar:     ddl += "FLOAT"; break;
+      case ir_sql_converter::Date:         ddl += "DATE"; break;
+      case ir_sql_converter::TimestampVar: ddl += "TIMESTAMP"; break;
+      case ir_sql_converter::IntervalVar:  ddl += "INTERVAL"; break;
+      default:                             ddl += "VARCHAR"; break;
+      }
+    }
+    ddl += ")";
+    try {
+      plan_optimizer_duckdb_->GetConnection().Query(ddl);
+    } catch (const std::exception &e) {
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-OPT] Failed to register temp table in DuckDB: "
+                  << e.what() << "\n";
+    }
+  }
+#endif
+#ifdef HAVE_POSTGRES
+  if (plan_optimizer_pg_) {
+    std::string ddl = "CREATE TEMP TABLE IF NOT EXISTS " +
+                      temp_info.table_name + " (";
+    for (size_t i = 0; i < temp_info.column_names.size(); i++) {
+      if (i > 0) ddl += ", ";
+      ddl += "\"" + temp_info.column_names[i] + "\" ";
+      switch (temp_info.column_types[i]) {
+      case ir_sql_converter::BoolVar:      ddl += "BOOLEAN"; break;
+      case ir_sql_converter::IntVar:       ddl += "INTEGER"; break;
+      case ir_sql_converter::FloatVar:     ddl += "REAL"; break;
+      case ir_sql_converter::Date:         ddl += "DATE"; break;
+      case ir_sql_converter::TimestampVar: ddl += "TIMESTAMP"; break;
+      case ir_sql_converter::IntervalVar:  ddl += "INTERVAL"; break;
+      default:                             ddl += "TEXT"; break;
+      }
+    }
+    ddl += ")";
+    try {
+      plan_optimizer_pg_->ExecuteDDL(ddl);
+    } catch (const std::exception &e) {
+      if (config_.enable_debug_print)
+        std::cerr << "[PLAN-OPT] Failed to register temp table in PG: "
+                  << e.what() << "\n";
+    }
+  }
+#endif
+}
+
 IRQuerySplitter::TuneEntry
 IRQuerySplitter::ParseTuneLabel(const std::string &label) {
   TuneEntry e;
@@ -1734,7 +1878,14 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::chrono::high_resolution_clock::time_point duckdb_final_start;
       if (config_.enable_tuning)
         duckdb_final_start = std::chrono::high_resolution_clock::now();
-      query_result = adapter_->ExecuteSQL(final_sql);
+      auto opt_ir = OptimizeSubSQL(final_sql);
+      if (opt_ir) {
+        if (config_.enable_debug_print)
+          std::cerr << "[PLAN-OPT] Using external optimizer for final SQL\n";
+        query_result = adapter_->ExecuteIRQuery(*opt_ir);
+      } else {
+        query_result = adapter_->ExecuteSQL(final_sql);
+      }
       if (config_.enable_tuning)
         log_final_exe_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
@@ -3570,8 +3721,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #endif
         }
 #endif
-        adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                               config_.enable_update_temp_card);
+        auto opt_ir = OptimizeSubSQL(sub_sql);
+        if (opt_ir) {
+          if (config_.enable_debug_print)
+            std::cerr << "[PLAN-OPT] Using external optimizer for sub-SQL\n";
+          adapter_->ExecuteIRandCreateTempTable(*opt_ir, temp_table_name,
+                                                config_.enable_update_temp_card);
+        } else {
+          adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
+                                                 config_.enable_update_temp_card);
+        }
       }
     }
     if (config_.enable_tuning) {
@@ -3645,6 +3804,10 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
   // Add temp table to the mapping for future iterations
   splitter_->AddTableMapping(temp_table_index, temp_table_name);
+
+  // Register temp table with the external optimizer helper (if active)
+  // so subsequent sub-SQLs referencing it can be optimized.
+  RegisterTempTableWithOptimizerHelper(temp_table);
 
   if (config_.enable_debug_print) {
     std::cout << "[Iteration " << iteration_count_
@@ -3742,11 +3905,18 @@ TempTableInfo IRQuerySplitter::ExecuteSubIR(
     std::cout << sub_sql << std::endl;
   }
 
-  adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
-                                         config_.enable_update_temp_card);
+  auto opt_ir = OptimizeSubSQL(sub_sql);
+  if (opt_ir) {
+    if (config_.enable_debug_print)
+      std::cerr << "[PLAN-OPT] Using external optimizer for sub-SQL\n";
+    adapter_->ExecuteIRandCreateTempTable(*opt_ir, temp_table_name,
+                                          config_.enable_update_temp_card);
+  } else {
+    adapter_->ExecuteSQLandCreateTempTable(sub_sql, temp_table_name,
+                                           config_.enable_update_temp_card);
+  }
 
   unsigned int temp_table_index = adapter_->subquery_index - 1;
-  // TODO: support estimated_rows for enable_update_temp_card=false path
   uint64_t cardinality = adapter_->GetTempTableCardinality(temp_table_name);
 
   return TempTableInfo(temp_table_name, temp_table_index, cardinality);

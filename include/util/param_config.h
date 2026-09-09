@@ -40,8 +40,11 @@ struct ParamConfig {
   // CLI: --lingodb-plan-optimizer=duckdb|postgres (default: own = lingo-db's MLIR optimizer)
   enum class LingoDBPlanOptimizer { OWN, DUCKDB, POSTGRESQL };
   LingoDBPlanOptimizer lingodb_plan_optimizer = LingoDBPlanOptimizer::OWN;
-  std::string helper_db;     // Connection string for the plan optimizer or
-                             // DuckDB database path for node-based split helper
+  std::string helper_db;     // DuckDB database path for node-based split helper,
+                             // storage plan loading, and FK extraction fallback
+  std::string lingodb_plan_optimizer_db; // Connection string for the external
+                             // optimizer (DuckDB path or PG conn string).
+                             // Used only by --lingodb-plan-optimizer != own.
 
   // Mode selection
   bool benchmark_mode = false; // false = single query, true = benchmark
@@ -233,8 +236,11 @@ struct ParamConfig {
   void Print() const {
     std::cout << "=== Split Configuration ===" << std::endl;
     std::cout << "  Engine: " << GetEngineName() << std::endl;
-    if (engine == BackendEngine::LINGODB)
+    if (engine == BackendEngine::LINGODB) {
       std::cout << "  Plan Optimizer: " << GetLingoDBPlanOptimizerName() << std::endl;
+      if (!lingodb_plan_optimizer_db.empty())
+        std::cout << "  Plan Optimizer DB: " << lingodb_plan_optimizer_db << std::endl;
+    }
     std::cout << "  Strategy: " << GetStrategyName() << std::endl;
     std::cout << "  ReorderGet: "
               << (NeedsReorderGet() ? "enabled" : "disabled") << std::endl;

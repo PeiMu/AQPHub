@@ -76,9 +76,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       }
     }
     // Parse --helper-db-path=<connection> (DuckDB database path for
-    // node-based split helper, or connection string for lingodb-plan-optimizer)
+    // node-based split helper, storage plan loading, FK extraction)
     else if (arg.find("--helper-db-path=") == 0) {
       config.helper_db = arg.substr(17);
+    }
+    // Parse --lingodb-plan-optimizer-db=<connection> (connection string for the
+    // external optimizer chosen by --lingodb-plan-optimizer)
+    else if (arg.find("--lingodb-plan-optimizer-db=") == 0) {
+      config.lingodb_plan_optimizer_db = arg.substr(28);
     }
     // Parse --split=<value>
     else if (arg.find("--split=") == 0) {
@@ -351,6 +356,22 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     throw std::runtime_error(
         "--split=auto requires --tune-config=<path>");
 
+  // Validate --lingodb-plan-optimizer requires a connection string.
+  // Accept either --lingodb-plan-optimizer-db (preferred) or --helper-db-path
+  // (legacy fallback) so existing scripts keep working.
+  if (config.lingodb_plan_optimizer != LingoDBPlanOptimizer::OWN) {
+    if (config.lingodb_plan_optimizer_db.empty() &&
+        !config.helper_db.empty()) {
+      config.lingodb_plan_optimizer_db = config.helper_db;
+    }
+    if (config.lingodb_plan_optimizer_db.empty()) {
+      throw std::runtime_error(
+          "--lingodb-plan-optimizer=" +
+          config.GetLingoDBPlanOptimizerName() +
+          " requires --lingodb-plan-optimizer-db=<connection>");
+    }
+  }
+
   return config;
 }
 void ParamConfig::PrintUsage() {
@@ -372,8 +393,11 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --lingodb-plan-optimizer=<opt>    LinGo-DB plan optimizer: "
                "own (default), duckdb, postgres"
             << std::endl;
-  std::cout << "  --helper-db-path=<conn>            DuckDB path or PG "
-               "connection for plan optimizer / node-based split"
+  std::cout << "  --lingodb-plan-optimizer-db=<conn>  Connection string for "
+               "the external optimizer (DuckDB path or PG conn)"
+            << std::endl;
+  std::cout << "  --helper-db-path=<conn>            DuckDB path for "
+               "node-based split helper / storage plan loading"
             << std::endl;
   std::cout << "    Strategies: none, topdown, minsubquery, "
                "relationship-center, entity-center"

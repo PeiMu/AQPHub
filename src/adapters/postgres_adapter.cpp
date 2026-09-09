@@ -897,6 +897,18 @@ void PostgreSQLAdapter::CheckConnection() {
   }
 }
 
+void PostgreSQLAdapter::ExecuteDDL(const std::string &ddl) {
+  CheckConnection();
+  PGresult *res = PQexec(conn, ddl.c_str());
+  ExecStatusType status = PQresultStatus(res);
+  if (status != PGRES_COMMAND_OK) {
+    std::string err = PQresultErrorMessage(res);
+    PQclear(res);
+    throw std::runtime_error("DDL failed: " + err);
+  }
+  PQclear(res);
+}
+
 std::unordered_map<size_t, std::pair<int64_t, int64_t>>
 PostgreSQLAdapter::GetTempTableMinMax(
     const std::string &temp_table_name,

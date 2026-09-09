@@ -469,8 +469,8 @@ void ExecuteSingleQuery(
         if (config.engine == BackendEngine::LINGODB &&
             config.lingodb_plan_optimizer ==
                 ParamConfig::LingoDBPlanOptimizer::DUCKDB &&
-            !config.helper_db.empty()) {
-          DuckDBAdapter helper(config.helper_db);
+            !config.lingodb_plan_optimizer_db.empty()) {
+          DuckDBAdapter helper(config.lingodb_plan_optimizer_db);
           helper.ParseSQL(sql);
           helper.FilterOptimize();
           auto ir = helper.ConvertPlanToIR();
@@ -492,8 +492,8 @@ void ExecuteSingleQuery(
         if (config.engine == BackendEngine::LINGODB &&
             config.lingodb_plan_optimizer ==
                 ParamConfig::LingoDBPlanOptimizer::POSTGRESQL &&
-            !config.helper_db.empty()) {
-          PostgreSQLAdapter pg_helper(config.helper_db);
+            !config.lingodb_plan_optimizer_db.empty()) {
+          PostgreSQLAdapter pg_helper(config.lingodb_plan_optimizer_db);
           pg_helper.SetUsePgOptimizer(true);
           pg_helper.ParseSQL(sql);
           auto ir = pg_helper.ConvertPlanToIR();
@@ -676,7 +676,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
       }
     }
 
-    std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
+    if (config.enable_debug_print)
+      std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
     if (iter > 0 && config.jit_cache && config.jit_cache != 3)
@@ -732,7 +733,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
     for (size_t qi = 0; qi < sql_files.size(); qi++) {
       const auto &sql_file = sql_files[qi];
-      std::cout << "Run " + sql_file << std::endl;
+      if (config.enable_debug_print)
+        std::cout << "Run " + sql_file << std::endl;
       if (config.enable_timing) {
         std::ofstream log_file;
         log_file.open(g_timing_log_name, std::ios_base::app);

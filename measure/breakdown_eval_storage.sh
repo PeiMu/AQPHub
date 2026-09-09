@@ -31,7 +31,7 @@ source "${SCRIPT_DIR}/env.sh"
 
 COMMON="job duckdb topdown query none on on on all single-run-structural off tpde"
 DEST_DIR="${SCRIPT_DIR}/job_result"
-D="duckdb_topdown_query_none_jitcache_single_run_template_tpde"
+D="duckdb_topdown_query_none_jitcache_single_run_structural_tpde"
 
 # Step 1: Bi-directional storage enabled (default)
 echo "=== Step 1: Bi-directional storage enabled ==="

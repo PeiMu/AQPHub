@@ -16,10 +16,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
-COMMON="job duckdb topdown query none on on on all single-run-template off tpde"
 COMMON="job duckdb topdown query none on on on all single-run-structural off tpde"
 DEST_DIR="${SCRIPT_DIR}/job_result"
-D="duckdb_topdown_query_none_jitcache_single_run_template_tpde"
+D="duckdb_topdown_query_none_jitcache_single_run_structural_tpde"
 
 # Step 1: Baseline — optimizer enabled (default)
 echo "=== Step 1: Baseline (optimizer enabled) ==="

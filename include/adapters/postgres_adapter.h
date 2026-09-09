@@ -119,6 +119,9 @@ public:
   // Get connection handle
   PGconn *GetConnection() { return conn; }
 
+  // Execute a DDL statement (CREATE TABLE, etc.)
+  void ExecuteDDL(const std::string &ddl);
+
   void CheckConnection();
 
 #ifdef HAVE_LLVM

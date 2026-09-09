@@ -223,12 +223,16 @@ if [[ "$engine" == "opengauss" ]]; then
     cmd_prefix="env LD_LIBRARY_PATH=$HOME/gauss_compat_libs"
 fi
 
-# LingoDB: in-memory with CSV loading instead of --db
 db_arg="--db=${db_conn}"
 lingodb_flags=""
 if [[ "$engine" == "lingodb" ]]; then
-    db_arg="--in-memory"
-    lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv"
+    if [[ -d "${LINGODB_DB_JOB}" ]]; then
+        db_arg="--db=${LINGODB_DB_JOB}"
+        lingodb_flags="--lingodb-mode=llvm"
+    else
+        db_arg="--in-memory"
+        lingodb_flags="--csv-dir=$JOB_PATH/lingo_db_csv --lingodb-mode=llvm"
+    fi
 fi
 
 $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \

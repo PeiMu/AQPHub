@@ -189,7 +189,7 @@ fi
 ########################################
 if [[ "$engine" == "lingodb" ]]; then
     if [[ "$jit_level" == "none" ]]; then
-        log_name=aqp_middleware_${engine}_${lingodb_mode}_${split}${log_suffix}
+        log_name=aqp_middleware_${engine}_${lingodb_mode}_${split}${flag_suffix}${log_suffix}
     else
         log_name=aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${flag_suffix}${log_suffix}
     fi
@@ -235,17 +235,22 @@ fi
 ########################################
 helper_db_arg=""
 plan_opt_arg=""
+plan_opt_db_arg=""
 if [[ "$engine" == "lingodb" ]]; then
+    # DuckDB helper is always needed for node-based split and storage plan loading
+    helper_db_arg="--helper-db-path=${duckdb_db}"
     if [[ "$lingodb_plan_opt" == "postgres" || "$lingodb_plan_opt" == "postgresql" ]]; then
-        if [[ "$bench" == "job" ]]; then
-            helper_db_arg="--helper-db-path=${PG_CONN_JOB}"
-        else
-            helper_db_arg="--helper-db-path=${PG_CONN_DSB}"
-        fi
         plan_opt_arg="--lingodb-plan-optimizer=postgres"
-    else
-        helper_db_arg="--helper-db-path=${duckdb_db}"
-        [[ -n "$lingodb_plan_opt" ]] && plan_opt_arg="--lingodb-plan-optimizer=${lingodb_plan_opt}"
+        if [[ "$bench" == "job" ]]; then
+            plan_opt_db_arg="--lingodb-plan-optimizer-db=${PG_CONN_JOB}"
+        else
+            plan_opt_db_arg="--lingodb-plan-optimizer-db=${PG_CONN_DSB}"
+        fi
+    elif [[ "$lingodb_plan_opt" == "duckdb" ]]; then
+        plan_opt_arg="--lingodb-plan-optimizer=duckdb"
+        plan_opt_db_arg="--lingodb-plan-optimizer-db=${duckdb_db}"
+    elif [[ -n "$lingodb_plan_opt" ]]; then
+        plan_opt_arg="--lingodb-plan-optimizer=${lingodb_plan_opt}"
     fi
 elif [[ ("$split" == "node-based" || "$split" == "topdown" || "$split" == "auto") && "$engine" != "duckdb" ]]; then
     helper_db_arg="--helper-db-path=${duckdb_db}"
@@ -422,7 +427,7 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
     --engine="${engine}" \
     "${db_arg}" \
     "${helper_db_arg}" \
-    ${plan_opt_arg} \
+    ${plan_opt_arg} ${plan_opt_db_arg:+"${plan_opt_db_arg}"} \
     --schema="${schema}" \
     --fkeys="${fkeys}" \
     --split="${split}" \
