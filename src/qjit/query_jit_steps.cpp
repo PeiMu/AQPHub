@@ -297,7 +297,10 @@ struct Analyzer {
         return Reject("agg:grouped");
       if (agg.agg_fns.empty())
         return Reject("agg:no-functions");
-      for (const auto &fn : agg.agg_fns) {
+      for (size_t fi = 0; fi < agg.agg_fns.size(); fi++) {
+        const auto &fn = agg.agg_fns[fi];
+        if (fi < agg.agg_distinct.size() && agg.agg_distinct[fi])
+          return Reject("agg:distinct");
         switch (fn.second) {
         case Min:
         case Max:
