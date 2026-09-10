@@ -80,8 +80,8 @@ bash ./measure_umbra.sh dsb_50
 #bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based query none on on on all single-run-template recompile tpde
 
 #RQ3, TODO: measure pg; measure w/wo stats
-bash ./breakdown_eval_storage.sh &&\
-bash ./breakdown_runtime_guided_opt.sh &&\
+bash ./measure/breakdown_eval_stats.sh &&\
+bash ./breakdown_runtime_guided_opt.sh &&\ # TODO: write a new script
 
 #RQ4, TODO: need to check and fix
 bash ./breakdown_compile_time_reduction.sh &&\
