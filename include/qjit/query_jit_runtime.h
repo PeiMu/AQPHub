@@ -340,6 +340,7 @@ public:
   struct ColumnDesc {
     int32_t dtype; /* AQP_DTYPE_INT32 / INT64 / DOUBLE / VARCHAR      */
     std::string name;
+    uint8_t decimal_scale = 0; /* non-zero for DECIMAL: divide by 10^scale   */
   };
 
   QjitTable(std::vector<ColumnDesc> cols, uint32_t num_workers);

@@ -145,7 +145,12 @@ struct ParamConfig {
   bool block_skip = true;
   bool membership_preprobe = true;
   bool early_termination = true;
-  bool interpreter_collect_stats = false;
+  // Tri-state: -1 = auto (on if any JIT level active, off for no-jit),
+  // 0 = off, 1 = on. Controls range-pred injection, bloom-filter building,
+  // and min/max statistics collection across sub-plans.
+  int collect_stats = -1;
+
+  bool CollectStats() const;
 
   // Disable cross-query preparation (bg compile of query N+1's first
   // subquery during query N). Only relevant in benchmark mode with

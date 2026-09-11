@@ -1248,9 +1248,35 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
             if (!qtable.ValueValid(col, r)) {
               row_data.emplace_back("NULL");
             } else if (qtable.Col(col).dtype == AQP_DTYPE_INT32) {
-              row_data.push_back(std::to_string(qtable.GetI32(col, r)));
+              uint8_t sc = qtable.Col(col).decimal_scale;
+              if (sc > 0) {
+                int32_t raw = qtable.GetI32(col, r);
+                int32_t divisor = 1;
+                for (uint8_t s = 0; s < sc; s++) divisor *= 10;
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%s%d.%0*d",
+                         raw < 0 ? "-" : "",
+                         std::abs(raw) / divisor, sc,
+                         std::abs(raw) % divisor);
+                row_data.emplace_back(buf);
+              } else {
+                row_data.push_back(std::to_string(qtable.GetI32(col, r)));
+              }
             } else if (qtable.Col(col).dtype == AQP_DTYPE_INT64) {
-              row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+              uint8_t sc = qtable.Col(col).decimal_scale;
+              if (sc > 0) {
+                int64_t raw = qtable.GetI64(col, r);
+                int64_t divisor = 1;
+                for (uint8_t s = 0; s < sc; s++) divisor *= 10;
+                char buf[48];
+                snprintf(buf, sizeof(buf), "%s%lld.%0*lld",
+                         raw < 0 ? "-" : "",
+                         (long long)(std::abs(raw) / divisor), (int)sc,
+                         (long long)(std::abs(raw) % divisor));
+                row_data.emplace_back(buf);
+              } else {
+                row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+              }
             } else if (qtable.Col(col).dtype == AQP_DTYPE_DOUBLE) {
               row_data.push_back(std::to_string(qtable.GetF64(col, r)));
             } else {
@@ -3986,7 +4012,10 @@ bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
         reason = "output:agg-type";
         return false;
       }
-      compiled.out_descs.push_back({dt, out_name(i)});
+      uint8_t dec_scale = 0;
+      if (types[i].id() == duckdb::LogicalTypeId::DECIMAL)
+        dec_scale = duckdb::DecimalType::GetScale(types[i]);
+      compiled.out_descs.push_back({dt, out_name(i), dec_scale});
     }
     compiled.agg_output_cells = plan.agg_output_cells;
     compiled.agg_descs.reserve(last.agg_cells.size());
@@ -7290,9 +7319,35 @@ QueryResult DuckDBAdapter::ReplayQjitFinal(const CachedSubquery &sub) {
       if (!qtable.ValueValid(col, r)) {
         row_data.emplace_back("NULL");
       } else if (qtable.Col(col).dtype == AQP_DTYPE_INT32) {
-        row_data.push_back(std::to_string(qtable.GetI32(col, r)));
+        uint8_t sc = qtable.Col(col).decimal_scale;
+        if (sc > 0) {
+          int32_t raw = qtable.GetI32(col, r);
+          int32_t divisor = 1;
+          for (uint8_t s = 0; s < sc; s++) divisor *= 10;
+          char buf[32];
+          snprintf(buf, sizeof(buf), "%s%d.%0*d",
+                   raw < 0 ? "-" : "",
+                   std::abs(raw) / divisor, sc,
+                   std::abs(raw) % divisor);
+          row_data.emplace_back(buf);
+        } else {
+          row_data.push_back(std::to_string(qtable.GetI32(col, r)));
+        }
       } else if (qtable.Col(col).dtype == AQP_DTYPE_INT64) {
-        row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+        uint8_t sc = qtable.Col(col).decimal_scale;
+        if (sc > 0) {
+          int64_t raw = qtable.GetI64(col, r);
+          int64_t divisor = 1;
+          for (uint8_t s = 0; s < sc; s++) divisor *= 10;
+          char buf[48];
+          snprintf(buf, sizeof(buf), "%s%lld.%0*lld",
+                   raw < 0 ? "-" : "",
+                   (long long)(std::abs(raw) / divisor), (int)sc,
+                   (long long)(std::abs(raw) % divisor));
+          row_data.emplace_back(buf);
+        } else {
+          row_data.push_back(std::to_string(qtable.GetI64(col, r)));
+        }
       } else {
         QjitString s = qtable.GetStr(col, r);
         row_data.emplace_back(qjit::StringData(s), qjit::StringLen(s));

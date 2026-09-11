@@ -17,6 +17,11 @@ static std::string to_lower(const std::string &str) {
   return result;
 }
 
+bool ParamConfig::CollectStats() const {
+  if (collect_stats >= 0) return collect_stats != 0;
+  return (jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_QUERY_JIT)) != 0;
+}
+
 ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
   ParamConfig config;
 
@@ -282,8 +287,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.csv_dir = arg.substr(10);
     } else if (arg == "--explain") {
       config.enable_explain = true;
-    } else if (arg == "--interpreter-collect-stats") {
-      config.interpreter_collect_stats = true;
+    } else if (arg == "--collect-stats") {
+      config.collect_stats = 1;
+    } else if (arg == "--no-collect-stats") {
+      config.collect_stats = 0;
     } else if (arg == "--no-range-predicate-injection") {
       config.range_predicate_injection = false;
     } else if (arg == "--no-bloom-filter-injection") {
@@ -514,6 +521,11 @@ void ParamConfig::PrintUsage() {
             << std::endl;
   std::cout << "  --disable-optimizer              Disable engine optimizer for "
                "subquery execution (init IR still uses FilterOptimize)"
+            << std::endl;
+  std::cout << "  --[no-]collect-stats             Runtime statistics collection "
+               "(range preds, bloom filters, min/max).\n"
+               "                                     Default: auto (on with JIT, "
+               "off without)"
             << std::endl;
   std::cout << "  --help, -h                       Show this help message"
             << std::endl;

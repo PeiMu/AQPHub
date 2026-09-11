@@ -1826,11 +1826,13 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       if (!tune_entries_.empty())
         ApplyTuneOverride(static_cast<int>(temp_tables_.size()));
       if (trivial_temp.empty()) {
+        const bool cs = config_.CollectStats();
         const bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
-        const bool interp_stats = !query_jit && config_.interpreter_collect_stats;
+        // TODO: bloom filters for expr/operator/pipeline-JIT are untested;
+        // gate behind !query_jit for now — test and validate separately.
         ApplyCrossSubPlanOptimizations(
-            final_sql, /*inject_range_preds=*/query_jit || interp_stats,
-            /*build_bloom_filters=*/interp_stats);
+            final_sql, /*inject_range_preds=*/cs,
+            /*build_bloom_filters=*/cs && !query_jit);
       }
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
@@ -2398,11 +2400,14 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   // placeholder — we DON'T push it to temp_tables_ (bloom/min-max from zero
   // rows would be wrong). Divergence from the inline SQL is caught by the
   // SQL match and routed to the miss policy.
-  if (query_jit)
-    ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/true,
-                                   /*build_bloom_filters=*/false);
-  else
-    ApplyCrossSubPlanOptimizations(spec_sql);
+  {
+    const bool cs = config_.CollectStats();
+    if (query_jit)
+      ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/cs,
+                                     /*build_bloom_filters=*/false);
+    else
+      ApplyCrossSubPlanOptimizations(spec_sql, cs, cs);
+  }
 
   auto spec = std::make_unique<SpeculativeCompilation>();
   if (!query_jit)
@@ -2595,8 +2600,13 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
   unsigned int spec_sub_plan_id = adapter_->subquery_index;
   int spec_idx = spec_sub_plan_id;
   std::string spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
-  if (spec_jit_flags & AQP_JIT_QUERY_JIT)
-    ApplyCrossSubPlanOptimizations(spec_sql, true, false);
+  {
+    const bool cs = config_.CollectStats();
+    if (spec_jit_flags & AQP_JIT_QUERY_JIT)
+      ApplyCrossSubPlanOptimizations(spec_sql, cs, false);
+    else
+      ApplyCrossSubPlanOptimizations(spec_sql, cs, cs);
+  }
 
   auto spec = std::make_unique<SpeculativeCompilation>();
   spec->speculative_sql = std::move(spec_sql);
@@ -3535,22 +3545,27 @@ bool IRQuerySplitter::ExecuteOneIteration(
       // Compare raw (pre-optimization) SQL: Phase B stores raw SQL in
       // speculative_sql, so compare before applying range preds.
       spec_hit = CheckSpeculativeResult(sub_sql, temp_table_name);
-      if (spec_hit) {
-        ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
-                                       /*build_bloom_filters=*/false);
-      } else {
-        ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/true,
-                                       /*build_bloom_filters=*/true);
-        compensate_miss = true;
+      {
+        const bool cs = config_.CollectStats();
+        if (spec_hit) {
+          ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/cs,
+                                         /*build_bloom_filters=*/false);
+        } else {
+          ApplyCrossSubPlanOptimizations(sub_sql, /*inject_range_preds=*/cs,
+                                         /*build_bloom_filters=*/cs);
+          compensate_miss = true;
+        }
       }
     } else
 #endif
     {
+      const bool cs = config_.CollectStats();
       const bool query_jit = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
-      const bool interp_stats = !query_jit && config_.interpreter_collect_stats;
+      // TODO: bloom filters for expr/operator/pipeline-JIT are untested;
+      // gate behind !query_jit for now — test and validate separately.
       ApplyCrossSubPlanOptimizations(
-          sub_sql, /*inject_range_preds=*/query_jit || interp_stats,
-          /*build_bloom_filters=*/interp_stats);
+          sub_sql, /*inject_range_preds=*/cs,
+          /*build_bloom_filters=*/cs && !query_jit);
 #if (defined(HAVE_DUCKDB) || defined(HAVE_POSTGRES)) && defined(HAVE_LLVM)
       compensate_miss =
           learned_missed_iter && (config_.engine == BackendEngine::DUCKDB ||

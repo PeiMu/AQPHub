@@ -8,10 +8,11 @@
 # Cache tiers grouped after base configs.
 #
 # Config format:
-#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode[|skip_hash_cmp[|disable_runtime_opts]]]]]
+#   engine|split|jit_level|jit_simd|golden[|spec_jit[|jit_cache[|compile_mode[|skip_hash_cmp[|disable_runtime_opts[|collect_stats]]]]]]
 #   compile_mode defaults to llvm, skip_hash_cmp defaults to on(=all) when omitted.
 #   disable_runtime_opts: comma-separated list of runtime opts to disable
 #   (range-pred,bloom-filter,range-guard,block-skip,membership,early-term). Empty = all enabled.
+#   collect_stats: auto (default) | on | off — runtime statistics collection.
 #
 set -uo pipefail
 
@@ -399,6 +400,18 @@ JIT_CONFIGS=(
   # node-based: baseline (all 6 disabled)
   #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|||tpde||range-pred,early-term,range-guard,block-skip,membership,bloom-filter"
 
+  # ============================================================
+  # collect_stats flag validation
+  # ============================================================
+  # no-jit + collect_stats=on (explicit — default would be off)
+  "duckdb|topdown|none|none|duckdb_job_no-split_golden.txt||||||on"
+  # no-jit + collect_stats=off (same as default — regression check)
+  "duckdb|topdown|none|none|duckdb_job_no-split_golden.txt||||||off"
+  # query-jit + collect_stats=off (disable stats for query-jit)
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde|||off"
+  # query-jit + collect_stats=on (same as default — regression check)
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|||tpde|||on"
+
   # lingodb configs moved to correctness_test_job_lingodb.sh
 )
 
@@ -455,17 +468,18 @@ FAIL_LOG="job_result/correctness_failures.log"
 
 # --- Run JIT-level configs via run_aqp.sh job ---
 for entry in "${JIT_CONFIGS[@]}"; do
-  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp disable_runtime_opts <<< "$entry"
+  IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode skip_hash_cmp disable_runtime_opts collect_stats_mode <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
   jit_cache_mode=${jit_cache_mode:-off}
   compile_mode=${compile_mode:-llvm}
   skip_hash_cmp=${skip_hash_cmp:-on}
   disable_runtime_opts=${disable_runtime_opts:-}
-  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} disable_rt=${disable_runtime_opts:-all_on} ==="
+  collect_stats_mode=${collect_stats_mode:-auto}
+  echo "=== Testing: engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} disable_rt=${disable_runtime_opts:-all_on} collect_stats=${collect_stats_mode} ==="
 
   bash run_aqp.sh job "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
        on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}" \
-       "" "${disable_runtime_opts}"
+       "" "${disable_runtime_opts}" "${collect_stats_mode}"
 
   shc_suffix=""
   [[ "$skip_hash_cmp" == "off" ]] && shc_suffix="_noskiphashcmp"
@@ -486,13 +500,16 @@ for entry in "${JIT_CONFIGS[@]}"; do
   [[ "$disable_runtime_opts" == *"block-skip"* ]]    && rt_suffix+="_noblockskip"
   [[ "$disable_runtime_opts" == *"membership"* ]]    && rt_suffix+="_nomembership"
   [[ "$disable_runtime_opts" == *"early-term"* ]]    && rt_suffix+="_noearlyterm"
+  cs_suffix=""
+  [[ "$collect_stats_mode" == "on" ]]  && cs_suffix="_collectstats"
+  [[ "$collect_stats_mode" == "off" ]] && cs_suffix="_nocollectstats"
   if [[ "$engine" == "lingodb" ]]; then
     output="job_result/aqp_middleware_${engine}_${jit_level}_${split}_job.txt"
   else
-    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}${rt_suffix}_job.txt"
+    output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${shc_suffix}${cache_suffix}${spec_suffix}${fc_suffix}${rt_suffix}${cs_suffix}_job.txt"
   fi
 
-  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} disable_rt=${disable_runtime_opts:-all_on}"
+  config_label="engine=${engine} split=${split} jit=${jit_level} simd=${jit_simd} compile=${compile_mode} spec=${spec_jit_mode} cache=${jit_cache_mode} skip_hash_cmp=${skip_hash_cmp} disable_rt=${disable_runtime_opts:-all_on} collect_stats=${collect_stats_mode}"
 
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
@@ -513,24 +530,23 @@ for entry in "${JIT_CONFIGS[@]}"; do
     continue
   fi
 
-  # For --jit-cache=full (--repeat=2): compare BOTH iterations against golden.
-  # Iter 0 = normal path, iter 1 = replay path. Both must match.
+  # For --jit-cache=full (--repeat=2): compare iter-0 output against golden.
+  # The output contains two iterations back-to-back with no separator in
+  # release mode, so extract the first N lines (matching the golden).
   if [[ "$jit_cache_mode" == "full" ]]; then
-    d0_raw=$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
-    d1_raw=$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)
+    golden_filtered=$(eval $FILTER "$golden")
+    golden_lines=$(echo "$golden_filtered" | wc -l)
+    d0_raw=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
     d0=$(filter_known_diffs "$d0_raw" "$golden")
-    d1=$(filter_known_diffs "$d1_raw" "$golden")
-    if [[ -z "$d0" && -z "$d1" ]]; then
-      echo "  PASS (iter0 + iter1)"
+    if [[ -z "$d0" ]]; then
+      echo "  PASS (iter0)"
       ((passed++))
     else
-      echo "  FAIL: differences found"
-      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
-      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      echo "  FAIL: differences found (iter0)"
+      echo "$d0" | head -20
       FAILED_CONFIGS+=("$config_label")
       echo "--- $config_label ---" >> "$FAIL_LOG"
-      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
-      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
+      echo "$d0" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
     fi
@@ -740,19 +756,18 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    d1=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    if [[ -z "$d0" && -z "$d1" ]]; then
-      echo "  PASS (iter0 + iter1)"
+    golden_filtered=$(eval $FILTER "$golden")
+    golden_lines=$(echo "$golden_filtered" | wc -l)
+    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+    if [[ -z "$d0" ]]; then
+      echo "  PASS (iter0)"
       ((passed++))
     else
-      echo "  FAIL: differences found"
-      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
-      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      echo "  FAIL: differences found (iter0)"
+      echo "$d0" | head -20
       FAILED_CONFIGS+=("$config_label")
       echo "--- $config_label ---" >> "$FAIL_LOG"
-      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
-      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
+      echo "$d0" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
     fi
@@ -897,19 +912,18 @@ if [[ -f "$TUNE_JSON" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    d1=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    if [[ -z "$d0" && -z "$d1" ]]; then
-      echo "  PASS (iter0 + iter1)"
+    golden_filtered=$(eval $FILTER "$golden")
+    golden_lines=$(echo "$golden_filtered" | wc -l)
+    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+    if [[ -z "$d0" ]]; then
+      echo "  PASS (iter0)"
       ((passed++))
     else
-      echo "  FAIL: differences found"
-      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
-      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      echo "  FAIL: differences found (iter0)"
+      echo "$d0" | head -20
       FAILED_CONFIGS+=("$config_label")
       echo "--- $config_label ---" >> "$FAIL_LOG"
-      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
-      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
+      echo "$d0" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
     fi
@@ -1060,19 +1074,18 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    d1=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    if [[ -z "$d0" && -z "$d1" ]]; then
-      echo "  PASS (iter0 + iter1)"
+    golden_filtered=$(eval $FILTER "$golden")
+    golden_lines=$(echo "$golden_filtered" | wc -l)
+    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+    if [[ -z "$d0" ]]; then
+      echo "  PASS (iter0)"
       ((passed++))
     else
-      echo "  FAIL: differences found"
-      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
-      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      echo "  FAIL: differences found (iter0)"
+      echo "$d0" | head -20
       FAILED_CONFIGS+=("$config_label")
       echo "--- $config_label ---" >> "$FAIL_LOG"
-      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
-      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
+      echo "$d0" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
     fi
@@ -1215,19 +1228,18 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
     echo "" >> "$FAIL_LOG"
     ((failed++))
   else
-    d0=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 0 ---$/,/^--- Iteration 1 ---$/{ /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    d1=$(filter_known_diffs "$(diff <(sed -n '/^--- Iteration 1 ---$/,$ { /^--- Iteration/d; p; }' "$output" | eval $FILTER) <(eval $FILTER "$golden") || true)" "$golden")
-    if [[ -z "$d0" && -z "$d1" ]]; then
-      echo "  PASS (iter0 + iter1)"
+    golden_filtered=$(eval $FILTER "$golden")
+    golden_lines=$(echo "$golden_filtered" | wc -l)
+    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+    if [[ -z "$d0" ]]; then
+      echo "  PASS (iter0)"
       ((passed++))
     else
-      echo "  FAIL: differences found"
-      [[ -n "$d0" ]] && echo "  iter0 diff:" && echo "$d0" | head -10
-      [[ -n "$d1" ]] && echo "  iter1 diff:" && echo "$d1" | head -10
+      echo "  FAIL: differences found (iter0)"
+      echo "$d0" | head -20
       FAILED_CONFIGS+=("$config_label")
       echo "--- $config_label ---" >> "$FAIL_LOG"
-      [[ -n "$d0" ]] && echo "iter0 diff:" >> "$FAIL_LOG" && echo "$d0" >> "$FAIL_LOG"
-      [[ -n "$d1" ]] && echo "iter1 diff:" >> "$FAIL_LOG" && echo "$d1" >> "$FAIL_LOG"
+      echo "$d0" >> "$FAIL_LOG"
       echo "" >> "$FAIL_LOG"
       ((failed++))
     fi

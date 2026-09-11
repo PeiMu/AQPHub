@@ -16,7 +16,7 @@ spec_jit=${11:-off}       # off | recompile | interpret (--spec-jit mode)
 compile_mode=${12:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
-interp_collect_stats=${15:-off}  # on | off — enable stats collection for interpreter path
+collect_stats=${15:-auto}  # auto | on | off — runtime statistics collection (range preds, bloom filters, min/max)
 skip_queries=${16:-${AQP_SKIP_QUERIES:-}}  # pipe-separated query names to skip, e.g. "query050|query085|query101"
 
 ########################################
@@ -121,7 +121,8 @@ fi
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
 [[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
-[[ "$interp_collect_stats" == "on" ]] && jit_extra_flags+=" --interpreter-collect-stats"
+[[ "$collect_stats" == "on" ]]  && jit_extra_flags+=" --collect-stats"
+[[ "$collect_stats" == "off" ]] && jit_extra_flags+=" --no-collect-stats"
 if [[ -n "$disable_runtime_opts" ]]; then
     IFS=',' read -ra _dro <<< "$disable_runtime_opts"
     for _opt in "${_dro[@]}"; do
@@ -169,7 +170,8 @@ fi
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && flag_suffix+="_nobidirstorage"
 [[ "$disable_runtime_opts" == *"disable-optimizer"* ]] && flag_suffix+="_nooptimizer"
-[[ "$interp_collect_stats" == "on" ]]              && flag_suffix+="_interpcollect"
+[[ "$collect_stats" == "on" ]]                      && flag_suffix+="_collectstats"
+[[ "$collect_stats" == "off" ]]                     && flag_suffix+="_nocollectstats"
 [[ -n "$lingodb_plan_opt" ]] && flag_suffix+="_planopt_${lingodb_plan_opt}"
 
 ########################################
