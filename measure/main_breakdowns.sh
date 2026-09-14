@@ -38,7 +38,7 @@ bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all 
 bash ./measure_breakdown_time_aqp.sh job postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-structural recompile fastisel &&\
+bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-strict recompile fastisel &&\
 
 # Umbra JOB
 bash ./measure_umbra.sh job
@@ -61,7 +61,7 @@ export AQP_SKIP_QUERIES="query050|query085|query101"
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-structural recompile tpde &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-template recompile tpde &&\
 unset AQP_SKIP_QUERIES
 
 # Umbra DSB 50
@@ -79,12 +79,14 @@ bash ./measure_umbra.sh dsb_50
 #bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based none &&\
 #bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based query none on on on all single-run-template recompile tpde
 
-#RQ3, TODO: measure pg; measure w/wo stats
-bash ./measure/breakdown_eval_stats.sh &&\
-bash ./breakdown_runtime_guided_opt.sh &&\ # TODO: write a new script
+#RQ3.1 no-jit/query-jit x w/wo stats
+bash ./breakdown_eval_stats.sh &&\
+#RQ3.2 query-jit statis-enabled opt
+bash ./breakdown_runtime_guided_opt.sh &&\ 
 
-#RQ4, TODO: need to check and fix
+#RQ4 diff compiler backends; w/wo intertwine
 bash ./breakdown_compile_time_reduction.sh &&\
 
-#RQ5
+#RQ5 w/wo bidirectional storage
 bash ./breakdown_eval_storage.sh
+

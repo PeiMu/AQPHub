@@ -1231,7 +1231,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 3 && config_.engine == BackendEngine::DUCKDB) {
+  if (config_.jit_cache >= 4 && config_.engine == BackendEngine::DUCKDB) {
     auto &cache = DuckDBAdapter::QueryPlanCache();
     auto it = cache.find(query_name_);
     if (it != cache.end())
@@ -1241,7 +1241,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   }
 #endif
 #if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 3 && config_.engine == BackendEngine::POSTGRESQL) {
+  if (config_.jit_cache >= 4 && config_.engine == BackendEngine::POSTGRESQL) {
     auto &cache = PostgreSQLAdapter::PgQueryPlanCache();
     auto it = cache.find(query_name_);
     if (it != cache.end())
@@ -1911,7 +1911,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   }
   
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 3 && duckdb_adapter_ &&
+  if (config_.jit_cache >= 4 && duckdb_adapter_ &&
       duckdb_adapter_->IsPlanRecording()) {
     CachedQueryPlan cached;
     auto &buf = duckdb_adapter_->GetPlanRecording();
@@ -1925,7 +1925,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   }
 #endif
 #if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 3 && config_.engine == BackendEngine::POSTGRESQL) {
+  if (config_.jit_cache >= 4 && config_.engine == BackendEngine::POSTGRESQL) {
     auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
     if (pg && pg->IsPlanRecording()) {
       PgCachedQueryPlan cached;

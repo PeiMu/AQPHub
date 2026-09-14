@@ -227,10 +227,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_cache = 1;
     } else if (arg == "--jit-cache=single-run-template") {
       config.jit_cache = 2;
-    } else if (arg == "--jit-cache=full") {
-      config.jit_cache = 3;
     } else if (arg == "--jit-cache=structural" ||
                arg == "--jit-cache=single-run-structural") {
+      config.jit_cache = 3;
+    } else if (arg == "--jit-cache=full") {
       config.jit_cache = 4;
     } else if (arg == "--no-jit-cache") {
       config.jit_cache = 0;
@@ -356,7 +356,7 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       throw std::runtime_error("--in-memory requires --csv-dir=<path> or --schema=<path>");
   }
 
-  if (config.jit_cache == 3 && config.jit_cache_dir.empty())
+  if (config.jit_cache == 4 && config.jit_cache_dir.empty())
     config.jit_cache_dir = "/dev/shm/aqp_jit_cache/v1";
 
   if (config.strategy == SplitStrategy::AUTO && config.tune_config_path.empty())
@@ -473,11 +473,11 @@ void ParamConfig::PrintUsage() {
                "                                     single-run-strict: exact plan "
                "match, cleared between iterations\n"
                "                                     single-run-template: "
-               "parameterized constants, relaxed key (PLANNED)\n"
-               "                                     full: persistent disk cache "
-               "(PLANNED)\n"
+               "parameterized constants, relaxed key\n"
                "                                     structural: structural-template "
                "cache (table/column identity erased)\n"
+               "                                     full: persistent disk cache "
+               "with plan replay\n"
                "                                     bare --jit-cache = "
                "single-run-strict"
             << std::endl;

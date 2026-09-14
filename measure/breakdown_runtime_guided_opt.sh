@@ -96,33 +96,3 @@ echo ""
 echo "=== Query-JIT runtime-guided optimization breakdown complete ==="
 echo "Output: ${DEST_DIR}/step[1-5]_*.csv"
 
-# ============================================================
-# Interpreter path: range-pred injection is OFF by default (collect_stats=auto
-# resolves to off for no-jit). Use --collect-stats to enable it.
-# OPTs 2-4 (range-guard, block-skip, membership) are query-JIT
-# codegen features — zero effect on interpreter execution.
-# The SQL-level range-pred injection subsumes their effects
-# by letting DuckDB's optimizer use tighter predicates for
-# zone map skipping and range filtering.
-# ============================================================
-
-INTERP="job duckdb topdown none"
-# Args: bench engine split jit_level jit_simd payload_prune prefetch
-#       batch_probe skip_hash_cmp jit_cache spec_jit compile_mode
-#       tune_config disable_runtime_opts disable_compile_opts collect_stats
-
-echo ""
-echo "=== Interpreter: --collect-stats effect ==="
-
-# Interp baseline: no stats collection (default)
-bash ./measure_breakdown_time_aqp.sh $INTERP && \
-cp "${DEST_DIR}/duckdb_topdown_none_off_breakdown_time_log.csv" \
-   "${DEST_DIR}/step1_interprete_baseline.csv" && \
-
-# Interp with stats collection enabled
-bash ./measure_breakdown_time_aqp.sh $INTERP none on on on all off off tpde "" "" "" on && \
-mv "${DEST_DIR}/duckdb_topdown_none_none_collectstats_breakdown_time_log.csv" \
-   "${DEST_DIR}/step2-4_interprete_collect-stats.csv" && \
-
-echo ""
-echo "=== Interpreter runtime-guided optimization breakdown complete ==="

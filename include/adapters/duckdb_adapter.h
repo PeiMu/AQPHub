@@ -351,7 +351,7 @@ public:
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
   // JIT object cache mode (--jit-cache=..., default 0=off).
-  // config.jit_cache=4 (structural) maps to compiler cache_mode_=3.
+  // config.jit_cache=4 (full) maps to compiler cache_mode_=3 (structural keys).
   void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
 

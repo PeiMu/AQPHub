@@ -111,7 +111,9 @@ struct ParamConfig {
   //   2 = single-run-template (parameterized compilation: constants loaded from
   //       runtime params array, cache key strips constant values + column names,
   //       cleared between iterations)
-  //   3 = full (persistent disk cache, survives process restart)
+  //   3 = single-run-structural (structural-template cache: table/column identity
+  //       erased, cleared between iterations)
+  //   4 = full (persistent disk cache, survives process restart, uses plan replay)
   // Default OFF so every repeat measures real compile time.
   int jit_cache = 0;
   // Disk directory for jit-cache=full compiled objects. Empty = default
