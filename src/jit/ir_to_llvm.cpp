@@ -437,7 +437,7 @@ struct IrToLlvmCompiler::Impl {
     return cache;
   }
 
-  // §8.1 structural-template: secondary index for two-tier lookup.
+  // §8.1 template: secondary index for two-tier lookup.
   struct StructuralEntry {
     std::string full_cache_key;
     std::string filter_key;
@@ -719,7 +719,7 @@ static void SetTargetAttrs(Function *fn, const std::string &cpu,
     fn->addFnAttr("target-features", features);
 }
 
-// §7.3 single-run-template (cache mode 2): tracks constant layout during
+// §7.3 single-run-parameterized (cache mode 2): tracks constant layout during
 // codegen. The same walk order at cache-hit time produces an identical buffer.
 struct ParamsBuilder {
   std::vector<uint8_t> buf;
@@ -840,7 +840,7 @@ struct CompileCtx {
   // extra branch would cost it for no correctness gain.
   bool strict_null_guard = false;
 
-  // §7.3 template cache mode: load constants from runtime params buffer.
+  // §7.3 parameterized cache mode: load constants from runtime params buffer.
   bool template_mode = false;
   Value *params_base = nullptr; // i8* to flat params buffer (loaded once)
   ParamsBuilder *params_builder = nullptr; // offset tracker during codegen
@@ -5625,7 +5625,7 @@ static std::string SerializeQjitPlanTemplate(const qjit::QjitQueryPlan &plan) {
   return s;
 }
 
-// §8.1 structural-template: resolve attr to positional schema index.
+// §8.1 template: resolve attr to positional schema index.
 static int FindColIdxInSchema(const std::vector<ColSchema> &schema,
                               unsigned table_idx, unsigned col_idx) {
   for (int i = 0; i < (int)schema.size(); i++)
@@ -5634,7 +5634,7 @@ static int FindColIdxInSchema(const std::vector<ColSchema> &schema,
   return -1;
 }
 
-// §8.1 structural-template expression serialization: same as
+// §8.1 template expression serialization: same as
 // SerializeExprTemplate but replaces attr identity with positional index.
 static void SerializeExprStructural(std::string &s, const AQPExpr *expr,
                                     const std::vector<ColSchema> &schema) {
@@ -5705,7 +5705,7 @@ static void SerializeExprStructural(std::string &s, const AQPExpr *expr,
   }
 }
 
-// §8.1 structural-template plan serialization: erases table/column identity,
+// §8.1 template plan serialization: erases table/column identity,
 // keeps only dtype signature, operation sequence, HT layout, guards, sinks.
 static std::string SerializeQjitPlanStructural(
     const qjit::QjitQueryPlan &plan,
@@ -5755,8 +5755,8 @@ static std::string SerializeQjitPlanStructural(
   return s;
 }
 
-// §8.1 structural-template: shape key (no filter) and filter key (filter only).
-// shape_key_out = structural plan with filter ops replaced by type-only markers.
+// §8.1 template: shape key (no filter) and filter key (filter only).
+// shape_key_out = template plan with filter ops replaced by type-only markers.
 // filter_key_out = "none" or filter template string with positional refs.
 static void ComputeStructuralKeys(
     const qjit::QjitQueryPlan &plan,
@@ -9107,7 +9107,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
   uint64_t fn_id = s_filter_counter.fetch_add(1, std::memory_order_relaxed);
   std::string entry_name = "qjit_query_" + std::to_string(fn_id);
 
-  // §8.1 structural-template: pre-build schemas for structural key.
+  // §8.1 template: pre-build schemas for template key.
   std::vector<std::vector<ColSchema>> struct_schemas;
   std::string struct_shape_key, struct_filter_key;
   if (structural_mode) {

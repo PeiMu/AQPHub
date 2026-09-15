@@ -108,10 +108,10 @@ struct ParamConfig {
   //   0 = off (no caching)
   //   1 = single-run-strict (in-memory, exact plan match, cleared between
   //       --repeat iterations so each iteration sees cold-start + within-run hits)
-  //   2 = single-run-template (parameterized compilation: constants loaded from
+  //   2 = single-run-parameterized (parameterized compilation: constants loaded from
   //       runtime params array, cache key strips constant values + column names,
   //       cleared between iterations)
-  //   3 = single-run-structural (structural-template cache: table/column identity
+  //   3 = single-run-template (template cache: table/column identity
   //       erased, cleared between iterations)
   //   4 = full (persistent disk cache, survives process restart, uses plan replay)
   // Default OFF so every repeat measures real compile time.

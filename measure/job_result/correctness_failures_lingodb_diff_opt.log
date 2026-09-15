@@ -1,0 +1,1358 @@
+--- split=none, optimizer=own ---
+0a1
+> RUN 10a
+2a4
+> RUN 10b
+4a7
+> RUN 10c
+6a10
+> RUN 11a
+8a13
+> RUN 11b
+10a16
+> RUN 11c
+12a19
+> RUN 11d
+14a22
+> RUN 12a
+16a25
+> RUN 12b
+18a28
+> RUN 12c
+20a31
+> RUN 13a
+22a34
+> RUN 13b
+24a37
+> RUN 13c
+26a40
+> RUN 13d
+28a43
+> RUN 14a
+30a46
+> RUN 14b
+32a49
+> RUN 14c
+34a52
+> RUN 15a
+36a55
+> RUN 15b
+38a58
+> RUN 15c
+40a61
+> RUN 15d
+42a64
+> RUN 16a
+44a67
+> RUN 16b
+46a70
+> RUN 16c
+48a73
+> RUN 16d
+50a76
+> RUN 17a
+52a79
+> RUN 17b
+54a82
+> RUN 17c
+56a85
+> RUN 17d
+58a88
+> RUN 17e
+60a91
+> RUN 17f
+62a94
+> RUN 18a
+64a97
+> RUN 18b
+66a100
+> RUN 18c
+68a103
+> RUN 19a
+70a106
+> RUN 19b
+72a109
+> RUN 19c
+74a112
+> RUN 19d
+76a115
+> RUN 1a
+78a118
+> RUN 1b
+80a121
+> RUN 1c
+82a124
+> RUN 1d
+84a127
+> RUN 20a
+86a130
+> RUN 20b
+88a133
+> RUN 20c
+90a136
+> RUN 21a
+92a139
+> RUN 21b
+94a142
+> RUN 21c
+96a145
+> RUN 22a
+98a148
+> RUN 22b
+100a151
+> RUN 22c
+102a154
+> RUN 22d
+104a157
+> RUN 23a
+106a160
+> RUN 23b
+108a163
+> RUN 23c
+110a166
+> RUN 24a
+112a169
+> RUN 24b
+114a172
+> RUN 25a
+116a175
+> RUN 25b
+118a178
+> RUN 25c
+120a181
+> RUN 26a
+122a184
+> RUN 26b
+124a187
+> RUN 26c
+126a190
+> RUN 27a
+128a193
+> RUN 27b
+130a196
+> RUN 27c
+132a199
+> RUN 28a
+134a202
+> RUN 28b
+136a205
+> RUN 28c
+138a208
+> RUN 29a
+140a211
+> RUN 29b
+142a214
+> RUN 29c
+144a217
+> RUN 2a
+146a220
+> RUN 2b
+148a223
+> RUN 2c
+150a226
+> RUN 2d
+152a229
+> RUN 30a
+154a232
+> RUN 30b
+156a235
+> RUN 30c
+158a238
+> RUN 31a
+160a241
+> RUN 31b
+162a244
+> RUN 31c
+164a247
+> RUN 32a
+166a250
+> RUN 32b
+168a253
+> RUN 33a
+170a256
+> RUN 33b
+172a259
+> RUN 33c
+174a262
+> RUN 3a
+176a265
+> RUN 3b
+178a268
+> RUN 3c
+180a271
+> RUN 4a
+182a274
+> RUN 4b
+184a277
+> RUN 4c
+186a280
+> RUN 5a
+188a283
+> RUN 5b
+190a286
+> RUN 5c
+192a289
+> RUN 6a
+194a292
+> RUN 6b
+196a295
+> RUN 6c
+198a298
+> RUN 6d
+200a301
+> RUN 6e
+202a304
+> RUN 6f
+204a307
+> RUN 7a
+206a310
+> RUN 7b
+208a313
+> RUN 7c
+210a316
+> RUN 8a
+212a319
+> RUN 8b
+214a322
+> RUN 8c
+216a325
+> RUN 8d
+218a328
+> RUN 9a
+220a331
+> RUN 9b
+222a334
+> RUN 9c
+224a337
+> RUN 9d
+
+--- split=none, optimizer=duckdb ---
+0a1
+> RUN 10a
+2a4
+> RUN 10b
+4a7
+> RUN 10c
+6a10
+> RUN 11a
+8a13
+> RUN 11b
+10a16
+> RUN 11c
+12a19
+> RUN 11d
+14a22
+> RUN 12a
+16a25
+> RUN 12b
+18a28
+> RUN 12c
+20a31
+> RUN 13a
+22a34
+> RUN 13b
+24a37
+> RUN 13c
+26a40
+> RUN 13d
+28a43
+> RUN 14a
+30a46
+> RUN 14b
+32a49
+> RUN 14c
+34a52
+> RUN 15a
+36a55
+> RUN 15b
+38a58
+> RUN 15c
+40a61
+> RUN 15d
+42a64
+> RUN 16a
+44a67
+> RUN 16b
+46a70
+> RUN 16c
+48a73
+> RUN 16d
+50a76
+> RUN 17a
+52a79
+> RUN 17b
+54a82
+> RUN 17c
+56a85
+> RUN 17d
+58a88
+> RUN 17e
+60a91
+> RUN 17f
+62a94
+> RUN 18a
+64a97
+> RUN 18b
+66a100
+> RUN 18c
+68a103
+> RUN 19a
+70a106
+> RUN 19b
+72a109
+> RUN 19c
+74a112
+> RUN 19d
+76a115
+> RUN 1a
+78a118
+> RUN 1b
+80a121
+> RUN 1c
+82a124
+> RUN 1d
+84a127
+> RUN 20a
+86a130
+> RUN 20b
+88a133
+> RUN 20c
+90a136
+> RUN 21a
+92a139
+> RUN 21b
+94a142
+> RUN 21c
+96a145
+> RUN 22a
+98a148
+> RUN 22b
+100a151
+> RUN 22c
+102a154
+> RUN 22d
+104a157
+> RUN 23a
+106a160
+> RUN 23b
+108a163
+> RUN 23c
+110a166
+> RUN 24a
+112a169
+> RUN 24b
+114a172
+> RUN 25a
+116a175
+> RUN 25b
+118a178
+> RUN 25c
+120a181
+> RUN 26a
+122a184
+> RUN 26b
+124a187
+> RUN 26c
+126a190
+> RUN 27a
+128a193
+> RUN 27b
+130a196
+> RUN 27c
+132a199
+> RUN 28a
+134a202
+> RUN 28b
+136a205
+> RUN 28c
+138a208
+> RUN 29a
+140a211
+> RUN 29b
+142a214
+> RUN 29c
+144a217
+> RUN 2a
+146a220
+> RUN 2b
+148a223
+> RUN 2c
+150a226
+> RUN 2d
+152a229
+> RUN 30a
+154a232
+> RUN 30b
+156a235
+> RUN 30c
+158a238
+> RUN 31a
+160a241
+> RUN 31b
+162a244
+> RUN 31c
+164a247
+> RUN 32a
+166a250
+> RUN 32b
+168a253
+> RUN 33a
+170a256
+> RUN 33b
+172a259
+> RUN 33c
+174a262
+> RUN 3a
+176a265
+> RUN 3b
+178a268
+> RUN 3c
+180a271
+> RUN 4a
+182a274
+> RUN 4b
+184a277
+> RUN 4c
+186a280
+> RUN 5a
+188a283
+> RUN 5b
+190a286
+> RUN 5c
+192a289
+> RUN 6a
+194a292
+> RUN 6b
+196a295
+> RUN 6c
+198a298
+> RUN 6d
+200a301
+> RUN 6e
+202a304
+> RUN 6f
+204a307
+> RUN 7a
+206a310
+> RUN 7b
+208a313
+> RUN 7c
+210a316
+> RUN 8a
+212a319
+> RUN 8b
+214a322
+> RUN 8c
+216a325
+> RUN 8d
+218a328
+> RUN 9a
+220a331
+> RUN 9b
+222a334
+> RUN 9c
+224a337
+> RUN 9d
+
+--- split=none, optimizer=postgres ---
+1,220c1,132
+< Test FAILED for 10a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 10b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 10c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 11a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 11b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 12b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 13b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 13c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 13d.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 15a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 15b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 15c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 16a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 17b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 17c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 17d.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 19b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 1a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 1b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 1c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 1d.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 20b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 21b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 23a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 23b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 23c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 27a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 27b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 27c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 2c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 32a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 3b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 4b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 5a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 5b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 6a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 6c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 6e.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 7a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 7b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 8a.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 8b.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 8c.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< Test FAILED for 8d.sql
+< Error: PostgreSQL connection failed: connection to server at "localhost" (::1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+< connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused
+< 	Is the server running on that host and accepting TCP/IP connections?
+---
+> RUN 10a
+> Rows: 1, Columns: 2
+> Actor|12 Rounds|
+> RUN 10b
+> Rows: 1, Columns: 2
+> NULL|NULL|
+> RUN 10c
+> Rows: 1, Columns: 2
+> Himself|Evil Eyes: Behind the Scenes|
+> RUN 11a
+> Rows: 1, Columns: 3
+> Churchill Films|followed by|Batman Beyond|
+> RUN 11b
+> Rows: 1, Columns: 3
+> Filmlance International AB|follows|The Money Man|
+> RUN 12b
+> Rows: 1, Columns: 2
+> $10,000|Birdemic: Shock and Terror|
+> RUN 13b
+> Rows: 1, Columns: 3
+> 501audio|1.8|5 Time Champion|
+> RUN 13c
+> Rows: 1, Columns: 3
+> DL Sites|1.8|Champion|
+> RUN 13d
+> Rows: 1, Columns: 3
+> "O" Films|1.0|#54 Meets #47|
+> RUN 15a
+> Rows: 1, Columns: 2
+> USA:1 June 2007|Battlestar Galactica: The Resistance|
+> RUN 15b
+> Rows: 1, Columns: 2
+> USA:27 April 2007|RoboCop vs Terminator|
+> RUN 15c
+> Rows: 1, Columns: 2
+> USA:1 April 2003|24: Day Six - Debrief|
+> RUN 16a
+> Rows: 1, Columns: 2
+> Adams, Stan|Carol Burnett vs. Anthony Perkins|
+> RUN 17b
+> Rows: 1, Columns: 2
+> Z'Dar, Robert|Z'Dar, Robert|
+> RUN 17c
+> Rows: 1, Columns: 2
+> X'Volaitis, John|X'Volaitis, John|
+> RUN 17d
+> Rows: 1, Columns: 1
+> Abrahamsson, Bertil|
+> RUN 19b
+> Rows: 1, Columns: 2
+> Jolie, Angelina|Kung Fu Panda|
+> RUN 1a
+> Rows: 1, Columns: 3
+> (A Warner Bros.-First National Picture) (presents)|A Clockwork Orange|1934|
+> RUN 1b
+> Rows: 1, Columns: 3
+> (Set Decoration Rentals) (uncredited)|Disaster Movie|2008|
+> RUN 1c
+> Rows: 1, Columns: 3
+> (co-production)|Intouchables|2011|
+> RUN 1d
+> Rows: 1, Columns: 3
+> (Set Decoration Rentals) (uncredited)|Disaster Movie|2004|
+> RUN 20b
+> Rows: 1, Columns: 1
+> Iron Man|
+> RUN 21b
+> Rows: 1, Columns: 3
+> Filmlance International AB|followed by|Hämndens pris|
+> RUN 23a
+> Rows: 1, Columns: 2
+> movie|The Analysts|
+> RUN 23b
+> Rows: 1, Columns: 2
+> movie|The Big Mope|
+> RUN 23c
+> Rows: 1, Columns: 2
+> movie|Dirt Merchant|
+> RUN 27a
+> Rows: 1, Columns: 3
+> Det Danske Filminstitut|followed by|Spår i mörker|
+> RUN 27b
+> Rows: 1, Columns: 3
+> Filmlance International AB|followed by|Vita nätter|
+> RUN 27c
+> Rows: 1, Columns: 3
+> Det Danske Filminstitut|followed by|Spår i mörker|
+> RUN 2c
+> Rows: 1, Columns: 1
+> NULL|
+> RUN 32a
+> Rows: 1, Columns: 3
+> NULL|NULL|NULL|
+> RUN 3b
+> Rows: 1, Columns: 1
+> 300: Rise of an Empire|
+> RUN 4b
+> Rows: 1, Columns: 2
+> 9.1|Batman: Arkham City|
+> RUN 5a
+> Rows: 1, Columns: 1
+> NULL|
+> RUN 5b
+> Rows: 1, Columns: 1
+> NULL|
+> RUN 6a
+> Rows: 1, Columns: 3
+> marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+> RUN 6c
+> Rows: 1, Columns: 3
+> marvel-cinematic-universe|Downey Jr., Robert|The Avengers 2|
+> RUN 6e
+> Rows: 1, Columns: 3
+> marvel-cinematic-universe|Downey Jr., Robert|Iron Man 3|
+> RUN 7a
+> Rows: 1, Columns: 2
+> Antonioni, Michelangelo|Dressed to Kill|
+> RUN 7b
+> Rows: 1, Columns: 2
+> De Palma, Brian|Dressed to Kill|
+> RUN 8a
+> Rows: 1, Columns: 2
+> Chambers, Linda|.hack//Quantum|
+> RUN 8b
+> Rows: 1, Columns: 2
+> Chambers, Linda|Dragon Ball Z: Shin Budokai|
+> RUN 8c
+> Rows: 1, Columns: 2
+> "A.J."|#1 Cheerleader Camp|
+> RUN 8d
+> Rows: 1, Columns: 2
+> "Jenny from the Block"|#1 Cheerleader Camp|
+
+--- split=topdown, optimizer=own ---
+0a1
+> RUN 10a
+2a4
+> RUN 10b
+4a7
+> RUN 10c
+6a10
+> RUN 11a
+8a13
+> RUN 11b
+10a16
+> RUN 11c
+12a19
+> RUN 11d
+14a22
+> RUN 12a
+16a25
+> RUN 12b
+18a28
+> RUN 12c
+20a31
+> RUN 13a
+22a34
+> RUN 13b
+24a37
+> RUN 13c
+26a40
+> RUN 13d
+28a43
+> RUN 14a
+30a46
+> RUN 14b
+32a49
+> RUN 14c
+34a52
+> RUN 15a
+36a55
+> RUN 15b
+38a58
+> RUN 15c
+40a61
+> RUN 15d
+42a64
+> RUN 16a
+44a67
+> RUN 16b
+46a70
+> RUN 16c
+48a73
+> RUN 16d
+50a76
+> RUN 17a
+52a79
+> RUN 17b
+54a82
+> RUN 17c
+56a85
+> RUN 17d
+58a88
+> RUN 17e
+60a91
+> RUN 17f
+62a94
+> RUN 18a
+64a97
+> RUN 18b
+66a100
+> RUN 18c
+68a103
+> RUN 19a
+70a106
+> RUN 19b
+72a109
+> RUN 19c
+74a112
+> RUN 19d
+76a115
+> RUN 1a
+78a118
+> RUN 1b
+80a121
+> RUN 1c
+82a124
+> RUN 1d
+84a127
+> RUN 20a
+86a130
+> RUN 20b
+88a133
+> RUN 20c
+90a136
+> RUN 21a
+92a139
+> RUN 21b
+94a142
+> RUN 21c
+96a145
+> RUN 22a
+98a148
+> RUN 22b
+100a151
+> RUN 22c
+102a154
+> RUN 22d
+104a157
+> RUN 23a
+106a160
+> RUN 23b
+108a163
+> RUN 23c
+110a166
+> RUN 24a
+112a169
+> RUN 24b
+114a172
+> RUN 25a
+116a175
+> RUN 25b
+118a178
+> RUN 25c
+120a181
+> RUN 26a
+122a184
+> RUN 26b
+124a187
+> RUN 26c
+126a190
+> RUN 27a
+128a193
+> RUN 27b
+130a196
+> RUN 27c
+132a199
+> RUN 28a
+134a202
+> RUN 28b
+136a205
+> RUN 28c
+138a208
+> RUN 29a
+140a211
+> RUN 29b
+142a214
+> RUN 29c
+144a217
+> RUN 2a
+146a220
+> RUN 2b
+148a223
+> RUN 2c
+150a226
+> RUN 2d
+152a229
+> RUN 30a
+154a232
+> RUN 30b
+156a235
+> RUN 30c
+158a238
+> RUN 31a
+160a241
+> RUN 31b
+162a244
+> RUN 31c
+164a247
+> RUN 32a
+166a250
+> RUN 32b
+168a253
+> RUN 33a
+170a256
+> RUN 33b
+172a259
+> RUN 33c
+174a262
+> RUN 3a
+176a265
+> RUN 3b
+178a268
+> RUN 3c
+180a271
+> RUN 4a
+182a274
+> RUN 4b
+184a277
+> RUN 4c
+186a280
+> RUN 5a
+188a283
+> RUN 5b
+190a286
+> RUN 5c
+192a289
+> RUN 6a
+194a292
+> RUN 6b
+196a295
+> RUN 6c
+198a298
+> RUN 6d
+200a301
+> RUN 6e
+202a304
+> RUN 6f
+204a307
+> RUN 7a
+206a310
+> RUN 7b
+208a313
+> RUN 7c
+210a316
+> RUN 8a
+212a319
+> RUN 8b
+214a322
+> RUN 8c
+216a325
+> RUN 8d
+218a328
+> RUN 9a
+220a331
+> RUN 9b
+222a334
+> RUN 9c
+224a337
+> RUN 9d
+
+--- split=topdown, optimizer=duckdb ---
+0a1
+> RUN 10a
+2a4
+> RUN 10b
+4a7
+> RUN 10c
+6a10
+> RUN 11a
+8a13
+> RUN 11b
+10a16
+> RUN 11c
+12a19
+> RUN 11d
+14a22
+> RUN 12a
+16a25
+> RUN 12b
+18a28
+> RUN 12c
+20a31
+> RUN 13a
+22a34
+> RUN 13b
+24a37
+> RUN 13c
+26a40
+> RUN 13d
+28a43
+> RUN 14a
+30a46
+> RUN 14b
+32a49
+> RUN 14c
+34a52
+> RUN 15a
+36a55
+> RUN 15b
+38a58
+> RUN 15c
+40a61
+> RUN 15d
+42a64
+> RUN 16a
+44a67
+> RUN 16b
+46a70
+> RUN 16c
+48a73
+> RUN 16d
+50a76
+> RUN 17a
+52a79
+> RUN 17b
+54a82
+> RUN 17c
+56a85
+> RUN 17d
+58a88
+> RUN 17e
+60a91
+> RUN 17f
+62a94
+> RUN 18a
+64a97
+> RUN 18b
+66a100
+> RUN 18c
+68a103
+> RUN 19a
+70a106
+> RUN 19b
+72a109
+> RUN 19c
+74a112
+> RUN 19d
+76a115
+> RUN 1a
+78a118
+> RUN 1b
+80a121
+> RUN 1c
+82a124
+> RUN 1d
+84a127
+> RUN 20a
+86a130
+> RUN 20b
+88a133
+> RUN 20c
+90a136
+> RUN 21a
+92a139
+> RUN 21b
+94a142
+> RUN 21c
+96a145
+> RUN 22a
+98a148
+> RUN 22b
+100a151
+> RUN 22c
+102a154
+> RUN 22d
+104a157
+> RUN 23a
+106a160
+> RUN 23b
+108a163
+> RUN 23c
+110a166
+> RUN 24a
+112a169
+> RUN 24b
+114a172
+> RUN 25a
+116a175
+> RUN 25b
+118a178
+> RUN 25c
+120a181
+> RUN 26a
+122a184
+> RUN 26b
+124a187
+> RUN 26c
+126a190
+> RUN 27a
+128a193
+> RUN 27b
+130a196
+> RUN 27c
+132a199
+> RUN 28a
+134a202
+> RUN 28b
+136a205
+> RUN 28c
+138a208
+> RUN 29a
+140a211
+> RUN 29b
+142a214
+> RUN 29c
+144a217
+> RUN 2a
+146a220
+> RUN 2b
+148a223
+> RUN 2c
+150a226
+> RUN 2d
+152a229
+> RUN 30a
+154a232
+> RUN 30b
+156a235
+> RUN 30c
+158a238
+> RUN 31a
+160a241
+> RUN 31b
+162a244
+> RUN 31c
+164a247
+> RUN 32a
+166a250
+> RUN 32b
+168a253
+> RUN 33a
+170a256
+> RUN 33b
+172a259
+> RUN 33c
+174a262
+> RUN 3a
+176a265
+> RUN 3b
+178a268
+> RUN 3c
+180a271
+> RUN 4a
+182a274
+> RUN 4b
+184a277
+> RUN 4c
+186a280
+> RUN 5a
+188a283
+> RUN 5b
+190a286
+> RUN 5c
+192a289
+> RUN 6a
+194a292
+> RUN 6b
+196a295
+> RUN 6c
+198a298
+> RUN 6d
+200a301
+> RUN 6e
+202a304
+> RUN 6f
+204a307
+> RUN 7a
+206a310
+> RUN 7b
+208a313
+> RUN 7c
+210a316
+> RUN 8a
+212a319
+> RUN 8b
+214a322
+> RUN 8c
+216a325
+> RUN 8d
+218a328
+> RUN 9a
+220a331
+> RUN 9b
+222a334
+> RUN 9c
+224a337
+> RUN 9d
+
+--- split=topdown, optimizer=postgres ---
+0a1
+> RUN 10a
+2a4
+> RUN 10b
+4a7
+> RUN 10c
+6a10
+> RUN 11a
+8a13
+> RUN 11b
+10a16
+> RUN 12b
+12a19
+> RUN 13b
+14a22
+> RUN 13c
+16a25
+> RUN 13d
+18a28
+> RUN 15a
+20a31
+> RUN 15b
+22a34
+> RUN 15c
+24a37
+> RUN 16a
+26a40
+> RUN 17b
+28a43
+> RUN 17c
+30a46
+> RUN 17d
+32a49
+> RUN 19b
+34a52
+> RUN 1a
+36a55
+> RUN 1b
+38a58
+> RUN 1c
+40a61
+> RUN 1d
+42a64
+> RUN 20b
+44a67
+> RUN 21b
+46a70
+> RUN 23a
+48a73
+> RUN 23b
+50a76
+> RUN 23c
+52a79
+> RUN 27a
+54a82
+> RUN 27b
+56a85
+> RUN 27c
+58a88
+> RUN 2c
+60a91
+> RUN 32a
+62a94
+> RUN 3b
+64a97
+> RUN 4b
+66a100
+> RUN 5a
+68a103
+> RUN 5b
+70a106
+> RUN 6a
+72a109
+> RUN 6c
+74a112
+> RUN 6e
+76a115
+> RUN 7a
+78a118
+> RUN 7b
+80a121
+> RUN 8a
+82a124
+> RUN 8b
+84a127
+> RUN 8c
+86a130
+> RUN 8d
+

@@ -64,15 +64,15 @@ JIT_CONFIGS=(
   "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run"
 
   # ============================================================
-  # Query-JIT + jit-cache=single-run-template: 4 splits = 4 configs
+  # Query-JIT + jit-cache=single-run-parameterized: 4 splits = 4 configs
   # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-template"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-template"
+  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-parameterized"
+  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-parameterized"
+  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-parameterized"
+  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-parameterized"
 
   # ============================================================
-  # Query-JIT + jit-cache=structural: 4 splits = 4 configs
+  # Query-JIT + jit-cache=template: 4 splits = 4 configs
   # ============================================================
   "lingodb|none|query|none|${LDB_GOLDEN}||structural"
   "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||structural"

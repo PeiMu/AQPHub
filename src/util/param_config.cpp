@@ -225,10 +225,10 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     } else if (arg == "--jit-cache" || arg == "--jit-cache=single-run" ||
                arg == "--jit-cache=single-run-strict") {
       config.jit_cache = 1;
-    } else if (arg == "--jit-cache=single-run-template") {
+    } else if (arg == "--jit-cache=single-run-parameterized") {
       config.jit_cache = 2;
-    } else if (arg == "--jit-cache=structural" ||
-               arg == "--jit-cache=single-run-structural") {
+    } else if (arg == "--jit-cache=template" ||
+               arg == "--jit-cache=single-run-template") {
       config.jit_cache = 3;
     } else if (arg == "--jit-cache=full") {
       config.jit_cache = 4;
@@ -472,9 +472,9 @@ void ParamConfig::PrintUsage() {
                "(default: off)\n"
                "                                     single-run-strict: exact plan "
                "match, cleared between iterations\n"
-               "                                     single-run-template: "
+               "                                     single-run-parameterized: "
                "parameterized constants, relaxed key\n"
-               "                                     structural: structural-template "
+               "                                     template: template "
                "cache (table/column identity erased)\n"
                "                                     full: persistent disk cache "
                "with plan replay\n"

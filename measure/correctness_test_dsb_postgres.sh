@@ -124,11 +124,11 @@ JIT_CONFIGS=(
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-strict|tpde"
 
   # ============================================================
-  # jit-cache=single-run-template
+  # jit-cache=single-run-parameterized
   # ============================================================
-#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template"
-#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|fastisel"
-#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-template|tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-parameterized"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-parameterized|fastisel"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|off|single-run-parameterized|tpde"
 
   # ============================================================
   # jit-cache=full (with --repeat=2 for cold+warm)
@@ -155,11 +155,11 @@ JIT_CONFIGS=(
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-strict|tpde"
 
   # ============================================================
-  # Speculative JIT, recompile + jit_cache=single-run-template
+  # Speculative JIT, recompile + jit_cache=single-run-parameterized
   # ============================================================
-#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template"
-#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|fastisel"
-#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-template|tpde"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-parameterized"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-parameterized|fastisel"
+#  "postgresql|node-based|query|none|${GOLDEN_NB}|recompile|single-run-parameterized|tpde"
 
   # ============================================================
   # Speculative JIT, recompile + jit_cache=full
@@ -185,12 +185,12 @@ JIT_CONFIGS=(
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-strict|fastisel"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-strict|tpde"
 
-  # jit-cache=single-run-template (query x llvm / fastisel / tpde)
+  # jit-cache=single-run-parameterized (query x llvm / fastisel / tpde)
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-parameterized"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template"
-  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-structural"
-#  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|fastisel"
+#  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-parameterized|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-parameterized|tpde"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|tpde"
-  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-structural|tpde"
 
   # jit-cache=full (query x llvm / fastisel / tpde)
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full"
@@ -207,12 +207,12 @@ JIT_CONFIGS=(
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-strict|fastisel"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-strict|tpde"
 
-  # Speculative JIT, recompile + jit_cache=single-run-template
+  # Speculative JIT, recompile + jit_cache=single-run-parameterized
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-parameterized"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template"
-  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-structural"
-#  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|fastisel"
+#  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-parameterized|fastisel"
+  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-parameterized|tpde"
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|tpde"
-  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-structural|tpde"
 
   # Speculative JIT, recompile + jit_cache=full
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full"
@@ -393,14 +393,14 @@ if [[ -f "$TUNE_JSON" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=off
+  # Tune + cache=single-run-parameterized, spec=off
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit off) ==="
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
+       on on on on single-run-parameterized off llvm "$TUNE_JSON"
        on on on on single-run-template off llvm "$TUNE_JSON"
-       on on on on single-run-structural off llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_parameterized_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -548,14 +548,14 @@ if [[ -f "$TUNE_JSON" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=recompile
+  # Tune + cache=single-run-parameterized, spec=recompile
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit=recompile) ==="
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
+       on on on on single-run-parameterized recompile llvm "$TUNE_JSON"
        on on on on single-run-template recompile llvm "$TUNE_JSON"
-       on on on on single-run-structural recompile llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_parameterized_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -711,14 +711,14 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=off
+  # Tune + cache=single-run-parameterized, spec=off
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit off) ==="
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
+       on on on on single-run-parameterized off llvm "$TUNE_JSON_TD"
        on on on on single-run-template off llvm "$TUNE_JSON_TD"
-       on on on on single-run-structural off llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=off"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_tuned_dsb.txt"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_parameterized_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -866,14 +866,14 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=recompile
+  # Tune + cache=single-run-parameterized, spec=recompile
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit=recompile) ==="
   ((total++))
   bash run_aqp.sh "dsb_${DSB_SF}" postgresql auto query none \
+       on on on on single-run-parameterized recompile llvm "$TUNE_JSON_TD"
        on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
-       on on on on single-run-structural recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=recompile"
-  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_template_specrecompile_tuned_dsb.txt"
+  output="${RESULT_DIR}/aqp_middleware_postgresql_auto_query_none_jitcache_single_run_parameterized_specrecompile_tuned_dsb.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")

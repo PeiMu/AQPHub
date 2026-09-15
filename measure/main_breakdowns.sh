@@ -26,13 +26,13 @@ source "${SCRIPT_DIR}/env.sh"
 bash ./measure_breakdown_time_aqp.sh job duckdb none none &&\
 bash ./measure_breakdown_time_aqp.sh job duckdb none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh job duckdb topdown none &&\
-bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all single-run-structural off tpde &&\
+bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all single-run-template off tpde &&\
 
 ## DuckDB DSB 10
 #bash ./measure_breakdown_time_aqp.sh dsb duckdb none none &&\
 #bash ./measure_breakdown_time_aqp.sh dsb duckdb none query none on on on all off off tpde &&\
 #bash ./measure_breakdown_time_aqp.sh dsb duckdb node-based none &&\
-#bash measure_breakdown_time_aqp.sh dsb duckdb node-based query none on on on all single-run-template off tpde &&\
+#bash measure_breakdown_time_aqp.sh dsb duckdb node-based query none on on on all single-run-parameterized off tpde &&\
 
 # PostgreSQL JOB
 bash ./measure_breakdown_time_aqp.sh job postgresql none none &&\
@@ -47,13 +47,13 @@ bash ./measure_umbra.sh job
 ##bash ./measure_breakdown_time_aqp.sh dsb postgresql none none &&\
 ##bash ./measure_breakdown_time_aqp.sh dsb postgresql none query none on on on all off off tpde &&\
 #bash ./measure_breakdown_time_aqp.sh dsb postgresql node-based none &&\
-#bash ./measure_breakdown_time_aqp.sh dsb postgresql node-based query none on on on all single-run-template recompile tpde &&\
+#bash ./measure_breakdown_time_aqp.sh dsb postgresql node-based query none on on on all single-run-parameterized recompile tpde &&\
 
 # DuckDB DSB 50
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb none none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on on all single-run-structural off tpde &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on on all single-run-template off tpde &&\
 
 # PostgreSQL DSB 50
 # Skip queries that timeout or have disk-corruption at SF50 on PostgreSQL.
@@ -61,7 +61,7 @@ export AQP_SKIP_QUERIES="query050|query085|query101"
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-template recompile tpde &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-parameterized recompile tpde &&\
 unset AQP_SKIP_QUERIES
 
 # Umbra DSB 50
@@ -71,13 +71,13 @@ bash ./measure_umbra.sh dsb_50
 #bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none none &&\
 #bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb none query none on on on all off off tpde &&\
 #bash ./measure_breakdown_time_aqp.sh dsb_100 duckdb node-based none &&\
-#bash measure_breakdown_time_aqp.sh dsb_100 duckdb node-based query none on on on all single-run-template off tpde 
+#bash measure_breakdown_time_aqp.sh dsb_100 duckdb node-based query none on on on all single-run-parameterized off tpde 
 
 # PostgreSQL DSB 100
 #bash ./measure_breakdown_time_aqp.sh dsb postgresql none none &&\
 #bash ./measure_breakdown_time_aqp.sh dsb postgresql none query none on on on all off off tpde &&\
 #bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based none &&\
-#bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based query none on on on all single-run-template recompile tpde
+#bash ./measure_breakdown_time_aqp.sh dsb_100 postgresql node-based query none on on on all single-run-parameterized recompile tpde
 
 #RQ3.1 no-jit/query-jit x w/wo stats
 bash ./breakdown_eval_stats.sh &&\
@@ -89,4 +89,7 @@ bash ./breakdown_compile_time_reduction.sh &&\
 
 #RQ5 w/wo bidirectional storage
 bash ./breakdown_eval_storage.sh
+
+# Copy all results to the plotting script's expected directories
+bash ./copy_results_to_plot_dir.sh
 

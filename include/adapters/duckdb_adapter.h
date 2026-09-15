@@ -351,7 +351,7 @@ public:
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
 
   // JIT object cache mode (--jit-cache=..., default 0=off).
-  // config.jit_cache=4 (full) maps to compiler cache_mode_=3 (structural keys).
+  // config.jit_cache=4 (full) maps to compiler cache_mode_=3 (template keys).
   void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
 
@@ -450,7 +450,7 @@ public:
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
     std::vector<qjit::QjitSortCol> order_by;
     int64_t limit = -1;
-    std::vector<uint8_t> params_buf; // template cache mode 2: runtime constants
+    std::vector<uint8_t> params_buf; // parameterized cache mode 2: runtime constants
     // §7.3b plan-replay cache: source info for ResolveQjitSources
     std::string replay_cache_key;
     std::string replay_fn_name;

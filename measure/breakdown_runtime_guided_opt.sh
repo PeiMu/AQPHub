@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Runtime-statistics-guided optimization breakdown: 5-step waterfall.
-# Target: duckdb topdown query-jit tpde cache=single-run-template spec=off
+# Target: duckdb topdown query-jit tpde cache=single-run-parameterized spec=off
 #
 # Each step enables ONE additional optimization on top of the previous,
 # following the code's execution order.
@@ -53,9 +53,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
-COMMON="job duckdb topdown query none on on on all single-run-structural off tpde"
+COMMON="job duckdb topdown query none on on on all single-run-template off tpde"
 DEST_DIR="${SCRIPT_DIR}/job_result"
-D="duckdb_topdown_query_none_jitcache_single_run_structural_tpde"
+D="duckdb_topdown_query_none_jitcache_single_run_template_tpde"
 
 # Step 1: Baseline — all runtime opts disabled
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \

@@ -138,7 +138,7 @@ JIT_CONFIGS=(
   # skip_hash_cmp=off + spec-jit / cache tiers (cache keys embed the mode)
   #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|||off"
   #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-strict||off"
-  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template||off"
+  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized||off"
 #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|full||off"
 
   # ============================================================
@@ -181,43 +181,43 @@ JIT_CONFIGS=(
   #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret|single-run-strict"
 
   # ============================================================
-  # jit-cache=single-run-template
+  # jit-cache=single-run-parameterized
   # ============================================================
   # expr-jit (llvm)
-  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-template"
-  #"duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
+  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
+  #"duckdb|node-based|expr|auto|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
   # expr-jit (fastisel/tpde)
-#  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-template|fastisel"
-  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-template|tpde"
+#  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized|fastisel"
+  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized|tpde"
   # operator-jit (llvm)
-  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-template"
-  #"duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
+  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
+  #"duckdb|node-based|operator|auto|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
   # operator-jit (fastisel/tpde)
-#  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-template|fastisel"
-  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-template|tpde"
+#  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized|fastisel"
+  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized|tpde"
   # pipeline-jit (deprioritized)
-  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|single-run-template"
-  #"duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
+  #"duckdb|node-based|pipeline|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
+  #"duckdb|node-based|pipeline|auto|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
   # query-jit (llvm)
-  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template"
-  #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off|single-run-template"
+  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
+  #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|off|single-run-parameterized"
   # query-jit (fastisel/tpde)
-#  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template|fastisel"
-  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-template|tpde"
+#  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized|fastisel"
+  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|off|single-run-parameterized|tpde"
   # template + spec-jit=recompile (llvm)
-  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-template"
-  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-template"
-  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-template"
-  #"duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret|single-run-template"
+  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized"
+  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized"
+  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized"
+  #"duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|interpret|single-run-parameterized"
   # template + spec-jit=recompile (fastisel/tpde)
-#  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|fastisel"
-  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|tpde"
-#  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|fastisel"
-  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|tpde"
-#  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|fastisel"
-  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-template|tpde"
-  #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|recompile|single-run-template"
-  #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret|single-run-template"
+#  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized|fastisel"
+  #  "duckdb|node-based|expr|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized|tpde"
+#  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized|fastisel"
+  #  "duckdb|node-based|operator|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized|tpde"
+#  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized|fastisel"
+  #  "duckdb|node-based|query|none|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized|tpde"
+  #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|recompile|single-run-parameterized"
+  #"duckdb|node-based|query|auto|duckdb_job_node-based_golden.txt|interpret|single-run-parameterized"
 
   # ============================================================
   # jit-cache=full
@@ -301,25 +301,25 @@ JIT_CONFIGS=(
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-strict|tpde"
   # skip_hash_cmp=off + cache tiers
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-strict||off"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized||off"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template||off"
-  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-structural||off"
 #  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|full||off"
-  # jit-cache=single-run-template (expr / operator / query x llvm / fastisel / tpde)
+  # jit-cache=single-run-parameterized (expr / operator / query x llvm / fastisel / tpde)
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized"
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-template"
-  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-structural"
-#  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-template|fastisel"
+#  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized|fastisel"
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized|tpde"
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|single-run-structural|tpde"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-template"
-  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-structural"
-#  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-template|fastisel"
+#  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized|fastisel"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized|tpde"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|off|single-run-structural|tpde"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template"
-  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-structural"
-#  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template|fastisel"
+#  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized|fastisel"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-parameterized|tpde"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-template|tpde"
-  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|off|single-run-structural|tpde"
   # jit-cache=full (expr / operator / query x llvm / fastisel / tpde)
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|full"
 #  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|off|full|fastisel"
@@ -354,22 +354,22 @@ JIT_CONFIGS=(
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-strict"
 #  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-strict|fastisel"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-strict|tpde"
-  # cache=single-run-template + spec=recompile
+  # cache=single-run-parameterized + spec=recompile
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized"
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural"
-#  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|fastisel"
+#  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized|fastisel"
+  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized|tpde"
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural|tpde"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural"
-#  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|fastisel"
+#  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized|fastisel"
+  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized|tpde"
   "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|topdown|operator|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural|tpde"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-template"
-  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural"
-#  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|fastisel"
+#  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized|fastisel"
+  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-parameterized|tpde"
   "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-template|tpde"
-  "duckdb|topdown|query|none|duckdb_job_no-split_golden.txt|recompile|single-run-structural|tpde"
   # cache=full + spec=recompile
   "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|full"
 #  "duckdb|topdown|expr|none|duckdb_job_no-split_golden.txt|recompile|full|fastisel"
@@ -696,13 +696,13 @@ if [[ -f "$TUNE_JSON" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=off
+  # Tune + cache=single-run-parameterized, spec=off
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit off) ==="
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
-       on on on on single-run-template off llvm "$TUNE_JSON"
+       on on on on single-run-parameterized off llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=off"
-  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_job.txt"
+  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_parameterized_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -852,13 +852,13 @@ if [[ -f "$TUNE_JSON" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=recompile
+  # Tune + cache=single-run-parameterized, spec=recompile
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit=recompile) ==="
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
-       on on on on single-run-template recompile llvm "$TUNE_JSON"
+       on on on on single-run-parameterized recompile llvm "$TUNE_JSON"
   config_label="tune-config auto cache=template spec=recompile"
-  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
+  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_parameterized_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -1014,13 +1014,13 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=off
+  # Tune + cache=single-run-parameterized, spec=off
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit off) ==="
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
-       on on on on single-run-template off llvm "$TUNE_JSON_TD"
+       on on on on single-run-parameterized off llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=off"
-  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_tuned_job.txt"
+  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_parameterized_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")
@@ -1168,13 +1168,13 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   fi
   echo ""
 
-  # Tune + cache=single-run-template, spec=recompile
+  # Tune + cache=single-run-parameterized, spec=recompile
   echo "=== Testing: per-subquery tune-config (auto, cache=template, spec-jit=recompile) ==="
   ((total++))
   bash run_aqp.sh job duckdb auto query none \
-       on on on on single-run-template recompile llvm "$TUNE_JSON_TD"
+       on on on on single-run-parameterized recompile llvm "$TUNE_JSON_TD"
   config_label="tune-config auto cache=template spec=recompile"
-  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_template_specrecompile_tuned_job.txt"
+  output="job_result/aqp_middleware_duckdb_auto_query_none_jitcache_single_run_parameterized_specrecompile_tuned_job.txt"
   if [[ ! -f "$output" ]]; then
     echo "  FAIL: output file not found: $output"
     FAILED_CONFIGS+=("$config_label  [output missing: $output]")

@@ -71,12 +71,12 @@ JIT_CONFIGS=(
   "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run"
 
   # Query-JIT + cache=template: 4 splits
-  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|node-based|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-template"
+  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-parameterized"
+  "lingodb|node-based|query|none|${LDB_GOLDEN}||single-run-parameterized"
+  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-parameterized"
+  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-parameterized"
 
-  # Query-JIT + cache=structural: 4 splits
+  # Query-JIT + cache=template: 4 splits
   "lingodb|none|query|none|${LDB_GOLDEN}||structural"
   "lingodb|node-based|query|none|${LDB_GOLDEN}||structural"
   "lingodb|topdown|query|none|${LDB_GOLDEN}||structural"

@@ -89,7 +89,7 @@ typedef int64_t (*QjitQueryFn)(QjitQueryContext *ctx);
 
 /* Composite user-data wrapper threaded through ctx->user.
  * Carries both the per-step block-skip statistics (existing) and the
- * runtime filter-constant buffer (single-run-template cache mode 2).
+ * runtime filter-constant buffer (single-run-parameterized cache mode 2).
  * FIELD ORDER IS ABI — compiled code GEPs into this struct. */
 typedef struct {
     const void *block_stats;  /* const int32_t** indexed by step            */
