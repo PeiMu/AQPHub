@@ -1,0 +1,426 @@
+
+========================================
+Running Benchmark: /tmp/tmp.T35qHoFITE
+========================================
+Found 25 SQL file(s)
+
+=== Query Results ===
+Rows: 1, Columns: 4
+23.9943181818181818|2064.8895454545454545|1777.8782954545454545|312906.58|
+
+=== Query Results ===
+Rows: 1, Columns: 4
+2|145.00|74.94|74.94|
+
+=== Query Results ===
+Rows: 9, Columns: 10
+AAAAAAAAGPOFAAAA|United States|GA|Douglas County|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+AAAAAAAAGPOFAAAA|United States|GA|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+AAAAAAAAGEKFAAAA|United States|ME|Oxford County|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGEKFAAAA|United States|ME|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGEKFAAAA|United States|NULL|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGPOFAAAA|United States|NULL|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+AAAAAAAAGEKFAAAA|NULL|NULL|NULL|71.0000000000000000|226.0800000000000000|0.00000000000000000000|72.3400000000000000|-853.4200000000000000|1944.0000000000000000|
+AAAAAAAAGPOFAAAA|NULL|NULL|NULL|4.0000000000000000|102.0700000000000000|0.00000000000000000000|11.2200000000000000|-292.5600000000000000|1975.0000000000000000|
+NULL|NULL|NULL|NULL|37.5000000000000000|164.0750000000000000|0.00000000000000000000|41.7800000000000000|-572.9900000000000000|1959.5000000000000000|
+
+=== Query Results ===
+Rows: 1, Columns: 11
+AAAAAAAAGEKFAAAA|United States|GA|Douglas County|4|102.07|0.00|11.22|-853.42|1944|0|
+
+=== Query Results ===
+Rows: 12, Columns: 5
+9016010|corpunivamalg #10                                 |236|prin steing                                       |14868.09|
+9005012|scholarmaxi #12                                   |161|oughtcallyought                                   |6402.51|
+9014012|edu packunivamalg #12                             |495|antin stese                                       |5136.82|
+9006008|corpmaxi #8                                       |615|antioughtcally                                    |3822.00|
+9008004|namelessmaxi #4                                   |118|prieing                                           |2493.65|
+9016010|corpunivamalg #10                                 |202|antiation                                         |2277.95|
+9002012|importomaxi #12                                   |129|anticallyable                                     |2129.80|
+9002002|importomaxi #2                                    |760|barcallyation                                     |1585.98|
+9008010|namelessmaxi #10                                  |739|antieseeing                                       |1206.66|
+9004002|edu packmaxi #2                                   |112|ableoughtought                                    |624.00|
+9009002|maximaxi #2                                       |419|n stoughtese                                      |435.60|
+9006008|corpmaxi #8                                       |186|callyeingought                                    |0.00|
+
+=== Query Results ===
+Rows: 1, Columns: 3
+9002002|112|0.00|
+
+=== Query Results ===
+Rows: 35, Columns: 7
+AAAAAAAAAEEOAAAA|Likely shareholders seem main officers. More western weeks shall live most|AAAAAAAADEAAAAAA|ation|NULL|NULL|NULL|
+AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAAHAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAMEAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAAAFAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAACGAAAAAA|eing|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAAGFAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAACPJDAAAA|Groups used to endure huge, young workers. Small, long minutes will cope simply competent others. Less f|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAECIFAAAA|Coherent steps make back efforts. Originally com|AAAAAAAAEHAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAAEFGOAAAA|Now pleased fires may see still in a studies. Partially correct employees shall press other, holy drugs; please warm times consider italian farmers; international, modern acres give mu|AAAAAAAAOIAAAAAA|ese|0|0|3048.693713497635|
+AAAAAAAAFANKAAAA|More than vulnerable pounds enter financial, financial marks. Left methods own levels. At all main parents must not cover well supposed, small adults. Great, guilty users w|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAFDKNAAAA|Academic approaches find never very concerned messages. Ready, good employers would assess most special, quiet resources. Already violent place|AAAAAAAAHAAAAAAA|ation|NULL|NULL|NULL|
+AAAAAAAAGAGOAAAA|Always different pains must install so devices. In particular usual characteristics compete however. Procedures explain certain|AAAAAAAACDAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAACAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAKHAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAALCAAAAAA|pri|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAODAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAGCNEAAAA|Somehow supreme effects may record very dec|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAILADAAAA|Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAJEGDAAAA|Wages would not get national men. Full, disastrous rates would not think human strings. Associations ask very grateful, good faces; then future lawyers could not undertake|AAAAAAAAJEAAAAAA|pri|NULL|NULL|NULL|
+AAAAAAAAKAHFAAAA|Tight bonds seek compar|AAAAAAAANGAAAAAA|n st|NULL|NULL|NULL|
+AAAAAAAAKJMGAAAA|L|AAAAAAAAAFAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAAKNMDAAAA|Documents could realise commercial, am|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAALKGBAAAA|Financial, classical methods should use fully spec|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAALNNAAAAA|Typically colonial agreements break foreign, outer talks. All grim friends believe troops. Accounts join. Great, limited results exp|AAAAAAAAJEAAAAAA|pri|NULL|NULL|NULL|
+AAAAAAAAMBHFAAAA|Original, available users could get safer; bodies like so tragic waves. Huge job|AAAAAAAAJHAAAAAA|ought|NULL|NULL|NULL|
+AAAAAAAAMPAKAAAA|British managers will not go. Obvious approaches include home buildings. Together english shows boost however behind a objects; tables create otherwise boys. Then early times might|AAAAAAAACGAAAAAA|eing|NULL|NULL|NULL|
+AAAAAAAAMPAKAAAA|British managers will not go. Obvious approaches include home buildings. Together english shows boost however behind a objects; tables create otherwise boys. Then early times might|AAAAAAAAIAAAAAAA|eing|NULL|NULL|NULL|
+AAAAAAAANJGDAAAA|Theories ought to complain in order different generations. |AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAOJLBAAAA|Always european industries thank simply bare, new things. States may call nearly unions. Golden sites will lead often. Beautifu|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillors may join now hot cells. Around little businesses could show even local, pure results. Papers shall mind difficulties. Famous ways know |AAAAAAAAAFAAAAAA|bar|NULL|NULL|NULL|
+AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillors may join now hot cells. Around little businesses could show even local, pure results. Papers shall mind difficulties. Famous ways know |AAAAAAAAEHAAAAAA|cally|NULL|NULL|NULL|
+AAAAAAAAOOPHAAAA|Financial, total reductions star at all; more social councillors may join now hot cells. Around little businesses could show even local, pure results. Papers shall mind difficulties. Famous ways know |AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAPHBLAAAA|Services will hold old, fatal cost|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+AAAAAAAAPPGHAAAA|Possibly|AAAAAAAAACAAAAAA|able|NULL|NULL|NULL|
+AAAAAAAAPPGHAAAA|Possibly|AAAAAAAAOIAAAAAA|ese|NULL|NULL|NULL|
+
+=== Query Results ===
+Rows: 1, Columns: 10
+AAAAAAAAAPIFAAAA|About specific fingers|AAAAAAAAAIAAAAAA|able|-3877.59|18.20|-7616.99|5932|3685751|1878468|
+
+=== Query Results ===
+Rows: 1, Columns: 8
+AAAAAAAAACGDAAAA|MI|1|1.42|0.00|0.00|511|6634126|
+
+=== Query Results ===
+Rows: 1, Columns: 1
+79|
+
+=== Query Results ===
+Rows: 52, Columns: 4
+MO|AAAAAAAAAGGOAAAA|-272.68|0|
+MO|AAAAAAAAANCFAAAA|-678.36|0|
+MO|AAAAAAAACEBMAAAA|-2328.00|0|
+MO|AAAAAAAACIDGAAAA|69.16|0|
+MO|AAAAAAAACIMHAAAA|21.76|0|
+MO|AAAAAAAAGAHGAAAA|0|-375.68|
+MO|AAAAAAAAGFJAAAAA|0.00|0|
+MO|AAAAAAAAGJKEAAAA|0|-582.10|
+MO|AAAAAAAAGKHMAAAA|0|-273.06|
+MO|AAAAAAAAGKNMAAAA|-1435.78|0|
+MO|AAAAAAAAHBNHAAAA|-20.55|0|
+MO|AAAAAAAALMMIAAAA|-212.97|0|
+MO|AAAAAAAAMDHNAAAA|0|-108.62|
+MO|AAAAAAAAOBNAAAAA|-78.88|0|
+MO|AAAAAAAAOCKAAAAA|0|-339.40|
+MO|AAAAAAAAOFPKAAAA|-451.54|0|
+MO|AAAAAAAAOMGJAAAA|-8974.95|0|
+MO|AAAAAAAAPGDBAAAA|6.23|0|
+OH|AAAAAAAAENAMAAAA|-189.81|0|
+OH|AAAAAAAAFIIEAAAA|-473.78|0|
+OH|AAAAAAAAGMHGAAAA|0|95.29|
+OH|AAAAAAAAKOOMAAAA|-3593.88|0|
+OH|AAAAAAAALNEAAAAA|0|-2369.12|
+OH|AAAAAAAAMHFNAAAA|-92.09|0|
+SC|AAAAAAAACACDAAAA|204.03|0|
+SC|AAAAAAAACELOAAAA|-1300.14|0|
+SC|AAAAAAAACJDIAAAA|0|46.70|
+SC|AAAAAAAAECGEAAAA|-3024.10|0|
+SC|AAAAAAAAHGLBAAAA|-930.57|0|
+SC|AAAAAAAAHPELAAAA|-1122.16|0|
+SC|AAAAAAAAIFGDAAAA|-157.60|0|
+SC|AAAAAAAAMCCAAAAA|0|-2098.77|
+SC|AAAAAAAAMNBGAAAA|-16323.44|0|
+SC|AAAAAAAAOIDNAAAA|-25.68|0|
+SC|AAAAAAAAOJIMAAAA|-381.69|0|
+SD|AAAAAAAAAPDHAAAA|-2389.55|0|
+SD|AAAAAAAAENGMAAAA|0|-1826.91|
+SD|AAAAAAAAFMCDAAAA|-111.30|0|
+SD|AAAAAAAAGIDDAAAA|-406.08|0|
+SD|AAAAAAAAIPEKAAAA|46.24|0|
+SD|AAAAAAAAKGNIAAAA|-435.26|0|
+SD|AAAAAAAAKIJNAAAA|-19.45|0|
+SD|AAAAAAAAKLCOAAAA|-1417.21|0|
+SD|AAAAAAAAMNDMAAAA|-1003.95|0|
+SD|AAAAAAAAOIPNAAAA|-1106.01|0|
+SD|AAAAAAAAOOPAAAAA|0|-1144.23|
+TN|AAAAAAAADMLOAAAA|-779.24|0|
+TN|AAAAAAAAINMHAAAA|60.47|0|
+TN|AAAAAAAAMEDAAAAA|-469.60|0|
+TN|AAAAAAAAMPHDAAAA|-835.23|0|
+TN|AAAAAAAAMPKKAAAA|-321.77|0|
+TN|AAAAAAAAOBMLAAAA|0|-321.70|
+
+=== Query Results ===
+Rows: 1, Columns: 6
+MO|AAAAAAAAAGGOAAAA|557|3741300|557|3741300|
+
+=== Query Results ===
+Rows: 100, Columns: 6
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5204|0|30|30|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5205|0|29|29|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5206|0|23|23|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5204|0|22|22|
+Military children should carry also deep round events. Communications explore content, i|NULL|5205|0|20|20|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Local, mass universi|5207|0|19|19|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|NULL|5206|0|19|19|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5182|0|18|18|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|NULL|5167|0|17|17|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5182|0|17|17|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5207|0|17|17|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5179|0|16|16|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5180|0|16|16|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Bad cards must make.|5202|0|15|15|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|NULL|5180|0|15|15|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5168|0|14|14|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5206|0|14|14|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Conventional childr|5207|0|14|14|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Local, mass universi|5203|0|13|13|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5181|0|13|13|
+Military children should carry also deep round events. Communications explore content, i|NULL|5167|0|13|13|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5178|0|13|13|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5216|0|12|12|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5199|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5179|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5181|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|NULL|5178|0|12|12|
+Military children should carry also deep round events. Communications explore content, i|NULL|5198|0|12|12|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Conventional childr|5167|0|12|12|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Conventional childr|5202|1|11|12|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5167|0|12|12|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5168|0|12|12|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5200|0|11|11|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5200|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Conventional childr|5198|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5181|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5208|0|11|11|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5169|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Bad cards must make.|5200|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5177|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5170|0|11|11|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5215|0|11|11|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Bad cards must make.|5180|0|11|11|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5197|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5167|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5198|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5196|0|10|10|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|NULL|5182|0|10|10|
+Military children should carry also deep round events. Communications explore content, i|Doors canno|5167|0|10|10|
+Military children should carry also deep round events. Communications explore content, i|NULL|5180|0|10|10|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5166|0|10|10|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5178|0|10|10|
+Documents could realise commercial, am|Local, mass universi|5177|0|9|9|
+Documents could realise commercial, am|Local, mass universi|5207|0|9|9|
+Documents could realise commercial, am|Quite effectiv|5202|0|9|9|
+Documents could realise commercial, am|Quite effectiv|5203|0|9|9|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5196|0|9|9|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5196|0|9|9|
+Documents could realise commercial, am|Important issues liv|5168|0|8|8|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Local, mass universi|5179|0|8|8|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5184|0|8|8|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5182|0|8|8|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5213|0|7|7|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5201|0|7|7|
+Military children should carry also deep round events. Communications explore content, i|Quite effectiv|5168|0|7|7|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Local, mass universi|5178|0|7|7|
+Original, available users could get safer; bodies like so tragic waves. Huge job|NULL|5172|0|7|7|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Local, mass universi|5206|0|7|7|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5213|0|6|6|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5196|0|6|6|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5217|0|6|6|
+Military children should carry also deep round events. Communications explore content, i|Bad cards must make.|5170|0|6|6|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5189|0|6|6|
+Military children should carry also deep round events. Communications explore content, i|NULL|5189|0|6|6|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Important issues liv|5217|0|6|6|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Bad cards must make.|5173|0|6|6|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|NULL|5181|0|6|6|
+Documents could realise commercial, am|Local, mass universi|5206|0|5|5|
+Documents could realise commercial, am|NULL|5202|0|5|5|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Conventional childr|5218|0|5|5|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Local, mass universi|5218|0|5|5|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5183|0|5|5|
+Military children should carry also deep round events. Communications explore content, i|Conventional childr|5175|0|5|5|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5190|0|5|5|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Bad cards must make.|5187|0|5|5|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5214|0|5|5|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Conventional childr|5208|0|5|5|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|Local, mass universi|5176|0|5|5|
+Separate, dangerous trousers get only however interesting boxes. Full expectation|NULL|5176|0|5|5|
+Documents could realise commercial, am|Quite effectiv|5179|0|4|4|
+Documents could realise commercial, am|Quite effectiv|5181|0|4|4|
+Documents could realise commercial, am|NULL|5179|0|4|4|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Doors canno|5173|0|4|4|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Important issues liv|5175|0|4|4|
+Half high cases afford then old, private characteristics. Costs could not offer clean, maximum days. Civil, whole|Quite effectiv|5173|0|4|4|
+Military children should carry also deep round events. Communications explore content, i|Important issues liv|5191|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Bad cards must make.|5209|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Doors canno|5173|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5192|0|4|4|
+Original, available users could get safer; bodies like so tragic waves. Huge job|Quite effectiv|5211|0|4|4|
+
+=== Query Results ===
+Rows: 1, Columns: 6
+19|Bad cards must make.|5166|19|1077079|19|
+
+=== Query Results ===
+Rows: 100, Columns: 2
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAABNDHAAA|Warren, Cindy|
+AAAAAAAAACCCLAAA|Morales, Joseph|
+AAAAAAAAACCCLAAA|Morales, Joseph|
+AAAAAAAAACCCLAAA|Morales, Joseph|
+AAAAAAAAACNLHAAA|Pena, Wayne|
+AAAAAAAAACNLHAAA|Pena, Wayne|
+AAAAAAAAAEFELAAA|Lanham, Edward|
+AAAAAAAAAEFELAAA|Lanham, Edward|
+AAAAAAAAAEFELAAA|Lanham, Edward|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAGPNIAAA|Mcclain, George|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAKEJEAAA|Smith, Allison|
+AAAAAAAAAOKFAAAA|Orourke, Edward|
+AAAAAAAABBHHIAAA|Witherspoon, Bart|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABBMNGAAA|Larson, Ben|
+AAAAAAAABJJNEAAA|Grimes, Jeffrey|
+AAAAAAAABJJNEAAA|Grimes, Jeffrey|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABMNMCAAA|Burke, Stephanie|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNHFHAAA|Snyder, Arthur|
+AAAAAAAABNJLIAAA|Brooks, Herman|
+AAAAAAAABOBGEAAA|Wiggins, David|
+AAAAAAAABOBGEAAA|Wiggins, David|
+AAAAAAAABOBGEAAA|Wiggins, David|
+AAAAAAAACBILIAAA|Wright, Eunice|
+AAAAAAAACBILIAAA|Wright, Eunice|
+AAAAAAAACBILIAAA|Wright, Eunice|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACKICDAAA|Palacios, Brenda|
+AAAAAAAACNAALAAA|Beasley, Juan|
+AAAAAAAACNAALAAA|Beasley, Juan|
+AAAAAAAACNAALAAA|Beasley, Juan|
+
+=== Query Results ===
+Rows: 1, Columns: 3
+AAAAAAAAABNDHAAA|3317|7|
+
+=== Query Results ===
+Rows: 1, Columns: 1
+0|
+
+=== Query Results ===
+Rows: 4, Columns: 4
+AAAAAAAAHAAAAAAA|Pacific Northwest|Alden Snyder|31254.30|
+AAAAAAAAIAAAAAAA|California|Wayne Ray|30803.13|
+AAAAAAAABAAAAAAA|NY Metro|Bob Belcher|22713.09|
+AAAAAAAACAAAAAAA|Mid Atlantic|Felipe Perkins|10520.04|
+
+=== Query Results ===
+Rows: 1, Columns: 6
+AAAAAAAABAAAAAAA|California|Alden Snyder|8.68|416|1606065|
+
+=== Query Results ===
+Rows: 6, Columns: 8
+Bad cards must make.|LIBRARY                       |Mid Atlantic|256|224|199|0|0|
+Bad cards must make.|LIBRARY                       |NY Metro|763|764|819|0|0|
+Local, mass universi|LIBRARY                       |Mid Atlantic|459|407|358|0|0|
+Local, mass universi|LIBRARY                       |NY Metro|1311|1269|1315|0|0|
+Quite effectiv|LIBRARY                       |Mid Atlantic|174|145|171|0|0|
+Quite effectiv|LIBRARY                       |NY Metro|512|500|547|0|0|
+
+=== Query Results ===
+Rows: 1, Columns: 5
+Bad cards must make.|LIBRARY                       |Mid Atlantic|2034713|9|
+
+=== Query Results ===
+Rows: 0, Columns: 3
+
+=== Query Results ===
+Rows: 1, Columns: 4
+NULL|NULL|NULL|NULL|
+
+Test FAILED for query102_0.sql
+Error: Query execution failed: ERROR:  canceling statement due to statement timeout
+
+
+=== Query Results ===
+Rows: 1, Columns: 6
+NULL|NULL|NULL|NULL|NULL|NULL|
+
+========================================
+Benchmark Summary
+========================================
+Total queries: 25
+Passed: 24
+Failed: 1
+========================================
+
+========================================
+Execution completed
+========================================

@@ -95,4 +95,3 @@ cp "${DEST_DIR}/${D}_breakdown_time_log.csv" \
 echo ""
 echo "=== Query-JIT runtime-guided optimization breakdown complete ==="
 echo "Output: ${DEST_DIR}/step[1-5]_*.csv"
-

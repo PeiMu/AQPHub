@@ -82,7 +82,7 @@ bash ./measure_umbra.sh dsb_50
 #RQ3.1 no-jit/query-jit x w/wo stats
 bash ./breakdown_eval_stats.sh &&\
 #RQ3.2 query-jit statis-enabled opt
-bash ./breakdown_runtime_guided_opt.sh &&\ 
+bash ./breakdown_runtime_guided_opt.sh &&\
 
 #RQ4 diff compiler backends; w/wo intertwine
 bash ./breakdown_compile_time_reduction.sh &&\
