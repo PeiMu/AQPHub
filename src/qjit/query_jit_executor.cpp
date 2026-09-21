@@ -77,12 +77,12 @@ bool QjitExecutor::ResolveSource(const FlatTable &flat,
     }
 
     QjitColView view{};
-    view.validity = col.null_bitmap.get(); // nullptr = all valid
+    view.validity = const_cast<uint64_t *>(col.null_bitmap_raw);
     if (col.type == FlatColumnType::INT32) {
-      view.data = col.data.get();
+      view.data = const_cast<char *>(col.data_raw);
       view.dtype = AQP_DTYPE_INT32;
     } else if (col.type == FlatColumnType::INT64) {
-      view.data = col.data.get();
+      view.data = const_cast<char *>(col.data_raw);
       view.dtype = AQP_DTYPE_INT64;
     } else {
       std::string key = flat.table_name + "." + std::to_string(idx);

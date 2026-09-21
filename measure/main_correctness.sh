@@ -248,14 +248,17 @@ run_inline_config "DuckDB DSB-50 node-based query tpde cache=template" "$DUCKDB_
 
 # --- PostgreSQL DSB-50 (main_breakdowns.sh lines 60-62) ---
 
-run_inline_config "PG DSB-50 none query tpde" "$PG_DSB50_NOSPLIT_GOLDEN" dsb_result_sf50 "_dsb.txt" \
-  dsb_50 postgresql none query none on off off tpde "" "" "" auto
+run_inline_config "PG DSB-50 none query llvm" "$PG_DSB50_NOSPLIT_GOLDEN" dsb_result_sf50 "_dsb.txt" \
+  dsb_50 postgresql none query none on off off llvm "" "" "" auto
 
 run_inline_config "PG DSB-50 node-based none" "$PG_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
   dsb_50 postgresql node-based none none on off off llvm "" "" "" auto
 
 run_inline_config "PG DSB-50 node-based query tpde cache=param spec=recompile" "$PG_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
   dsb_50 postgresql node-based query none on single-run-parameterized recompile tpde "" "" "" auto
+
+run_inline_config "PG DSB-50 node-based query tpde cache=template spec=recompile" "$PG_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
+  dsb_50 postgresql node-based query none on single-run-template recompile tpde "" "" "" auto
 
 # =============================================================
 # RQ3.1: Stats collection overhead

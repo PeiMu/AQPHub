@@ -92,19 +92,19 @@ public:
     return inverted_indices_;
   }
 
+  ~StoragePlan();
+
 private:
   bool loaded_ = false;
   std::unordered_map<std::string, FlatTable> tables_;
-  // Key: "fk_table.fk_column"
   std::unordered_map<std::string, CSRIndex> csr_indexes_;
   DimensionCache dim_cache_;
-  // Key: "table_name.column_name"
   std::unordered_map<std::string, SortedIndex> sorted_indices_;
-  // Key: "dim_table->target_table"
   std::unordered_map<std::string, InvertedIndex> inverted_indices_;
-  // Base column names that appear in FK/PK relationships (e.g., "movie_id", "id")
   mutable std::unordered_set<std::string> join_key_cols_;
   mutable bool join_key_cols_built_ = false;
+  void *mmap_base_ = nullptr;
+  size_t mmap_size_ = 0;
 };
 
 } // namespace storage

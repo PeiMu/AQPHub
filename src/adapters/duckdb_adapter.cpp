@@ -465,7 +465,7 @@ void DuckDBAdapter::KernelTempScanFunc(duckdb::ClientContext &context,
     auto &vec = output.data[out_idx];
 
     if (col.type == storage::FlatColumnType::INT32) {
-      auto *src = reinterpret_cast<const int32_t *>(col.data.get()) +
+      auto *src = reinterpret_cast<const int32_t *>(col.data_raw) +
                   state.current_row;
       auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
       std::memcpy(dst, src, count * sizeof(int32_t));
@@ -663,7 +663,7 @@ void DuckDBAdapter::CreateTempFromFlatTable(
       auto &vec = chunk.data[c];
 
       if (col.type == storage::FlatColumnType::INT32) {
-        auto *src = reinterpret_cast<const int32_t *>(col.data.get()) + offset;
+        auto *src = reinterpret_cast<const int32_t *>(col.data_raw) + offset;
         auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
         std::memcpy(dst, src, count * sizeof(int32_t));
       } else {

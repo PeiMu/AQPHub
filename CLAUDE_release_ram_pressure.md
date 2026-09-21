@@ -19,7 +19,7 @@ Make PG adapter + node-based split + query-JIT faster than PG adapter + node-bas
 - [ ] Fix 3: Cascade fix — load PG temp table results back into qjit_temps_ (postgres_adapter.cpp) — SEGFAULT in FetchPgTempIntoQjitTemps, needs debugging (disabled)
 - [x] Fix 4: Support GROUP BY in JIT — IMPLEMENTED, correct results, but no perf improvement due to 52GB storage plan memory pressure
 - [ ] Fix 5: Skip MaterializeQjitTempToPostgreSQL when next sub-query is JIT-eligible
-- [ ] Fix 6: mmap for storage plan instead of fread
+- [x] Fix 6: mmap for storage plan instead of fread — **26.9x faster, RSS 220MB vs 52GB, kept**
 - [ ] Fix 7: Bloom filter to reduce PG disk reads
 
 ### Performance log (DSB sf50, PG adapter, node-based split)
@@ -30,6 +30,7 @@ Make PG adapter + node-based split + query-JIT faster than PG adapter + node-bas
 | Fix1 shared_buffers=4GB | 3.609 | 11.428 | 2898.680 | 2913.716 | REVERTED: 7% slower |
 | Fix2 table filtering only | 0.612 | 2.548 | 2345.570 | 2348.730 | 13.6% faster, still 23.8x slower than no-JIT |
 | Fix2+4 GROUP BY | 0.554 | 2.671 | 2748.459 | 2751.684 | No improvement — 52GB storage plan memory pressure dominates |
+| Fix2+4+6 mmap | 0.008 | 0.247 | 102.072 | 102.327 | **26.9x faster!** RSS 220MB, within 3.6% of no-JIT |
 
 ## Implementation Plan
 

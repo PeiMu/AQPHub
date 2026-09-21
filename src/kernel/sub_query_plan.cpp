@@ -521,7 +521,7 @@ bool BuildFilteredPKBitset(const FlatTable *dim_table,
   int32_t max_pk = dim_table->max_pk;
   if (max_pk < 0) {
     const auto *pk_data =
-        reinterpret_cast<const int32_t *>(dim_table->columns[pk_col].data.get());
+        reinterpret_cast<const int32_t *>(dim_table->columns[pk_col].data_raw);
     max_pk = 0;
     for (uint64_t r = 0; r < dim_table->row_count; r++) {
       if (pk_data[r] > max_pk)
@@ -624,6 +624,7 @@ std::unique_ptr<FlatTable> FlatTableBuilder::Finalize(const std::string &table_n
       }
       offsets[row_count] = offset;
     }
+    col.SyncRawPointers();
   }
 
   return result;
