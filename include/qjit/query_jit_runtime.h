@@ -327,6 +327,64 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// QjitGroupAggMap — open-addressing hash map for grouped aggregation.
+// Per-worker: each worker owns one map (no locking). After all morsels,
+// the executor merges worker maps single-threaded.
+// ---------------------------------------------------------------------------
+
+struct QjitGroupedAggDesc {
+  uint32_t key_size = 0;
+  std::vector<int32_t> key_dtypes;
+  std::vector<uint32_t> key_offsets;
+  std::vector<int> output_map; // negative=group key, non-negative=agg cell
+};
+
+class QjitGroupAggMap {
+public:
+  QjitGroupAggMap(uint32_t key_size,
+                  const std::vector<int32_t> &key_dtypes,
+                  const std::vector<uint32_t> &key_offsets,
+                  std::vector<QjitAggCellDesc> descs);
+
+  QjitAggState *FindOrInsert(uint64_t hash, const uint8_t *key_buf);
+
+  void MergeFrom(const QjitGroupAggMap &other);
+
+  template <typename Fn>
+  void ForEach(Fn &&fn) const {
+    for (const auto &s : slots_) {
+      if (s.hash != 0)
+        fn(s.keys, s.state);
+    }
+  }
+
+  size_t NumGroups() const { return count_; }
+  const std::vector<QjitAggCellDesc> &Descs() const { return descs_; }
+
+private:
+  struct Slot {
+    uint64_t hash = 0;
+    uint8_t *keys = nullptr;
+    QjitAggState *state = nullptr;
+  };
+
+  bool KeysEqual(const uint8_t *a, const uint8_t *b) const;
+  uint8_t *CopyKeys(const uint8_t *src);
+  void Resize();
+
+  std::vector<Slot> slots_;
+  uint64_t mask_;
+  uint64_t count_ = 0;
+  uint32_t key_size_;
+  std::vector<int32_t> key_dtypes_;
+  std::vector<uint32_t> key_offsets_;
+  std::vector<QjitAggCellDesc> descs_;
+  QjitBuffer key_arena_;
+  std::vector<std::unique_ptr<QjitStringArena>> state_arenas_;
+  std::vector<std::unique_ptr<QjitAggState>> owned_states_;
+};
+
+// ---------------------------------------------------------------------------
 // QjitTable — columnar sink (result or temp table).
 //
 // Build protocol: each worker appends rows into its own partition; a

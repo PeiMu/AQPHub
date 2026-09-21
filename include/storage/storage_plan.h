@@ -42,7 +42,8 @@ public:
   // skip_indexes: seek past the CSR/sorted/inverted index sections instead of
   // materializing them (query-jit consumes FlatTables only; the index maps
   // stay empty). The file format is unchanged.
-  bool LoadFromFile(const std::string &path, bool skip_indexes = false);
+  bool LoadFromFile(const std::string &path, bool skip_indexes = false,
+                    const std::unordered_set<std::string> *table_filter = nullptr);
 
   const FlatTable *GetTable(const std::string &table_name) const;
 

@@ -140,6 +140,41 @@ static bool ShouldSplitHeuristic(const std::string &sql) {
   return true; // unknown schema: default to split
 }
 
+static std::unordered_set<std::string>
+ScanBenchmarkForTables(const std::string &query_path,
+                       const std::string &schema_path) {
+  std::vector<std::string> all_tables;
+  for (const auto &t : kDSBFactTables) all_tables.push_back(t);
+  for (const auto &t : kDSBDimTables) all_tables.push_back(t);
+  for (const auto &t : kIMDBFactTables) all_tables.push_back(t);
+  for (const auto &t : kIMDBDimTables) all_tables.push_back(t);
+  all_tables.push_back("dbgen_version");
+
+  std::unordered_set<std::string> needed;
+  auto sql_files = get_sql_files(query_path);
+  for (const auto &fpath : sql_files) {
+    std::ifstream ifs(fpath);
+    std::string sql((std::istreambuf_iterator<char>(ifs)),
+                    std::istreambuf_iterator<char>());
+    std::string lower(sql.size(), ' ');
+    std::transform(sql.begin(), sql.end(), lower.begin(), ::tolower);
+    for (const auto &t : all_tables) {
+      if (needed.count(t)) continue;
+      size_t pos = lower.find(t);
+      while (pos != std::string::npos) {
+        bool left_ok = (pos == 0 || (!std::isalnum(lower[pos - 1]) &&
+                                      lower[pos - 1] != '_'));
+        size_t end = pos + t.size();
+        bool right_ok = (end >= lower.size() ||
+                         (!std::isalnum(lower[end]) && lower[end] != '_'));
+        if (left_ok && right_ok) { needed.insert(t); break; }
+        pos = lower.find(t, end);
+      }
+    }
+  }
+  return needed;
+}
+
 // Factory function to create the appropriate adapter based on config
 std::unique_ptr<EngineAdapter> CreateAdapter(const ParamConfig &config) {
   switch (config.engine) {
@@ -994,9 +1029,18 @@ int main(int argc, char **argv) {
       // other storage-plan consumer) reads FlatTable columns exclusively.
       bool need_indexes = config.kernel_path != KernelPath::NONE;
       bool loaded_from_cache = false;
+      std::unordered_set<std::string> table_filter;
+      const std::unordered_set<std::string> *filter_ptr = nullptr;
+      if (!config.query_path.empty() && !need_indexes) {
+        table_filter = ScanBenchmarkForTables(config.query_path,
+                                              config.schema_path);
+        if (!table_filter.empty())
+          filter_ptr = &table_filter;
+      }
       if (!config.storage_cache_path.empty()) {
         loaded_from_cache = storage_plan_ptr->LoadFromFile(
-            config.storage_cache_path, /*skip_indexes=*/!need_indexes);
+            config.storage_cache_path, /*skip_indexes=*/!need_indexes,
+            filter_ptr);
       }
       if (!loaded_from_cache) {
 #ifdef HAVE_POSTGRES

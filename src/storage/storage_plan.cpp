@@ -1122,7 +1122,8 @@ void StoragePlan::SaveToFile(const std::string &path) const {
 #endif
 }
 
-bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
+bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes,
+                               const std::unordered_set<std::string> *table_filter) {
   auto start = std::chrono::high_resolution_clock::now();
   FILE *f = fopen(path.c_str(), "rb");
   if (!f) return false;
@@ -1140,12 +1141,47 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
   csr_indexes_.clear();
 
   for (uint32_t t = 0; t < num_tables; t++) {
-    FlatTable tbl;
-    tbl.table_name = ReadStr(f);
-    fread(&tbl.row_count, 8, 1, f);
-    fread(&tbl.max_pk, 4, 1, f);
+    std::string tname = ReadStr(f);
+    uint64_t row_count;
+    int32_t max_pk;
+    fread(&row_count, 8, 1, f);
+    fread(&max_pk, 4, 1, f);
     uint32_t num_cols;
     fread(&num_cols, 4, 1, f);
+
+    bool skip_table = table_filter && table_filter->find(tname) == table_filter->end();
+
+    if (skip_table) {
+      for (uint32_t c = 0; c < num_cols; c++) {
+        uint8_t type_byte, nullable_byte;
+        fread(&type_byte, 1, 1, f);
+        fread(&nullable_byte, 1, 1, f);
+        uint64_t col_row_count;
+        fread(&col_row_count, 8, 1, f);
+        auto ctype = static_cast<FlatColumnType>(type_byte);
+        if (ctype == FlatColumnType::INT32) {
+          fseek(f, static_cast<long>(col_row_count * sizeof(int32_t)), SEEK_CUR);
+        } else if (ctype == FlatColumnType::INT64) {
+          fseek(f, static_cast<long>(col_row_count * sizeof(int64_t)), SEEK_CUR);
+        } else {
+          uint64_t pool_size;
+          fread(&pool_size, 8, 1, f);
+          fseek(f, static_cast<long>((col_row_count + 1) * sizeof(uint32_t)), SEEK_CUR);
+          fseek(f, static_cast<long>(pool_size), SEEK_CUR);
+        }
+        if (nullable_byte) {
+          uint64_t bitmap_words = (col_row_count + 63) / 64;
+          fseek(f, static_cast<long>(bitmap_words * sizeof(uint64_t)), SEEK_CUR);
+        }
+        SkipStr(f);
+      }
+      continue;
+    }
+
+    FlatTable tbl;
+    tbl.table_name = tname;
+    tbl.row_count = row_count;
+    tbl.max_pk = max_pk;
     tbl.columns.resize(num_cols);
     tbl.column_names.resize(num_cols);
 

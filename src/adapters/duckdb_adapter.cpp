@@ -4138,6 +4138,8 @@ void DuckDBAdapter::RegisterQjitRuntimeSymbols(
                               (void *)&qjit_agg_update_str);
   comp->RegisterRuntimeSymbol("qjit_agg_update_count",
                               (void *)&qjit_agg_update_count);
+  comp->RegisterRuntimeSymbol("qjit_gagg_lookup", (void *)&qjit_gagg_lookup);
+  comp->RegisterRuntimeSymbol("qjit_hash_string", (void *)&qjit_hash_string);
   comp->RegisterRuntimeSymbol("qjit_table_begin", (void *)&qjit_table_begin);
   comp->RegisterRuntimeSymbol("qjit_table_col_slow",
                               (void *)&qjit_table_col_slow);

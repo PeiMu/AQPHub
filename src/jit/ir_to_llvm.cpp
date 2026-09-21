@@ -9360,6 +9360,12 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
       FunctionType::get(void_ty, {i8p, i64, i8p}, false));
   FunctionCallee agg_upd_cnt = mod->getOrInsertFunction(
       "qjit_agg_update_count", FunctionType::get(void_ty, {i8p, i64}, false));
+  FunctionCallee gagg_lookup_fn = mod->getOrInsertFunction(
+      "qjit_gagg_lookup",
+      FunctionType::get(i8p, {i8p, i64, i8p}, false));
+  FunctionCallee hash_string_fn = mod->getOrInsertFunction(
+      "qjit_hash_string",
+      FunctionType::get(i64, {i8p}, false));
 
   FunctionType *morsel_ft =
       FunctionType::get(void_ty, {ctxp, i64, i64, i32}, false);
@@ -9525,6 +9531,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 
     Value *result = nullptr, *agg_state = nullptr, *sink_ht_ptr = nullptr;
     Value *ht_handle = nullptr;
+    Value *gagg_map = nullptr, *gagg_key_buf = nullptr;
     Value *tbl_handles = nullptr, *tbl_row_count = nullptr;
     uint64_t tbl_ncols = st.outputs.size();
     switch (st.sink) {
@@ -9551,6 +9558,18 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
       Value *widx = cc.b.CreateZExt(m_worker, i64, "widx");
       agg_state = cc.b.CreateLoad(i8p, cc.b.CreateGEP(i8p, ws, widx),
                                   "agg_state");
+      break;
+    }
+    case qjit::QjitStep::GroupedAgg: {
+      Value *ws_raw = cc.b.CreateLoad(
+          i8p, cc.b.CreateStructGEP(QjitCtxTy, m_ctx, 5), "ws_raw");
+      Value *ws = cc.b.CreateBitCast(ws_raw, i8pp);
+      Value *widx = cc.b.CreateZExt(m_worker, i64, "widx");
+      gagg_map = cc.b.CreateLoad(i8p, cc.b.CreateGEP(i8p, ws, widx),
+                                 "gagg_map");
+      const auto &aht = plan.agg_hts[st.sink_agg_ht];
+      gagg_key_buf = cc.b.CreateAlloca(
+          i8, cc.c64(aht.keys_size > 0 ? aht.keys_size : 8), "gagg_keybuf");
       break;
     }
     }
@@ -10464,6 +10483,65 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
           cc.b.CreateCall(
               agg_upd_i64,
               {agg_state, cell_i,
+               cc.b.CreateSExt(loc_value_i32(cell.arg), i64)});
+        }
+        cc.b.CreateBr(bb_skip);
+        cc.b.SetInsertPoint(bb_skip);
+      }
+      cc.b.CreateBr(cont);
+      break;
+    }
+
+    case qjit::QjitStep::GroupedAgg: {
+      const auto &aht = plan.agg_hts[st.sink_agg_ht];
+      Value *h = nullptr;
+      for (size_t ki = 0; ki < aht.keys.size(); ki++) {
+        const auto &gk = aht.keys[ki];
+        Value *dst = cc.b.CreateGEP(i8, gagg_key_buf, cc.c64(gk.offset));
+        if (gk.dtype == AQP_DTYPE_VARCHAR) {
+          Value *sp = loc_value_str(gk.loc);
+          for (int64_t half = 0; half < 16; half += 8) {
+            Value *w = cc.b.CreateLoad(
+                i64, cc.b.CreateBitCast(
+                    cc.b.CreateGEP(i8, sp, cc.c64(half)), i64p));
+            cc.b.CreateStore(
+                w, cc.b.CreateBitCast(
+                    cc.b.CreateGEP(i8, dst, cc.c64(half)), i64p));
+          }
+          Value *hk = cc.b.CreateCall(hash_string_fn, {sp});
+          h = h ? emitCombine(h, hk) : hk;
+        } else {
+          Value *v = cc.b.CreateSExt(loc_value_i32(gk.loc), i64);
+          cc.b.CreateStore(v, cc.b.CreateBitCast(dst, i64p));
+          Value *hk = emitMurmur(v);
+          h = h ? emitCombine(h, hk) : hk;
+        }
+      }
+      if (!h)
+        h = cc.c64(0);
+      Value *gagg_state = cc.b.CreateCall(
+          gagg_lookup_fn, {gagg_map, h, gagg_key_buf}, "gagg_state");
+      for (size_t i = 0; i < st.agg_cells.size(); ++i) {
+        const qjit::QjitAggCellPlan &cell = st.agg_cells[i];
+        Value *cell_i = cc.c64((int64_t)i);
+        if (!cell.has_arg) {
+          cc.b.CreateCall(agg_upd_cnt, {gagg_state, cell_i});
+          continue;
+        }
+        Value *valid = loc_valid_i1(cell.arg);
+        BasicBlock *bb_do = BasicBlock::Create(C, "gagg_do", fn);
+        BasicBlock *bb_skip = BasicBlock::Create(C, "gagg_skip", fn);
+        cc.b.CreateCondBr(valid, bb_do, bb_skip);
+        cc.b.SetInsertPoint(bb_do);
+        if (cell.fn == qjit::QjitAggFn::Count) {
+          cc.b.CreateCall(agg_upd_cnt, {gagg_state, cell_i});
+        } else if (cell.arg.dtype == AQP_DTYPE_VARCHAR) {
+          cc.b.CreateCall(agg_upd_str,
+                          {gagg_state, cell_i, loc_value_str(cell.arg)});
+        } else {
+          cc.b.CreateCall(
+              agg_upd_i64,
+              {gagg_state, cell_i,
                cc.b.CreateSExt(loc_value_i32(cell.arg), i64)});
         }
         cc.b.CreateBr(bb_skip);

@@ -180,7 +180,8 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
                           const std::vector<int> &agg_output_cells,
                           QjitTable &result,
                           const std::vector<uint32_t> &ht_key0_offsets,
-                          const std::vector<uint8_t> &params_buf) {
+                          const std::vector<uint8_t> &params_buf,
+                          const QjitGroupedAggDesc *gagg_desc) {
   const uint32_t nworkers = pool_.NumWorkers();
 
   std::vector<QjitTableView> views(srcs.size());
@@ -203,12 +204,20 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
     ht_ptrs.push_back(hts.back().get());
   }
 
-  // Per-worker aggregate states. Arenas are sized up front: QjitAggState
-  // keeps a raw arena pointer, so the vector must never reallocate.
   std::vector<QjitStringArena> agg_arenas;
   std::vector<std::unique_ptr<QjitAggState>> agg_states;
+  std::vector<std::unique_ptr<QjitGroupAggMap>> gagg_maps;
   std::vector<void *> worker_states;
-  if (!agg_descs.empty()) {
+  if (gagg_desc && !agg_descs.empty()) {
+    gagg_maps.reserve(nworkers);
+    worker_states.reserve(nworkers);
+    for (uint32_t w = 0; w < nworkers; w++) {
+      gagg_maps.push_back(std::make_unique<QjitGroupAggMap>(
+          gagg_desc->key_size, gagg_desc->key_dtypes,
+          gagg_desc->key_offsets, agg_descs));
+      worker_states.push_back(gagg_maps.back().get());
+    }
+  } else if (!agg_descs.empty()) {
     agg_arenas.resize(nworkers);
     agg_states.reserve(nworkers);
     worker_states.reserve(nworkers);
@@ -240,8 +249,67 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
   if (rc < 0)
     return rc;
 
-  if (!agg_descs.empty()) {
-    // Merge epilogue (single-threaded) + single result row.
+  if (gagg_desc && !gagg_maps.empty()) {
+    for (uint32_t w = 1; w < nworkers; w++)
+      gagg_maps[0]->MergeFrom(*gagg_maps[w]);
+    const auto &omap = gagg_desc->output_map;
+    gagg_maps[0]->ForEach([&](const uint8_t *keys, QjitAggState *state) {
+      for (size_t i = 0; i < state->NumCells(); i++) {
+        QjitAggCell &c = state->Cell(i);
+        const QjitAggCellDesc &d = state->Desc(i);
+        if (d.fn == QjitAggFn::Average && c.seen) {
+          if (d.dtype == QjitAggDType::F64)
+            c.f64 = c.f64 / (double)c.count;
+          else
+            c.f64 = (double)c.i64 / (double)c.count;
+        }
+      }
+      for (size_t oi = 0; oi < omap.size(); oi++) {
+        int mapping = omap[oi];
+        if (mapping < 0) {
+          int ki = -(mapping + 1);
+          int32_t dt = gagg_desc->key_dtypes[ki];
+          uint32_t off = gagg_desc->key_offsets[ki];
+          const uint8_t *kp = keys + off;
+          if (dt == AQP_DTYPE_VARCHAR) {
+            QjitString s;
+            std::memcpy(&s, kp, sizeof(QjitString));
+            result.AppendStr(0, oi, s);
+          } else if (dt == AQP_DTYPE_INT64) {
+            int64_t v;
+            std::memcpy(&v, kp, 8);
+            result.AppendI64(0, oi, v);
+          } else {
+            int64_t v;
+            std::memcpy(&v, kp, 8);
+            result.AppendI32(0, oi, (int32_t)v);
+          }
+        } else {
+          size_t cell_idx = (size_t)mapping;
+          const QjitAggCell &c = state->Cell(cell_idx);
+          const QjitAggCellDesc &d = state->Desc(cell_idx);
+          if (d.fn == QjitAggFn::Count || d.fn == QjitAggFn::CountStar) {
+            result.AppendI64(0, oi, (int64_t)c.count);
+          } else if (!c.seen) {
+            result.AppendNull(0, oi);
+          } else {
+            switch (result.Col(oi).dtype) {
+            case AQP_DTYPE_INT32:
+              result.AppendI32(0, oi, (int32_t)c.i64); break;
+            case AQP_DTYPE_INT64:
+              result.AppendI64(0, oi, c.i64); break;
+            case AQP_DTYPE_DOUBLE:
+              result.AppendF64(0, oi, c.f64); break;
+            case AQP_DTYPE_VARCHAR:
+              result.AppendStr(0, oi, c.str); break;
+            default: break;
+            }
+          }
+        }
+      }
+      result.FinishRow(0);
+    });
+  } else if (!agg_descs.empty()) {
     QjitStringArena merge_arena;
     QjitAggState merged(agg_descs, &merge_arena);
     for (uint32_t w = 0; w < nworkers; w++)
@@ -261,28 +329,24 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
       const QjitAggCell &c = merged.Cell(cell);
       const QjitAggCellDesc &d = merged.Desc(cell);
       if (d.fn == QjitAggFn::Count || d.fn == QjitAggFn::CountStar) {
-        result.AppendI64(0, i, (int64_t)c.count); // empty input => 0
+        result.AppendI64(0, i, (int64_t)c.count);
         continue;
       }
       if (!c.seen) {
-        result.AppendNull(0, i); // empty input => NULL (DuckDB semantics)
+        result.AppendNull(0, i);
         continue;
       }
       switch (result.Col(i).dtype) {
       case AQP_DTYPE_INT32:
-        result.AppendI32(0, i, (int32_t)c.i64);
-        break;
+        result.AppendI32(0, i, (int32_t)c.i64); break;
       case AQP_DTYPE_INT64:
-        result.AppendI64(0, i, c.i64);
-        break;
+        result.AppendI64(0, i, c.i64); break;
       case AQP_DTYPE_DOUBLE:
-        result.AppendF64(0, i, c.f64);
-        break;
+        result.AppendF64(0, i, c.f64); break;
       case AQP_DTYPE_VARCHAR:
-        result.AppendStr(0, i, c.str);
-        break;
+        result.AppendStr(0, i, c.str); break;
       default:
-        return -2; // adapter type-checks outputs; unreachable
+        return (int64_t)-2;
       }
     }
     result.FinishRow(0);

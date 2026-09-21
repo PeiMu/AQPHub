@@ -346,6 +346,10 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     timer = chrono_tic();
 
 #ifdef HAVE_LLVM
+  std::vector<qjit::QjitTable::ColumnDesc> cascade_out_descs;
+#endif
+
+#ifdef HAVE_LLVM
   if (query_jit_ && qjit_storage_plan_ && qjit_storage_plan_->IsLoaded()) {
     // Spec HIT path: bg thread already compiled this sub-query
     if (qjit_spec_hit_) {
@@ -435,12 +439,20 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
 
     AnnotateBuildSidesByCard(*ir_ptr);
 
+    std::vector<int32_t> ir_dtypes;
+    std::vector<std::string> ir_col_names;
+    IrTargetListToDtypes(*ir_ptr, ir_dtypes, ir_col_names);
+
+    cascade_out_descs.resize(ir_dtypes.size());
+    for (size_t i = 0; i < ir_dtypes.size(); i++) {
+      cascade_out_descs[i].dtype = ir_dtypes[i];
+      cascade_out_descs[i].name = i < ir_col_names.size() ? ir_col_names[i]
+                                                          : "col_" + std::to_string(i);
+    }
+
     if (post_prepare_hook_) {
-      std::vector<int32_t> dtypes;
-      std::vector<std::string> col_names;
-      IrTargetListToDtypes(*ir_ptr, dtypes, col_names);
       uint64_t est = EstimateIRCard(*ir_ptr);
-      post_prepare_hook_(temp_table_name, dtypes, col_names,
+      post_prepare_hook_(temp_table_name, ir_dtypes, ir_col_names,
                          est, false);
     }
 
@@ -597,6 +609,13 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
   while (PGresult *r = PQgetResult(conn)) {
     PQclear(r);
   }
+
+  // cascade fix temporarily disabled for debugging
+  // #ifdef HAVE_LLVM
+  //   if (session_query_jit_ && !cascade_out_descs.empty()) {
+  //     FetchPgTempIntoQjitTemps(temp_table_name, cascade_out_descs);
+  //   }
+  // #endif
 
   if (enable_timing_) {
     auto extra_materialize_time =
@@ -1042,6 +1061,8 @@ void PostgreSQLAdapter::RegisterQjitRuntimeSymbols(
                               (void *)&qjit_agg_update_str);
   comp->RegisterRuntimeSymbol("qjit_agg_update_count",
                               (void *)&qjit_agg_update_count);
+  comp->RegisterRuntimeSymbol("qjit_gagg_lookup", (void *)&qjit_gagg_lookup);
+  comp->RegisterRuntimeSymbol("qjit_hash_string", (void *)&qjit_hash_string);
   comp->RegisterRuntimeSymbol("qjit_table_begin", (void *)&qjit_table_begin);
   comp->RegisterRuntimeSymbol("qjit_table_col_slow",
                               (void *)&qjit_table_col_slow);
@@ -1071,23 +1092,77 @@ bool PostgreSQLAdapter::BuildOutputDescsFromIR(
     return "col_" + std::to_string(i);
   };
 
-  if (plan.has_agg) {
+  if (plan.has_agg && !plan.agg_group_output_map.empty()) {
+    const auto &aht = plan.agg_hts.back();
+    const auto &omap = plan.agg_group_output_map;
+    for (size_t i = 0; i < omap.size(); i++) {
+      int mapping = omap[i];
+      int32_t dt;
+      if (mapping < 0) {
+        int ki = -(mapping + 1);
+        dt = aht.keys[ki].dtype;
+      } else {
+        const auto &cell = last.agg_cells[(size_t)mapping];
+        if (cell.fn == qjit::QjitAggFn::Count ||
+            cell.fn == qjit::QjitAggFn::CountStar)
+          dt = AQP_DTYPE_INT64;
+        else if (cell.fn == qjit::QjitAggFn::Average)
+          dt = AQP_DTYPE_DOUBLE;
+        else if (cell.arg.dtype == AQP_DTYPE_INT32)
+          dt = AQP_DTYPE_INT32;
+        else if (cell.arg.dtype == AQP_DTYPE_INT64)
+          dt = AQP_DTYPE_INT64;
+        else if (cell.arg.dtype == AQP_DTYPE_VARCHAR)
+          dt = AQP_DTYPE_VARCHAR;
+        else {
+          reason = "output:gagg-type";
+          return false;
+        }
+      }
+      compiled.out_descs.push_back({dt, out_name(i)});
+    }
+    compiled.agg_output_cells = plan.agg_group_output_map;
+    compiled.agg_descs.reserve(last.agg_cells.size());
+    for (const auto &cell : last.agg_cells) {
+      qjit::QjitAggDType adt;
+      if (cell.fn == qjit::QjitAggFn::Average)
+        adt = (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+                  ? qjit::QjitAggDType::Str
+                  : (cell.has_arg && (cell.arg.dtype == AQP_DTYPE_DOUBLE ||
+                                      cell.arg.dtype == AQP_DTYPE_FLOAT))
+                        ? qjit::QjitAggDType::F64
+                        : qjit::QjitAggDType::I64;
+      else
+        adt = (cell.has_arg && cell.arg.dtype == AQP_DTYPE_VARCHAR)
+                  ? qjit::QjitAggDType::Str
+                  : qjit::QjitAggDType::I64;
+      compiled.agg_descs.push_back({cell.fn, adt});
+    }
+    auto desc = std::make_unique<qjit::QjitGroupedAggDesc>();
+    desc->key_size = aht.keys_size;
+    for (const auto &k : aht.keys) {
+      desc->key_dtypes.push_back(k.dtype);
+      desc->key_offsets.push_back(k.offset);
+    }
+    desc->output_map = plan.agg_group_output_map;
+    compiled.gagg_desc = std::move(desc);
+  } else if (plan.has_agg) {
     for (size_t i = 0; i < plan.agg_output_cells.size(); i++) {
       const qjit::QjitAggCellPlan &cell =
           last.agg_cells[(size_t)plan.agg_output_cells[i]];
       int32_t dt;
       if (cell.fn == qjit::QjitAggFn::Count ||
-          cell.fn == qjit::QjitAggFn::CountStar) {
+          cell.fn == qjit::QjitAggFn::CountStar)
         dt = AQP_DTYPE_INT64;
-      } else if (cell.fn == qjit::QjitAggFn::Average) {
+      else if (cell.fn == qjit::QjitAggFn::Average)
         dt = AQP_DTYPE_DOUBLE;
-      } else if (cell.arg.dtype == AQP_DTYPE_INT32) {
+      else if (cell.arg.dtype == AQP_DTYPE_INT32)
         dt = AQP_DTYPE_INT32;
-      } else if (cell.arg.dtype == AQP_DTYPE_INT64) {
+      else if (cell.arg.dtype == AQP_DTYPE_INT64)
         dt = AQP_DTYPE_INT64;
-      } else if (cell.arg.dtype == AQP_DTYPE_VARCHAR) {
+      else if (cell.arg.dtype == AQP_DTYPE_VARCHAR)
         dt = AQP_DTYPE_VARCHAR;
-      } else {
+      else {
         reason = "output:agg-type";
         return false;
       }
@@ -1263,7 +1338,8 @@ int64_t PostgreSQLAdapter::ExecuteQueryJit(QjitCompiled &compiled,
   int64_t rows = qjit_executor_->Run(
       reinterpret_cast<QjitQueryFn>(compiled.fn), compiled.srcs,
       compiled.ht_tuple_sizes, compiled.agg_descs, compiled.agg_output_cells,
-      *qtable, compiled.ht_key0_offsets, compiled.params_buf);
+      *qtable, compiled.ht_key0_offsets, compiled.params_buf,
+      compiled.gagg_desc.get());
   if (rows >= 0) {
 #ifndef NDEBUG
     fprintf(stderr, "[AQP-QJIT] exec label=%s rows=%lld\n",
@@ -1277,14 +1353,14 @@ int64_t PostgreSQLAdapter::ExecuteQueryJit(QjitCompiled &compiled,
   return rows;
 }
 
-// Execute compiled query-jit plan, return result as QueryResult (final query)
 QueryResult
 PostgreSQLAdapter::ExecuteQueryJitFinal(QjitCompiled &compiled) {
   qjit::QjitTable qtable(compiled.out_descs, qjit_executor_->NumWorkers());
   int64_t rows = qjit_executor_->Run(
       reinterpret_cast<QjitQueryFn>(compiled.fn), compiled.srcs,
       compiled.ht_tuple_sizes, compiled.agg_descs, compiled.agg_output_cells,
-      qtable, compiled.ht_key0_offsets, compiled.params_buf);
+      qtable, compiled.ht_key0_offsets, compiled.params_buf,
+      compiled.gagg_desc.get());
   QueryResult result;
   if (rows < 0) {
     fprintf(stderr, "[AQP-QJIT] fallback:run-error(rc=%lld) label=result\n",
@@ -1449,6 +1525,70 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
           "[AQP-QJIT] materialized temp=%s rows=%llu cols=%zu\n",
           name.c_str(), (unsigned long long)nrows, ncols);
 #endif
+}
+
+void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
+    const std::string &temp_table_name,
+    const std::vector<qjit::QjitTable::ColumnDesc> &out_descs) {
+  std::string select_sql = "SELECT * FROM " + temp_table_name;
+  PGresult *res = PQexec(conn, select_sql.c_str());
+  if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+    if (res) PQclear(res);
+    return;
+  }
+
+  int nrows = PQntuples(res);
+  int ncols = PQnfields(res);
+  if (ncols != static_cast<int>(out_descs.size())) {
+    PQclear(res);
+    return;
+  }
+
+  auto qtable = std::make_unique<qjit::QjitTable>(out_descs, 1);
+  qtable->ReserveFlat(static_cast<uint64_t>(nrows));
+
+  for (int c = 0; c < ncols; c++) {
+    uint8_t *data = qtable->FlatData(c);
+    uint64_t *validity = qtable->FlatValidity(c);
+    uint64_t bitmap_words = (static_cast<uint64_t>(nrows) + 63) / 64;
+    std::fill(validity, validity + bitmap_words, ~uint64_t(0));
+
+    int32_t dtype = out_descs[c].dtype;
+    for (int r = 0; r < nrows; r++) {
+      if (PQgetisnull(res, r, c)) {
+        validity[r / 64] &= ~(uint64_t(1) << (r % 64));
+        continue;
+      }
+      const char *val = PQgetvalue(res, r, c);
+      if (dtype == AQP_DTYPE_INT32 || dtype == AQP_DTYPE_DATE) {
+        if (dtype == AQP_DTYPE_DATE && val[0] != '\0' && !isdigit(val[0]) &&
+            val[0] != '-') {
+          struct tm tm_buf = {};
+          sscanf(val, "%d-%d-%d", &tm_buf.tm_year, &tm_buf.tm_mon,
+                 &tm_buf.tm_mday);
+          tm_buf.tm_year -= 1900;
+          tm_buf.tm_mon -= 1;
+          time_t epoch = timegm(&tm_buf);
+          reinterpret_cast<int32_t *>(data)[r] =
+              static_cast<int32_t>(epoch / 86400);
+        } else {
+          reinterpret_cast<int32_t *>(data)[r] =
+              static_cast<int32_t>(std::stol(val));
+        }
+      } else if (dtype == AQP_DTYPE_INT64) {
+        reinterpret_cast<int64_t *>(data)[r] = std::stoll(val);
+      } else {
+        auto &arena = qtable->FlatArena();
+        size_t len = strlen(val);
+        QjitString qs = arena.Copy(val, static_cast<uint32_t>(len));
+        reinterpret_cast<QjitString *>(data)[r] = qs;
+      }
+    }
+  }
+
+  qtable->MarkFinalized(static_cast<uint64_t>(nrows));
+  PQclear(res);
+  qjit_temps_[temp_table_name] = std::move(qtable);
 }
 
 // Bg-thread speculative compile: parse → IR → annotate by card → compile.
