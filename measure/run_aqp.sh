@@ -16,8 +16,9 @@ spec_jit=${11:-off}       # off | recompile | interpret (--spec-jit mode)
 compile_mode=${12:-llvm}   # llvm | fastisel | tpde (--compile-mode backend)
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
-collect_stats=${15:-auto}  # auto | on | off — runtime statistics collection (range preds, bloom filters, min/max)
-skip_queries=${16:-${AQP_SKIP_QUERIES:-}}  # pipe-separated query names to skip, e.g. "query050|query085|query101"
+disable_compile_opts=${15:-}  # comma-separated: cross-query-prep
+collect_stats=${16:-auto}  # auto | on | off — runtime statistics collection (range preds, bloom filters, min/max)
+skip_queries=${17:-${AQP_SKIP_QUERIES:-}}  # pipe-separated query names to skip, e.g. "query050|query085|query101"
 
 ########################################
 # Parse dsb_<SF> bench argument
@@ -53,7 +54,11 @@ if [[ "$bench" == "job" ]]; then
     opengauss_user="imdb"
     opengauss_pw="imdb_132"
 elif [[ "$bench" == "dsb" ]]; then
-    dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp_pg/1/"
+    else
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    fi
     schema="${DSB_PATH}/scripts/create_tables.sql"
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then
@@ -139,6 +144,15 @@ if [[ -n "$disable_runtime_opts" ]]; then
         esac
     done
 fi
+if [[ -n "$disable_compile_opts" ]]; then
+    IFS=',' read -ra _dco <<< "$disable_compile_opts"
+    for _opt in "${_dco[@]}"; do
+        case "$_opt" in
+            cross-query-prep) jit_extra_flags+=" --no-cross-query-prep" ;;
+            *) echo "Unknown compile opt: $_opt"; exit 1 ;;
+        esac
+    done
+fi
 
 ########################################
 # Plan optimizer override (env var: AQP_LINGODB_PLAN_OPTIMIZER)
@@ -170,6 +184,7 @@ fi
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && flag_suffix+="_nobidirstorage"
 [[ "$disable_runtime_opts" == *"disable-optimizer"* ]] && flag_suffix+="_nooptimizer"
+[[ "$disable_compile_opts" == *"cross-query-prep"* ]] && flag_suffix+="_nocrossqprep"
 [[ "$collect_stats" == "on" ]]                      && flag_suffix+="_collectstats"
 [[ "$collect_stats" == "off" ]]                     && flag_suffix+="_nocollectstats"
 [[ -n "$lingodb_plan_opt" ]] && flag_suffix+="_planopt_${lingodb_plan_opt}"

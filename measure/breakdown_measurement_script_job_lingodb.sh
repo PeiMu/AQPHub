@@ -58,7 +58,7 @@ for s in "${SPLITS[@]}"; do
 done
 
 for s in "${SPLITS[@]}"; do
-  bash ./measure_breakdown_time_aqp.sh job lingodb "$s" query none on on on on structural off
+  bash ./measure_breakdown_time_aqp.sh job lingodb "$s" query none on on on on single-run-template off
 done
 
 for s in "${SPLITS[@]}"; do

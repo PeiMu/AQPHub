@@ -46,7 +46,11 @@ if [[ "$bench" == "job" ]]; then
     csv_dir="$JOB_PATH/lingo_db_csv"
     lingodb_db="${LINGODB_DB_JOB}"
 elif [[ "$bench" == "dsb" ]]; then
-    dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp_pg/1/"
+    else
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    fi
     schema="${DSB_PATH}/scripts/create_tables.sql"
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then

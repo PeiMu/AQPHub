@@ -13,7 +13,9 @@ import csv, json, os, re, sys
 def _iter_params(path):
     base = os.path.basename(path)
     if base.startswith('postgresql_') or base.startswith('postgres_'):
-        return 8, 3
+        if 'dsb_result' in path:
+            return 2, 1
+        return 5, 2
     return 15, 5
 
 

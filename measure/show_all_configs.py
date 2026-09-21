@@ -14,7 +14,9 @@ import csv, json, os, re, sys
 def _iter_params(csv_file):
     base = os.path.basename(csv_file)
     if base.startswith('postgresql_') or base.startswith('postgres_'):
-        return 8, 3
+        if 'dsb_result' in csv_file:
+            return 2, 1
+        return 5, 2
     return 15, 5
 
 
@@ -369,10 +371,20 @@ def main():
         # --- jit-cache=single-run-template ---
         ("struct_q_llvm",
          f"duckdb_{split}_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv", True),
+        ("struct_q_fasti",
+         f"duckdb_{split}_query_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv", True),
         ("struct_q_tpde",
          f"duckdb_{split}_query_none_jitcache_single_run_template_tpde_breakdown_time_log.csv", True),
+        ("struct_q_srec_llvm",
+         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv", True),
+        ("struct_q_srec_fasti",
+         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_fastisel_breakdown_time_log.csv", True),
         ("struct_q_srec_tpde",
          f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv", True),
+        ("struct_tuned",
+         f"duckdb_{split}_query_none_jitcache_single_run_template_tuned_breakdown_time_log.csv", True),
+        ("struct_tuned_srec",
+         f"duckdb_{split}_query_none_jitcache_single_run_template_specrecompile_tuned_breakdown_time_log.csv", True),
     ]
 
     data = {}

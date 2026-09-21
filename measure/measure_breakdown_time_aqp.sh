@@ -53,7 +53,11 @@ if [[ "$bench" == "job" ]]; then
     opengauss_user="imdb"
     opengauss_pw="imdb_132"
 elif [[ "$bench" == "dsb" ]]; then
-    dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp_pg/1/"
+    else
+        dir="$DSB_PATH/code/tools/1_instance_out_aqp/1/"
+    fi
     schema="${DSB_PATH}/scripts/create_tables.sql"
     fkeys="${DSB_PATH}/scripts/tpcds_ri_umbra.sql"
     if [[ "$DSB_SF" == "10" ]]; then
@@ -196,7 +200,11 @@ log_name=time_log.csv
 container_name="umbra_benchmark"
 
 if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
-    iteration=5  # 2 warm up, 3 runs
+    if [[ "$bench" == "dsb" ]]; then
+        iteration=2  # 1 warm up, 1 run
+    else
+        iteration=5  # 2 warm up, 3 runs
+    fi
 else
     iteration=15 # 5 warm up, 10 runs
 fi

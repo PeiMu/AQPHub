@@ -24,7 +24,7 @@ DEST_DIR="${SCRIPT_DIR}/job_result"
 # Step 1: no-jit + no-collect-stats (default for no-jit — auto resolves to off)
 echo "=== Step 1: no-jit + no-collect-stats ==="
 #bash ./measure_breakdown_time_aqp.sh job duckdb topdown none && \
-cp "${DEST_DIR}/duckdb_topdown_none_none_nocollectstats_breakdown_time_log.csv" \
+cp "${DEST_DIR}/duckdb_topdown_none_off_breakdown_time_log.csv " \
    "${DEST_DIR}/eval_stats_nojit_nostats.csv" && \
 
 # Step 2: no-jit + collect-stats (explicit on)

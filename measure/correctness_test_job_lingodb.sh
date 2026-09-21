@@ -74,10 +74,10 @@ JIT_CONFIGS=(
   # ============================================================
   # Query-JIT + jit-cache=template: 4 splits = 4 configs
   # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}||structural"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||structural"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||structural"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||structural"
+  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-template"
+  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-template"
+  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-template"
+  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-template"
 
   # ============================================================
   # Query-JIT + jit-cache=full: 4 splits = 4 configs

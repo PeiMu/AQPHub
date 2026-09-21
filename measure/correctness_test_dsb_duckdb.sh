@@ -404,7 +404,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
 
   bash run_aqp.sh "dsb_${DSB_SF}" "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
        on on on "${skip_hash_cmp}" "${jit_cache_mode}" "${spec_jit_mode}" "${compile_mode}" \
-       "" "${disable_runtime_opts}" "${collect_stats_mode}"
+       "" "${disable_runtime_opts}" "" "${collect_stats_mode}"
 
   shc_suffix=""
   [[ "$skip_hash_cmp" == "off" ]] && shc_suffix="_noskiphashcmp"

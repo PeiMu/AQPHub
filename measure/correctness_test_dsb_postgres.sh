@@ -24,13 +24,7 @@ fi
 
 FILTER='grep -v -E "^Running|^==|^Execution|^$|^waiting|^server|^ANALYZ|^NOTICE:|^\[AQP|^\[Storage|^\[CSR|^\[Dim|^\[RelationshipCenter|^\[IRQuerySplitter|^  [a-z_]*: [0-9]* rows$|^Found [0-9]|^Run |^Passed:|^Failed:|^Total |^Benchmark|^Average|^--- Iteration|^Test FAILED|^Error:|^warning:|^Warning:|^Do not support|Doesn.t support type|^CONTEXT:|^same engine|^embed data|no version information available|falling back to|could not read blocks"'
 
-# Queries to skip: timeout or disk-corruption at SF50 on PostgreSQL.
-# query050: I/O error (disk corruption), query085: timeout, query101{,_spj}: timeout
 PG_DSB_SKIP_QUERIES=""
-if [[ "$DSB_SF" != "10" ]]; then
-    PG_DSB_SKIP_QUERIES="query050|query085|query101"
-fi
-export AQP_SKIP_QUERIES="$PG_DSB_SKIP_QUERIES"
 
 # filter_output <file>: strip blocks for skipped queries, then apply FILTER.
 # A "block" runs from one "^Run ..." line to the next (or EOF).
