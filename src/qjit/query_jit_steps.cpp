@@ -293,9 +293,18 @@ struct Analyzer {
       result.has_aggregate = true;
       if (!top_of_spine)
         return Reject("agg:not-top");
-      if (!agg.groups.empty())
-        return Reject("agg:grouped");
-      if (agg.agg_fns.empty())
+      for (const auto &g : agg.groups) {
+        if (!g)
+          return Reject("agg:null-group");
+        auto gt = g->GetType();
+        if (gt != IntVar && gt != Date && gt != StringVar)
+          return Reject("agg:group-type");
+      }
+      if (!agg.group_exprs.empty())
+        return Reject("agg:group-expr");
+      if (!agg.grouping_sets.empty())
+        return Reject("agg:grouping-sets");
+      if (agg.agg_fns.empty() && agg.groups.empty())
         return Reject("agg:no-functions");
       for (size_t fi = 0; fi < agg.agg_fns.size(); fi++) {
         const auto &fn = agg.agg_fns[fi];
@@ -374,9 +383,6 @@ QjitAnalysisResult AnalyzeQueryJit(const AQPStmt &root,
   } else {
     fprintf(stderr, "[AQP-QJIT] reject:%s label=%s\n",
             a.result.reject_reason.c_str(), label.c_str());
-    if (a.result.reject_reason.find("CrossProduct") != std::string::npos)
-      fprintf(stderr, "[AQP-QJIT] WARNING: query-jit does not support "
-              "CrossProduct nodes, falling back to interpreter\n");
   }
 #endif
   return a.result;
@@ -525,6 +531,8 @@ struct PlanBuilder {
     std::vector<const SimplestAttr *> output_attrs;
     // Agg sink: agg_fns (arg attr may be null only for CountStar).
     std::vector<std::pair<const SimplestAttr *, SimplestAggFnType>> agg_fns;
+    // GroupedAgg sink: group-by column attributes.
+    std::vector<const SimplestAttr *> group_attrs;
   };
   std::vector<RawStep> raw;
 
@@ -1133,6 +1141,52 @@ struct PlanBuilder {
         step.agg_cells.push_back(cell);
       }
       break;
+    case QjitStep::GroupedAgg: {
+      QjitAggHtDesc &agg_ht = plan.agg_hts[step.sink_agg_ht];
+      for (const SimplestAttr *ga : rs.group_attrs) {
+        QjitGroupKeyCol gk;
+        auto vt = ga->GetType();
+        if (vt == IntVar)
+          gk.dtype = ga->GetBitWidth() == 64 ? AQP_DTYPE_INT64 : AQP_DTYPE_INT32;
+        else if (vt == Date)
+          gk.dtype = AQP_DTYPE_DATE;
+        else
+          gk.dtype = AQP_DTYPE_VARCHAR;
+        if (!ResolveAttr(step, step.ops.size(), *ga, gk.loc))
+          return false;
+        agg_ht.keys.push_back(gk);
+      }
+      uint32_t off = 0;
+      for (auto &k : agg_ht.keys) {
+        k.offset = off;
+        off += (k.dtype == AQP_DTYPE_VARCHAR) ? 16u : 8u;
+      }
+      agg_ht.keys_size = off;
+      agg_ht.tuple_size = off;
+      for (const auto &fn : rs.agg_fns) {
+        QjitAggCellPlan cell;
+        switch (fn.second) {
+        case Min:       cell.fn = QjitAggFn::Min; break;
+        case Max:       cell.fn = QjitAggFn::Max; break;
+        case Sum:       cell.fn = QjitAggFn::Sum; break;
+        case Count:     cell.fn = QjitAggFn::Count; break;
+        case CountStar: cell.fn = QjitAggFn::CountStar; break;
+        case Average:   cell.fn = QjitAggFn::Average; break;
+        default:
+          return Fail(std::string("agg:") + AggFnName(fn.second));
+        }
+        if (fn.second != CountStar) {
+          if (!fn.first)
+            return Fail("agg:missing-arg");
+          cell.has_arg = true;
+          if (!ResolveAttr(step, step.ops.size(), *fn.first, cell.arg))
+            return false;
+        }
+        agg_ht.cells.push_back(cell);
+        step.agg_cells.push_back(cell);
+      }
+      break;
+    }
     case QjitStep::HtBuild: {
       // The target layout is final: every consumer (a later step) has
       // already been resolved. Note: the loop body may append payload
@@ -1293,49 +1347,82 @@ bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
   }
 
   if (agg) {
-    if (!agg->groups.empty())
-      return pb.Fail("agg:grouped");
-    if (agg->agg_fns.empty())
+    if (agg->agg_fns.empty() && agg->groups.empty())
       return pb.Fail("agg:no-functions");
     if (!agg->qual_vec.empty())
-      return pb.Fail("filter:above-agg"); // HAVING-style qual on agg node
+      return pb.Fail("filter:above-agg");
     if (agg->children.size() != 1 || !agg->children[0])
       return pb.Fail("agg:children!=1");
     node = agg->children[0].get();
     out.has_agg = true;
   }
 
-  int root_step = pb.Decompose(node, agg ? QjitStep::Agg : QjitStep::Result,
-                               -1);
+  bool grouped = agg && !agg->groups.empty();
+  QjitStep::SinkKind agg_sink =
+      agg ? (grouped ? QjitStep::GroupedAgg : QjitStep::Agg)
+          : QjitStep::Result;
+  int root_step = pb.Decompose(node, agg_sink, -1);
   if (root_step < 0)
     return false;
 
-  // Root sink raw data.
   PlanBuilder::RawStep &rs = pb.raw[root_step];
   if (agg) {
     for (const auto &fn : agg->agg_fns)
       rs.agg_fns.emplace_back(fn.first.get(), fn.second);
-    // Result-column -> agg-cell mapping. With a projection above, target
-    // attrs reference (agg_index, position-in-agg_fns). NOTE: CountStar
-    // produces NO agg_fns entry in the converter, shifting positions; an
-    // out-of-range index rejects here, and the no-projection case is
-    // caught by the adapter's output-count check.
-    if (proj_above_agg) {
-      if (proj_above_agg->target_list.empty())
-        return pb.Fail("output:empty-target-list");
-      for (const auto &attr : proj_above_agg->target_list) {
-        if (!attr)
-          return pb.Fail("output:null-attr");
-        if (attr->GetTableIndex() != agg->GetAggIndex())
-          return pb.Fail("agg:proj-ref");
-        unsigned cell = attr->GetColumnIndex();
-        if (cell >= agg->agg_fns.size())
-          return pb.Fail("agg:proj-cell-range");
-        out.agg_output_cells.push_back((int)cell);
+
+    if (grouped) {
+      for (const auto &g : agg->groups)
+        rs.group_attrs.push_back(g.get());
+
+      QjitAggHtDesc agg_ht;
+      int agg_ht_id = (int)out.agg_hts.size();
+      out.steps[root_step].sink_agg_ht = agg_ht_id;
+
+      if (proj_above_agg) {
+        if (proj_above_agg->target_list.empty())
+          return pb.Fail("output:empty-target-list");
+        for (const auto &attr : proj_above_agg->target_list) {
+          if (!attr)
+            return pb.Fail("output:null-attr");
+          if (attr->GetTableIndex() == agg->GetGroupIndex()) {
+            unsigned gi = attr->GetColumnIndex();
+            if (gi >= agg->groups.size())
+              return pb.Fail("agg:group-ref-range");
+            out.agg_group_output_map.push_back(-(int)(1 + gi));
+          } else if (attr->GetTableIndex() == agg->GetAggIndex()) {
+            unsigned ci = attr->GetColumnIndex();
+            if (ci >= agg->agg_fns.size())
+              return pb.Fail("agg:proj-cell-range");
+            out.agg_group_output_map.push_back((int)ci);
+          } else {
+            return pb.Fail("agg:proj-ref");
+          }
+        }
+      } else {
+        for (size_t i = 0; i < agg->groups.size(); i++)
+          out.agg_group_output_map.push_back(-(int)(1 + i));
+        for (size_t i = 0; i < agg->agg_fns.size(); i++)
+          out.agg_group_output_map.push_back((int)i);
       }
+      out.agg_hts.push_back(std::move(agg_ht));
     } else {
-      for (size_t i = 0; i < agg->agg_fns.size(); i++)
-        out.agg_output_cells.push_back((int)i);
+      if (proj_above_agg) {
+        if (proj_above_agg->target_list.empty())
+          return pb.Fail("output:empty-target-list");
+        for (const auto &attr : proj_above_agg->target_list) {
+          if (!attr)
+            return pb.Fail("output:null-attr");
+          if (attr->GetTableIndex() != agg->GetAggIndex())
+            return pb.Fail("agg:proj-ref");
+          unsigned cell = attr->GetColumnIndex();
+          if (cell >= agg->agg_fns.size())
+            return pb.Fail("agg:proj-cell-range");
+          out.agg_output_cells.push_back((int)cell);
+        }
+      } else {
+        for (size_t i = 0; i < agg->agg_fns.size(); i++)
+          out.agg_output_cells.push_back((int)i);
+      }
     }
   } else {
     if (inner->target_list.empty())

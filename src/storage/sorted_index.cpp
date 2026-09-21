@@ -34,13 +34,13 @@ SortedIndex BuildSortedIndex(const FlatTable &table,
   }
 
   if (col.type == FlatColumnType::INT32) {
-    const auto *data = reinterpret_cast<const int32_t *>(col.data.get());
+    const auto *data = reinterpret_cast<const int32_t *>(col.data_raw);
     std::sort(idx.sorted_perm.begin(), idx.sorted_perm.end(),
               [data](uint32_t a, uint32_t b) { return data[a] < data[b]; });
   } else {
     const auto *offsets =
-        reinterpret_cast<const uint32_t *>(col.data.get());
-    const char *pool = col.string_pool.get();
+        reinterpret_cast<const uint32_t *>(col.data_raw);
+    const char *pool = col.string_pool_raw;
     std::sort(idx.sorted_perm.begin(), idx.sorted_perm.end(),
               [offsets, pool](uint32_t a, uint32_t b) {
                 uint32_t a_off = offsets[a], a_end = offsets[a + 1];

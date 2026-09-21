@@ -907,7 +907,7 @@ static void ExecuteOneBatch(
 
     // B.1: Gather keys
     const auto *col_data = reinterpret_cast<const int32_t *>(
-        plan.scan_table->columns[key_col].data.get());
+        plan.scan_table->columns[key_col].data_raw);
     for (int i = 0; i < n_qual; i++)
       keys[i] = col_data[qualifying[i]];
 

@@ -3238,7 +3238,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
             continue;
           int32_t max_val = 0;
           const auto *int_data =
-              reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data.get());
+              reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data_raw);
           for (uint64_t r = 0; r < flat_ptr->row_count; r++) {
             if (int_data[r] > max_val) max_val = int_data[r];
           }
@@ -4749,7 +4749,11 @@ void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
       off += static_cast<uint32_t>(strs[r].size());
     }
     offsets[flat->row_count] = off;
+    col.SyncRawPointers();
   }
+  for (auto &col : flat->columns)
+    if (col.type == storage::FlatColumnType::INT32)
+      col.SyncRawPointers();
 
   kernel_temp_ptrs_[temp_name] = flat.get();
   kernel_temps_[temp_name] = std::move(flat);
@@ -4780,7 +4784,7 @@ void IRQuerySplitter::EnsureKernelTempReady(const std::string &temp_name) {
       continue;
     int32_t max_val = 0;
     const auto *int_data =
-        reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data.get());
+        reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data_raw);
     for (uint64_t r = 0; r < flat_ptr->row_count; r++) {
       if (int_data[r] > max_val) max_val = int_data[r];
     }
@@ -4901,7 +4905,11 @@ void IRQuerySplitter::EnsureKernelTempReadyNoCsr(const std::string &temp_name) {
       off += static_cast<uint32_t>(strs[r].size());
     }
     offsets[flat->row_count] = off;
+    col.SyncRawPointers();
   }
+  for (auto &col : flat->columns)
+    if (col.type == storage::FlatColumnType::INT32)
+      col.SyncRawPointers();
 
   // No CSR build — pipeline kernel uses hash join tables instead
   kernel_temp_ptrs_[temp_name] = flat.get();

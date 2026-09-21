@@ -465,7 +465,7 @@ void DuckDBAdapter::KernelTempScanFunc(duckdb::ClientContext &context,
     auto &vec = output.data[out_idx];
 
     if (col.type == storage::FlatColumnType::INT32) {
-      auto *src = reinterpret_cast<const int32_t *>(col.data.get()) +
+      auto *src = reinterpret_cast<const int32_t *>(col.data_raw) +
                   state.current_row;
       auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
       std::memcpy(dst, src, count * sizeof(int32_t));
@@ -663,7 +663,7 @@ void DuckDBAdapter::CreateTempFromFlatTable(
       auto &vec = chunk.data[c];
 
       if (col.type == storage::FlatColumnType::INT32) {
-        auto *src = reinterpret_cast<const int32_t *>(col.data.get()) + offset;
+        auto *src = reinterpret_cast<const int32_t *>(col.data_raw) + offset;
         auto *dst = duckdb::FlatVector::GetData<int32_t>(vec);
         std::memcpy(dst, src, count * sizeof(int32_t));
       } else {
@@ -4138,6 +4138,8 @@ void DuckDBAdapter::RegisterQjitRuntimeSymbols(
                               (void *)&qjit_agg_update_str);
   comp->RegisterRuntimeSymbol("qjit_agg_update_count",
                               (void *)&qjit_agg_update_count);
+  comp->RegisterRuntimeSymbol("qjit_gagg_lookup", (void *)&qjit_gagg_lookup);
+  comp->RegisterRuntimeSymbol("qjit_hash_string", (void *)&qjit_hash_string);
   comp->RegisterRuntimeSymbol("qjit_table_begin", (void *)&qjit_table_begin);
   comp->RegisterRuntimeSymbol("qjit_table_col_slow",
                               (void *)&qjit_table_col_slow);

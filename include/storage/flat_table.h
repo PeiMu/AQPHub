@@ -22,34 +22,33 @@ struct FlatColumn {
   uint64_t row_count = 0;
   bool nullable = false;
 
-  // INT32: int32_t[row_count]
-  // VARCHAR: uint32_t[row_count+1] offsets into string_pool
+  // Ownership pointers (heap-allocated columns only; null for mmap-backed).
   std::unique_ptr<char[]> data;
-
-  // 1-bit-per-row validity bitmap. bit=1 means valid (NOT NULL).
-  // Only allocated when nullable=true.
   std::unique_ptr<uint64_t[]> null_bitmap;
-
-  // VARCHAR only: contiguous string storage
   std::unique_ptr<char[]> string_pool;
   uint64_t string_pool_size = 0;
 
+  // Raw read pointers — always valid after loading (heap or mmap).
+  const char *data_raw = nullptr;
+  const uint64_t *null_bitmap_raw = nullptr;
+  const char *string_pool_raw = nullptr;
+
   inline int32_t GetInt32(uint64_t row) const {
     assert(type == FlatColumnType::INT32);
-    return reinterpret_cast<const int32_t *>(data.get())[row];
+    return reinterpret_cast<const int32_t *>(data_raw)[row];
   }
 
   inline int64_t GetInt64(uint64_t row) const {
     assert(type == FlatColumnType::INT64);
-    return reinterpret_cast<const int64_t *>(data.get())[row];
+    return reinterpret_cast<const int64_t *>(data_raw)[row];
   }
 
   inline bool IsNull(uint64_t row) const {
-    if (!nullable || !null_bitmap)
+    if (!nullable || !null_bitmap_raw)
       return false;
     uint64_t word = row / 64;
     uint64_t bit = row % 64;
-    return !(null_bitmap[word] & (uint64_t(1) << bit));
+    return !(null_bitmap_raw[word] & (uint64_t(1) << bit));
   }
 
   inline void SetValid(uint64_t row) {
@@ -64,23 +63,26 @@ struct FlatColumn {
     null_bitmap[word] &= ~(uint64_t(1) << bit);
   }
 
-  // Returns pointer to the string and its length for the given row.
-  // Caller must check IsNull() first for nullable VARCHAR columns.
   inline const char *GetVarchar(uint64_t row, uint32_t &out_len) const {
     assert(type == FlatColumnType::VARCHAR);
     const auto *offsets =
-        reinterpret_cast<const uint32_t *>(data.get());
+        reinterpret_cast<const uint32_t *>(data_raw);
     uint32_t start = offsets[row];
     uint32_t end = offsets[row + 1];
     out_len = end - start;
-    return string_pool.get() + start;
+    return string_pool_raw + start;
   }
 
-  // Convenience: get as std::string
   inline std::string GetString(uint64_t row) const {
     uint32_t len;
     const char *ptr = GetVarchar(row, len);
     return std::string(ptr, len);
+  }
+
+  void SyncRawPointers() {
+    data_raw = data.get();
+    null_bitmap_raw = null_bitmap.get();
+    string_pool_raw = string_pool.get();
   }
 
   uint64_t GetMemoryUsage() const {
@@ -90,10 +92,10 @@ struct FlatColumn {
     } else if (type == FlatColumnType::INT64) {
       mem += row_count * sizeof(int64_t);
     } else {
-      mem += (row_count + 1) * sizeof(uint32_t); // offsets
+      mem += (row_count + 1) * sizeof(uint32_t);
       mem += string_pool_size;
     }
-    if (nullable && null_bitmap) {
+    if (nullable && null_bitmap_raw) {
       mem += ((row_count + 63) / 64) * sizeof(uint64_t);
     }
     return mem;

@@ -165,6 +165,7 @@ public:
     std::vector<int> agg_output_cells;
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
     std::vector<uint8_t> params_buf;
+    std::unique_ptr<qjit::QjitGroupedAggDesc> gagg_desc;
     std::string replay_cache_key;
     std::string replay_fn_name;
     std::vector<qjit::QjitColumnRef> replay_source_cols;
@@ -265,6 +266,10 @@ private:
 
   void MaterializeQjitTempToPostgreSQL(const std::string &name,
                                        bool update_temp_card);
+
+  void FetchPgTempIntoQjitTemps(
+      const std::string &temp_table_name,
+      const std::vector<qjit::QjitTable::ColumnDesc> &out_descs);
 
   bool query_jit_ = false;
   bool session_query_jit_ = false;

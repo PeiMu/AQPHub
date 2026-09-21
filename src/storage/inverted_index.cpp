@@ -26,7 +26,7 @@ InvertedIndex BuildInvertedIndex(
   idx.row_ptr = std::make_unique<uint64_t[]>(dim_domain);
 
   const auto &col = bridge_flat.columns[target_col_idx];
-  const auto *target_data = reinterpret_cast<const int32_t *>(col.data.get());
+  const auto *target_data = reinterpret_cast<const int32_t *>(col.data_raw);
 
   // Pass 1: For each dim PK value, collect target values from CSR matches,
   // sort and deduplicate, count unique entries.

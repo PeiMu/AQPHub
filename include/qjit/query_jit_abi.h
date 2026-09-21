@@ -181,6 +181,13 @@ void qjit_agg_update_count(void *state, uint64_t cell);
  * single-threaded (merge epilogue). */
 void qjit_str_arena_copy(void *arena, QjitString *dst, const QjitString *src);
 
+/* ---- grouped-aggregate runtime (QjitGroupAggMap) ---------------------- */
+/* Find or insert a group in the per-worker map. Returns QjitAggState*
+ * for the group (existing or newly allocated). */
+void *qjit_gagg_lookup(void *map, uint64_t hash, const void *key_buf);
+/* Hash a QjitString value (FNV-1a). */
+uint64_t qjit_hash_string(const QjitString *s);
+
 /* ---- result-table sink (qjit::QjitTable) ------------------------------ */
 /* One output row = one append per column (in any order, exactly once per
  * column) + one finish_row. Appends are worker-local: concurrent calls are

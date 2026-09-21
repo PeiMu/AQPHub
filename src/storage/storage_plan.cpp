@@ -11,6 +11,10 @@
 #include <fstream>
 #include <iostream>
 #include <regex>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace middleware {
 namespace storage {
@@ -84,6 +88,7 @@ static FlatColumn LoadColumnINT32(duckdb::MaterializedQueryResult &result,
     row_offset += chunk->size();
   }
 
+  col.SyncRawPointers();
   return col;
 }
 
@@ -166,6 +171,7 @@ static FlatColumn LoadColumnINT64(duckdb::MaterializedQueryResult &result,
     row_offset += chunk->size();
   }
 
+  col.SyncRawPointers();
   return col;
 }
 
@@ -247,6 +253,7 @@ static FlatColumn LoadColumnVARCHAR(duckdb::MaterializedQueryResult &result,
   }
   offsets[total_rows] = offset;
 
+  col.SyncRawPointers();
   return col;
 }
 
@@ -367,7 +374,7 @@ void StoragePlan::LoadFromDuckDB(duckdb::Connection &connection) {
     if (id_col >= 0 && col_types[id_col] == FlatColumnType::INT32) {
       int32_t max_id = 0;
       const auto *id_data =
-          reinterpret_cast<const int32_t *>(table.columns[id_col].data.get());
+          reinterpret_cast<const int32_t *>(table.columns[id_col].data_raw);
       for (uint64_t r = 0; r < row_count; r++) {
         if (id_data[r] > max_id)
           max_id = id_data[r];
@@ -601,6 +608,7 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
       }
 
       PQclear(data_result);
+      col.SyncRawPointers();
       table.columns[ci] = std::move(col);
     }
 
@@ -609,7 +617,7 @@ void StoragePlan::LoadFromPostgreSQL(PGconn *conn) {
     if (id_col >= 0 && col_types[id_col] == FlatColumnType::INT32) {
       int32_t max_id = 0;
       const auto *id_data =
-          reinterpret_cast<const int32_t *>(table.columns[id_col].data.get());
+          reinterpret_cast<const int32_t *>(table.columns[id_col].data_raw);
       for (uint64_t r = 0; r < row_count; r++) {
         if (id_data[r] > max_id)
           max_id = id_data[r];
@@ -926,6 +934,14 @@ StoragePlan::GetInvertedIndex(const std::string &dim_table,
   return nullptr;
 }
 
+StoragePlan::~StoragePlan() {
+  if (mmap_base_) {
+    tables_.clear();
+    munmap(mmap_base_, mmap_size_);
+    mmap_base_ = nullptr;
+  }
+}
+
 const FlatTable *StoragePlan::GetTable(const std::string &table_name) const {
   auto it = tables_.find(table_name);
   if (it == tables_.end())
@@ -1055,18 +1071,18 @@ void StoragePlan::SaveToFile(const std::string &path) const {
       fwrite(&col.row_count, 8, 1, f);
 
       if (col.type == FlatColumnType::INT32) {
-        fwrite(col.data.get(), sizeof(int32_t), col.row_count, f);
+        fwrite(col.data_raw, sizeof(int32_t), col.row_count, f);
       } else if (col.type == FlatColumnType::INT64) {
-        fwrite(col.data.get(), sizeof(int64_t), col.row_count, f);
+        fwrite(col.data_raw, sizeof(int64_t), col.row_count, f);
       } else {
         fwrite(&col.string_pool_size, 8, 1, f);
-        fwrite(col.data.get(), sizeof(uint32_t), col.row_count + 1, f);
-        fwrite(col.string_pool.get(), 1, col.string_pool_size, f);
+        fwrite(col.data_raw, sizeof(uint32_t), col.row_count + 1, f);
+        fwrite(col.string_pool_raw, 1, col.string_pool_size, f);
       }
 
-      if (col.nullable && col.null_bitmap) {
+      if (col.nullable && col.null_bitmap_raw) {
         uint64_t bitmap_words = (col.row_count + 63) / 64;
-        fwrite(col.null_bitmap.get(), sizeof(uint64_t), bitmap_words, f);
+        fwrite(col.null_bitmap_raw, sizeof(uint64_t), bitmap_words, f);
       }
 
       WriteStr(f, tbl.column_names[c]);
@@ -1122,70 +1138,128 @@ void StoragePlan::SaveToFile(const std::string &path) const {
 #endif
 }
 
-bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
+bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes,
+                               const std::unordered_set<std::string> *table_filter) {
   auto start = std::chrono::high_resolution_clock::now();
-  FILE *f = fopen(path.c_str(), "rb");
-  if (!f) return false;
 
-  uint64_t magic;
-  uint32_t version;
-  if (fread(&magic, 8, 1, f) != 1 || magic != CACHE_MAGIC) { fclose(f); return false; }
-  if (fread(&version, 4, 1, f) != 1 || version > CACHE_VERSION) { fclose(f); return false; }
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0) return false;
+  struct stat st;
+  if (fstat(fd, &st) != 0) { close(fd); return false; }
+  size_t file_size = static_cast<size_t>(st.st_size);
+
+  void *base = mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  close(fd);
+  if (base == MAP_FAILED) return false;
+  madvise(base, file_size, MADV_SEQUENTIAL);
+
+  mmap_base_ = base;
+  mmap_size_ = file_size;
+
+  const uint8_t *cur = static_cast<const uint8_t *>(base);
+  const uint8_t *mmap_end = cur + file_size;
+
+  auto mread = [&](void *dst, size_t n) {
+    std::memcpy(dst, cur, n); cur += n;
+  };
+  auto mskip = [&](size_t n) { cur += n; };
+  auto mread_str = [&]() -> std::string {
+    uint32_t len; mread(&len, 4);
+    std::string s(reinterpret_cast<const char *>(cur), len);
+    cur += len;
+    return s;
+  };
+  auto mskip_str = [&]() { uint32_t len; mread(&len, 4); cur += len; };
+
+  uint64_t magic; uint32_t version;
+  mread(&magic, 8);
+  if (magic != CACHE_MAGIC) { munmap(mmap_base_, mmap_size_); mmap_base_ = nullptr; return false; }
+  mread(&version, 4);
+  if (version > CACHE_VERSION) { munmap(mmap_base_, mmap_size_); mmap_base_ = nullptr; return false; }
 
   uint32_t num_tables, num_csrs;
-  fread(&num_tables, 4, 1, f);
-  fread(&num_csrs, 4, 1, f);
+  mread(&num_tables, 4);
+  mread(&num_csrs, 4);
 
   tables_.clear();
   csr_indexes_.clear();
 
   for (uint32_t t = 0; t < num_tables; t++) {
+    std::string tname = mread_str();
+    uint64_t row_count; int32_t max_pk; uint32_t num_cols;
+    mread(&row_count, 8);
+    mread(&max_pk, 4);
+    mread(&num_cols, 4);
+
+    bool skip_table = table_filter && table_filter->find(tname) == table_filter->end();
+
+    if (skip_table) {
+      for (uint32_t c = 0; c < num_cols; c++) {
+        uint8_t type_byte, nullable_byte;
+        mread(&type_byte, 1); mread(&nullable_byte, 1);
+        uint64_t col_row_count; mread(&col_row_count, 8);
+        auto ctype = static_cast<FlatColumnType>(type_byte);
+        if (ctype == FlatColumnType::INT32)
+          mskip(col_row_count * sizeof(int32_t));
+        else if (ctype == FlatColumnType::INT64)
+          mskip(col_row_count * sizeof(int64_t));
+        else {
+          uint64_t pool_size; mread(&pool_size, 8);
+          mskip((col_row_count + 1) * sizeof(uint32_t));
+          mskip(pool_size);
+        }
+        if (nullable_byte) {
+          uint64_t bw = (col_row_count + 63) / 64;
+          mskip(bw * sizeof(uint64_t));
+        }
+        mskip_str();
+      }
+      continue;
+    }
+
     FlatTable tbl;
-    tbl.table_name = ReadStr(f);
-    fread(&tbl.row_count, 8, 1, f);
-    fread(&tbl.max_pk, 4, 1, f);
-    uint32_t num_cols;
-    fread(&num_cols, 4, 1, f);
+    tbl.table_name = tname;
+    tbl.row_count = row_count;
+    tbl.max_pk = max_pk;
     tbl.columns.resize(num_cols);
     tbl.column_names.resize(num_cols);
 
     for (uint32_t c = 0; c < num_cols; c++) {
       auto &col = tbl.columns[c];
       uint8_t type_byte, nullable_byte;
-      fread(&type_byte, 1, 1, f);
-      fread(&nullable_byte, 1, 1, f);
+      mread(&type_byte, 1); mread(&nullable_byte, 1);
       col.type = static_cast<FlatColumnType>(type_byte);
       col.nullable = nullable_byte != 0;
-      fread(&col.row_count, 8, 1, f);
+      mread(&col.row_count, 8);
 
       if (col.type == FlatColumnType::INT32) {
-        col.data = std::make_unique<char[]>(col.row_count * sizeof(int32_t));
-        fread(col.data.get(), sizeof(int32_t), col.row_count, f);
+        col.data_raw = reinterpret_cast<const char *>(cur);
+        mskip(col.row_count * sizeof(int32_t));
       } else if (col.type == FlatColumnType::INT64) {
-        col.data = std::make_unique<char[]>(col.row_count * sizeof(int64_t));
-        fread(col.data.get(), sizeof(int64_t), col.row_count, f);
+        col.data_raw = reinterpret_cast<const char *>(cur);
+        mskip(col.row_count * sizeof(int64_t));
       } else {
-        fread(&col.string_pool_size, 8, 1, f);
-        col.data = std::make_unique<char[]>((col.row_count + 1) * sizeof(uint32_t));
-        fread(col.data.get(), sizeof(uint32_t), col.row_count + 1, f);
-        col.string_pool = std::make_unique<char[]>(col.string_pool_size);
-        fread(col.string_pool.get(), 1, col.string_pool_size, f);
+        mread(&col.string_pool_size, 8);
+        col.data_raw = reinterpret_cast<const char *>(cur);
+        mskip((col.row_count + 1) * sizeof(uint32_t));
+        col.string_pool_raw = reinterpret_cast<const char *>(cur);
+        mskip(col.string_pool_size);
       }
 
       if (col.nullable) {
         uint64_t bitmap_words = (col.row_count + 63) / 64;
-        col.null_bitmap = std::make_unique<uint64_t[]>(bitmap_words);
-        fread(col.null_bitmap.get(), sizeof(uint64_t), bitmap_words, f);
+        col.null_bitmap_raw = reinterpret_cast<const uint64_t *>(cur);
+        mskip(bitmap_words * sizeof(uint64_t));
       }
 
-      tbl.column_names[c] = ReadStr(f);
+      tbl.column_names[c] = mread_str();
     }
 
     if (tbl.max_pk >= 0) {
       int id_col = tbl.FindColumn("id");
       if (id_col >= 0 && tbl.columns[id_col].type == FlatColumnType::INT32) {
         const auto *id_data =
-            reinterpret_cast<const int32_t *>(tbl.columns[id_col].data.get());
+            reinterpret_cast<const int32_t *>(tbl.columns[id_col].data_raw);
         if (tbl.row_count > 0 && tbl.max_pk == static_cast<int32_t>(tbl.row_count)) {
           bool in_order = (id_data[0] == 1);
           for (uint64_t r = 1; r < tbl.row_count && in_order; r++) {
@@ -1209,102 +1283,78 @@ bool StoragePlan::LoadFromFile(const std::string &path, bool skip_indexes) {
     tables_[tbl.table_name] = std::move(tbl);
   }
 
-  for (uint32_t i = 0; i < num_csrs; i++) {
+  for (uint32_t i = 0; i < num_csrs && cur < mmap_end; i++) {
     if (skip_indexes) {
-      SkipStr(f); // fk_table
-      SkipStr(f); // fk_column
-      SkipStr(f); // pk_table
-      SkipStr(f); // pk_column
-      uint64_t row_ptr_size = 0, col_idx_size = 0;
-      fread(&row_ptr_size, 8, 1, f);
-      fseek(f, static_cast<long>(row_ptr_size * sizeof(uint64_t)), SEEK_CUR);
-      fread(&col_idx_size, 8, 1, f);
-      fseek(f, static_cast<long>(col_idx_size * sizeof(uint32_t)), SEEK_CUR);
+      mskip_str(); mskip_str(); mskip_str(); mskip_str();
+      uint64_t rps = 0, cis = 0;
+      mread(&rps, 8); mskip(rps * sizeof(uint64_t));
+      mread(&cis, 8); mskip(cis * sizeof(uint32_t));
       continue;
     }
     CSRIndex csr;
-    csr.fk_table = ReadStr(f);
-    csr.fk_column = ReadStr(f);
-    csr.pk_table = ReadStr(f);
-    csr.pk_column = ReadStr(f);
-    fread(&csr.row_ptr_size, 8, 1, f);
+    csr.fk_table = mread_str(); csr.fk_column = mread_str();
+    csr.pk_table = mread_str(); csr.pk_column = mread_str();
+    mread(&csr.row_ptr_size, 8);
     csr.row_ptr = std::make_unique<uint64_t[]>(csr.row_ptr_size);
-    fread(csr.row_ptr.get(), sizeof(uint64_t), csr.row_ptr_size, f);
-    fread(&csr.col_idx_size, 8, 1, f);
+    std::memcpy(csr.row_ptr.get(), cur, csr.row_ptr_size * sizeof(uint64_t));
+    mskip(csr.row_ptr_size * sizeof(uint64_t));
+    mread(&csr.col_idx_size, 8);
     csr.col_idx = std::make_unique<uint32_t[]>(csr.col_idx_size);
-    fread(csr.col_idx.get(), sizeof(uint32_t), csr.col_idx_size, f);
-
+    std::memcpy(csr.col_idx.get(), cur, csr.col_idx_size * sizeof(uint32_t));
+    mskip(csr.col_idx_size * sizeof(uint32_t));
     std::string key = csr.fk_table + "." + csr.fk_column;
     csr_indexes_[key] = std::move(csr);
   }
 
-  // Read sorted indices (version >= 2)
   sorted_indices_.clear();
-  if (version >= 2) {
-    uint32_t num_sorted;
-    if (fread(&num_sorted, 4, 1, f) == 1) {
-      for (uint32_t i = 0; i < num_sorted; i++) {
-        if (skip_indexes) {
-          SkipStr(f); // table_name
-          SkipStr(f); // column_name
-          uint64_t perm_count = 0;
-          fread(&perm_count, 8, 1, f);
-          fseek(f, static_cast<long>(perm_count * sizeof(uint32_t)), SEEK_CUR);
-          continue;
-        }
-        SortedIndex si;
-        si.table_name = ReadStr(f);
-        si.column_name = ReadStr(f);
-        uint64_t perm_count;
-        fread(&perm_count, 8, 1, f);
-        si.sorted_perm.resize(perm_count);
-        fread(si.sorted_perm.data(), sizeof(uint32_t), perm_count, f);
-        std::string key = si.table_name + "." + si.column_name;
-        sorted_indices_[key] = std::move(si);
+  if (version >= 2 && cur < mmap_end) {
+    uint32_t num_sorted; mread(&num_sorted, 4);
+    for (uint32_t i = 0; i < num_sorted && cur < mmap_end; i++) {
+      if (skip_indexes) {
+        mskip_str(); mskip_str();
+        uint64_t pc = 0; mread(&pc, 8); mskip(pc * sizeof(uint32_t));
+        continue;
       }
+      SortedIndex si;
+      si.table_name = mread_str(); si.column_name = mread_str();
+      uint64_t perm_count; mread(&perm_count, 8);
+      si.sorted_perm.resize(perm_count);
+      std::memcpy(si.sorted_perm.data(), cur, perm_count * sizeof(uint32_t));
+      mskip(perm_count * sizeof(uint32_t));
+      std::string key = si.table_name + "." + si.column_name;
+      sorted_indices_[key] = std::move(si);
     }
   }
 
-  // Read inverted indices (version >= 3)
   inverted_indices_.clear();
-  if (version >= 3) {
-    uint32_t num_inverted;
-    if (fread(&num_inverted, 4, 1, f) == 1) {
-      for (uint32_t i = 0; i < num_inverted; i++) {
-        if (skip_indexes) {
-          SkipStr(f); // dim_table
-          SkipStr(f); // bridge_table
-          SkipStr(f); // bridge_fk_col
-          SkipStr(f); // target_col
-          SkipStr(f); // target_table
-          uint64_t row_ptr_size = 0, target_vals_size = 0;
-          fread(&row_ptr_size, 8, 1, f);
-          fseek(f, static_cast<long>(row_ptr_size * sizeof(uint64_t)), SEEK_CUR);
-          fread(&target_vals_size, 8, 1, f);
-          fseek(f, static_cast<long>(target_vals_size * sizeof(int32_t)),
-                SEEK_CUR);
-          continue;
-        }
-        InvertedIndex inv;
-        inv.dim_table = ReadStr(f);
-        inv.bridge_table = ReadStr(f);
-        inv.bridge_fk_col = ReadStr(f);
-        inv.target_col = ReadStr(f);
-        inv.target_table = ReadStr(f);
-        fread(&inv.row_ptr_size, 8, 1, f);
-        inv.row_ptr = std::make_unique<uint64_t[]>(inv.row_ptr_size);
-        fread(inv.row_ptr.get(), sizeof(uint64_t), inv.row_ptr_size, f);
-        fread(&inv.target_vals_size, 8, 1, f);
-        inv.target_vals = std::make_unique<int32_t[]>(inv.target_vals_size);
-        fread(inv.target_vals.get(), sizeof(int32_t), inv.target_vals_size, f);
-        std::string key = inv.dim_table + "->" + inv.target_table +
-                          "." + inv.bridge_table + "." + inv.bridge_fk_col;
-        inverted_indices_[key] = std::move(inv);
+  if (version >= 3 && cur < mmap_end) {
+    uint32_t num_inverted; mread(&num_inverted, 4);
+    for (uint32_t i = 0; i < num_inverted && cur < mmap_end; i++) {
+      if (skip_indexes) {
+        mskip_str(); mskip_str(); mskip_str(); mskip_str(); mskip_str();
+        uint64_t rps = 0, tvs = 0;
+        mread(&rps, 8); mskip(rps * sizeof(uint64_t));
+        mread(&tvs, 8); mskip(tvs * sizeof(int32_t));
+        continue;
       }
+      InvertedIndex inv;
+      inv.dim_table = mread_str(); inv.bridge_table = mread_str();
+      inv.bridge_fk_col = mread_str(); inv.target_col = mread_str();
+      inv.target_table = mread_str();
+      mread(&inv.row_ptr_size, 8);
+      inv.row_ptr = std::make_unique<uint64_t[]>(inv.row_ptr_size);
+      std::memcpy(inv.row_ptr.get(), cur, inv.row_ptr_size * sizeof(uint64_t));
+      mskip(inv.row_ptr_size * sizeof(uint64_t));
+      mread(&inv.target_vals_size, 8);
+      inv.target_vals = std::make_unique<int32_t[]>(inv.target_vals_size);
+      std::memcpy(inv.target_vals.get(), cur, inv.target_vals_size * sizeof(int32_t));
+      mskip(inv.target_vals_size * sizeof(int32_t));
+      std::string key = inv.dim_table + "->" + inv.target_table +
+                        "." + inv.bridge_table + "." + inv.bridge_fk_col;
+      inverted_indices_[key] = std::move(inv);
     }
   }
 
-  fclose(f);
   loaded_ = true;
   dim_cache_.Build(tables_);
 

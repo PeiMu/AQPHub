@@ -120,6 +120,19 @@ struct QjitAggCellPlan {
   QjitValueLoc arg;
 };
 
+struct QjitGroupKeyCol {
+  int dtype = 0;          // AQP_DTYPE_INT32 / INT64 / VARCHAR / DATE
+  QjitValueLoc loc;       // where the group key value comes from
+  uint32_t offset = 0;    // byte offset within the serialized key buffer
+};
+
+struct QjitAggHtDesc {
+  std::vector<QjitGroupKeyCol> keys;
+  std::vector<QjitAggCellPlan> cells;
+  uint32_t keys_size = 0;   // total bytes for serialized keys
+  uint32_t tuple_size = 0;  // = keys_size (cells stored separately)
+};
+
 struct QjitStep {
   // ScanNode base-table name, or ChunkNode temp-table name (source_is_temp).
   std::string source_table;
@@ -152,8 +165,9 @@ struct QjitStep {
   // against per-block min/max stats: key 0 of guards[0]. -1 = none.
   int block_skip_col = -1;
 
-  enum SinkKind { Result, HtBuild, Agg } sink = Result;
-  int sink_ht = -1; // HtBuild: target hts[] index
+  enum SinkKind { Result, HtBuild, Agg, GroupedAgg } sink = Result;
+  int sink_ht = -1;      // HtBuild: target hts[] index
+  int sink_agg_ht = -1;  // GroupedAgg: target agg_hts[] index
   // Result: one loc per output column, in root target_list order.
   // HtBuild: one loc per hts[sink_ht].cols entry (keys then payloads).
   std::vector<QjitValueLoc> outputs;
@@ -180,6 +194,11 @@ struct QjitQueryPlan {
   // has_agg: result column i = agg cell agg_output_cells[i] (root
   // projections over the aggregate may reorder/duplicate cells).
   std::vector<int> agg_output_cells;
+  // Grouped aggregation HT descriptors.
+  std::vector<QjitAggHtDesc> agg_hts;
+  // Grouped agg output mapping: negative = -(1+group_key_index),
+  // non-negative = agg cell index. Empty when ungrouped.
+  std::vector<int> agg_group_output_map;
   // Synthesized filter expressions (mark-join IN-list rewrite) referenced
   // by QjitStepOp::filter; owned here so they outlive codegen.
   std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> owned_exprs;

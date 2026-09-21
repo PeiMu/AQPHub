@@ -412,6 +412,107 @@ void QjitAggState::Merge(const QjitAggState &other) {
 }
 
 // ---------------------------------------------------------------------------
+// QjitGroupAggMap
+// ---------------------------------------------------------------------------
+
+QjitGroupAggMap::QjitGroupAggMap(uint32_t key_size,
+                                 const std::vector<int32_t> &key_dtypes,
+                                 const std::vector<uint32_t> &key_offsets,
+                                 std::vector<QjitAggCellDesc> descs)
+    : slots_(64), mask_(63), key_size_(key_size), key_dtypes_(key_dtypes),
+      key_offsets_(key_offsets), descs_(std::move(descs)) {}
+
+bool QjitGroupAggMap::KeysEqual(const uint8_t *a, const uint8_t *b) const {
+  for (size_t i = 0; i < key_dtypes_.size(); i++) {
+    uint32_t off = key_offsets_[i];
+    if (key_dtypes_[i] == AQP_DTYPE_VARCHAR) {
+      const auto *sa = reinterpret_cast<const QjitString *>(a + off);
+      const auto *sb = reinterpret_cast<const QjitString *>(b + off);
+      if (!StringEq(*sa, *sb))
+        return false;
+    } else {
+      int64_t va, vb;
+      std::memcpy(&va, a + off, 8);
+      std::memcpy(&vb, b + off, 8);
+      if (va != vb)
+        return false;
+    }
+  }
+  return true;
+}
+
+uint8_t *QjitGroupAggMap::CopyKeys(const uint8_t *src) {
+  auto *dst = reinterpret_cast<uint8_t *>(key_arena_.Allocate(key_size_));
+  std::memcpy(dst, src, key_size_);
+  for (size_t i = 0; i < key_dtypes_.size(); i++) {
+    if (key_dtypes_[i] == AQP_DTYPE_VARCHAR) {
+      uint32_t off = key_offsets_[i];
+      const auto *ss = reinterpret_cast<const QjitString *>(src + off);
+      if (StringLen(*ss) > QJIT_STRING_INLINE_LEN) {
+        if (!state_arenas_.empty()) {
+          auto copied = state_arenas_.back()->Copy(*ss);
+          std::memcpy(dst + off, &copied, sizeof(QjitString));
+        }
+      }
+    }
+  }
+  return dst;
+}
+
+void QjitGroupAggMap::Resize() {
+  uint64_t new_cap = (mask_ + 1) * 2;
+  std::vector<Slot> new_slots(new_cap);
+  uint64_t new_mask = new_cap - 1;
+  for (auto &s : slots_) {
+    if (s.hash == 0)
+      continue;
+    uint64_t idx = s.hash & new_mask;
+    while (new_slots[idx].hash != 0)
+      idx = (idx + 1) & new_mask;
+    new_slots[idx] = s;
+  }
+  slots_ = std::move(new_slots);
+  mask_ = new_mask;
+}
+
+QjitAggState *QjitGroupAggMap::FindOrInsert(uint64_t hash,
+                                            const uint8_t *key_buf) {
+  if (hash == 0)
+    hash = 1;
+  uint64_t idx = hash & mask_;
+  while (true) {
+    Slot &s = slots_[idx];
+    if (s.hash == 0) {
+      if (count_ * 4 > (mask_ + 1) * 3) {
+        Resize();
+        return FindOrInsert(hash, key_buf);
+      }
+      s.hash = hash;
+      s.keys = CopyKeys(key_buf);
+      auto arena = std::make_unique<QjitStringArena>();
+      auto state = std::make_unique<QjitAggState>(descs_, arena.get());
+      s.state = state.get();
+      state_arenas_.push_back(std::move(arena));
+      owned_states_.push_back(std::move(state));
+      count_++;
+      return s.state;
+    }
+    if (s.hash == hash && KeysEqual(s.keys, key_buf))
+      return s.state;
+    idx = (idx + 1) & mask_;
+  }
+}
+
+void QjitGroupAggMap::MergeFrom(const QjitGroupAggMap &other) {
+  for (const auto &s : other.slots_) {
+    if (s.hash == 0)
+      continue;
+    QjitAggState *my = FindOrInsert(s.hash, s.keys);
+    my->Merge(*s.state);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // QjitTable
 // ---------------------------------------------------------------------------
 
@@ -665,6 +766,22 @@ void qjit_agg_update_count(void *state, uint64_t cell) {
 
 void qjit_str_arena_copy(void *arena, QjitString *dst, const QjitString *src) {
   *dst = static_cast<qjit::QjitStringArena *>(arena)->Copy(*src);
+}
+
+void *qjit_gagg_lookup(void *map, uint64_t hash, const void *key_buf) {
+  return static_cast<qjit::QjitGroupAggMap *>(map)->FindOrInsert(
+      hash, static_cast<const uint8_t *>(key_buf));
+}
+
+uint64_t qjit_hash_string(const QjitString *s) {
+  const char *data = qjit::StringData(*s);
+  uint32_t len = qjit::StringLen(*s);
+  uint64_t h = 0xcbf29ce484222325ULL;
+  for (uint32_t i = 0; i < len; i++) {
+    h ^= static_cast<uint64_t>(static_cast<uint8_t>(data[i]));
+    h *= 0x100000001b3ULL;
+  }
+  return h;
 }
 
 void qjit_table_append_i32(void *table, uint32_t worker_id, uint64_t col,

@@ -22,7 +22,7 @@ CSRIndex BuildCSR(const FlatTable &fk_table, int fk_col_idx,
   std::memset(csr.row_ptr.get(), 0, domain_size * sizeof(uint64_t));
 
   const auto &fk_col = fk_table.columns[fk_col_idx];
-  const auto *fk_data = reinterpret_cast<const int32_t *>(fk_col.data.get());
+  const auto *fk_data = reinterpret_cast<const int32_t *>(fk_col.data_raw);
 
   // Pass 1: count occurrences of each FK value (skip NULLs)
   uint64_t non_null_count = 0;
