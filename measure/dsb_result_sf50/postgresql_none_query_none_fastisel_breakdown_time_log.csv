@@ -1,69 +1,69 @@
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query013/query013_0.sql...
-0.000, 0.141, 0.000, 39830.396, 0.026
-0.058, 6.373, 0.000, 35369.768, 0.018
+0.000, 0.008, 0.000, 3723.160, 0.015
+0.051, 0.013, 0.000, 3619.907, 0.010
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query013_spj/query013_spj_0.sql...
-0.076, 0.031, 0.000, 3982.309, 0.011
-0.065, 0.026, 0.000, 4090.923, 0.014
+0.107, 0.013, 0.000, 3577.882, 0.011
+0.092, 0.013, 0.000, 3576.528, 0.017
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query018/query018_0.sql...
-0.068, 0.020, 0.000, 376468.976, 472.327
-0.060, 0.020, 0.000, 354475.314, 114.429
+0.083, 0.013, 0.000, 4248.720, 0.030
+0.120, 0.013, 0.000, 4341.336, 0.034
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query018_spj/query018_spj_0.sql...
-0.146, 23.133, 0.000, 335421.944, 347.423
-0.152, 56.990, 0.000, 341012.202, 530.368
+0.059, 0.013, 0.000, 3986.802, 0.013
+0.070, 0.013, 0.000, 4029.045, 0.028
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query019/query019_0.sql...
-0.101, 23.130, 0.000, 5129.663, 0.205
-0.053, 31.763, 0.000, 5580.874, 0.252
+0.033, 0.013, 0.000, 345.521, 0.025
+0.038, 0.013, 0.000, 346.043, 0.025
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query019_spj/query019_spj_0.sql...
-0.093, 0.077, 0.000, 437.534, 0.013
-0.153, 0.106, 0.000, 378.420, 0.026
+0.057, 0.013, 0.000, 246.290, 0.013
+0.037, 0.012, 0.000, 275.369, 0.010
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query025/query025_0.sql...
-0.059, 0.022, 0.000, 259932.710, 0.111
-0.035, 0.033, 0.000, 256751.228, 0.131
+0.023, 0.012, 0.000, 57912.547, 0.136
+0.061, 0.014, 0.000, 57948.043, 0.125
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query025_spj/query025_spj_0.sql...
-0.051, 0.022, 0.000, 262412.079, 0.027
-0.071, 0.024, 0.000, 261574.538, 0.026
+0.085, 0.013, 0.000, 23819.941, 0.026
+0.062, 0.013, 0.000, 23815.748, 0.027
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query027_spj/query027_spj_0.sql...
-0.053, 0.025, 0.000, 48307.240, 0.026
-0.046, 0.023, 0.000, 40677.765, 0.012
+0.060, 0.025, 0.000, 2536.133, 0.010
+0.062, 0.026, 0.000, 2440.579, 0.015
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query038/query038_0.sql...
-0.036, 16.649, 0.000, 377185.588, 289.093
-0.036, 0.027, 0.000, 381850.194, 339.071
+0.042, 0.013, 0.000, 8321.226, 0.011
+0.030, 0.013, 0.000, 8337.438, 0.010
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query040/query040_0.sql...
-0.369, 0.083, 0.000, 100589.578, 0.144
-0.247, 0.083, 0.000, 101305.709, 0.087
+0.071, 0.013, 0.000, 475.846, 0.085
+0.108, 0.013, 0.000, 505.774, 0.104
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query040_spj/query040_spj_0.sql...
-0.051, 0.018, 0.000, 508.950, 0.025
-0.046, 0.026, 0.000, 432.762, 0.011
+0.063, 0.026, 0.000, 417.480, 0.012
+0.066, 0.015, 0.000, 433.954, 0.012
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query050_spj/query050_spj_0.sql...
-0.031, 38.041, 0.000, 300787.364, 0.015
-0.038, 0.022, 0.000, 301139.542, 0.017
+0.034, 0.013, 0.000, 1621.372, 0.014
+0.038, 0.014, 0.000, 1701.878, 0.013
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query072/query072_0.sql...
-0.065, 20.996, 0.000, 288467.689, 0.322
-0.079, 0.034, 0.000, 289393.093, 0.295
+0.056, 0.015, 0.000, 18471.220, 0.174
+0.055, 0.014, 0.000, 18479.891, 0.170
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query072_spj/query072_spj_0.sql...
-0.066, 28.646, 0.000, 266010.551, 0.023
-0.051, 0.026, 0.000, 148034.524, 0.012
+0.050, 0.013, 0.000, 17922.299, 0.011
+0.050, 0.013, 0.000, 17919.671, 0.011
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query084/query084_0.sql...
-0.075, 0.033, 0.000, 60169.939, 0.244
-0.079, 0.023, 0.000, 60388.548, 427.653
+0.089, 0.013, 0.000, 1077.274, 0.166
+0.117, 0.014, 0.000, 1051.520, 0.263
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query084_spj/query084_spj_0.sql...
-0.038, 20.686, 0.000, 16465.774, 0.029
-0.085, 26.478, 0.000, 27800.356, 0.026
+0.026, 0.013, 0.000, 897.384, 0.013
+0.023, 0.013, 0.000, 923.744, 0.011
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query091/query091_0.sql...
-0.025, 0.037, 0.000, 34843.748, 0.029
-0.026, 0.024, 0.000, 37279.058, 0.025
+0.028, 0.013, 0.000, 419.546, 0.017
+0.029, 0.013, 0.000, 418.706, 0.016
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query091_spj/query091_spj_0.sql...
-0.035, 0.026, 0.000, 705.213, 0.011
-0.035, 0.027, 0.000, 427.201, 0.026
+0.032, 0.013, 0.000, 383.620, 0.011
+0.073, 0.014, 0.000, 397.357, 0.012
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query099/query099_0.sql...
-0.031, 36.672, 0.000, 342693.921, 175.282
-0.035, 7.145, 0.000, 345337.480, 630.942
+0.034, 0.013, 0.000, 3855.364, 0.038
+0.038, 0.015, 0.000, 3894.198, 0.020
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query099_spj/query099_spj_0.sql...
-0.192, 0.104, 0.000, 326791.674, 113.008
-276.018, 0.093, 0.000, 326499.636, 289.115
+0.088, 0.013, 0.000, 3766.091, 0.011
+0.085, 0.012, 0.000, 3838.613, 0.013
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query100/query100_0.sql...
-0.080, 0.098, 0.000, 2403.927, 0.016
-0.081, 0.097, 0.000, 2305.575, 0.017
+0.041, 0.013, 0.000, 381.926, 0.010
+0.025, 0.013, 0.000, 388.602, 0.010
 Running benchmark for /home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_aqp_pg/1/query100_spj/query100_spj_0.sql...
-0.063, 0.042, 0.000, 694.117, 0.011
-0.090, 0.042, 0.000, 725.637, 0.011
+0.038, 0.013, 0.000, 399.835, 0.027
+0.040, 0.013, 0.000, 399.049, 0.010
