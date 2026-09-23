@@ -55,6 +55,12 @@ bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb none query none on on on all 
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on on all single-run-template off tpde &&\
 
+# PostgreSQL DSB 50
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none none &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off llvm &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-parameterized recompile tpde &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-template recompile tpde &&\
 
 # Umbra DSB 50
 bash ./measure_umbra.sh dsb_50
@@ -81,13 +87,6 @@ bash ./breakdown_compile_time_reduction.sh &&\
 
 #RQ5 w/wo bidirectional storage
 bash ./breakdown_eval_storage.sh
-
-# PostgreSQL DSB 50
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off llvm &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-parameterized recompile tpde &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-template recompile tpde &&\
 
 # Copy all results to the plotting script's expected directories
 bash ./copy_results_to_plot_dir.sh

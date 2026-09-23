@@ -3646,14 +3646,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
         bool query_jit_level = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
         bool comp_fast = compensate_miss && config_.spec_jit == 1;
         bool comp_interp = compensate_miss && config_.spec_jit == 2;
-        if (compensate_miss && config_.enable_debug_print)
-          std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
-                    << (comp_fast ? " action=COMPENSATE_FAST\n"
-                                  : " action=COMPENSATE_INTERP\n");
-        if (comp_fast)
-          spec_compensate_fast_++;
-        else if (comp_interp)
-          spec_compensate_interp_++;
+        if (config_.engine == BackendEngine::DUCKDB) {
+          if (compensate_miss && config_.enable_debug_print)
+            std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                      << (comp_fast ? " action=COMPENSATE_FAST\n"
+                                    : " action=COMPENSATE_INTERP\n");
+          if (comp_fast)
+            spec_compensate_fast_++;
+          else if (comp_interp)
+            spec_compensate_interp_++;
+        }
         if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
           if (duck) {

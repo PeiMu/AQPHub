@@ -244,7 +244,7 @@ run_one() {
         --schema="${_schema}" \
         --fkeys="${_fkeys}" \
         --split="${split}" \
-        --no-analyze --jit-level=query --jit-simd=avx2 \
+        --no-analyze --jit-level=query --jit-simd=none \
         --jit-cache="${cache_mode}" \
         ${_storage_flags} \
         --benchmark \
