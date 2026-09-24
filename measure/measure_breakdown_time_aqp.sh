@@ -136,7 +136,10 @@ if [[ -n "$disable_runtime_opts" ]]; then
             block-skip)    jit_extra_flags+=" --no-block-skip" ;;
             membership)    jit_extra_flags+=" --no-membership-preprobe" ;;
             early-term)    jit_extra_flags+=" --no-early-termination" ;;
-            disable-bi-directional-storage) jit_extra_flags+=" --disable-bidirectional-storage" ;;
+            disable-bi-directional-storage) jit_extra_flags+=" --no-scan-forwarding --no-mode-bridging" ;;
+            no-scan-forwarding) jit_extra_flags+=" --no-scan-forwarding" ;;
+            no-mode-bridging) jit_extra_flags+=" --no-mode-bridging" ;;
+            force-interpreter-nth=*) jit_extra_flags+=" --${_opt}" ;;
             disable-optimizer) jit_extra_flags+=" --disable-optimizer" ;;
             *) echo "Unknown runtime opt: $_opt"; exit 1 ;;
         esac
@@ -190,6 +193,11 @@ fi
 [[ "$disable_runtime_opts" == *"membership"* ]]    && flag_suffix+="_nomembership"
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && flag_suffix+="_nobidirstorage"
+[[ "$disable_runtime_opts" == *"no-scan-forwarding"* ]] && flag_suffix+="_noscanfwd"
+[[ "$disable_runtime_opts" == *"no-mode-bridging"* ]] && flag_suffix+="_nomodebridg"
+if [[ "$disable_runtime_opts" =~ force-interpreter-nth=([0-9]+) ]]; then
+  flag_suffix+="_forceinterp${BASH_REMATCH[1]}"
+fi
 [[ "$disable_runtime_opts" == *"disable-optimizer"* ]] && flag_suffix+="_nooptimizer"
 [[ "$disable_compile_opts" == *"cross-query-prep"* ]] && flag_suffix+="_nocrossqprep"
 [[ "$collect_stats" == "on" ]]                      && flag_suffix+="_collectstats"

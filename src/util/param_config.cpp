@@ -305,8 +305,15 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.early_termination = false;
     } else if (arg == "--no-cross-query-prep") {
       config.no_cross_query_prep = true;
+    } else if (arg == "--no-scan-forwarding") {
+      config.no_scan_forwarding = true;
+    } else if (arg == "--no-mode-bridging") {
+      config.no_mode_bridging = true;
     } else if (arg == "--disable-bidirectional-storage") {
-      config.disable_bidirectional_storage = true;
+      config.no_scan_forwarding = true;
+      config.no_mode_bridging = true;
+    } else if (arg.find("--force-interpreter-nth=") == 0) {
+      config.force_interpreter_nth = std::stoi(arg.substr(24));
     } else if (arg == "--disable-optimizer") {
       config.disable_engine_optimizer = true;
     } else if (arg == "--help" || arg == "-h") {

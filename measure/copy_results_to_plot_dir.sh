@@ -84,8 +84,15 @@ done
 ########################################
 STOR_DEST="${PLOT_DIR}/evaluate_storage"
 mkdir -p "$STOR_DEST"
-for f in storage_step1_bidir_enabled.csv storage_step2_bidir_disabled.csv; do
+for f in storage_step1_bidir_enabled.csv \
+         storage_step2_no_scan_forwarding.csv; do
     [[ -f "${JOB_RESULT}/$f" ]] && cp "${JOB_RESULT}/$f" "${STOR_DEST}/$f"
+done
+for N in 2 3 4 5; do
+    for f in "storage_step3a_nth${N}_bridge_on.csv" \
+             "storage_step3b_nth${N}_bridge_off.csv"; do
+        [[ -f "${JOB_RESULT}/$f" ]] && cp "${JOB_RESULT}/$f" "${STOR_DEST}/$f"
+    done
 done
 
 ########################################

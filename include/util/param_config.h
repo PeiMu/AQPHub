@@ -159,10 +159,21 @@ struct ParamConfig {
   // jit_cache >= 1. Set via --no-cross-query-prep.
   bool no_cross_query_prep = false;
 
-  // Force intermediate results into DuckDB catalog temp tables (in addition
-  // to the in-memory replacement-scan path) to measure the overhead of
-  // round-tripping through the engine's storage layer.
-  bool disable_bidirectional_storage = false;
+  // Disable scan forwarding: force intermediate results into DuckDB catalog
+  // temp tables instead of serving them via in-memory replacement-scan table
+  // functions. Measures the round-trip overhead through the engine's storage.
+  bool no_scan_forwarding = false;
+
+  // Disable mode bridging: prevent GetOrLoadQjitTemp() from converting
+  // interpreter-produced temps (ColumnDataCollection) into QjitTable for
+  // subsequent JIT subqueries. Forces cascade fallback after interpreter use.
+  bool no_mode_bridging = false;
+
+  // Force every N-th intermediate subquery (temp2, temp4, … for N=2) to use
+  // the DBMS interpreter instead of query-JIT, even when JIT would succeed.
+  // 0 = disabled. Used to evaluate mode bridging on workloads with no
+  // naturally unsupported nodes.
+  int force_interpreter_nth = 0;
 
   // Disable engine optimizer for subquery execution (PRAGMA disable_optimizer).
   // FilterOptimize (init IR) still runs; only the per-subquery Prepare()

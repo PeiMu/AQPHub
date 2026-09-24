@@ -345,7 +345,9 @@ public:
   void SetRangeGuard(bool v) { range_guard_ = v; }
   void SetBlockSkip(bool v) { block_skip_ = v; }
   void SetMembershipPreprobe(bool v) { membership_preprobe_ = v; }
-  void SetDisableBidirectionalStorage(bool v) { disable_bidirectional_storage_ = v; }
+  void SetNoScanForwarding(bool v) { no_scan_forwarding_ = v; }
+  void SetNoModeBridging(bool v) { no_mode_bridging_ = v; }
+  void SetForceInterpreterNth(int n) { force_interpreter_nth_ = n; }
   void SetDisableEngineOptimizer(bool v) { disable_engine_optimizer_ = v; }
 
   void SetBenchmarkMode(bool benchmark) { benchmark_mode_ = benchmark; }
@@ -716,7 +718,9 @@ private:
   bool range_guard_ = true;
   bool block_skip_ = true;
   bool membership_preprobe_ = true;
-  bool disable_bidirectional_storage_ = false;
+  bool no_scan_forwarding_ = false;
+  bool no_mode_bridging_ = false;
+  int force_interpreter_nth_ = 0;
   bool disable_engine_optimizer_ = false;
 
   // RAII guard: temporarily disables the DuckDB optimizer for conn->Prepare()
@@ -1016,7 +1020,7 @@ private:
 #endif
 #endif
   // Create a DuckDB catalog temp table from a ColumnDataCollection (used when
-  // disable_bidirectional_storage_ is set to measure round-trip overhead).
+  // no_scan_forwarding_ is set to measure round-trip overhead).
   void MaterializeCatalogTempTable(const std::string &temp_table_name,
                                    const duckdb::vector<duckdb::LogicalType> &types,
                                    const std::vector<std::string> &col_names,

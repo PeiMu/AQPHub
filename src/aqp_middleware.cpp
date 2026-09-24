@@ -418,7 +418,9 @@ void ExecuteSingleQuery(
         duckdb_adp->SetRangeGuard(config.range_guard);
         duckdb_adp->SetBlockSkip(config.block_skip);
         duckdb_adp->SetMembershipPreprobe(config.membership_preprobe);
-        duckdb_adp->SetDisableBidirectionalStorage(config.disable_bidirectional_storage);
+        duckdb_adp->SetNoScanForwarding(config.no_scan_forwarding);
+        duckdb_adp->SetNoModeBridging(config.no_mode_bridging);
+        duckdb_adp->SetForceInterpreterNth(config.force_interpreter_nth);
         duckdb_adp->SetDisableEngineOptimizer(config.disable_engine_optimizer);
       }
 #endif

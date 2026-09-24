@@ -1998,6 +1998,17 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   // collection, so that path keeps the CDC write-back (Combine below).
   bool qjit_stored = false;
   int64_t qjit_rows = 0;
+  if (qjit_compiled && force_interpreter_nth_ > 0 &&
+      temp_table_name.substr(0, 4) == "temp") {
+    int idx = std::atoi(temp_table_name.c_str() + 4);
+    if (idx > 0 && idx % force_interpreter_nth_ == 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "[AQP-QJIT] force-interpreter label=%s nth=%d\n",
+              temp_table_name.c_str(), force_interpreter_nth_);
+#endif
+      qjit_compiled.reset();
+    }
+  }
   if (qjit_compiled) {
     auto qtable = std::make_unique<qjit::QjitTable>(
         qjit_compiled->out_descs, qjit_executor_->NumWorkers());
@@ -2108,10 +2119,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   temp_table_card_.emplace(temp_table_name, chunk_size);
 
 #ifdef HAVE_LLVM
-  // Bi-directional storage disabled: also push result into a DuckDB catalog
-  // temp table so the next Prepare sees it via catalog lookup (measuring the
+  // Scan forwarding disabled: also push result into a DuckDB catalog temp
+  // table so the next Prepare sees it via catalog lookup (measuring the
   // round-trip overhead that the replacement-scan path avoids).
-  if (disable_bidirectional_storage_) {
+  if (no_scan_forwarding_) {
     const auto &mat_names =
         qjit_stored ? qjit_temp_meta_[temp_table_name].column_names
                     : temp_collections_[temp_table_name].column_names;
@@ -2445,7 +2456,7 @@ void DuckDBAdapter::DropTempTable(const std::string &table_name) {
 #ifdef HAVE_LLVM
   qjit_temps_.erase(table_name);
 #endif
-  if (disable_bidirectional_storage_ && bidir_conn_) {
+  if (no_scan_forwarding_ && bidir_conn_) {
     try {
       bidir_conn_->Query("DROP TABLE IF EXISTS temp." + table_name);
     } catch (...) {}
@@ -4531,6 +4542,10 @@ DuckDBAdapter::GetOrLoadQjitTemp(const std::string &name,
   auto it = qjit_temps_.find(name);
   if (it != qjit_temps_.end())
     return it->second.get();
+  if (no_mode_bridging_) {
+    reason = "source:tmp-no-bridge:" + name;
+    return nullptr;
+  }
   auto tc = temp_collections_.find(name);
   if (tc == temp_collections_.end() || !tc->second.collection) {
     reason = "source:tmp-missing:" + name;

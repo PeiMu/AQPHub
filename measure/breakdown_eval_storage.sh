@@ -2,25 +2,31 @@
 #
 # Bi-directional storage layer evaluation.
 #
-# Compares query-JIT with the middleware's replacement-scan-based temp
-# storage (bi-directional) against a baseline that also materializes
-# every intermediate result into a DuckDB catalog temp table (the
-# round-trip that would be required without bi-directional storage).
+# Evaluates the two features of bi-directional storage independently:
+#
+#   Scan forwarding  – intermediate results are served to DuckDB via
+#                      in-memory replacement-scan table functions instead
+#                      of being materialised into catalog temp tables.
+#
+#   Mode bridging    – GetOrLoadQjitTemp() converts interpreter-produced
+#                      temps (ColumnDataCollection) into QjitTable so that
+#                      subsequent subqueries can still use query-JIT.
 #
 # ============================================================
 # Steps
 # ============================================================
 #
-# Step 1: Bi-directional storage enabled (default)
-#   Intermediate results stay in middleware memory (QjitTable /
-#   ColumnDataCollection) and are served to DuckDB via replacement
-#   scan table functions (scan_qjit_temp / scan_temp_collection).
+# Step 1: Both enabled (default / baseline)
 #
-# Step 2: Bi-directional storage disabled
-#   Same as Step 1, but after each subquery the result is ALSO
-#   copied into a DuckDB catalog temp table (CREATE TABLE +
-#   LocalAppend), measuring the round-trip overhead that the
-#   replacement-scan path avoids.
+# Step 2: Scan forwarding disabled (--no-scan-forwarding)
+#   After each subquery the result is ALSO copied into a DuckDB catalog
+#   temp table, measuring the round-trip overhead that the replacement-
+#   scan path avoids.
+#
+# Step 3: Mode bridging evaluation (--force-interpreter-nth=N)
+#   For N = 2..5, forces every N-th subquery to use the interpreter,
+#   then compares mode bridging ON (subsequent JIT subqueries can
+#   consume interpreter temps) vs OFF (cascade fallback).
 #
 # Run from measure/ directory.
 #
@@ -33,19 +39,40 @@ COMMON="job duckdb topdown query none on on on all single-run-template off tpde"
 DEST_DIR="${SCRIPT_DIR}/job_result"
 D="duckdb_topdown_query_none_jitcache_single_run_template_tpde"
 
-# Step 1: Bi-directional storage enabled (default)
-echo "=== Step 1: Bi-directional storage enabled ==="
+# Step 1: Both enabled (default)
+echo "=== Step 1: Bi-directional storage enabled (baseline) ==="
 #bash ./measure_breakdown_time_aqp.sh $COMMON && \
 cp "${DEST_DIR}/${D}_breakdown_time_log.csv" \
    "${DEST_DIR}/storage_step1_bidir_enabled.csv" && \
 
-# Step 2: Bi-directional storage disabled
-echo "=== Step 2: Bi-directional storage disabled ==="
+# Step 2: Scan forwarding disabled
+echo "=== Step 2: Scan forwarding disabled ==="
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \
-    "disable-bi-directional-storage" && \
-mv "${DEST_DIR}/${D}_nobidirstorage_breakdown_time_log.csv" \
-   "${DEST_DIR}/storage_step2_bidir_disabled.csv" && \
+    "no-scan-forwarding" && \
+mv "${DEST_DIR}/${D}_noscanfwd_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step2_no_scan_forwarding.csv" && \
+
+# Step 3: Mode bridging evaluation (sweep N=2..5)
+for N in 2 3 4 5; do
+  echo "=== Step 3a: force-interpreter-nth=${N}, mode bridging ON ==="
+  bash ./measure_breakdown_time_aqp.sh $COMMON "" \
+      "force-interpreter-nth=${N}" && \
+  mv "${DEST_DIR}/${D}_forceinterp${N}_breakdown_time_log.csv" \
+     "${DEST_DIR}/storage_step3a_nth${N}_bridge_on.csv" && \
+
+  echo "=== Step 3b: force-interpreter-nth=${N}, mode bridging OFF ==="
+  bash ./measure_breakdown_time_aqp.sh $COMMON "" \
+      "force-interpreter-nth=${N},no-mode-bridging" && \
+  mv "${DEST_DIR}/${D}_nomodebridg_forceinterp${N}_breakdown_time_log.csv" \
+     "${DEST_DIR}/storage_step3b_nth${N}_bridge_off.csv"
+done
 
 echo ""
 echo "=== Bi-directional storage evaluation complete ==="
-echo "Output: ${DEST_DIR}/storage_step[1-2]_*.csv"
+echo "Output:"
+echo "  ${DEST_DIR}/storage_step1_bidir_enabled.csv"
+echo "  ${DEST_DIR}/storage_step2_no_scan_forwarding.csv"
+for N in 2 3 4 5; do
+  echo "  ${DEST_DIR}/storage_step3a_nth${N}_bridge_on.csv"
+  echo "  ${DEST_DIR}/storage_step3b_nth${N}_bridge_off.csv"
+done

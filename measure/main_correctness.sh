@@ -105,6 +105,11 @@ run_inline_config() {
   [[ "$disable_runtime_opts" == *"membership"* ]]    && rt_suffix+="_nomembership"
   [[ "$disable_runtime_opts" == *"early-term"* ]]    && rt_suffix+="_noearlyterm"
   [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && rt_suffix+="_nobidirstorage"
+  [[ "$disable_runtime_opts" == *"no-scan-forwarding"* ]] && rt_suffix+="_noscanfwd"
+  [[ "$disable_runtime_opts" == *"no-mode-bridging"* ]] && rt_suffix+="_nomodebridg"
+  if [[ "$disable_runtime_opts" =~ force-interpreter-nth=([0-9]+) ]]; then
+    rt_suffix+="_forceinterp${BASH_REMATCH[1]}"
+  fi
   [[ "$disable_compile_opts" == *"cross-query-prep"* ]] && cc_suffix+="_nocrossqprep"
   [[ "$collect_stats" == "on" ]]  && cs_suffix="_collectstats"
   [[ "$collect_stats" == "off" ]] && cs_suffix="_nocollectstats"
