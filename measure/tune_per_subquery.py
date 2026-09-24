@@ -67,8 +67,7 @@ Fields in each sub-query entry:
   - payload_prune, prefetch, batch_probe, skip_hash_cmp: true/false
     (only emitted when they differ from the default)
 
-Warm-row selection: PG+DSB uses 1 warmup + 1 run (2 total),
-  PG+JOB uses 2 warmup + 3 runs (5 total),
+Warm-row selection: PG uses 2 warmup + 3 runs (5 total),
   others use 5 warmup + 10 runs (15 total).
   Fallback: rows[1:] if too few rows.
 Aggregation: arithmetic mean per column (matches plot_middleware_jit.py).
@@ -84,8 +83,6 @@ import json, os, re, sys
 def _iter_params(path):
     base = os.path.basename(path)
     if base.startswith('postgresql_') or base.startswith('postgres_'):
-        if 'dsb_result' in path:
-            return 2, 1
         return 5, 2
     return 15, 5
 

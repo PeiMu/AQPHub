@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Show performance breakdown of all node-based configs in job_result/ or dsb_result/.
 
-Uses the same parser as plot_middleware_jit.py (PG: 3 warmup + 5 runs, others: 5 warmup + 10 runs).
+Uses the same parser as plot_middleware_jit.py (PG: 2 warmup + 3 runs, others: 5 warmup + 10 runs).
 Columns: middleware overhead, jit compile, execute, end-to-end total (all in seconds).
 
 Usage: python3 show_all_configs.py [--bench=dsb] [split]
@@ -14,8 +14,6 @@ import csv, json, os, re, sys
 def _iter_params(csv_file):
     base = os.path.basename(csv_file)
     if base.startswith('postgresql_') or base.startswith('postgres_'):
-        if 'dsb_result' in csv_file:
-            return 2, 1
         return 5, 2
     return 15, 5
 

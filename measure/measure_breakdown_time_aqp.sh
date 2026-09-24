@@ -200,11 +200,7 @@ log_name=time_log.csv
 container_name="umbra_benchmark"
 
 if [[ "$engine" == "postgres" || "$engine" == "postgresql" ]]; then
-    if [[ "$bench" == "dsb" ]]; then
-        iteration=2  # 1 warm up, 1 run
-    else
-        iteration=5  # 2 warm up, 3 runs
-    fi
+    iteration=5  # 2 warm up, 3 runs
 else
     iteration=15 # 5 warm up, 10 runs
 fi
