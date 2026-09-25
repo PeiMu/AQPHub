@@ -52,8 +52,23 @@ bash ./measure_breakdown_time_aqp.sh $COMMON "" \
 mv "${DEST_DIR}/${D}_noscanfwd_breakdown_time_log.csv" \
    "${DEST_DIR}/storage_step2_no_scan_forwarding.csv" && \
 
-# Step 3: Mode bridging evaluation (sweep N=2..5)
-for N in 1 2 3 4 5; do
+# Step 3: Mode bridging evaluation (sweep N=1..5)
+#
+# N=1 bridge-off: every sub-query falls back to interpreter (the first
+# sub-query is forced to interpret, and without bridging the cascade
+# makes all subsequent ones interpret too).  This is equivalent to
+# jit_level=none, so reuse that measurement instead of re-running.
+echo "=== Step 3a: force-interpreter-nth=1, mode bridging ON ==="
+bash ./measure_breakdown_time_aqp.sh $COMMON "" \
+    "force-interpreter-nth=1" && \
+mv "${DEST_DIR}/${D}_forceinterp1_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step3a_nth1_bridge_on.csv" && \
+
+echo "=== Step 3b: force-interpreter-nth=1, mode bridging OFF (copy from none_off) ==="
+cp "${DEST_DIR}/duckdb_topdown_none_off_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step3b_nth1_bridge_off.csv"
+
+for N in 2 3 4 5; do
   echo "=== Step 3a: force-interpreter-nth=${N}, mode bridging ON ==="
   bash ./measure_breakdown_time_aqp.sh $COMMON "" \
       "force-interpreter-nth=${N}" && \
