@@ -1646,7 +1646,18 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   // metadata points into, plus the result types/names (no Prepare happens
   // on the main connection in that case).
   std::unique_ptr<QjitSpecCompiled> qjit_spec;
-  if (query_jit_) {
+  bool force_interpreter = false;
+  if (force_interpreter_nth_ > 0 && temp_table_name.substr(0, 4) == "temp") {
+    int idx = std::atoi(temp_table_name.c_str() + 4);
+    if (idx > 0 && idx % force_interpreter_nth_ == 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "[AQP-QJIT] force-interpreter label=%s nth=%d\n",
+              temp_table_name.c_str(), force_interpreter_nth_);
+#endif
+      force_interpreter = true;
+    }
+  }
+  if (query_jit_ && !force_interpreter) {
     if (qjit_spec_hit_) {
       // Spec-jit HIT: the bg pool already compiled this sub-query on a spec
       // compiler. Resolve sources now (the consumed temp exists only since
@@ -1809,6 +1820,15 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
           &timer, "ExecuteSQLandCreateTempTable::qjit analyze time\n", false);
       WriteJitTimingColumn(analyze_us + ConsumeSpecWaitUs());
     }
+  } else if (force_interpreter) {
+    qjit_pending_ir_ = nullptr;
+    jit_pending_plan_.reset();
+    {
+      auto og = MakeOptGuard();
+      prepared = conn->Prepare(sql);
+    }
+    if (enable_timing_)
+      WriteJitTimingColumn(0);
   } else if (jit_pending_plan_) {
     jit_pending_plan_->ResolveOperatorTypes();
     auto plan_types = jit_pending_plan_->types;
@@ -1998,17 +2018,6 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   // collection, so that path keeps the CDC write-back (Combine below).
   bool qjit_stored = false;
   int64_t qjit_rows = 0;
-  if (qjit_compiled && force_interpreter_nth_ > 0 &&
-      temp_table_name.substr(0, 4) == "temp") {
-    int idx = std::atoi(temp_table_name.c_str() + 4);
-    if (idx > 0 && idx % force_interpreter_nth_ == 0) {
-#ifndef NDEBUG
-      fprintf(stderr, "[AQP-QJIT] force-interpreter label=%s nth=%d\n",
-              temp_table_name.c_str(), force_interpreter_nth_);
-#endif
-      qjit_compiled.reset();
-    }
-  }
   if (qjit_compiled) {
     auto qtable = std::make_unique<qjit::QjitTable>(
         qjit_compiled->out_descs, qjit_executor_->NumWorkers());
