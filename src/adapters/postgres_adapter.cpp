@@ -635,12 +635,9 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     PQclear(r);
   }
 
-  // cascade fix temporarily disabled for debugging
-  // #ifdef HAVE_LLVM
-  //   if (session_query_jit_ && !cascade_out_descs.empty()) {
-  //     FetchPgTempIntoQjitTemps(temp_table_name, cascade_out_descs);
-  //   }
-  // #endif
+  // Interp→JIT cascade: don't eagerly fetch here. ResolveQjitSources
+  // will lazily call FetchPgTempIntoQjitTemps only when a subsequent
+  // JIT sub-query actually needs this temp.
 
   if (enable_timing_) {
     auto extra_materialize_time =
@@ -1266,6 +1263,18 @@ bool PostgreSQLAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
     const qjit::QjitStep &st = plan.steps[k];
     if (st.source_is_temp) {
       auto it = qjit_temps_.find(st.source_table);
+      if ((it == qjit_temps_.end() || !it->second) &&
+          pg_materialized_temps_.count(st.source_table)) {
+        std::vector<qjit::QjitTable::ColumnDesc> descs;
+        for (const auto &col : st.cols) {
+          qjit::QjitTable::ColumnDesc d;
+          d.dtype = col.expected_dtype;
+          d.name = col.column_name;
+          descs.push_back(d);
+        }
+        FetchPgTempIntoQjitTemps(st.source_table, descs);
+        it = qjit_temps_.find(st.source_table);
+      }
       if (it == qjit_temps_.end() || !it->second) {
         reason = "source:temp-missing:" + st.source_table;
         return false;
@@ -1294,8 +1303,7 @@ PostgreSQLAdapter::TryCompileQueryJit(
   auto fallback = [&](const std::string &reason)
       -> std::unique_ptr<QjitCompiled> {
 #ifndef NDEBUG
-    fprintf(stderr, "[AQP-QJIT] fallback:%s label=%s\n", reason.c_str(),
-            label.c_str());
+    std::cerr << "[AQP-QJIT] fallback:" << reason << " label=" << label << "\n";
 #else
     (void)reason;
 #endif
@@ -1891,7 +1899,14 @@ void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
     return;
   }
 
-  auto qtable = std::make_unique<qjit::QjitTable>(out_descs, 1);
+  // QjitTable::ElemSize doesn't handle FLOAT or BOOL — promote them.
+  auto fixed_descs = out_descs;
+  for (auto &d : fixed_descs) {
+    if (d.dtype == AQP_DTYPE_FLOAT) d.dtype = AQP_DTYPE_DOUBLE;
+    if (d.dtype == AQP_DTYPE_BOOL)  d.dtype = AQP_DTYPE_INT32;
+  }
+
+  auto qtable = std::make_unique<qjit::QjitTable>(fixed_descs, 1);
   qtable->ReserveFlat(static_cast<uint64_t>(nrows));
 
   for (int c = 0; c < ncols; c++) {
@@ -1900,7 +1915,7 @@ void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
     uint64_t bitmap_words = (static_cast<uint64_t>(nrows) + 63) / 64;
     std::fill(validity, validity + bitmap_words, ~uint64_t(0));
 
-    int32_t dtype = out_descs[c].dtype;
+    int32_t dtype = fixed_descs[c].dtype;
     for (int r = 0; r < nrows; r++) {
       if (PQgetisnull(res, r, c)) {
         validity[r / 64] &= ~(uint64_t(1) << (r % 64));
@@ -1924,6 +1939,8 @@ void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
         }
       } else if (dtype == AQP_DTYPE_INT64) {
         reinterpret_cast<int64_t *>(data)[r] = std::stoll(val);
+      } else if (dtype == AQP_DTYPE_DOUBLE) {
+        reinterpret_cast<double *>(data)[r] = std::strtod(val, nullptr);
       } else {
         auto &arena = qtable->FlatArena();
         size_t len = strlen(val);
