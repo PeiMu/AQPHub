@@ -4,8 +4,9 @@
 #
 # Evaluates the two features of bi-directional storage independently:
 #
-#   Scan forwarding  – intermediate results are served to DuckDB via
-#                      in-memory replacement-scan table functions instead
+#   Scan forwarding  – intermediate results are served to the engine via
+#                      in-memory replacement-scan table functions (DuckDB)
+#                      or shared-memory custom scans (PostgreSQL) instead
 #                      of being materialised into catalog temp tables.
 #
 #   Mode bridging    – GetOrLoadQjitTemp() converts interpreter-produced
@@ -82,6 +83,24 @@ for N in 2 3 4 5; do
      "${DEST_DIR}/storage_step3b_nth${N}_bridge_off.csv"
 done
 
+# =============================================================
+# Step 4: PostgreSQL scan forwarding
+# =============================================================
+
+PG_COMMON="job postgresql node-based query none on on on all single-run-strict recompile fastisel"
+PG="postgresql_node-based_query_none_jitcache_single_run_strict_specrecompile_fastisel"
+
+echo "=== Step 4a: PostgreSQL scan forwarding enabled (baseline) ==="
+bash ./measure_breakdown_time_aqp.sh $PG_COMMON && \
+cp "${DEST_DIR}/${PG}_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step4a_pg_scan_fwd_enabled.csv" && \
+
+echo "=== Step 4b: PostgreSQL scan forwarding disabled ==="
+bash ./measure_breakdown_time_aqp.sh $PG_COMMON "" \
+    "no-scan-forwarding" && \
+mv "${DEST_DIR}/${PG}_noscanfwd_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step4b_pg_no_scan_forwarding.csv"
+
 echo ""
 echo "=== Bi-directional storage evaluation complete ==="
 echo "Output:"
@@ -91,3 +110,5 @@ for N in 1 2 3 4 5; do
   echo "  ${DEST_DIR}/storage_step3a_nth${N}_bridge_on.csv"
   echo "  ${DEST_DIR}/storage_step3b_nth${N}_bridge_off.csv"
 done
+echo "  ${DEST_DIR}/storage_step4a_pg_scan_fwd_enabled.csv"
+echo "  ${DEST_DIR}/storage_step4b_pg_no_scan_forwarding.csv"

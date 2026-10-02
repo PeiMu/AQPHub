@@ -392,10 +392,11 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
                  << (execute_us / 1000.0) << ", ";
         log_file.close();
       }
-      // Deferred materialization: skip PG temp table creation — the next
-      // sub-query will resolve this temp from qjit_temps_ if it JIT-compiles.
-      // If a later sub-query falls back to the PG interpreter,
-      // EnsureTempsMaterializedForSQL() will materialize on demand.
+      // Scan forwarding: skip PG materialization — the next sub-query will
+      // resolve this temp from qjit_temps_ if it JIT-compiles.  When
+      // --no-scan-forwarding, fall back to unconditional COPY INTO PG.
+      if (no_scan_forwarding_)
+        MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
       if (enable_timing_) {
         auto mat_us = chrono_toc(
             &timer, "qjit extra_materialize time\n", false);
@@ -503,7 +504,9 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
                << (execute_us / 1000.0) << ", ";
       log_file.close();
     }
-    // Deferred materialization: skip — see comment in spec-hit path above.
+    // Scan forwarding: skip — see comment in spec-hit path above.
+    if (no_scan_forwarding_)
+      MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
     if (enable_timing_) {
       auto mat_us =
           chrono_toc(&timer, "qjit extra_materialize time\n",
@@ -1635,7 +1638,7 @@ void PostgreSQLAdapter::EnsureTempsMaterializedForSQL(const std::string &sql) {
       size_t end = pos + name.size();
       bool right_ok = (end >= sql.size()) || !is_ident_char(sql[end]);
       if (left_ok && right_ok) {
-        if (scan_forward_available_)
+        if (scan_forward_available_ && !no_scan_forwarding_)
           ForwardQjitTempViaShm(kv.first);
         else
           MaterializeQjitTempToPostgreSQL(kv.first, true);
@@ -2135,8 +2138,10 @@ PostgreSQLAdapter::ReplayQjitSubquery(const PgCachedSubquery &sub,
     return rows;
 
   temp_table_card_[sub.temp_table_name] = rows;
-  // Deferred materialization: skip — EnsureTempsMaterializedForSQL() will
+  // Scan forwarding: skip — EnsureTempsMaterializedForSQL() will
   // materialize on demand if a later replay sub-query falls back to PG.
+  if (no_scan_forwarding_)
+    MaterializeQjitTempToPostgreSQL(sub.temp_table_name, true);
 
 #ifndef NDEBUG
   fprintf(stderr, "[PLAN-REPLAY-PG] exec label=%s rows=%lld\n",

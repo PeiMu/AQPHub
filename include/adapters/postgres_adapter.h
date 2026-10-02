@@ -150,6 +150,7 @@ public:
     jit_prefetch_ = enable;
     jit_prefetch_distance_ = distance;
   }
+  void SetNoScanForwarding(bool v) { no_scan_forwarding_ = v; }
 
   int GetSkipHashCmp() const { return skip_hash_cmp_; }
   bool GetJitDebug() const { return jit_debug_; }
@@ -305,6 +306,7 @@ private:
   std::unordered_set<std::string> shm_forwarded_temps_;
   bool scan_forward_available_ = false;
   bool scan_forward_checked_ = false;
+  bool no_scan_forwarding_ = false;
   const ir_sql_converter::AQPStmt *qjit_pending_ir_ = nullptr;
   PostPrepareHook post_prepare_hook_;
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
