@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -149,6 +150,7 @@ public:
     jit_prefetch_ = enable;
     jit_prefetch_distance_ = distance;
   }
+  void SetNoScanForwarding(bool v) { no_scan_forwarding_ = v; }
 
   int GetSkipHashCmp() const { return skip_hash_cmp_; }
   bool GetJitDebug() const { return jit_debug_; }
@@ -271,6 +273,13 @@ private:
       const std::string &temp_table_name,
       const std::vector<qjit::QjitTable::ColumnDesc> &out_descs);
 
+  void EnsureTempsMaterializedForSQL(const std::string &sql);
+
+  void WriteQjitTempToShm(const std::string &name);
+  void ForwardQjitTempViaShm(const std::string &name);
+  void UnlinkShmFile(const std::string &name);
+  static std::string ShmPath(const std::string &name);
+
   bool query_jit_ = false;
   bool session_query_jit_ = false;
   bool use_pg_optimizer_ = false;
@@ -293,6 +302,11 @@ private:
   int jit_prefetch_distance_ = 8;
   std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>>
       qjit_temps_;
+  std::unordered_set<std::string> pg_materialized_temps_;
+  std::unordered_set<std::string> shm_forwarded_temps_;
+  bool scan_forward_available_ = false;
+  bool scan_forward_checked_ = false;
+  bool no_scan_forwarding_ = false;
   const ir_sql_converter::AQPStmt *qjit_pending_ir_ = nullptr;
   PostPrepareHook post_prepare_hook_;
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;

@@ -429,6 +429,11 @@ run_inline_config "RQ5 bidir-disabled" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
   job duckdb topdown query none on single-run-template off tpde "" \
   "disable-bi-directional-storage" "" auto
 
+# Step 3: PostgreSQL scan forwarding disabled
+run_inline_config "RQ5 PG no-scan-forwarding" "$PG_JOB_NB_GOLDEN" job_result "_job.txt" \
+  job postgresql node-based query none on single-run-strict recompile fastisel "" \
+  "no-scan-forwarding" "" auto
+
 # =============================================================
 # Inline configs summary
 # =============================================================

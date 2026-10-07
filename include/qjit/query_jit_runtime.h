@@ -450,7 +450,9 @@ public:
      then calls MarkFinalized(nrows). */
   void ReserveFlat(uint64_t total_rows);
   uint8_t *FlatData(size_t col) { return flat_[col].data.data(); }
+  const uint8_t *FlatDataConst(size_t col) const { return flat_[col].data.data(); }
   uint64_t *FlatValidity(size_t col) { return flat_[col].validity.data(); }
+  const uint64_t *FlatValidityConst(size_t col) const { return flat_[col].validity.data(); }
   QjitStringArena &FlatArena() { return flat_arena_; }
   void MarkFinalized(uint64_t total_rows) { nrows_ = total_rows; finalized_ = true; }
 

@@ -9,6 +9,11 @@
 #include <ctime>
 #include <limits>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #ifdef HAVE_LLVM
 
 #define QJIT_ASSERT(cond, msg)                                                 \
@@ -198,6 +203,10 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
 
   if (query_jit_ && qjit_storage_plan_ && qjit_storage_plan_->IsLoaded() &&
       IsSelectStatement(sql)) {
+    // The final query uses PG optimizer for IR (ConvertPlanToIRFromPgOptimizer),
+    // which needs temp tables in the catalog for type resolution. Materialize
+    // any JIT-only temps the SQL references so PG's planner sees correct types.
+    EnsureTempsMaterializedForSQL(sql);
     ParseSQL(sql);
     auto ir = ConvertPlanToIR();
     if (ir) {
@@ -279,6 +288,10 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
   std::chrono::high_resolution_clock::time_point timer;
   if (enable_timing_)
     timer = chrono_tic();
+#endif
+#ifdef HAVE_LLVM
+  // Final query PG fallback: materialize any JIT-only temps this SQL references.
+  EnsureTempsMaterializedForSQL(sql);
 #endif
   PGresult *pg_result = PQexec(conn, sql.c_str());
 
@@ -379,7 +392,11 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
                  << (execute_us / 1000.0) << ", ";
         log_file.close();
       }
-      MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
+      // Scan forwarding: skip PG materialization — the next sub-query will
+      // resolve this temp from qjit_temps_ if it JIT-compiles.  When
+      // --no-scan-forwarding, fall back to unconditional COPY INTO PG.
+      if (no_scan_forwarding_)
+        MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
       if (enable_timing_) {
         auto mat_us = chrono_toc(
             &timer, "qjit extra_materialize time\n", false);
@@ -487,7 +504,9 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
                << (execute_us / 1000.0) << ", ";
       log_file.close();
     }
-    MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
+    // Scan forwarding: skip — see comment in spec-hit path above.
+    if (no_scan_forwarding_)
+      MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
     if (enable_timing_) {
       auto mat_us =
           chrono_toc(&timer, "qjit extra_materialize time\n",
@@ -552,6 +571,12 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
   }
 #endif
 
+#ifdef HAVE_LLVM
+  // Interpreter fallback: materialize any JIT-only predecessor temps that
+  // this SQL references so PG can see them in its catalog.
+  EnsureTempsMaterializedForSQL(sql);
+#endif
+
   // Build SQL: CREATE TEMP TABLE + optional ANALYZE in one round-trip
   std::string create_sql = "CREATE TEMP TABLE " + temp_table_name + " AS (" +
                            sql.substr(0, sql.size() - 1) + ")";
@@ -594,6 +619,9 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     temp_table_card_[temp_table_name] = std::stoull(cmd_tuples);
   }
   PQclear(create_result);
+#ifdef HAVE_LLVM
+  pg_materialized_temps_.insert(temp_table_name);
+#endif
 
   if (enable_timing_) {
     auto execute_sub_sql_time =
@@ -610,12 +638,9 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     PQclear(r);
   }
 
-  // cascade fix temporarily disabled for debugging
-  // #ifdef HAVE_LLVM
-  //   if (session_query_jit_ && !cascade_out_descs.empty()) {
-  //     FetchPgTempIntoQjitTemps(temp_table_name, cascade_out_descs);
-  //   }
-  // #endif
+  // Interp→JIT cascade: don't eagerly fetch here. ResolveQjitSources
+  // will lazily call FetchPgTempIntoQjitTemps only when a subsequent
+  // JIT sub-query actually needs this temp.
 
   if (enable_timing_) {
     auto extra_materialize_time =
@@ -649,6 +674,19 @@ void PostgreSQLAdapter::CreateTempTable(const std::string &table_name,
 
 void PostgreSQLAdapter::DropTempTable(const std::string &table_name) {
   CheckConnection();
+
+#ifdef HAVE_LLVM
+  if (shm_forwarded_temps_.count(table_name)) {
+    std::string unreg = "SELECT aqp_scan_forward_unregister('" + table_name + "')";
+    PGresult *r = PQexec(conn, unreg.c_str());
+    if (r) PQclear(r);
+    UnlinkShmFile(table_name);
+    shm_forwarded_temps_.erase(table_name);
+  }
+  if (session_query_jit_ && !pg_materialized_temps_.count(table_name))
+    return;
+  pg_materialized_temps_.erase(table_name);
+#endif
 
   std::string drop_sql = "DROP TABLE IF EXISTS " + table_name;
   PGresult *pg_result = PQexec(conn, drop_sql.c_str());
@@ -900,6 +938,8 @@ void PostgreSQLAdapter::ResetQueryState() {
   subquery_index = 0;
 #ifdef HAVE_LLVM
   qjit_temps_.clear();
+  pg_materialized_temps_.clear();
+  shm_forwarded_temps_.clear();
   qjit_pending_ir_ = nullptr;
   qjit_spec_hit_.reset();
   spec_wait_extra_us_ = 0;
@@ -1226,6 +1266,18 @@ bool PostgreSQLAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
     const qjit::QjitStep &st = plan.steps[k];
     if (st.source_is_temp) {
       auto it = qjit_temps_.find(st.source_table);
+      if ((it == qjit_temps_.end() || !it->second) &&
+          pg_materialized_temps_.count(st.source_table)) {
+        std::vector<qjit::QjitTable::ColumnDesc> descs;
+        for (const auto &col : st.cols) {
+          qjit::QjitTable::ColumnDesc d;
+          d.dtype = col.expected_dtype;
+          d.name = col.column_name;
+          descs.push_back(d);
+        }
+        FetchPgTempIntoQjitTemps(st.source_table, descs);
+        it = qjit_temps_.find(st.source_table);
+      }
       if (it == qjit_temps_.end() || !it->second) {
         reason = "source:temp-missing:" + st.source_table;
         return false;
@@ -1254,8 +1306,7 @@ PostgreSQLAdapter::TryCompileQueryJit(
   auto fallback = [&](const std::string &reason)
       -> std::unique_ptr<QjitCompiled> {
 #ifndef NDEBUG
-    fprintf(stderr, "[AQP-QJIT] fallback:%s label=%s\n", reason.c_str(),
-            label.c_str());
+    std::cerr << "[AQP-QJIT] fallback:" << reason << " label=" << label << "\n";
 #else
     (void)reason;
 #endif
@@ -1525,6 +1576,313 @@ void PostgreSQLAdapter::MaterializeQjitTempToPostgreSQL(
           "[AQP-QJIT] materialized temp=%s rows=%llu cols=%zu\n",
           name.c_str(), (unsigned long long)nrows, ncols);
 #endif
+  pg_materialized_temps_.insert(name);
+}
+
+void PostgreSQLAdapter::EnsureTempsMaterializedForSQL(const std::string &sql) {
+  // Lazy-check once whether the scan-forward extension is loaded (not just
+  // installed). The hooks require the library to be loaded via
+  // session_preload_libraries or shared_preload_libraries. We test by
+  // calling register+unregister on a dummy name; if the hooks aren't
+  // loaded, the function still succeeds but scans won't be intercepted.
+  // A more reliable check: verify the library is in pg_shdepend or simply
+  // attempt a round-trip test.
+  if (!scan_forward_checked_) {
+    scan_forward_checked_ = true;
+    // Check both: function exists AND library is loaded (hooks active).
+    // The function exists check is fast; the library load check uses
+    // pg_file_settings which shows loaded libraries.
+    PGresult *r = PQexec(conn,
+        "SELECT 1 FROM pg_proc WHERE proname='aqp_scan_forward_register' LIMIT 1");
+    bool fn_exists = (r && PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) > 0);
+    if (r) PQclear(r);
+    if (fn_exists) {
+      // Verify library is loaded by doing a test round-trip
+      PGresult *t1 = PQexec(conn, "CREATE TEMP TABLE _aqp_sf_test (id int)");
+      if (t1) PQclear(t1);
+      PGresult *t2 = PQexec(conn,
+          "SELECT aqp_scan_forward_register('_aqp_sf_test', '/dev/null', 0)");
+      bool reg_ok = (t2 && PQresultStatus(t2) == PGRES_TUPLES_OK);
+      if (t2) PQclear(t2);
+      if (reg_ok) {
+        // Check if hooks are active by running EXPLAIN on the test table.
+        // If hooks are loaded, we should see "Custom Scan (AqpScanForward)".
+        PGresult *e = PQexec(conn, "EXPLAIN SELECT * FROM _aqp_sf_test");
+        if (e && PQresultStatus(e) == PGRES_TUPLES_OK && PQntuples(e) > 0) {
+          const char *plan = PQgetvalue(e, 0, 0);
+          if (plan && strstr(plan, "AqpScanForward"))
+            scan_forward_available_ = true;
+        }
+        if (e) PQclear(e);
+        PGresult *u = PQexec(conn,
+            "SELECT aqp_scan_forward_unregister('_aqp_sf_test')");
+        if (u) PQclear(u);
+      }
+      PGresult *d = PQexec(conn, "DROP TABLE IF EXISTS _aqp_sf_test");
+      if (d) PQclear(d);
+    }
+  }
+
+  auto is_ident_char = [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+  };
+  for (const auto &kv : qjit_temps_) {
+    if (pg_materialized_temps_.count(kv.first))
+      continue;
+    if (shm_forwarded_temps_.count(kv.first))
+      continue;
+    const std::string &name = kv.first;
+    size_t pos = 0;
+    while ((pos = sql.find(name, pos)) != std::string::npos) {
+      bool left_ok = (pos == 0) || !is_ident_char(sql[pos - 1]);
+      size_t end = pos + name.size();
+      bool right_ok = (end >= sql.size()) || !is_ident_char(sql[end]);
+      if (left_ok && right_ok) {
+        if (scan_forward_available_ && !no_scan_forwarding_)
+          ForwardQjitTempViaShm(kv.first);
+        else
+          MaterializeQjitTempToPostgreSQL(kv.first, true);
+        break;
+      }
+      pos = end;
+    }
+  }
+}
+
+// ---- Scan-forward shared memory format (must match aqp_scan_forward.c) ----
+namespace {
+struct ShmHeader {
+  uint32_t magic;
+  uint32_t version;
+  uint64_t nrows;
+  uint32_t ncols;
+  uint32_t _pad0;
+  uint64_t total_size;
+  uint64_t string_pool_offset;
+  uint64_t string_pool_size;
+  uint8_t  _pad1[16];
+};
+static_assert(sizeof(ShmHeader) == 64, "ShmHeader must be 64 bytes");
+
+struct ShmColMeta {
+  int32_t  dtype;
+  uint32_t elem_size;
+  uint64_t data_offset;
+  uint64_t validity_offset;
+};
+static_assert(sizeof(ShmColMeta) == 24, "ShmColMeta must be 24 bytes");
+
+constexpr uint32_t AQP_SHM_MAGIC = 0x41515046;
+inline uint64_t align8(uint64_t x) { return (x + 7) & ~uint64_t(7); }
+} // namespace
+
+std::string PostgreSQLAdapter::ShmPath(const std::string &name) {
+  return "/dev/shm/aqp_sf_" + std::to_string(getpid()) + "_" + name;
+}
+
+void PostgreSQLAdapter::UnlinkShmFile(const std::string &name) {
+  ::unlink(ShmPath(name).c_str());
+}
+
+void PostgreSQLAdapter::WriteQjitTempToShm(const std::string &name) {
+  auto it = qjit_temps_.find(name);
+  if (it == qjit_temps_.end() || !it->second)
+    return;
+  const qjit::QjitTable &qt = *it->second;
+  uint64_t nrows = qt.NumRows();
+  size_t ncols = qt.NumCols();
+
+  // --- Compute layout ---
+  uint64_t meta_end = sizeof(ShmHeader) + sizeof(ShmColMeta) * ncols;
+  uint64_t offset = align8(meta_end);
+
+  struct ColLayout { uint64_t data_off; uint64_t val_off; uint32_t elem_sz; };
+  std::vector<ColLayout> layout(ncols);
+
+  for (size_t c = 0; c < ncols; c++) {
+    uint32_t esz = 4;
+    switch (qt.Col(c).dtype) {
+      case AQP_DTYPE_INT32: case AQP_DTYPE_DATE: esz = 4; break;
+      case AQP_DTYPE_INT64: esz = 8; break;
+      case AQP_DTYPE_DOUBLE: case AQP_DTYPE_FLOAT: esz = 8; break;
+      case AQP_DTYPE_VARCHAR: esz = 16; break;
+    }
+    layout[c].elem_sz = esz;
+    layout[c].data_off = offset;
+    offset += align8(nrows * esz);
+    layout[c].val_off = offset;
+    uint64_t val_bytes = ((nrows + 63) / 64) * 8;
+    offset += align8(val_bytes);
+  }
+
+  // Pre-compute string pool size
+  uint64_t pool_offset = offset;
+  uint64_t pool_size = 0;
+  for (size_t c = 0; c < ncols; c++) {
+    if (qt.Col(c).dtype != AQP_DTYPE_VARCHAR) continue;
+    for (uint64_t r = 0; r < nrows; r++) {
+      if (!qt.ValueValid(c, r)) continue;
+      QjitString s = qt.GetStr(c, r);
+      uint32_t len = qjit::StringLen(s);
+      if (len > QJIT_STRING_INLINE_LEN)
+        pool_size += len;
+    }
+  }
+  uint64_t total_size = pool_offset + pool_size;
+
+  // --- Create file ---
+  std::string path = ShmPath(name);
+  int fd = ::open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0644);
+  if (fd < 0) {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-SHM] open %s failed: %s\n",
+            path.c_str(), strerror(errno));
+#endif
+    return;
+  }
+  if (ftruncate(fd, total_size) < 0) {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-SHM] ftruncate failed: %s\n", strerror(errno));
+#endif
+    ::close(fd);
+    return;
+  }
+  uint8_t *base = (uint8_t *)mmap(nullptr, total_size,
+                                   PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  ::close(fd);
+  if (base == MAP_FAILED) {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-SHM] mmap failed: %s\n", strerror(errno));
+#endif
+    return;
+  }
+
+  // --- Write header ---
+  auto *hdr = reinterpret_cast<ShmHeader *>(base);
+  memset(hdr, 0, sizeof(*hdr));
+  hdr->magic = AQP_SHM_MAGIC;
+  hdr->version = 1;
+  hdr->nrows = nrows;
+  hdr->ncols = (uint32_t)ncols;
+  hdr->total_size = total_size;
+  hdr->string_pool_offset = pool_offset;
+  hdr->string_pool_size = pool_size;
+
+  // --- Write column metadata ---
+  auto *meta = reinterpret_cast<ShmColMeta *>(base + sizeof(ShmHeader));
+  for (size_t c = 0; c < ncols; c++) {
+    meta[c].dtype = qt.Col(c).dtype;
+    meta[c].elem_size = layout[c].elem_sz;
+    meta[c].data_offset = layout[c].data_off;
+    meta[c].validity_offset = layout[c].val_off;
+  }
+
+  // --- Write column data and validity ---
+  uint64_t pool_cursor = 0;
+  for (size_t c = 0; c < ncols; c++) {
+    uint8_t *dst_data = base + layout[c].data_off;
+    uint8_t *dst_val = base + layout[c].val_off;
+    uint64_t val_words = (nrows + 63) / 64;
+
+    // Copy validity bitmap
+    const uint64_t *src_val = qt.FlatValidityConst(c);
+    memcpy(dst_val, src_val, val_words * 8);
+
+    if (qt.Col(c).dtype != AQP_DTYPE_VARCHAR) {
+      // Scalar: bulk memcpy
+      const uint8_t *src_data = qt.FlatDataConst(c);
+      memcpy(dst_data, src_data, nrows * layout[c].elem_sz);
+    } else {
+      // VARCHAR: copy QjitString slots, rewriting ptr for long strings
+      const uint8_t *src_data = qt.FlatDataConst(c);
+      memcpy(dst_data, src_data, nrows * 16); // copy all 16-byte slots
+      // Now fix up long-string pointers to pool offsets
+      for (uint64_t r = 0; r < nrows; r++) {
+        if (!qt.ValueValid(c, r)) continue;
+        QjitString s = qt.GetStr(c, r);
+        uint32_t len = qjit::StringLen(s);
+        if (len > QJIT_STRING_INLINE_LEN) {
+          const char *sdata = qjit::StringData(s);
+          // Copy string bytes to pool
+          memcpy(base + pool_offset + pool_cursor, sdata, len);
+          // Rewrite the ptr field (offset 8 in the 16-byte QjitString)
+          // to be the pool-relative offset
+          uint64_t rel_off = pool_cursor;
+          memcpy(dst_data + r * 16 + 8, &rel_off, 8);
+          pool_cursor += len;
+        }
+      }
+    }
+  }
+
+  munmap(base, total_size);
+}
+
+void PostgreSQLAdapter::ForwardQjitTempViaShm(const std::string &name) {
+  auto it = qjit_temps_.find(name);
+  if (it == qjit_temps_.end() || !it->second) return;
+  const qjit::QjitTable &qt = *it->second;
+  uint64_t nrows = qt.NumRows();
+  size_t ncols = qt.NumCols();
+
+  // 1. Write shared memory file
+  WriteQjitTempToShm(name);
+
+  // 2. Drop any existing table with same name
+  std::string drop_sql = "DROP TABLE IF EXISTS " + name;
+  PGresult *dr = PQexec(conn, drop_sql.c_str());
+  PQclear(dr);
+
+  // 3. CREATE TEMP TABLE (schema only, no data)
+  std::string create_sql = "CREATE TEMP TABLE " + name + " (";
+  for (size_t c = 0; c < ncols; c++) {
+    if (c > 0) create_sql += ", ";
+    create_sql += "\"" + qt.Col(c).name + "\" ";
+    // Must match MaterializeQjitTempToPostgreSQL's type mapping exactly —
+    // the middleware's generated SQL expects these PG column types.
+    if (qt.Col(c).dtype == AQP_DTYPE_DATE)
+      create_sql += "date";
+    else if (qt.Col(c).dtype == AQP_DTYPE_INT32)
+      create_sql += "integer";
+    else if (qt.Col(c).dtype == AQP_DTYPE_INT64)
+      create_sql += "bigint";
+    else
+      create_sql += "text";
+  }
+  create_sql += ")";
+  PGresult *cr = PQexec(conn, create_sql.c_str());
+  if (PQresultStatus(cr) != PGRES_COMMAND_OK) {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-SHM] CREATE failed: %s\n", PQerrorMessage(conn));
+#endif
+    PQclear(cr);
+    UnlinkShmFile(name);
+    MaterializeQjitTempToPostgreSQL(name, true);
+    return;
+  }
+  PQclear(cr);
+
+  // 4. Register with extension
+  std::string shm_path = ShmPath(name);
+  char *escaped = PQescapeLiteral(conn, shm_path.c_str(), shm_path.size());
+  std::string reg_sql = "SELECT aqp_scan_forward_register('" + name + "', " +
+                         std::string(escaped) + ", " +
+                         std::to_string(nrows) + ")";
+  PQfreemem(escaped);
+  PGresult *rr = PQexec(conn, reg_sql.c_str());
+  if (!rr || PQresultStatus(rr) != PGRES_TUPLES_OK) {
+#ifndef NDEBUG
+    fprintf(stderr, "[AQP-SHM] register failed: %s\n", PQerrorMessage(conn));
+#endif
+    if (rr) PQclear(rr);
+    UnlinkShmFile(name);
+    MaterializeQjitTempToPostgreSQL(name, true);
+    return;
+  }
+  PQclear(rr);
+
+  shm_forwarded_temps_.insert(name);
+  pg_materialized_temps_.insert(name);
 }
 
 void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
@@ -1544,7 +1902,14 @@ void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
     return;
   }
 
-  auto qtable = std::make_unique<qjit::QjitTable>(out_descs, 1);
+  // QjitTable::ElemSize doesn't handle FLOAT or BOOL — promote them.
+  auto fixed_descs = out_descs;
+  for (auto &d : fixed_descs) {
+    if (d.dtype == AQP_DTYPE_FLOAT) d.dtype = AQP_DTYPE_DOUBLE;
+    if (d.dtype == AQP_DTYPE_BOOL)  d.dtype = AQP_DTYPE_INT32;
+  }
+
+  auto qtable = std::make_unique<qjit::QjitTable>(fixed_descs, 1);
   qtable->ReserveFlat(static_cast<uint64_t>(nrows));
 
   for (int c = 0; c < ncols; c++) {
@@ -1553,7 +1918,7 @@ void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
     uint64_t bitmap_words = (static_cast<uint64_t>(nrows) + 63) / 64;
     std::fill(validity, validity + bitmap_words, ~uint64_t(0));
 
-    int32_t dtype = out_descs[c].dtype;
+    int32_t dtype = fixed_descs[c].dtype;
     for (int r = 0; r < nrows; r++) {
       if (PQgetisnull(res, r, c)) {
         validity[r / 64] &= ~(uint64_t(1) << (r % 64));
@@ -1577,6 +1942,8 @@ void PostgreSQLAdapter::FetchPgTempIntoQjitTemps(
         }
       } else if (dtype == AQP_DTYPE_INT64) {
         reinterpret_cast<int64_t *>(data)[r] = std::stoll(val);
+      } else if (dtype == AQP_DTYPE_DOUBLE) {
+        reinterpret_cast<double *>(data)[r] = std::strtod(val, nullptr);
       } else {
         auto &arena = qtable->FlatArena();
         size_t len = strlen(val);
@@ -1771,7 +2138,10 @@ PostgreSQLAdapter::ReplayQjitSubquery(const PgCachedSubquery &sub,
     return rows;
 
   temp_table_card_[sub.temp_table_name] = rows;
-  MaterializeQjitTempToPostgreSQL(sub.temp_table_name, update_temp_card);
+  // Scan forwarding: skip — EnsureTempsMaterializedForSQL() will
+  // materialize on demand if a later replay sub-query falls back to PG.
+  if (no_scan_forwarding_)
+    MaterializeQjitTempToPostgreSQL(sub.temp_table_name, true);
 
 #ifndef NDEBUG
   fprintf(stderr, "[PLAN-REPLAY-PG] exec label=%s rows=%lld\n",

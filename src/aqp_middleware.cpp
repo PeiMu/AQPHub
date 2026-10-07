@@ -371,6 +371,17 @@ void ExecuteSingleQuery(
       log_file.close();
     }
 
+#ifdef HAVE_POSTGRES
+    {
+      auto *pg_adp = dynamic_cast<PostgreSQLAdapter *>(adapter);
+      if (pg_adp) {
+#ifdef HAVE_LLVM
+        pg_adp->SetNoScanForwarding(config.no_scan_forwarding);
+#endif
+      }
+    }
+#endif
+
     if (local_config.NeedsSplit()) {
       if (config.enable_debug_print) {
         std::cout << "\n=== Execution with Split Strategy: "
@@ -439,6 +450,7 @@ void ExecuteSingleQuery(
         pg_adp->SetJITDebug(config.enable_debug_print);
         pg_adp->SetJITPrefetch(config.jit_prefetch,
                                config.jit_prefetch_distance);
+        pg_adp->SetNoScanForwarding(config.no_scan_forwarding);
 #endif
       }
 #endif
