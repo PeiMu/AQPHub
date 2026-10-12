@@ -324,7 +324,7 @@ bash ./measure_mariadb.sh
 
 ## Web Interface
 
-We provide a web interface at https://github.com/bitaasudeh/aqp-web-interface
+We provide a web interface at [https://github.com/bitaasudeh/aqp-web-interface](https://github.com/PeiMu/aqp-web-interface)
 
 ## Citation
 ```
