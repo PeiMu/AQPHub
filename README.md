@@ -327,5 +327,8 @@ bash ./measure_mariadb.sh
 We provide a web interface at https://github.com/bitaasudeh/aqp-web-interface
 
 ## Citation
+```
+Mu, Pei, et al. "A Portable Middleware for Plan-Based Adaptive Query Processing." Proceedings of the VLDB Endowment 19.12 (2026): 4650-4653.
 
-TBD
+Mu, Pei, et al. "[Experiment, Analysis, and Benchmark] Systematic Evaluation of Plan-Based Adaptive Query Processing." 2026 IEEE 42nd International Conference on Data Engineering (ICDE). IEEE, 2026.
+```
